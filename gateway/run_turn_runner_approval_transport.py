@@ -67,7 +67,7 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
         turn._close_native_stream_boundary("Approval")
     # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
     cmd = _redact_approval_command(approval_data.get("command", ""))
-    desc = approval_data.get("description") or ea_default_reason_text()
+    desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
     flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
     # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
     exact_text = (getattr(turn, "_dispatch_text_approval", False) or
@@ -78,8 +78,8 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
             fut = turn._schedule(
                 adapter.send_exec_approval(
                     chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                    description=desc, metadata={**(ctx._status_thread_metadata or {}),
-                        'approval_request_id': approval_data.get('request_id')}, **flags,
+                    description=desc, metadata=ctx._status_thread_metadata,
+                    request_id=approval_data.get('request_id'), **flags,
                 ),
                 "send_exec_approval scheduling error",
             )
@@ -90,7 +90,7 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
                 # Without this, a card whose timer runs out keeps live buttons and nobody
                 # learns the command did NOT run (only the TUI registered a settle hook).
                 register_timeout_notice(
-                    turn, approval_data, command=cmd,
+                    turn, {**approval_data, "description": desc}, command=cmd,
                     card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                 return
             if outcome == "ambiguous":
@@ -157,7 +157,7 @@ def notify_approval(turn, approval_data: dict, *, background=False) -> None:
         if getattr(result, "success", True) is False:
             raise RuntimeError("Approval notification was not delivered")
         # No card to edit on the text path: post timeout as a new message.
-        register_timeout_notice(turn, approval_data, command=cmd, card_message_id=None)
+        register_timeout_notice(turn, {**approval_data, "description": desc}, command=cmd, card_message_id=None)
     except Exception as e:
         logger.error("Failed to send approval request: %s", e)
         raise

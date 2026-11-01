@@ -53,7 +53,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **网页搜索与抓取** | Nous 托管 | Agent 级搜索与整页内容提取。无需搜索 API 密钥，无需管理速率限制。 |
 | **图像生成** | FAL | 单一端点下的九个模型：FLUX 2 Klein 9B、FLUX 2 Pro、Z-Image Turbo、Nano Banana Pro（Gemini 3 Pro Image）、GPT Image 1.5、GPT Image 2、Ideogram V3、Recraft V4 Pro、Qwen Image。 |
 | **文字转语音** | OpenAI TTS | 无需独立 OpenAI 密钥的高质量 TTS。在各消息平台上启用[语音模式](../user-guide/features/voice-mode.md)。 |
-| **云端浏览器自动化** | Browser Use | 用于 `browser_navigate`、`browser_click`、`browser_type`、`browser_vision` 的无头 Chromium 会话。无需 Browserbase 账号。 |
+| **云端浏览器自动化** | Browser Use | 由 `browser_exec` 通过 CDP 驱动的无头云端 Chromium 会话。无需 Browserbase 账号。 |
 | **云端终端沙箱** | Modal | 用于代码执行的无服务器终端沙箱（可选附加项）。 |
 
 不使用 gateway 的话，接入上述每项服务意味着：一个网页搜索账号、一个 FAL 账号、一个 Browser Use 账号、一个 OpenAI 密钥、一个 Modal 账号——五次独立注册、五个独立控制台、五套独立充值流程。使用 gateway 后，所有内容通过一个订阅统一路由。

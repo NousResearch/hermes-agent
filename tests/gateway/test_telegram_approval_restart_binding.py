@@ -24,7 +24,7 @@ async def test_old_card_cannot_resolve_first_request_after_adapter_restart(monke
             adapter._bot.send_message.return_value = SimpleNamespace(message_id=42)
             monkeypatch.setattr(adapter, '_is_callback_user_authorized', lambda *a, **kw: True)
             await adapter.send_exec_approval(chat_id='123', command='fixture', session_key=route,
-                metadata={'thread_id': '9', 'approval_request_id': request_id})
+                metadata={'thread_id': '9'}, request_id=request_id)
             markup = adapter._bot.send_message.call_args.kwargs['reply_markup']
             callbacks.append(markup.inline_keyboard[0][0].callback_data)
             assert all(len(button.callback_data.encode('utf-8')) <= 64

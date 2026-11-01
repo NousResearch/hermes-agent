@@ -70,7 +70,7 @@ async def test_child_approval_after_parent_settled(tmp_path, monkeypatch, scenar
                 result = ad.dispatch_async_delegation(goal='approval fixture', context=None,
                     toolsets=None, role='leaf', model=None, session_key=route,
                     parent_session_id=entry.session_id, runner=child)
-                assert result['status'] == 'dispatched'
+                assert result['status'] == 'dispatched', result
             finally:
                 reset_current_session_key(token)
         await asyncio.to_thread(dispatch)

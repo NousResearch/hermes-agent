@@ -148,6 +148,24 @@ button) reach the OS browser through one explicit bridge instead:
 Widening any of those three (partition key, trusted-click gate, scheme set)
 reopens the gesture-less forced-navigation class the advisory closed.
 
+## Rendering work follows visibility and ownership
+
+- Live transcript navigation reads the session store; the shared navigation
+  context carries only the selected historical page, not every streamed delta.
+- Unchanged retained snapshots must not republish the terminal store. Closing
+  the last mounted writer must enforce the cold agent-terminal retention budget
+  even when no later output arrives.
+- Hidden terminals stay mounted and keep parsing output. Suppress only their
+  DOM rows, not the measurable host/helpers or terminal state. Do not reduce
+  scrollback or replace parser state to save painting work. WebGL surfaces remain
+  unchanged; hidden DOM-row suppression must leave fitting and font helpers measurable.
+  Register an agent-terminal writer before recovering its matching process
+  snapshot. A quiet tab can reopen after cold eviction without any new registry
+  notification; recovery must not duplicate live output or exempt cold entries
+  from the retention budget.
+- Root geometry variables are not theme changes. Authored custom CSS can depend
+  on those variables, so it must retain full repaint notifications.
+
 ## Nous free tier: state is pulled, never latched in the renderer
 
 The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer
@@ -157,7 +175,13 @@ notice_pending, model, label) read from local auth state with zero network, and
 first-launch ready screen and the own-key strip are the SAME state rendered for two situations,
 keyed on `notice_pending`; there is no localStorage latch, so the CLI and the desktop cannot
 disagree about whether the notice was shown. Sign-in goes through the existing
-`POST /api/providers/oauth/nous/start` + poll route, which over a free-tier identity registers the
-connector transfer and reports `reason`, `account_email` and `model` on completion; every entry
-point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog. Never branch on
+`POST /api/providers/oauth/nous/start` + poll route, which the dialog long-polls (`?wait=`: the
+backend answers once the session leaves `pending`; the loop never asks again sooner than 2 s, so an
+older backend that answers at once is not hammered). On completion it reports `reason`,
+`account_email`, `model` and `handoff_status` (what the replaced free tier's apps did, with the
+backend's own copy in `lines`); a move still retrying is followed through the
+`/api/providers/oauth/nous/handoff` long-poll until it settles or the dialog closes. Every entry
+point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog, and a Nous sign-in
+from the onboarding picker that moved apps shows the same result screen once onboarding leaves the
+screen (onboarding paints above every dialog). Never branch on
 provider display names: the picker row carries `free_tier_row`, status cards carry `free_tier`.

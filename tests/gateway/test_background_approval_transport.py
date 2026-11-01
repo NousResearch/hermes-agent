@@ -112,3 +112,42 @@ def test_foreground_authority_checks_renders_then_registers(monkeypatch, decline
     else:
         turn._approval_notify_sync({"command": "example"})
     assert events == (["check", "render"] if declined else ["check", "render", "register"])
+
+
+@pytest.mark.parametrize("buttons", [False, True])
+def test_background_delivery_redacts_description_and_registers_timeout(monkeypatch, buttons):
+    import asyncio
+    from gateway.run_turn_runner_approval_transport import notify_approval
+
+    sent, notices = [], []
+
+    class Adapter:
+        async def send(self, chat_id, text, metadata=None):
+            sent.append(text)
+            return SimpleNamespace(success=True)
+
+    class ButtonAdapter(Adapter):
+        async def send_exec_approval(self, **kwargs):
+            sent.append(kwargs)
+            return SimpleNamespace(success=True, message_id="card")
+
+    turn = TurnRunner(None, TurnContext(session_key="route", _status_chat_id="chat",
+                      _status_adapter=ButtonAdapter() if buttons else Adapter()))
+    def schedule(self, coro, *args):
+        future = Future()
+        future.set_result(asyncio.run(coro))
+        return future
+    monkeypatch.setattr(TurnRunner, "_schedule", schedule)
+    monkeypatch.setattr(gateway.run, "_redact_approval_command",
+                        lambda text: text.replace("secret-value", "[redacted]") if text else text)
+    monkeypatch.setattr(gateway.run, "_approval_send_outcome", lambda *a, **kw: "sent")
+    monkeypatch.setattr("gateway.run_turn_runner_approval_settle.register_timeout_notice",
+                        lambda runner, data, **kw: notices.append((data, kw)))
+    notify_approval(turn, {"request_id": "req-1", "command": "echo secret-value",
+                           "description": "reason secret-value"}, background=True)
+    assert "secret-value" not in str(sent)
+    assert notices[0][0]["description"] == "reason [redacted]"
+    assert notices[0][1]["command"] == "echo [redacted]"
+    assert notices[0][1]["card_message_id"] == ("card" if buttons else None)
+    if buttons:
+        assert sent[0]["request_id"] == "req-1"

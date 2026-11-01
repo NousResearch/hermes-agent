@@ -19,7 +19,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, file_signature
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -270,14 +270,15 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         path = get_config_path()
     except Exception:
         return None
+    from hermes_cli.config_backend import config_cache_version
     try:
-        stat = path.stat()
+        version = config_cache_version(path)
     except OSError:
         # A missing config is still a definite identity for this profile.
         return (str(path), None)
     except Exception:
         return None
-    return (str(path), file_signature(stat))
+    return (str(path), version)
 
 
 def _ensure_direct_aliases() -> None:
@@ -456,6 +457,9 @@ class ModelSwitchResult:
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
+    # Window plans only: the Large-model warning (display only, never a confirm). Empty for every other
+    # account and model, so their switch output is unchanged.
+    usage_notice: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
@@ -559,13 +563,23 @@ def resolve_persist_behavior(
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
 MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
+MODEL_SWITCH_ERR_RESET_WITH_FLAGS = "reset_with_flags"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
-    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra.",
+    MODEL_SWITCH_ERR_RESET_WITH_FLAGS: (
+        "/model reset takes no flags — it clears this session's model override so the "
+        "configured default applies again.")}
+
+# ``/model reset`` clears the session's /model override instead of switching to a model named
+# "reset". Deliberately NOT aliased to "default": MoA's default preset is literally named
+# "default", so ``/model default`` keeps resolving through exact_moa_preset_name(). A model whose
+# bare id is "reset" stays reachable by its qualified slug (``vendor/reset``, ``vendor:reset``).
+MODEL_SWITCH_RESET_TOKEN = "reset"
 
 
 @dataclass(frozen=True)
@@ -596,13 +610,19 @@ class ModelSwitchRequest:
         """Canonical (undercorated) error strings for this request."""
         return [MODEL_SWITCH_ERROR_TEXT[code] for code in self.errors]
 
+    @property
+    def is_reset(self) -> bool:
+        """``/model reset`` with no flags: clear the session override, keep the conversation."""
+        return self.target.strip().lower() == MODEL_SWITCH_RESET_TOKEN and not self.errors
+
 
 def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     """The ONE parser for every /model surface: tokenization plus flag-conflict validation.
 
     ``--once`` + ``--global`` -> ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``; ``--once`` with neither
     a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``; an unknown
-    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``. Targets pass through
+    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``; ``reset`` with any flag ->
+    ``MODEL_SWITCH_ERR_RESET_WITH_FLAGS`` (see :attr:`ModelSwitchRequest.is_reset`). Targets pass through
     untouched (bare names, ``vendor/model``, ``vendor:model``) for :func:`switch_model`."""
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -616,6 +636,10 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
+    if parsed.model_input.strip().lower() == MODEL_SWITCH_RESET_TOKEN and (
+            parsed.explicit_provider or parsed.reasoning_effort or parsed.is_global
+            or parsed.is_session or parsed.is_once):
+        errors.append(MODEL_SWITCH_ERR_RESET_WITH_FLAGS)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")
@@ -798,9 +822,9 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.models import static_catalog
         seen = {m.lower() for m in catalog}
-        catalog.extend(m for m in _PROVIDER_MODELS.get(current_provider, []) if m.lower() not in seen)
+        catalog.extend(m for m in static_catalog(current_provider) if m.lower() not in seen)
     except Exception:
         pass
 
@@ -1049,6 +1073,9 @@ def _ollama_configured_base() -> tuple[dict, str]:
 
 
 def _unknown_provider_message(explicit_provider: str) -> str:
+    from hermes_cli.left_core_migration import provider_install_hint
+    if moved := provider_install_hint(explicit_provider):
+        return f"Unknown provider '{explicit_provider}'. {moved}"
     msg = (
         f"Unknown provider '{explicit_provider}'. Check 'hermes model' for available "
         f"providers, or define it in config.yaml under 'providers:'.")
@@ -1659,11 +1686,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     return None
 
 
-def _copilot_api_mode(provider: str, model: str, api_key: str) -> str:
-    from hermes_cli.models import copilot_model_api_mode
-    return copilot_model_api_mode(model, api_key=api_key)
-
-
 def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     # Re-derive api_mode from the effective model rather than the persisted api_mode: the opencode providers
     # serve both anthropic_messages and chat_completions models, so the previous session's mode must not
@@ -1688,19 +1710,25 @@ def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
 # Per-provider api_mode overrides applied after validation, keyed on the final target provider
 # (the key sets are disjoint, so exactly one — or none — fires).
 _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
-    **dict.fromkeys(("copilot", "github-copilot"), _copilot_api_mode),
     **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode),
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
 def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
     """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
-    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
-    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
-    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Nous, and any provider profile
+    declaring ``api_mode_for_model``); None when the provider's wire is fixed by its endpoint. A persisted
+    api_mode from an earlier model of such a provider is never authoritative — resume paths must call this
+    instead of honoring the row (#96066)."""
     from hermes_cli.models import opencode_provider_family
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    if override is None and key:
+        from providers import get_provider_profile
+        profile = get_provider_profile(key)
+        if profile is not None:
+            from agent.provider_route_hooks import model_api_mode
+            return model_api_mode(profile, model, api_key=api_key or "")
     return override(key, model, api_key) if override is not None else None
 
 
@@ -1727,6 +1755,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    from hermes_cli.model_picker_usage import large_model_notice
+    usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
@@ -1741,7 +1771,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
+        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
         model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)
@@ -1819,20 +1849,50 @@ def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
     return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
 
 
-def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
+def apply_model_selection(model_cfg: Any, result: ModelSwitchResult, *, mask_cleared: bool = False) -> dict:
     """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
-    callers that save a whole config document they are already mutating."""
-    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg))
+    callers that save a whole config document they are already mutating.
+
+    ``mask_cleared``: a key the switch clears that *model_cfg* holds is set to ``None`` instead of
+    removed. For a document saved to Remote Config, where *model_cfg* is the EFFECTIVE block and
+    a removal only drops the profile override, so an upper level's old-endpoint ``api_key`` /
+    ``key_env`` / ``context_length`` would still apply at the new endpoint (contract §5.4: a
+    stored null is "no value"). The same rule :func:`persist_model_selection` applies."""
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg),
+                                    mask_cleared=mask_cleared)
 
 
-def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any]) -> dict:
+def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any], *, mask_cleared: bool = False) -> dict:
     model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
     for key, value in updates.items():
-        if value is None:
+        if value is None and not (mask_cleared and key in model_cfg):
             model_cfg.pop(key, None)
         else:
             model_cfg[key] = value
     return model_cfg
+
+
+def remote_model_selection_guard(before: Any, after: Any) -> None:
+    """Remote Config: refuse a whole-document model assignment when any ``model.*`` key it
+    changes is locked by an upper level. A bulk save omits a locked key instead of raising, which
+    would land the rest of the route (a new endpoint with the old provider, say) half-applied;
+    :func:`persist_model_selection` gets the same all-or-nothing refusal from its one keyed write.
+    No-op for the file backend."""
+    from hermes_cli.config_backend import ConfigLockedError, get_config_backend, supports_file_tooling
+    if supports_file_tooling():
+        return
+    from hermes_constants import get_hermes_home
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    backend, home = get_config_backend(), get_hermes_home()
+    for key in sorted(set(before) | set(after)):
+        if before.get(key, _MISSING) != after.get(key, _MISSING):
+            level = backend.locked(home, f"model.{key}")
+            if level:
+                raise ConfigLockedError(f"model.{key}", level)
+
+
+_MISSING = object()
 
 
 def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
@@ -1851,9 +1911,24 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     config lock, once one exists, must wrap the same section."""
     from pathlib import Path
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
+    from hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
+    if not supports_file_tooling():
+        # No config file (Remote Config): one keyed write, so a lock on any key refuses the whole
+        # switch instead of a document save silently omitting the locked part. The planned-from
+        # block is the EFFECTIVE one, so a key it holds may come from an upper level, where a
+        # profile-level unset cannot reach it (contract §5.4): an inherited old-endpoint api_key
+        # would stay active at the new endpoint. A key the switch clears and the effective block
+        # still holds is therefore masked with null ("no value"); an absent one is just unset.
+        from hermes_cli.config_backend import Changes, write_changes
+        held = planned_from if isinstance(planned_from, dict) else {}
+        masked = _merge_selection_updates(held, updates, mask_cleared=True)
+        write_changes(path, Changes(
+            set={f"model.{k}": masked[k] for k in updates if k in masked},
+            unset=tuple(f"model.{k}" for k in updates if k not in masked)))
+        return
     with _CONFIG_LOCK:
         config = read_user_config_raw(path)
         model_cfg = config.get("model")

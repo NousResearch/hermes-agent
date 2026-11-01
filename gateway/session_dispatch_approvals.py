@@ -29,7 +29,7 @@ class DispatchApprovalOwner:
             require_serving(a)
             if (a.epoch != self.epoch or a.retiring or a.runner._draining
                     or a.sessions.get(self.session_id) is not self.live
-                    or self.live.superseded or self.live.route != self.route
+                    or self.live.route != self.route
                     or self.lease is None or not self.lease.active):
                 return False
             # A reset can reuse a route without reusing its canonical incarnation.

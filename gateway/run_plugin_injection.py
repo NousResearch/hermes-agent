@@ -39,7 +39,7 @@ class GatewayPluginInjectionMixin:
     def _schedule_plugin_message_injection(
         self, *, content: str, plugin_id: str, session_key: Optional[str] = None,
         origin: Optional[Mapping[str, Any]] = None, plugin_home: Optional[Path] = None,
-        keyless: bool = False, calling_session_key: str = "",
+        quiet: bool = False, keyless: bool = False, calling_session_key: str = "",
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe).
 
@@ -58,20 +58,25 @@ class GatewayPluginInjectionMixin:
             if resolved is None:
                 return False
             target = f"session={resolved[1].route} (no key given)"
-            coro = plugin_keyless_inject.admit(self, *resolved, content=content, plugin_id=plugin_id)
+            coro = plugin_keyless_inject.admit(
+                self, *resolved, content=content, plugin_id=plugin_id, quiet=quiet,
+            )
         elif origin is not None:
             source = self._plugin_origin_source(origin, plugin_home=plugin_home, plugin_id=plugin_id)
             if source is None or not self._plugin_origin_admissible(source, plugin_home=plugin_home,
                                                                     plugin_id=plugin_id):
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
-            coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
+            coro = self._dispatch_plugin_origin_injection(
+                source=source, content=content, plugin_id=plugin_id, quiet=quiet,
+            )
         else:
             if not self._plugin_session_key_admissible(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
                 return False
             target = f"session={session_key}"
             coro = self._dispatch_plugin_message_injection(
                 session_key=session_key, content=content, plugin_id=plugin_id, plugin_home=plugin_home,
+                quiet=quiet,
             )
         try:
             current_loop = asyncio.get_running_loop()
@@ -187,6 +192,7 @@ class GatewayPluginInjectionMixin:
 
     async def _dispatch_plugin_message_injection(
         self, *, session_key: str, content: str, plugin_id: str, plugin_home: Optional[Path] = None,
+        quiet: bool = False,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         if not self._plugin_injection_accepting():
@@ -199,7 +205,7 @@ class GatewayPluginInjectionMixin:
         source = replace_source(self._restored_source(entry))
         if source.platform == Platform.LOCAL:
             return await self._dispatch_plugin_local_injection(source, entry, content=content, plugin_id=plugin_id,
-                                                               plugin_home=plugin_home)
+                                                               plugin_home=plugin_home, quiet=quiet)
         if not self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
             return False
         if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=f"session={session_key}"):
@@ -212,10 +218,10 @@ class GatewayPluginInjectionMixin:
         async with self._plugin_injection_scope(source):
             admitted = await self._admit_plugin_injection(
                 adapter, source, session_key=session_key, session_id=entry.session_id,
-                content=content, plugin_id=plugin_id)
+                content=content, plugin_id=plugin_id, quiet=quiet)
             if admitted is not None:
                 return admitted
-            await adapter.handle_message(MessageEvent(
+            event = MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
                 metadata={
@@ -223,7 +229,9 @@ class GatewayPluginInjectionMixin:
                     "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                     "gateway_session_strict": True,
                 },
-            ))
+            )
+            event._quiet_plugin_injection = bool(quiet)
+            await adapter.handle_message(event)
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
             plugin_id, session_key, entry.session_id,
@@ -231,7 +239,7 @@ class GatewayPluginInjectionMixin:
         return True
 
     async def _dispatch_plugin_local_injection(self, source: SessionSource, entry, *, content: str,
-                                               plugin_id: str, plugin_home: Optional[Path]) -> bool:
+                                               plugin_id: str, plugin_home: Optional[Path], quiet: bool = False) -> bool:
         """A local (CLI/TUI/Desktop) session has no messaging adapter or chat allowlist: the plugin
         turn is committed to its FIFO on the live session's own source and adapter, as a bot delivery
         is, only when the plugin's own profile's authority holds the session (checked before entering
@@ -242,7 +250,7 @@ class GatewayPluginInjectionMixin:
         async with self._plugin_injection_scope(source, plugin_home):
             return bool(await self._admit_plugin_injection(
                 self._adapter_for_source(live.source), live.source, session_key=entry.session_key,
-                session_id=entry.session_id, content=content, plugin_id=plugin_id))
+                session_id=entry.session_id, content=content, plugin_id=plugin_id, quiet=quiet))
 
     def _served_profile_for_home(self, home: Optional[Path]) -> Optional[str]:
         """Name of the profile this gateway serves at *home* (a plugin manager's immutable home), or
@@ -320,7 +328,7 @@ class GatewayPluginInjectionMixin:
         return False
 
     async def _dispatch_plugin_origin_injection(
-        self, *, source: SessionSource, content: str, plugin_id: str
+        self, *, source: SessionSource, content: str, plugin_id: str, quiet: bool = False,
     ) -> bool:
         """Start (or continue) the session at a plugin-supplied origin through the adapter's normal
         message path: ``get_or_create_session`` creates it, the reply goes back to that chat."""
@@ -347,8 +355,8 @@ class GatewayPluginInjectionMixin:
                     return False
                 return await self._admit_plugin_injection(
                     adapter, source, session_key=session_key, session_id=entry.session_id,
-                    content=content, plugin_id=plugin_id)
-            await adapter.handle_message(MessageEvent(
+                    content=content, plugin_id=plugin_id, quiet=quiet)
+            event = MessageEvent(
                 text=content, message_type=MessageType.TEXT, source=source, internal=True,
                 allow_gateway_control=False,
                 # Non-strict: the key is pinned against topic recovery, the session may not exist yet.
@@ -356,13 +364,15 @@ class GatewayPluginInjectionMixin:
                     "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
                     "gateway_session_key": session_key,
                 },
-            ))
+            )
+            event._quiet_plugin_injection = bool(quiet)
+            await adapter.handle_message(event)
         logger.info("Plugin message injection dispatched: plugin=%s %s session=%s", plugin_id, target, session_key)
         return True
 
     async def _admit_plugin_injection(
         self, adapter, source: SessionSource, *, session_key: str, session_id: str, content: str,
-        plugin_id: str,
+        plugin_id: str, quiet: bool = False,
     ) -> Optional[bool]:
         """Under a session authority, commit the plugin turn into the session's durable FIFO as a
         trusted producer admission (the heartbeat / completion seam) instead of running it on the
@@ -381,6 +391,7 @@ class GatewayPluginInjectionMixin:
             allow_gateway_control=False, message_id=identity,
             metadata={"gateway_session_key": session_key, "gateway_session_id": session_id},
         )
+        event._quiet_plugin_injection = bool(quiet)
         try:
             await authority.admit_automation(adapter, event, identity)
         except RuntimeStoreError as exc:

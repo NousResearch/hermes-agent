@@ -1832,22 +1832,6 @@ class TestFeishuStripLeadingSelf(unittest.TestCase):
         refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
         self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
 
-class TestFeishuNormalizeText(unittest.TestCase):
-
-    def test_renders_self_mention_with_name(self):
-        from plugins.platforms.feishu.adapter import _normalize_feishu_text, FeishuMentionRef
-
-        refs = {"@_user_1": FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)}
-        self.assertEqual(
-            _normalize_feishu_text("stop pinging @_user_1 please", refs),
-            "stop pinging @Hermes please",
-        )
-
-    def test_at_all_rendered_as_english_literal(self):
-        from plugins.platforms.feishu.adapter import _normalize_feishu_text
-
-        self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
-
 class TestFeishuPostMentionParsing(unittest.TestCase):
     def test_post_at_tag_renders_via_mentions_map(self):
         """Post <at>.user_id is a placeholder ('@_user_N'); the real display

@@ -1371,6 +1371,72 @@ class TestTerminalOutputRedaction:
         assert redact_terminal_output(out, "uv run pytest") == out
 
 
+class TestNvapiKeyTerminalRedaction:
+    """2026-10-22 audit: live ``nvapi-`` keys reached state.db through terminal output.
+
+    The key had no built-in prefix, ``cat auth.json`` was not a recognised secret-file read,
+    and the JSON field pass only ran on that narrow path, so every layer passed it through.
+    """
+
+    KEY = "nvapi-TESTKEY1234567890abcdefghij"
+
+    def test_plain_output_masks_key(self):
+        from agent.redact import redact_terminal_output
+
+        out = redact_terminal_output(f"NVIDIA_API_KEY is {self.KEY}\n", "python check_key.py")
+        assert self.KEY not in out
+        assert "nvapi-" in out  # vendor label survives for debuggability
+
+    @pytest.mark.parametrize("payload", [
+        '{{"api_key": "{key}"}}',
+        "{{'api_key': '{key}'}}",
+        '{{"api-key": "{key}"}}',
+        '{{"output": "{{\\"secret\\": \\"{key}\\"}}"}}',
+    ])
+    def test_json_field_masks_key_from_unclassified_command(self, payload):
+        from agent.redact import redact_terminal_output
+
+        out = redact_terminal_output(payload.format(key=self.KEY), "jq . /tmp/provider.json")
+        assert self.KEY not in out
+
+    def test_cat_auth_json_masks_prefixless_access_token(self):
+        """``auth.json`` is a secret-file read now, so an opaque token with no vendor
+        prefix is masked too, not only the nvapi- one the prefix pass catches."""
+        from agent.redact import _command_reads_secret_file, redact_terminal_output
+
+        opaque = "q7Rk2LmZ9xWc4VbN8sTd3HfJ6gPy1AeU"
+        auth = (
+            '{\n  "credential_pool": {\n    "nvidia": [\n'
+            f'      {{"label": "primary", "access_token": "{self.KEY}"}},\n'
+            f'      {{"label": "backup", "access_token": "{opaque}"}}\n'
+            "    ]\n  }\n}\n"
+        )
+        assert _command_reads_secret_file("cat ~/.hermes/auth.json")
+        assert _command_reads_secret_file("head /tmp/backup/auth.json")
+        assert _command_reads_secret_file("cat ~/.aws/credentials")
+        assert not _command_reads_secret_file("cat docs/auth.json.example")
+        out =redact_terminal_output(auth, "cat ~/.hermes/auth.json")
+        assert self.KEY not in out and opaque not in out
+        assert '"label": "primary"' in out
+
+    def test_unclassified_json_masks_opaque_value_but_keeps_fixtures(self):
+        """On the code_file path the JSON pass needs a credential-shaped value, so source
+        fixtures with placeholder values stay byte-identical."""
+        from agent.redact import redact_terminal_output
+
+        opaque = "q7Rk2LmZ9xWc4VbN8sTd3HfJ6gPy1AeU"
+        assert opaque not in redact_terminal_output(f'{{"access_token": "{opaque}"}}', "python dump.py")
+        fixtures = '{"apiKey": "test"}\n{"token": "${NVIDIA_API_KEY}"}\n{"secret": "your-key-here"}\n'
+        assert redact_terminal_output(fixtures, "cat tests/fixture.py") == fixtures
+
+    def test_nvapi_prose_is_not_redacted(self):
+        from agent.redact import redact_terminal_output
+
+        prose = "NVIDIA keys start with nvapi and the nvapi-endpoint docs list nvapi-short ids\n"
+        assert redact_terminal_output(prose, "cat README.md") == prose
+        assert redact_sensitive_text(prose, force=True) == prose
+
+
 class TestFileReadNonReusableRedaction:
     """#35519: prefix-matched credentials in FILE CONTENT (read_file /
     search_files / cat) must be redacted to a NON-REUSABLE sentinel — not a

@@ -97,6 +97,28 @@ def _hardline_rm_path(path_alt: str, tail: str = r'(?:\s|$|[)`;|&])') -> str:
 _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|'
                          r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*')
 
+
+def _hardline_home_paths() -> str:
+    """Absolute home/HERMES_HOME paths added to the rm hardline floor at import time.
+
+    The static ~/$HOME rules only cover tilde spellings; ``rm -rf /home/<user>`` (absolute) and
+    ``rm -rf "$HERMES_HOME"`` fell past the floor (verified by probe 2026-10-22). We resolve the
+    real home directory and the HERMES_HOME data dir and add their absolute, trailing-slash,
+    and glob-suffixed forms. Leading-Tilde expansion and quoting are handled by the caller-side
+    _hardline_rm_path matcher, so only bare absolute spellings are needed here.
+    """
+    paths: list[str] = []
+    for raw in {
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.expanduser("~/.hermes"),  # default HERMES_HOME; keep the symlink RESOLVED
+        os.environ.get("HERMES_HOME") or "",
+    }:
+        if not raw:
+            continue
+        base = re.escape(os.path.realpath(raw).rstrip("/") or "/")
+        paths.extend([base, base + r"/?", base + r"/\*", base + r"/\*\*"])
+    return "|".join(paths) if paths else r'__no_home_paths__'
+
 # `rm` plus flag group, shared by the rm hardline rules (plain concatenation, not f-string:
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
@@ -112,6 +134,7 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (_RM_FLAG_PREFIX + _hardline_rm_path(_hardline_home_paths()), "recursive delete of user home directory"),
     # Command-name rules (mkfs, dd, kill, shutdown...) are _CMDPOS-anchored so quoted prose
     # (`echo "does this use mkfs?"`) cannot trip the floor.
     # See #93392.

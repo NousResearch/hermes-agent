@@ -809,6 +809,9 @@ gateway:
     ack_described: "Learning a skill from what you described…"
     ack_conversation: "Learning a skill from this conversation…"
 
+  correct:
+    ack: "Correcting a wrong fact across {count} stored location(s)…"
+
   plan:
     ack_task: "Planning: {task}"
     ack_conversation: "Planning from this conversation's context…"
@@ -1717,6 +1720,8 @@ slash:
     description: "Generate a new petdex pet from a description"
   learn:
     description: "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)"
+  correct:
+    description: "Correct a wrong fact across memory and learned skills (preview first)"
   init:
     description: "Generate or update AGENTS.md project instructions from a repo scan"
   cron:
@@ -3071,6 +3076,8 @@ cli:
     learn:
       from_description: "⚡ Learning a skill from what you described..."
       from_conversation: "⚡ Learning a skill from this conversation..."
+    correct:
+      searching: "⚡ Correcting across {count} stored location(s)..."
     plan:
       planning: "📋 Planning: {task}"
       from_conversation: "📋 Planning from this conversation's context..."

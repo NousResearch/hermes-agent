@@ -2510,6 +2510,18 @@ export const zhOverrides = {
     restartNow: '立即重启',
     restarting: '正在重启…',
     restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    discordCheck: {
+      checkBot: '检查机器人',
+      checking: '正在检查…',
+      checkAgain: '重新检查',
+      saveFirst: '请先保存 Discord 机器人令牌。',
+      intentOn: 'Message Content Intent 已开启。',
+      intentOff: 'Message Content Intent 已关闭。在机器人设置中开启前，Discord 将拒绝连接。',
+      openSettings: '打开机器人设置',
+      membersOptional: '可选：开启 Server Members Intent，以便按用户名或角色允许用户访问。',
+      noServers: '机器人尚未加入任何服务器。',
+      addToServer: '添加到服务器'
+    },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
       subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',

@@ -415,6 +415,17 @@ export interface MessagingPlatformTestResponse {
   state?: null | string
 }
 
+export interface DiscordBotCheckResponse {
+  app_id: string
+  bot_name: string
+  bot_settings_url: string
+  invite_url: string
+  message_content: boolean
+  owners: { id: string; username: string }[]
+  server_count: null | number
+  server_members: boolean
+}
+
 // -- Telegram QR onboarding ---------------------------------------------------
 // The Nous pairing service mints a bot on the user's behalf: the desktop shows
 // a QR/deep link, Telegram confirms, the backend receives the token and writes

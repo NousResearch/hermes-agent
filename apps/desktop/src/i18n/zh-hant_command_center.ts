@@ -168,6 +168,18 @@ export const zhHantCommandCenter = {
     restartNow: '立即重新啟動',
     restarting: '正在重新啟動…',
     restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
+    discordCheck: {
+      checkBot: '檢查機器人',
+      checking: '正在檢查…',
+      checkAgain: '重新檢查',
+      saveFirst: '請先儲存 Discord 機器人權杖。',
+      intentOn: 'Message Content Intent 已開啟。',
+      intentOff: 'Message Content Intent 已關閉。在機器人設定中開啟前，Discord 將拒絕連線。',
+      openSettings: '開啟機器人設定',
+      membersOptional: '選用：開啟 Server Members Intent，以便依使用者名稱或角色允許使用者存取。',
+      noServers: '機器人尚未加入任何伺服器。',
+      addToServer: '新增至伺服器'
+    },
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',
       subtitle: '兩種方式都會連接由你控制的機器人，憑證僅儲存在此 Hermes 安裝中。',

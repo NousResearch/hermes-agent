@@ -2973,6 +2973,19 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    discordCheck: {
+      checkBot: 'Comprobar bot',
+      checking: 'Comprobando…',
+      checkAgain: 'Comprobar de nuevo',
+      saveFirst: 'Guarda primero un token de bot de Discord.',
+      intentOn: 'Message Content Intent está activado.',
+      intentOff:
+        'Message Content Intent está desactivado. Discord rechazará la conexión hasta que lo actives en los ajustes del bot.',
+      openSettings: 'Abrir ajustes del bot',
+      membersOptional: 'Opcional: activa Server Members Intent para permitir personas por nombre de usuario o rol.',
+      noServers: 'El bot aún no está en ningún servidor.',
+      addToServer: 'Añadir a un servidor'
+    },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
       subtitle:

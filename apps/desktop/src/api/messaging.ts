@@ -1,4 +1,5 @@
 import type {
+  DiscordBotCheckResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -50,6 +51,14 @@ export function testMessagingPlatform(
   return hermesApi<MessagingPlatformTestResponse>({
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
+    method: 'POST'
+  })
+}
+
+export function checkDiscordBot(profile?: null | string): Promise<DiscordBotCheckResponse> {
+  return hermesApi<DiscordBotCheckResponse>({
+    ...profileScoped(profile),
+    path: '/api/messaging/discord/check',
     method: 'POST'
   })
 }

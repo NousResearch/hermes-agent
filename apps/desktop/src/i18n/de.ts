@@ -2984,6 +2984,19 @@ export const deOverrides = {
       'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
+    discordCheck: {
+      checkBot: 'Bot prüfen',
+      checking: 'Wird geprüft…',
+      checkAgain: 'Erneut prüfen',
+      saveFirst: 'Speichere zuerst ein Discord-Bot-Token.',
+      intentOn: 'Message Content Intent ist aktiviert.',
+      intentOff:
+        'Message Content Intent ist deaktiviert. Discord verweigert die Verbindung, bis du es in den Bot-Einstellungen aktivierst.',
+      openSettings: 'Bot-Einstellungen öffnen',
+      membersOptional: 'Optional: Aktiviere Server Members Intent, um Personen per Benutzername oder Rolle zuzulassen.',
+      noServers: 'Der Bot ist noch auf keinem Server.',
+      addToServer: 'Zu einem Server hinzufügen'
+    },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
       subtitle:

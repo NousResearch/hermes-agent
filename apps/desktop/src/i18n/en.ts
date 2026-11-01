@@ -2591,6 +2591,19 @@ export const en: Translations = {
     restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
     restartAgain: 'Restart again',
     openLogs: 'Open logs',
+    discordCheck: {
+      checkBot: 'Check bot',
+      checking: 'Checking…',
+      checkAgain: 'Check again',
+      saveFirst: 'Save a Discord bot token first.',
+      intentOn: 'Message Content Intent is on.',
+      intentOff:
+        'Message Content Intent is off. Discord will refuse the connection until you turn it on in Bot settings.',
+      openSettings: 'Open Bot settings',
+      membersOptional: 'Optional: turn on Server Members Intent to allow people by username or role.',
+      noServers: "The bot isn't in any server yet.",
+      addToServer: 'Add to a server'
+    },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',
       subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',

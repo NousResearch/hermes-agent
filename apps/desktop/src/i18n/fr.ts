@@ -2992,6 +2992,20 @@ export const frOverrides = {
       'Réessayez le redémarrage ; si le problème persiste, ouvrez les journaux et envoyez les diagnostics.',
     restartAgain: 'Redémarrer à nouveau',
     openLogs: 'Ouvrir les journaux',
+    discordCheck: {
+      checkBot: 'Vérifier le bot',
+      checking: 'Vérification…',
+      checkAgain: 'Revérifier',
+      saveFirst: 'Enregistrez d’abord un token de bot Discord.',
+      intentOn: 'Message Content Intent est activé.',
+      intentOff:
+        'Message Content Intent est désactivé. Discord refusera la connexion tant que vous ne l’aurez pas activé dans les paramètres du bot.',
+      openSettings: 'Ouvrir les paramètres du bot',
+      membersOptional:
+        'Facultatif : activez Server Members Intent pour autoriser des personnes par nom d’utilisateur ou rôle.',
+      noServers: 'Le bot n’est encore sur aucun serveur.',
+      addToServer: 'Ajouter à un serveur'
+    },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
       subtitle:

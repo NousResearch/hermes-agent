@@ -1876,6 +1876,20 @@ export const ruOverrides = {
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    discordCheck: {
+      checkBot: 'Проверить бота',
+      checking: 'Проверка…',
+      checkAgain: 'Проверить снова',
+      saveFirst: 'Сначала сохраните токен бота Discord.',
+      intentOn: 'Message Content Intent включён.',
+      intentOff:
+        'Message Content Intent выключен. Discord отклонит подключение, пока вы не включите его в настройках бота.',
+      openSettings: 'Открыть настройки бота',
+      membersOptional:
+        'Необязательно: включите Server Members Intent, чтобы разрешать доступ по имени пользователя или роли.',
+      noServers: 'Бот ещё не добавлен ни на один сервер.',
+      addToServer: 'Добавить на сервер'
+    },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
       subtitle:

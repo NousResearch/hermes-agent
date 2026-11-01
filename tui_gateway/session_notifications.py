@@ -161,7 +161,8 @@ def _notif_claim_turn(session: dict) -> bool:
     After the user's Stop no automatic turn starts: the cancel latch holds notifications
     (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
+        if (not admitted or session.get("running") or session.get("_turn_cancel_requested")
+                or session.get("agent") is None or session.get("_closing")):
             return False
         session["running"] = True
         return True
@@ -191,10 +192,8 @@ def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwa
         accepted = _run_prompt_submit(rid, sid, session, text, **kwargs)
         if accepted:
             session.pop("_notif_refusal_delay", None)
-        else:
-            # Admission can refuse even after the local running flag was claimed. A caller that
-            # requeues the notice backs off first (_notif_refusal_backoff); the rest return at once.
-            _notif_release_turn(session)
+        # Refusal already released the turn in admission. A user may have claimed it since;
+        # releasing again would clear that new turn. Requeue callers retain their own backoff.
         return accepted
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -528,10 +527,19 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         diagnostic = split and isinstance(pending[0], DiagnosticText)
         batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
         session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
-    with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
-                      "kanban notification dispatch failed",
+    try:
+        started = _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
+                      "kanban notification dispatch failed", report_ownership_refusal=False,
                       **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
+    except Exception:
+        logger.exception("kanban notification dispatch failed; retaining batch for retry")
+        started = False
+    if started is False:
+        # Submit raises before thread.start(); later failures run on the worker, so restoring is safe.
+        # Restored items are memory-only (lost on close/retirement); released delegation rows stay pending
+        # until their delivery-attempt budget runs out. The next poll retries the batch.
+        with session["history_lock"]:
+            session["_kanban_pending"] = batch + list(session.get("_kanban_pending") or [])
 
 
 def _notif_defer_event(evt, claim, put=None):

@@ -20,7 +20,7 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
 
     event = pending('owned', 'refused-notification') if kind == 'async_delegation' else {
         'type': 'completion', 'session_id': 'owned-process', 'session_key': 'owned'}
-    session = {'history_lock': threading.RLock(), '_closing': True, 'running': True}
+    session = {'history_lock': threading.RLock(), '_closing': True, 'running': True, 'agent': object()}
     emitted = []
     namespace = dict(time=time, logger=logging.getLogger(__name__),
         _emit=lambda *args: emitted.append(args),
@@ -58,6 +58,7 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
             accepted.append((args, kwargs))
             return True
         namespace['_run_prompt_submit'] = accept
+        session['_closing'] = False  # a live owner can claim the retained completion now
         session['running'] = kind == 'async_delegation'
         if kind == 'async_delegation':
             namespace['_notif_dispatch_event']('live', session, event, 'nonhuman summary')

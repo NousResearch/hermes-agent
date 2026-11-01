@@ -276,6 +276,8 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
         return parent
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_cli.runtime_provider_custom import expand_direct_api_alias_keyed
+        task_api_key = expand_direct_api_alias_keyed(task_provider, task_base_url, task_api_key)[2]
         rp = resolve_runtime_provider(
             requested=task_provider, target_model=task_model,
             explicit_api_key=task_api_key, explicit_base_url=task_base_url,

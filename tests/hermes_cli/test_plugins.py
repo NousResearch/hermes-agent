@@ -2622,6 +2622,36 @@ class TestPluginDispatchTool:
         call_kwargs = mock_registry.dispatch.call_args
         assert call_kwargs[1]["parent_agent"] is explicit_agent
 
+    def test_dispatch_tool_runs_policy_pipeline(self, monkeypatch):
+        """Regression for #138864: plugin-dispatched tools honor call policy."""
+        ctx = PluginContext(PluginManifest(name="test-plugin", source="user"), PluginManager())
+        seen = {}
+
+        def _pre(name, args, **kwargs):
+            seen["pre"] = (name, args, kwargs)
+            return None, {**args, "approved": True}
+
+        def _execution(name, args, next_call, **kwargs):
+            seen["execution"] = (name, args, kwargs)
+            return next_call(args)
+
+        monkeypatch.setattr("hermes_cli.plugins._dispatch_pre_tool_call_hooks", _pre)
+        monkeypatch.setattr("hermes_cli.middleware.run_tool_execution_middleware", _execution)
+        monkeypatch.setattr(
+            "tools.registry.registry.dispatch",
+            lambda name, args, **kwargs: (seen.setdefault("dispatch", (name, args, kwargs)), '{"ok": true}')[1],
+        )
+
+        result = ctx.dispatch_tool("plugin_probe", {"value": 1}, task_id="task-1", session_id="session-1")
+
+        assert result == '{"ok": true}'
+        assert seen["pre"][0:2] == ("plugin_probe", {"value": 1})
+        assert seen["pre"][2]["task_id"] == "task-1"
+        assert seen["pre"][2]["session_id"] == "session-1"
+        assert seen["pre"][2]["tool_call_id"]
+        assert seen["execution"][1] == {"value": 1, "approved": True}
+        assert seen["dispatch"][1] == {"value": 1, "approved": True}
+
 
 class TestPluginContextProfileName:
     """ctx.profile_name resolves from HERMES_HOME in every context."""

@@ -89,7 +89,7 @@ These have sensible defaults in the ABC. Override as needed:
 
 | Method | Default | Override when |
 |--------|---------|--------------|
-| `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
+| `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB), or to know whom the agent serves — see below |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
 | `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
@@ -100,6 +100,27 @@ These have sensible defaults in the ABC. Override as needed:
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
 | `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
+
+### Who the agent serves
+
+Every `AIAgent` gets its own engine instance (`clone_for_agent()`), and the
+`on_session_start()` that follows the agent's construction says whom that agent
+serves — the identity memory providers receive in `initialize()`:
+
+| Keyword | Meaning |
+|---------|---------|
+| `agent_context` | `"primary"`, `"cron"` (scheduled job) or `"subagent"` (`delegate_task` child) |
+| `parent_session_id` | The spawning session, for delegated subagents and background-review forks |
+| `user_id`, `user_id_alt`, `user_name` | The gateway user the agent was built for |
+| `chat_id`, `chat_name`, `chat_type`, `thread_id`, `gateway_session_key` | The gateway chat |
+| `agent_identity` | The active profile name |
+
+Only set values are passed. An engine whose `on_session_start` lists explicit
+parameters receives only the ones it declares; `**kwargs` receives all of them.
+Use them to choose a storage scope or compaction policy per agent (for example,
+do not keep a cron job's or subagent's transcript as the user's conversation).
+Later starts (session transitions, compression boundaries) don't repeat them:
+an agent's identity is fixed for its lifetime, so keep them on the instance.
 
 ## Per-turn context selection and observation
 

@@ -179,7 +179,15 @@ class ContextEngine(ABC):
         return True
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
-        """Session begins: load persisted state. kwargs may include hermes_home, platform, model."""
+        """Session begins: load persisted state. kwargs may include hermes_home, platform, model.
+
+        The start that follows agent construction also says whom this agent (and so this
+        per-agent clone) serves, as memory providers learn it in ``initialize()``:
+        ``agent_context`` ("primary" / "cron" / "subagent"), ``parent_session_id`` (delegated
+        subagents, background-review forks), gateway identity (``user_id``, ``user_id_alt``,
+        ``user_name``, ``chat_id``, ``chat_name``, ``chat_type``, ``thread_id``,
+        ``gateway_session_key``; set values only) and ``agent_identity`` (the profile name).
+        An explicit signature receives only the names it declares; ``**kwargs`` gets all."""
 
     def on_session_end(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""

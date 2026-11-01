@@ -163,6 +163,60 @@ def test_blank_marker_pre_v2_not_previewed_nor_allowlisted(monkeypatch, capsys):
     assert prune_calls[0]["orphan_allowlist"] == set()
 
 
+# ─── confirmation preview names every orphan it will delete ────────────────
+
+# A v2 orphan with no recorded workdir is still confirmable (and deleted), so
+# the preview must name it by its project hash instead of "(unknown)".
+_V2_ORPHAN_NO_WORKDIR_STATUS = {
+    "projects": [
+        {"hash": "deadbeefcafebabe", "workdir": None, "exists": False, "commits": 2,
+         "orphan_confirmable": True, "unconfirmable_reason": None},
+    ],
+    "pre_v2_projects": [],
+}
+
+
+def test_pre_v2_orphan_preview_names_shadow_repo_path(monkeypatch, capsys):
+    """A pre-v2 orphan with no recorded workdir is named by its shadow repo
+    path in the destructive preview.
+
+    "(unknown)" gives the human no way to tell several such rows apart, and no
+    path to inspect before confirming — the shadow repo path is also exactly
+    what the allowlist binds, so showing it keeps the preview auditable.
+    """
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _PRE_V2_ONLY_STATUS, prune_calls)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "/home/user/.hermes/checkpoints/deadbeefcafebabe" in out
+    assert "(unknown)" not in out
+    assert prune_calls == []
+
+
+def test_v2_orphan_preview_falls_back_to_project_hash(monkeypatch, capsys):
+    """Same rule for v2 records: a confirmable orphan whose workdir is gone is
+    named by its project hash, not "(unknown)"."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    prune_calls: list = []
+    _patch_checkpoint_manager(monkeypatch, _V2_ORPHAN_NO_WORKDIR_STATUS, prune_calls)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = checkpoints_cli.cmd_prune(_ns())
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "checkpoint deadbeefcafebabe" in out
+    assert "(unknown)" not in out
+    assert prune_calls == []
+
+
 # ─── cmd_status surfaces pre-v2 shadow repos with their reason ─────────────
 
 

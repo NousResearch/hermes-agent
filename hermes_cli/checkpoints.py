@@ -119,9 +119,16 @@ def cmd_prune(args: argparse.Namespace) -> int:
                   "orphan checkpoint project(s) whose workdir is not currently reachable:")
             print()
             for p in orphans:
-                print(f"  {p.get('workdir') or '(unknown)'}  ({p.get('commits', 0)} commit(s))")
+                # A v2 record with a blank/missing workdir still gets deleted by
+                # this confirmation, so name it by project hash rather than
+                # printing "(unknown)" for something the user is about to lose.
+                print(f"  {p.get('workdir') or 'checkpoint ' + str(p.get('hash') or '(unknown)')}  ({p.get('commits', 0)} commit(s))")
             for p in pre_v2_orphans:
-                print(f"  {p.get('workdir') or '(unknown)'}  (pre-v2 shadow repo)")
+                # Pre-v2 records are identified by their shadow repo path (that
+                # is also what the allowlist binds), so fall back to it when the
+                # recorded workdir is blank/missing — the path is the only hint
+                # a human has to locate the directory before confirming.
+                print(f"  {p.get('workdir') or p.get('path') or '(unknown)'}  (pre-v2 shadow repo)")
             print()
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")

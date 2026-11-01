@@ -2639,6 +2639,14 @@ def _seed_profile_singleton(seed: _Seeder) -> None:
     profile = get_provider_profile(seed.provider)
     if profile is None or not _profile_seeds_pool(seed.provider):
         return
+    config = _load_config_safe()
+    providers = config.get("providers") if isinstance(config, dict) else None
+    provider_config = providers.get(seed.provider) if isinstance(providers, dict) else None
+    if isinstance(provider_config, dict):
+        from hermes_cli.config import is_provider_enabled
+
+        if not is_provider_enabled(provider_config):
+            return  # providers.<name>.enabled: false: no ambient token lookup or exchange
     from hermes_cli.auth import is_provider_explicitly_configured, suppressed_credential_sources
     rows = profile.seed_pool_credentials(  # values, not callbacks: a hosted profile gets plain JSON
         suppressed_sources=suppressed_credential_sources(seed.provider),

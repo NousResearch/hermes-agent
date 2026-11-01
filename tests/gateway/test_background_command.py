@@ -60,7 +60,7 @@ class TestRunBackgroundTask:
     """Tests for GatewayRunner._run_background_task (the actual execution)."""
 
     @pytest.mark.asyncio
-    async def test_successful_task_sends_result(self):
+    async def test_successful_task_sends_result(self, monkeypatch):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
@@ -78,6 +78,21 @@ class TestRunBackgroundTask:
 
         mock_result = {"final_response": "Hello from background!", "messages": []}
 
+        from agent.agent_init import _init_prompt_cache_config
+        import hermes_cli.config
+
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+        monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        cache_ttls = []
+
+        def build_agent(**kwargs):
+            from types import SimpleNamespace
+            cache_agent = SimpleNamespace(_anthropic_prompt_cache_policy=lambda: (True, True), **kwargs)
+            _init_prompt_cache_config(cache_agent)
+            cache_ttls.append(cache_agent._cache_ttl)
+            return mock_agent_instance
+
         checkpoint_config = {
             "checkpoints": {
                 "enabled": True,
@@ -93,10 +108,11 @@ class TestRunBackgroundTask:
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()
             mock_agent_instance.run_conversation.return_value = mock_result
-            MockAgent.return_value = mock_agent_instance
+            MockAgent.side_effect = build_agent
 
             await runner._run_background_task("say hello", source, "bg_test")
 
+        assert cache_ttls == ["5m"]
         # Should have sent the result
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args

@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -866,11 +866,13 @@ compression:
 # Anthropic prompt caching TTL
 # =============================================================================
 # When prompt caching is active (Claude via OpenRouter or native Anthropic),
-# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
-# "1h". Other values are ignored and "5m" is used.
+# Anthropic supports two TTL tiers for cached prefixes: "5m" and "1h". The
+# default "auto" picks per session: "1h" when a person types the turns (CLI,
+# TUI, Desktop, messaging), "5m" for subagents, cron, one-shots, webhooks,
+# Kanban, the API server and batch runs. Other values are ignored and "5m" is used.
 #
 prompt_caching:
-  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+  cache_ttl: "auto" # or pin "5m" / "1h" for every session
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

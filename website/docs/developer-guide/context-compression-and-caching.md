@@ -834,8 +834,9 @@ The marker is applied differently based on content type:
    for the compressed region but the system prompt cache survives. The rolling
    3-message window re-establishes caching within 1-2 turns.
 
-4. **TTL selection**: Default is `5m` (5 minutes). Use `1h` for long-running
-   sessions where the user takes breaks between turns.
+4. **TTL selection**: Default is `auto`: `1h` for human-paced sessions, where
+   the user takes breaks between turns, and `5m` for machine-paced ones. Pin
+   `5m` or `1h` to use one tier everywhere.
 
 5. **Model identity is part of the cache key**: Provider-side caches are scoped
    to the model (and account/API key) serving the request. Any mid-conversation
@@ -854,16 +855,16 @@ Prompt caching is automatically enabled when:
 - The provider supports `cache_control` (native Anthropic API or OpenRouter)
 
 ```yaml
-# config.yaml — TTL is configurable: "5m", "1h", or "auto"
+# config.yaml — TTL is configurable: "auto" (default), "5m", or "1h"
 prompt_caching:
-  cache_ttl: "5m"
+  cache_ttl: "auto"
 ```
 
-`"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
+`"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, api_server, tool, batch, curator); under `auto` a side agent (`side_agent=True`: `/background`, `/btw`, `/refine`) takes `5m`, and a background-review or `/btw` fork routed to a different model is clamped to `5m` like a delegated child. Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
 
 The CLI shows caching status at startup:
 ```
-💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)
+💾 Prompt caching: ENABLED (Claude via OpenRouter, 1h TTL)
 ```
 
 

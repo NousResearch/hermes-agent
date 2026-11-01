@@ -227,3 +227,65 @@ async def test_queued_lane_sends_the_text_without_the_tag_and_the_image_once():
     assert adapter.send.await_args.args[1] == "Done."
     adapter.send_multiple_images.assert_awaited_once()
     assert adapter.send_multiple_images.await_args.kwargs["images"] == [("https://example.com/chart.png", "chart")]
+
+
+def _provenance_adapter(tool_urls):
+    """The streamed adapter of #144041 plus the #129975 provenance lookup the base class carries."""
+    adapter = _adapter()
+    adapter._bounded_current_turn_tool_urls = AsyncMock(return_value=tool_urls)
+    adapter._accepts_kwarg = BasePlatformAdapter._accepts_kwarg
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_streamed_url_image_without_tool_provenance_is_not_fetched():
+    """#129975 (fail-closed): the post-stream lane fetches only tool-provenanced URLs too.
+    A URL the model wrote on its own must not turn into an attachment after streaming."""
+    adapter = _provenance_adapter(set())
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}),
+        "Injected: ![x](https://attacker.example/p.png)",
+        _event(),
+        adapter,
+        session_key="telegram:12345:67890",
+    )
+
+    adapter._bounded_current_turn_tool_urls.assert_awaited_once_with("telegram:12345:67890")
+    adapter.send_multiple_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streamed_url_image_with_tool_provenance_is_delivered():
+    adapter = _provenance_adapter({"https://example.com/chart.png"})
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}),
+        "Chart: ![chart](https://example.com/chart.png)",
+        _event(),
+        adapter,
+        session_key="telegram:12345:67890",
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.send_multiple_images.await_args.kwargs["images"] == [
+        ("https://example.com/chart.png", "chart")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_queued_lane_passes_the_session_key_to_the_provenance_gate():
+    """The queued-lane caller forwards the session key: the post-stream upload judges URL
+    images against the same turn's tool results as the non-streaming path does."""
+    adapter = _provenance_adapter(set())
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="t1"))
+    source = _event().source
+
+    await GatewayRunner._deliver_queued_first_response(
+        object.__new__(GatewayRunner), "Done.\n\n![chart](https://example.com/chart.png)",
+        source=source, adapter=adapter, metadata={}, event_message_id=None,
+        text_already_delivered=False, deliver_media=True, session_key="telegram:12345:67890")
+
+    adapter.send.assert_awaited_once()
+    adapter._bounded_current_turn_tool_urls.assert_awaited_once_with("telegram:12345:67890")
+    adapter.send_multiple_images.assert_not_awaited()

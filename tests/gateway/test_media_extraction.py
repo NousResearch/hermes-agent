@@ -379,5 +379,97 @@ caption
 
 
 
+class TestReplyImageProvenanceUrls:
+    """#129975: provenance for reply image URLs = the exact string occurred in the
+    current turn's tool results."""
+
+    def test_none_messages_means_unknown_not_verdict(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        assert reply_image_provenance_urls(None) is None
+
+    def test_turn_without_tools_is_an_empty_verdict(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "show me a cat"},
+            {"role": "assistant", "content": "![cat](https://example.com/cat.png)"},
+        ]
+        assert reply_image_provenance_urls(messages) == set()
+
+    def test_urls_from_tool_text_results(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "generate"},
+            {
+                "role": "tool",
+                "tool_call_id": "g",
+                "content": "saved to https://fal.media/files/abc/output.png ok",
+            },
+        ]
+        assert reply_image_provenance_urls(messages) == {
+            "https://fal.media/files/abc/output.png"
+        }
+
+    def test_urls_from_json_and_multimodal_tool_content(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "function",
+                "content": json.dumps({"url": "https://example.com/a.png", "nested": {"u": "https://example.com/b.jpg"}}),
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {"type": "text", "text": "result at https://example.com/c.webp"},
+                    {"type": "image_url"},
+                ],
+            },
+        ]
+        assert reply_image_provenance_urls(messages) == {
+            "https://example.com/a.png",
+            "https://example.com/b.jpg",
+            "https://example.com/c.webp",
+        }
+
+    def test_user_message_urls_are_not_provenance(self):
+        """Inbound text is the injection vector; its URLs must never authorize a fetch."""
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "look at https://attacker.example/in.png"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        assert reply_image_provenance_urls(messages) == set()
+
+    def test_only_current_turn_tool_results_count(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "gen a dog"},
+            {
+                "role": "tool",
+                "tool_call_id": "old",
+                "content": "https://example.com/old-turn.png",
+            },
+            {"role": "assistant", "content": "here"},
+            {"role": "user", "content": "now something else"},
+        ]
+        assert reply_image_provenance_urls(messages) == set()
+
+    def test_assistant_message_urls_are_not_provenance(self):
+        from gateway.media_repair import reply_image_provenance_urls
+
+        messages = [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "earlier https://example.com/self.png"},
+            {"role": "assistant", "content": "again"},
+        ]
+        assert reply_image_provenance_urls(messages) == set()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

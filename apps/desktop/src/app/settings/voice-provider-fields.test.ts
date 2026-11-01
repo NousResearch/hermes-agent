@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { FREE_INPUT_KEYS, SECTIONS } from './constants'
+import { ENUM_OPTIONS, FREE_INPUT_KEYS, SECTIONS } from './constants'
 import { voiceProviderKeys } from './voice-provider-fields'
 
 const voiceKeys = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
@@ -40,5 +40,16 @@ describe('voice field option coverage', () => {
     for (const key of FREE_INPUT_KEYS) {
       expect(voiceKeys, key).toContain(key)
     }
+  })
+
+  it('KittenTTS model options are exactly the published KittenML repos', () => {
+    // KittenML publishes an int8 variant only for nano; micro/mini exist as
+    // the plain repos. A fabricated `*-int8` id makes every download of that
+    // option fail at resolution time (#135767).
+    expect(ENUM_OPTIONS['tts.kittentts.model']).toEqual([
+      'KittenML/kitten-tts-nano-0.8-int8',
+      'KittenML/kitten-tts-micro-0.8',
+      'KittenML/kitten-tts-mini-0.8'
+    ])
   })
 })

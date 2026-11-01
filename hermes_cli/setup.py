@@ -582,6 +582,7 @@ from hermes_cli.setup_summary import _print_setup_summary
 from hermes_cli.setup_migration import _skip_configured_section
 from hermes_cli.setup_agent_import import offer_agent_import
 from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
+from hermes_cli.setup_verify import finish_model_setup, verification_scope
 
 
 # ── Main Wizard Orchestrator ──
@@ -599,7 +600,7 @@ SETUP_SECTIONS = [
 
 def run_setup_wizard(args):
     """Run setup with navigation control scoped to this invocation."""
-    with _setup_navigation_scope():
+    with _setup_navigation_scope(), verification_scope(args):
         try:
             return _run_setup_wizard_impl(args)
         except _SetupCancelled:
@@ -619,6 +620,8 @@ def _run_setup_section(config: dict, section: str) -> None:
     _run_setup_steps([(label, lambda: func(config))])
     save_config(config)
     print()
+    if section == "model":
+        finish_model_setup(config)
     print_success(f"{label} configuration complete!")
 
 
@@ -657,6 +660,7 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, imported_fr
         _step("terminal", "Terminal Backend", lambda: setup_terminal_backend(config)),
         ("Messaging Platforms", _gateway_step),
         _step("tools", "Tools", lambda: setup_tools(config, first_install=not is_existing))])
+    finish_model_setup(config)
 
 
 # First-time mode picker: (menu label, setup_quick runner name) — None falls through to Full Setup.

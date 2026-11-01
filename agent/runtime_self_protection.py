@@ -189,12 +189,49 @@ def _split_words(segment: str) -> list[str]:
         return segment.split()
 
 
+# A wrapper's own options sit between the wrapper and the real command word, so
+# `sudo -u root rm` must still resolve to `rm`. Only options listed here consume
+# the following token as their value; an unknown flag is assumed valueless, the
+# common case.
+_WRAPPER_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "sudo": frozenset({
+        "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+        "-C", "--close-from", "-r", "--role", "-t", "--type", "-U", "--other-user",
+        "-D", "--chdir", "-R", "--chroot", "-T", "--command-timeout",
+    }),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "time": frozenset({"-o", "--output", "-f", "--format"}),
+    "exec": frozenset({"-a"}),
+}
+
+
+def _skip_wrapper_options(words: list[str], wrapper: str) -> list[str]:
+    """Drop a wrapper's own options (and the values they consume) from ``words``.
+
+    Stops at the first non-option token (the command), dropping a ``--`` option
+    terminator on the way.
+    """
+    value_flags = _WRAPPER_VALUE_FLAGS.get(wrapper, frozenset())
+    index = 0
+    while index < len(words):
+        token = words[index]
+        if token == "--":
+            return words[index + 1:]
+        if token == "-" or not token.startswith("-"):
+            break
+        index += 1
+        if token in value_flags and index < len(words) and not words[index].startswith("-"):
+            index += 1
+    return words[index:]
+
+
 def _strip_prefixes(words: list[str]) -> list[str]:
     out = list(words)
     while out:
         first = out[0]
         if first in _COMMAND_PREFIXES:
-            out = out[1:]
+            out = _skip_wrapper_options(out[1:], first)
             continue
         if "=" in first and not first.startswith(("-", "/")) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", first):
             out = out[1:]

@@ -1148,7 +1148,7 @@ _ANCHOR_NOISE = frozenset({
 def _build_anchor_index(turns: list[dict[str, Any]]) -> str:
     """Regex-harvest exact identifiers from the compacted region (LLM-free); per-category caps, most-frequent first."""
     contents = (
-        (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else m.get("content") or "")
+        (_typed_user_text(m["content"]) if m.get("role") == "user" and isinstance(m.get("content"), str) else (m.get("content") if isinstance(m.get("content"), str) else ""))
         + ("\n" + "\n".join(m["_anchor_urls"]) if m.get("_anchor_urls") else "")
         for m in turns
     )
@@ -5333,7 +5333,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Whole transcript (or the entire post-user tail behind an oversized skill-scaffolded user
         # turn) fits soft_ceiling: re-cut with the raw budget so a worthwhile middle exists (else
         # #40803 loop / #empty_post_handoff_window when raw user scaffold + tail > soft_ceiling).
-        if (cut_idx <= head_end or cut_idx == last_user_idx + 1) and 0 < accumulated <= soft_ceiling:
+        if (
+            cut_idx <= head_end
+            or cut_idx == last_user_idx + 1
+            or (
+                cut_idx - max(head_end, last_user_idx + 1) <= _MAX_TAIL_MESSAGE_FLOOR // 2
+                and n - max(head_end, last_user_idx + 1) > self.protect_last_n
+                and accumulated > token_budget
+            )
+        ) and 0 < accumulated <= soft_ceiling:
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True, price=price)
 
         fallback_cut = n - min_tail
@@ -5347,8 +5355,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx = max(fallback_cut, head_end + 1)
         aligned_back = self._align_boundary_backward(messages, cut_idx)
         if (
-            0 <= last_user_idx < cut_idx
-            and aligned_back <= last_user_idx + 1
+            aligned_back < cut_idx
+            and (
+                (0 <= last_user_idx < cut_idx and aligned_back <= last_user_idx + 1)
+                or aligned_back - max(head_end, last_user_idx + 1) <= _MAX_TAIL_MESSAGE_FLOOR // 2
+            )
             and sum(map(price, range(aligned_back, n))) > soft_ceiling
         ):
             aligned_fwd = self._align_boundary_forward(messages, cut_idx)

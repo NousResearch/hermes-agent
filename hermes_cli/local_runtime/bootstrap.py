@@ -57,9 +57,9 @@ def _detect_gpu_vendor() -> str | None:
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a machine asset, and every
     profile shares the one managed server that serves it (same rule as runtimes_root())."""
-    from hermes_constants import get_default_hermes_root
+    from hermes_cache import managed_cache_dir
 
-    return get_default_hermes_root() / "models"
+    return managed_cache_dir("models")
 
 
 def assets_dir() -> Path:
@@ -102,7 +102,11 @@ def adopt_legacy_models() -> list[Path]:
     skips it. Returns the new paths of the moved files."""
     from hermes_constants import get_default_hermes_root, named_profile_has_identity
 
-    profiles_root = get_default_hermes_root() / "profiles"
+    root = get_default_hermes_root()
+    # Package caches start independently; old profile models may belong to a CLI install.
+    if models_dir() != root / "models":
+        return []
+    profiles_root = root / "profiles"
     if not profiles_root.is_dir():
         return []
     moved: list[Path] = []

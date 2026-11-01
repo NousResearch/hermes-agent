@@ -13,10 +13,12 @@ import { api } from "@/lib/api";
 import type {
   AnalyticsResponse,
   AnalyticsDailyEntry,
+  AnalyticsDailyModelEntry,
   AnalyticsModelEntry,
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import { inputOutputRatio, OTHER_MODELS, stackDailyByModel } from "@/lib/analytics-charts";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -33,6 +35,7 @@ const PERIODS = [
 ] as const;
 
 const CHART_HEIGHT_PX = 160;
+const PANEL_HEIGHT_PX = 64;
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -128,13 +131,100 @@ function SortHeader({
 
 
 
+// Categorical slots for the per-model stack, validated as an adjacent set on the dark canvas
+// (dataviz validator: CVD ΔE ≥ 8.4, normal ΔE ≥ 19.3, ≥ 3:1). Themes override via CSS vars.
+const MODEL_SERIES_VARS = [1, 2, 3, 4, 5].map((n) => `var(--series-model-${n})`);
+const OTHER_MODELS_COLOR = "var(--series-model-other)";
+
+function DateAxis({ days }: { days: string[] }) {
+  return (
+    <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
+      <span>{days.length > 0 ? formatDate(days[0]) : ""}</span>
+      {days.length > 2 && <span>{formatDate(days[Math.floor(days.length / 2)])}</span>}
+      <span>{days.length > 1 ? formatDate(days[days.length - 1]) : ""}</span>
+    </div>
+  );
+}
+
+interface DailyBarsProps {
+  label: string;
+  color: string;
+  bars: { day: string; value: number | null; tooltip: string[] }[];
+  format: (n: number) => string;
+  /** Dashed reference line (e.g. the period average), on this panel's own scale. */
+  reference?: { value: number; label: string };
+}
+
+/** One series per panel, each on its own scale: input dwarfs output, so a shared axis hides output. */
+function DailyBars({ label, color, bars, format, reference }: DailyBarsProps) {
+  const max = Math.max(...bars.map((b) => b.value ?? 0), reference?.value ?? 0, 1e-9);
+  const peak = Math.max(...bars.map((b) => b.value ?? 0));
+  return (
+    <div>
+      <div className="flex items-baseline justify-between font-mondwest normal-case text-xs text-muted-foreground mb-1.5">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5" style={{ backgroundColor: color }} />
+          {label}
+        </span>
+        <span className="text-text-tertiary">
+          {reference ? reference.label : `max ${format(peak)}`}
+        </span>
+      </div>
+      <div className="relative flex items-end gap-[2px]" style={{ height: PANEL_HEIGHT_PX }}>
+        {reference && (
+          <div
+            className="absolute inset-x-0 border-t border-dashed border-text-tertiary/60 pointer-events-none"
+            style={{ bottom: Math.round((reference.value / max) * PANEL_HEIGHT_PX) }}
+          />
+        )}
+        {bars.map((b) => {
+          const h = b.value === null ? 0 : Math.round((b.value / max) * PANEL_HEIGHT_PX);
+          return (
+            <div key={b.day} className="flex-1 min-w-0 group relative flex flex-col justify-end h-full">
+              <BarTooltip lines={b.tooltip} />
+              <div
+                className="w-full rounded-t-[2px]"
+                style={{
+                  backgroundColor: `color-mix(in srgb, ${color} 80%, transparent)`,
+                  height: Math.max(h, b.value ? 1 : 0),
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BarTooltip({ lines }: { lines: string[] }) {
+  return (
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
+      <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
+        <div className="font-medium">{lines[0]}</div>
+        {lines.slice(1).map((line) => (
+          <div key={line}>{line}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
   if (daily.length === 0) return null;
 
-  const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
-    1,
+  const ratioText = (r: number | null) =>
+    r === null ? "—" : t.analytics.ratioValue.replace("{ratio}", r.toFixed(1));
+  const tooltip = (d: AnalyticsDailyEntry) => [
+    formatDate(d.day),
+    `${t.analytics.input}: ${formatTokens(d.input_tokens)}`,
+    `${t.analytics.output}: ${formatTokens(d.output_tokens)}`,
+    ratioText(inputOutputRatio(d.input_tokens, d.output_tokens)),
+  ];
+  const periodRatio = inputOutputRatio(
+    daily.reduce((sum, d) => sum + d.input_tokens, 0),
+    daily.reduce((sum, d) => sum + d.output_tokens, 0),
   );
 
   return (
@@ -142,92 +232,96 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.analytics.dailyTokenUsage}
-          </CardTitle>
+          <CardTitle className="text-base">{t.analytics.dailyTokenUsage}</CardTitle>
         </div>
-        <div className="flex items-center gap-4 font-mondwest normal-case text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-input-token)" }}
-            />
-            {t.analytics.input}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div
-              className="h-2.5 w-2.5"
-              style={{ backgroundColor: "var(--series-output-token)" }}
-            />
-            {t.analytics.output}
-          </div>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <DailyBars
+          label={t.analytics.inputTokensPerDay}
+          color="var(--series-input-token)"
+          format={formatTokens}
+          bars={daily.map((d) => ({ day: d.day, value: d.input_tokens, tooltip: tooltip(d) }))}
+        />
+        <DailyBars
+          label={t.analytics.outputTokensPerDay}
+          color="var(--series-output-token)"
+          format={formatTokens}
+          bars={daily.map((d) => ({ day: d.day, value: d.output_tokens, tooltip: tooltip(d) }))}
+        />
+        <DailyBars
+          label={t.analytics.inputOutputRatio}
+          color="var(--series-io-ratio)"
+          format={(n) => `${n.toFixed(1)}×`}
+          reference={
+            periodRatio === null
+              ? undefined
+              : { value: periodRatio, label: t.analytics.ratioAverage.replace("{ratio}", periodRatio.toFixed(1)) }
+          }
+          bars={daily.map((d) => ({
+            day: d.day,
+            value: inputOutputRatio(d.input_tokens, d.output_tokens),
+            tooltip: tooltip(d),
+          }))}
+        />
+        <DateAxis days={daily.map((d) => d.day)} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ModelStackChart({ rows }: { rows: AnalyticsDailyModelEntry[] }) {
+  const { t } = useI18n();
+  const stack = useMemo(() => stackDailyByModel(rows, MODEL_SERIES_VARS.length), [rows]);
+  if (stack.days.length === 0) return null;
+
+  const colorOf = (key: string) =>
+    key === OTHER_MODELS ? OTHER_MODELS_COLOR : MODEL_SERIES_VARS[stack.series.indexOf(key)];
+  const nameOf = (key: string) =>
+    key === OTHER_MODELS ? t.analytics.otherModels : key || t.analytics.unknownModel;
+  const max = Math.max(...stack.days.map((d) => d.total), 1);
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Cpu className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">{t.analytics.dailyTokensByModel}</CardTitle>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mondwest normal-case text-xs text-muted-foreground">
+          {stack.series.map((key) => (
+            <div key={key} className="flex items-center gap-1.5">
+              <div className="h-2.5 w-2.5" style={{ backgroundColor: colorOf(key) }} />
+              <span className={key === OTHER_MODELS ? "" : "font-mono-ui"}>{nameOf(key)}</span>
+            </div>
+          ))}
         </div>
       </CardHeader>
       <CardContent>
-        <div
-          className="flex items-end gap-[2px]"
-          style={{ height: CHART_HEIGHT_PX }}
-        >
-          {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
-            const inputH = Math.round(
-              (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
-            const outputH = Math.round(
-              (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
-            );
-            return (
-              <div
-                key={d.day}
-                className="flex-1 min-w-0 group relative flex flex-col justify-end"
-                style={{ height: CHART_HEIGHT_PX }}
-              >
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
-                  <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
-                    <div className="font-medium">{formatDate(d.day)}</div>
-                    <div>
-                      {t.analytics.input}: {formatTokens(d.input_tokens)}
-                    </div>
-                    <div>
-                      {t.analytics.output}: {formatTokens(d.output_tokens)}
-                    </div>
-                    <div>
-                      {t.analytics.total}: {formatTokens(total)}
-                    </div>
-                  </div>
-                </div>
-
+        <div className="flex items-end gap-[2px]" style={{ height: CHART_HEIGHT_PX }}>
+          {stack.days.map((d) => (
+            <div key={d.day} className="flex-1 min-w-0 group relative flex flex-col-reverse justify-start h-full">
+              <BarTooltip
+                lines={[
+                  `${formatDate(d.day)} · ${formatTokens(d.total)}`,
+                  ...d.segments.map((s) => `${nameOf(s.key)}: ${formatTokens(s.tokens)}`),
+                ]}
+              />
+              {d.segments.map((s, i) => (
                 <div
-                  className="w-full"
+                  key={s.key}
+                  className={`w-full ${i === d.segments.length - 1 ? "rounded-t-[2px]" : ""}`}
                   style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
-                    height: Math.max(inputH, total > 0 ? 1 : 0),
+                    backgroundColor: colorOf(s.key),
+                    height: Math.max(Math.round((s.tokens / max) * CHART_HEIGHT_PX), 1),
+                    // 2px surface gap between stacked segments.
+                    marginBottom: i === 0 ? 0 : 2,
                   }}
                 />
-
-                <div
-                  className="w-full"
-                  style={{
-                    backgroundColor:
-                      "color-mix(in srgb, var(--series-output-token) 70%, transparent)",
-                    height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0),
-                  }}
-                />
-              </div>
-            );
-          })}
+              ))}
+            </div>
+          ))}
         </div>
-
-        <div className="flex justify-between mt-2 font-mondwest normal-case text-xs text-text-tertiary">
-          <span>{daily.length > 0 ? formatDate(daily[0].day) : ""}</span>
-          {daily.length > 2 && (
-            <span>{formatDate(daily[Math.floor(daily.length / 2)].day)}</span>
-          )}
-          <span>
-            {daily.length > 1 ? formatDate(daily[daily.length - 1].day) : ""}
-          </span>
-        </div>
+        <DateAxis days={stack.days.map((d) => d.day)} />
       </CardContent>
     </Card>
   );
@@ -577,6 +671,7 @@ export default function AnalyticsPage() {
             <TokenBarChart daily={data.daily} />
           </div>
 
+          <ModelStackChart rows={data.daily_by_model ?? []} />
           <DailyTable daily={data.daily} />
           <ModelTable models={data.by_model} />
           <SkillTable skills={data.skills.top_skills} />

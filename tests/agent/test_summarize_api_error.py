@@ -93,3 +93,28 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
+
+
+def test_policy_gateway_reason_without_message_is_surfaced():
+    """A policy gateway's 403 body states its refusal in ``error.reason`` with no
+    ``message`` (#125058); the summary line must carry the reason, not the raw JSON."""
+    err = Exception("Error code: 403")
+    err.status_code = 403
+    err.body = {"error": {"type": "wardryx_denied",
+                          "reason": "estimated cost $0.02 exceeds policy threshold"}}
+    err.response = SimpleNamespace(text="")
+    summary = AIAgent._summarize_api_error(err)
+    assert "estimated cost $0.02 exceeds policy threshold" in summary
+    assert "{" not in summary
+
+
+def test_policy_gateway_flat_body_reason_is_surfaced():
+    """A flat policy-gateway body (no ``error`` wrapper) states its refusal in a
+    top-level ``reason`` (#125058); the summary must read it, not the raw JSON."""
+    err = Exception("Error code: 403")
+    err.status_code = 403
+    err.body = {"type": "wardryx_denied", "reason": "workspace policy blocks this model"}
+    err.response = SimpleNamespace(text="")
+    summary = AIAgent._summarize_api_error(err)
+    assert "workspace policy blocks this model" in summary
+    assert "{" not in summary

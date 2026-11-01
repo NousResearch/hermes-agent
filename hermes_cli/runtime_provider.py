@@ -166,6 +166,45 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _is_nous_inference_base_url(base_url: str) -> bool:
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+
+    allowed_hosts = {
+        str(host).strip().lower().rstrip(".")
+        for host in getattr(auth_mod, "_ALLOWED_NOUS_INFERENCE_HOSTS", frozenset())
+        if isinstance(host, str) and host.strip()
+    }
+    default_host = base_url_hostname(getattr(auth_mod, "DEFAULT_NOUS_INFERENCE_URL", ""))
+    if default_host:
+        allowed_hosts.add(default_host)
+    return hostname in allowed_hosts
+
+
+def _is_nous_invoke_jwt(value: Any) -> bool:
+    status_fn = getattr(auth_mod, "_nous_invoke_jwt_status", None)
+    if not callable(status_fn) or not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        status = status_fn(value, min_ttl_seconds=0)
+    except Exception:
+        return False
+    return status in {None, "invoke_jwt_expiring", "invoke_jwt_expiry_unknown_or_expiring"}
+
+
+def _custom_explicit_api_key_candidate(explicit_api_key: Optional[str], base_url: str) -> str:
+    candidate = str(explicit_api_key or "").strip()
+    if candidate and _is_nous_invoke_jwt(candidate) and not _is_nous_inference_base_url(base_url):
+        logger.debug(
+            "Ignoring Nous invoke JWT for custom provider endpoint %s; "
+            "using custom provider credentials instead",
+            base_url,
+        )
+        return ""
+    return candidate
+
+
 def _parse_api_mode(raw: Any) -> Optional[str]:
     """Validate an api_mode from config (None if invalid). Legacy/alias spellings (``openai``,
     ``anthropic``, ``responses``, …) are canonicalized first so old configs keep their transport

@@ -81,7 +81,13 @@ class CloudBrowserProvider(BrowserProvider):
 
     @staticmethod
     def _session_name(task_id: str) -> str:
-        return f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
+        # agent-browser binds ``<root>/agent-browser-<name>/<name>.sock`` under a 103-byte
+        # AF_UNIX cap, and socket_safe_tmpdir() may return a root of up to 50 chars, so the
+        # name must stay <= 16 chars (50 + 2*16 + 21 = 103). Embedding task_id (a 36-char
+        # UUID by default) overflowed even /tmp. Sessions are keyed by task_id in
+        # _active_sessions; nothing reads it back from the name. The ``hermes_`` prefix is
+        # what the orphan reaper globs for.
+        return f"hermes_{uuid.uuid4().hex[:9]}"
 
     def _post_create(
         self, url: str, headers: dict[str, str], payload: dict[str, object], *, wrap_errors: bool = True

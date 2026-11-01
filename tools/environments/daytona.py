@@ -123,7 +123,9 @@ class DaytonaEnvironment(BaseEnvironment):
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
 
     def _daytona_delete(self, remote_paths: list[str]) -> None:
-        self._sandbox.process.exec(quoted_rm_command(remote_paths))
+        response = self._sandbox.process.exec(quoted_rm_command(remote_paths))
+        if response.exit_code != 0:
+            raise RuntimeError(f"Daytona delete failed (exit {response.exit_code}): {response.result}")
 
     def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""

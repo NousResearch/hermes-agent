@@ -99,7 +99,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
-import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
+import { leaveWorkspacePageForChat, openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -316,6 +316,21 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
         }
       : {})
   } as CSSProperties
+}
+
+// The tab-strip "+", ⌘T, ⌘N, the palette and the sidebar row all funnel into
+// openNewSessionTabAction. The route-leave closes a workspace page (Settings,
+// Profiles, …) so the minted tab is not hidden behind it; the primary
+// selection decides where the route lands. Module-level so ContribWiring's
+// body stays on the FUNC_LINES ratchet (it may only go down).
+function openNewSessionTabWithRouteLeave(
+  openNewSessionTile: ReturnType<typeof useSessionActions>['openNewSessionTile'],
+  navigate: ReturnType<typeof useNavigate>,
+  resolveStoredId: () => null | string
+): void {
+  openNewSessionTabAction(openNewSessionTile, {
+    leaveWorkspacePage: () => leaveWorkspacePageForChat(navigate, resolveStoredId)
+  })
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -987,8 +1002,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // The tab-strip "+" and ⌘T share one action (see `openNewSessionTab`).
-  const openNewSessionTab = useCallback(() => openNewSessionTabAction(openNewSessionTile), [openNewSessionTile])
+  const openNewSessionTab = useCallback(() => openNewSessionTabWithRouteLeave(openNewSessionTile, navigate, () => selectedStoredSessionId), [navigate, openNewSessionTile, selectedStoredSessionId])
 
   // Archive the selected session (rebindable `session.archive` hotkey).
   const archiveSelectedSession = useCallback(() => {
@@ -1007,7 +1021,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     archiveSelectedSession,
     openNewSessionTab,
     requestGateway,
-    startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin
   })

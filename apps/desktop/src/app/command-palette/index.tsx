@@ -95,6 +95,7 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import { runSharedNewSessionOrLegacy } from '../chat/new-session-tab'
 import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
@@ -863,7 +864,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: 'nav-new',
             keywords: ['chat', 'create'],
             label: cc.nav.newChat.title,
-            run: go(NEW_CHAT_ROUTE)
+            // One creation path for every entry point: the shared action
+            // wiring publishes (tab-strip "+", ⌘T, ⌘N, sidebar), with the
+            // legacy new-chat navigation as the never-dead fallback.
+            run: () => runSharedNewSessionOrLegacy(go(NEW_CHAT_ROUTE))
           },
           ...(canOpenNewWindow()
             ? [

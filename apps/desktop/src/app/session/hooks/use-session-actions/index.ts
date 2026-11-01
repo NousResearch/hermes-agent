@@ -9,9 +9,9 @@ import {
   graftRefreshedTailOntoBackfill,
   olderPageReader
 } from '@/app/chat/transcript-backfill'
-import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
+import { selectSidebarItemAction } from '@/app/session/hooks/use-session-actions/select-sidebar-item'
+import { defaultNewSessionTarget } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import {
   deleteSession,
   fetchStoredTranscriptAcrossBackends,
@@ -142,7 +142,7 @@ import type {
   UsageStats
 } from '@/types/hermes'
 
-import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
+import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import {
   pinStoredSessionForOwner,
@@ -195,6 +195,7 @@ import {
   hasPersistedDisplayTranscriptProvenance,
   withoutTranscriptProvenance
 } from './transcript-provenance'
+import { upsertUnlistedSessionOwner } from './unlisted-owners'
 import {
   appendLiveSessionProjection,
   applyRuntimeInfo,
@@ -220,8 +221,7 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
-  upsertOptimisticSession,
-  upsertUnlistedSessionOwner
+  upsertOptimisticSession
 } from './utils'
 
 interface SessionActionsOptions {
@@ -901,23 +901,6 @@ export function useSessionActions({
     ]
   )
 
-  const selectSidebarItem = useCallback(
-    (item: SidebarNavItem) => {
-      if (item.action === 'new-session') {
-        prepareDefaultNewSession()
-        setWorkspaceScope('sessions')
-        startFreshSessionDraft()
-
-        return
-      }
-
-      if (item.route) {
-        navigateToWorkspacePage(navigate, item.route)
-      }
-    },
-    [navigate, startFreshSessionDraft]
-  )
-
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
    *  Used by the New session row's "Open in split" menu and the tab-strip "+".
    *
@@ -1155,6 +1138,15 @@ export function useSessionActions({
 
     navigate(NEW_CHAT_ROUTE)
   }, [navigate, selectedStoredSessionId])
+
+  // The New-session row routes through the ONE shared creation path — see
+  // select-sidebar-item.ts (topical sibling; this file sits on the FILE_LINES
+  // ratchet and may only go down).
+  const selectSidebarItem = useCallback(
+    (item: SidebarNavItem) =>
+      selectSidebarItemAction(item, { navigate, openNewSessionTile, selectedStoredSessionIdRef }),
+    [navigate, openNewSessionTile, selectedStoredSessionIdRef]
+  )
 
   const resumeSession = useCallback(
     async (

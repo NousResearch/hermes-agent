@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
+from tools.tool_result_signals import provider_billing_blocker_from_exception
 
 SEARCH_LIMIT_CAP = 20  # every vendor here caps max_results at 20 server-side
 
@@ -175,6 +176,8 @@ def _guarded(vendor: str, kind: str, logger: logging.Logger, body: Callable[[], 
             return interrupted
         return body()
     except Exception as exc:
+        if blocker := provider_billing_blocker_from_exception(exc, provider=vendor.lower()):
+            raise blocker from exc
         return fail(_failure_message(vendor, kind, exc, logger, sdk=sdk, verbatim_value_error=vve))
 
 
@@ -204,6 +207,8 @@ async def run_extract_async(
             return _extract_interrupted(urls)
         return await body()
     except Exception as exc:
+        if blocker := provider_billing_blocker_from_exception(exc, provider=vendor.lower()):
+            raise blocker from exc
         return extract_fail(urls, _failure_message(vendor, "extract", exc, logger, sdk=sdk, verbatim_value_error=verbatim_value_error))
 
 

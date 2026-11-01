@@ -1100,6 +1100,18 @@ def _commit_tool_result(
     from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
     observe_tool_outcome(agent, function_name, is_error)
+    if not blocked:
+        from tools.tool_result_signals import is_billing_blocker_signal, parse_tool_result_signal
+        signal = parse_tool_result_signal(function_result)
+        if is_billing_blocker_signal(signal):
+            from agent.tool_guardrails import ToolGuardrailDecision
+            agent._set_tool_guardrail_halt(ToolGuardrailDecision(
+                action="halt",
+                code="typed_tool_billing_blocker",
+                message=signal.message,
+                tool_name=function_name,
+                count=1,
+            ))
     if not (blocked or is_error):
         function_result = observe_onboarding_result(agent, function_name, function_args, function_result)
     if observed:

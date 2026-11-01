@@ -22,10 +22,11 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
                  "browser_get_images", "vision_analyze"),
         "edit": ("write_file", "patch", "skill_manage"),
         "search": ("search_files",),
-        "execute": ("terminal", "process", "execute_code", "browser_click", "browser_type", "browser_scroll",
-                    "browser_press", "browser_back", "delegate_task", "image_generate", "text_to_speech"),
+        "execute": ("terminal", "process_manage", "process", "execute_code", "browser_click", "browser_type",
+                    "browser_scroll", "browser_press", "browser_back", "delegate_task", "image_generate",
+                    "text_to_speech"),
         "fetch": ("web_search", "web_extract", "browser_navigate"),
-        "other": ("todo",),
+        "other": ("todo_list", "todo"),
         "think": ("_thinking",),
     }.items()
     for name in names
@@ -35,9 +36,9 @@ TOOL_KIND_MAP: dict[str, ToolKind] = {
 # suppressed for these); unknown/plugin tools stay conservative.
 _POLISHED_TOOLS = {
     # Core operator loop
-    "todo", "memory", "session_search", "delegate_task",
+    "todo_list", "todo", "memory", "session_search", "delegate_task",
     # Files / execution
-    "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
+    "read_file", "write_file", "patch", "search_files", "terminal", "process_manage", "process", "execute_code",
     # Skills / web / browser / media
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
@@ -618,13 +619,13 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
 
 
 _COMPLETION_FORMATTERS: dict[str, _Formatter] = {
-    "todo": _format_todo_result,
+    "todo_list": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
     "patch": _format_edit_result,
     "search_files": _format_search_files_result,
     "execute_code": _format_execute_code_result,
-    "process": _format_process_result,
+    "process_manage": _format_process_result,
     "delegate_task": _format_delegate_result,
     "session_search": _format_session_search_result,
     "memory": _format_memory_result,
@@ -762,19 +763,24 @@ _START_CONTENT_BUILDERS: dict[str, Optional[Callable[[Args], Any]]] = {
     "search_files": lambda a: (
         f"Searching for '{a.get('pattern', '')}' ({a.get('target', 'content')})" + _fmt(a.get("path"), " in {}", "")
     ),
-    "todo": _start_todo,
+    "todo_list": _start_todo,
     "skill_view": lambda a: f"Loading skill '{_arg(a, 'name', default='?')}' ({_arg(a, 'file_path', default='SKILL.md')})",
     "skill_manage": _start_skill_manage,
     "execute_code": _start_execute_code,
     "web_search": lambda a: _fmt(_arg(a, "query"), "Searching the web for: {}", "Searching the web"),
     "web_extract": None,
-    "process": lambda a: f"Process action: {_arg(a, 'action', default='manage')}" + _fmt(_arg(a, "session_id"), "\nSession: {}", "")
+    "process_manage": lambda a: f"Process action: {_arg(a, 'action', default='manage')}" + _fmt(_arg(a, "session_id"), "\nSession: {}", "")
     + _preview("Input", _arg(a, "data"), 500),
     "delegate_task": _start_delegate,
     "session_search": lambda a: _fmt(_arg(a, "query"), "Searching past sessions for: {}", "Loading recent sessions"),
     "memory": lambda a: f"Memory {_arg(a, 'action', default='manage')} ({_arg(a, 'target', default='memory')})"
     + _preview("Preview", _arg(a, "content", "old_text"), 500),
 }
+
+# Pre-rename names (model_tools._LEGACY_TOOL_ALIASES) still arrive from replayed transcripts.
+for _legacy, _current in (("todo", "todo_list"), ("process", "process_manage")):
+    _COMPLETION_FORMATTERS[_legacy] = _COMPLETION_FORMATTERS[_current]
+    _START_CONTENT_BUILDERS[_legacy] = _START_CONTENT_BUILDERS[_current]
 
 
 def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:

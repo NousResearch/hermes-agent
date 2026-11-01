@@ -177,6 +177,103 @@ def _find_heredoc_close(
         cursor = after
 
 
+def _heredoc_substitution_spans(command: str, start: int, end: int):
+    """Yield executable substitutions in an unquoted heredoc body.
+
+    Quotes in a heredoc body are data, so this deliberately starts with a
+    clean quote state.  Once a command substitution opens, its own shell
+    syntax determines where it closes.
+    """
+    cursor = start
+    while cursor < end:
+        if command.startswith("$(", cursor):
+            depth, quote, inner = 1, None, cursor + 2
+            while inner < end:
+                char = command[inner]
+                if char == "\\" and quote != "'" and inner + 1 < end:
+                    inner += 2
+                    continue
+                if char in "'\\\"" and (quote is None or char == quote):
+                    quote = char if quote is None else None
+                elif quote is None and command.startswith("$(", inner):
+                    depth += 1
+                    inner += 1
+                elif quote is None and char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        yield cursor, inner + 1
+                        cursor = inner + 1
+                        break
+                inner += 1
+            else:
+                cursor += 2
+        elif command[cursor] == "`":
+            inner = cursor + 1
+            while inner < end and command[inner] != "`":
+                inner += 2 if command[inner] == "\\" and inner + 1 < end else 1
+            if inner < end:
+                yield cursor, inner + 1
+                cursor = inner + 1
+            else:
+                cursor += 1
+        else:
+            cursor += 1
+
+
+def mask_heredoc_bodies_for_shell_scan(command: str) -> str:
+    """Mask heredoc data while retaining unquoted command substitutions.
+
+    Security scanners need command boundaries, not body text: treating body
+    quotes as shell syntax can hide the command after a heredoc, while treating
+    body lines as commands creates deny-rule false positives.  An unquoted
+    heredoc still expands ``$(...)`` and backticks, so those spans remain for
+    the caller to scan.  Offsets and newlines are retained for downstream
+    projections.
+    """
+    if "<<" not in command:
+        return command
+    bodies: list[tuple[int, int, bool, bool]] = []
+    command_start = 0
+    while command_start < len(command):
+        command_end, specs, unknown, _post_list, _owner_start = _scan_heredoc_command_unit(
+            command, command_start)
+        if unknown or not specs or command_end >= len(command):
+            command_start = command_end + 1
+            continue
+        body_cursor = command_end + 1
+        found_bodies: list[tuple[int, int, bool, bool]] = []
+        for delimiter, strip_tabs, quoted in specs:
+            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
+            if close_end is None:
+                # EOF is the implicit end of an unterminated heredoc.  It has
+                # no later shell command to hide, but its data must not become
+                # a false command projection.
+                found_bodies.append((body_cursor, len(command), not quoted, False))
+                body_cursor = len(command)
+                break
+            found_bodies.append((body_cursor, close_end, not quoted, True))
+            body_cursor = close_end
+        if found_bodies:
+            bodies.extend(found_bodies)
+            command_start = body_cursor
+        else:
+            command_start = command_end + 1
+    if not bodies:
+        return command
+    masked = list(command)
+    for start, end, _unquoted, _has_terminator in bodies:
+        for index in range(start, end):
+            if masked[index] != "\n":
+                masked[index] = " "
+    for start, end, unquoted, has_terminator in bodies:
+        if not unquoted:
+            continue
+        terminator_start = command.rfind("\n", start, end - 1) + 1 if has_terminator else end
+        for sub_start, sub_end in _heredoc_substitution_spans(command, start, terminator_start):
+            masked[sub_start:sub_end] = command[sub_start:sub_end]
+    return "".join(masked)
+
+
 def strip_inert_heredoc_bodies(command: str) -> str:
     """Mask heredoc bodies that are provably inert data (see module docstring)."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.

@@ -641,6 +641,22 @@ export interface Translations extends NoticeTranslations {
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
+        appGuidance: {
+          missing: (name: string) => string
+          oldVersion: (name: string, required: string, found: string) => string
+          unreadableVersion: (name: string, required: string) => string
+          unsupportedOs: (name: string) => string
+          unsupportedGpu: (name: string) => string
+          uncertain: (name: string) => string
+          notRunning: (name: string) => string
+          backendHost: string
+          download: (name: string) => string
+          recheck: string
+          /** Shown while the backend's app requirements are being checked. */
+          checking: string
+          askHermes: string
+          helpDraft: (name: string, profile: string) => string
+        }
         installFromGit: string
         reviewRepository: string
         repoPlaceholder: string

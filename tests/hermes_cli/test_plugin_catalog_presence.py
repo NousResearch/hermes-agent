@@ -45,3 +45,14 @@ def test_app_state_comes_from_the_pinned_declaration(catalog):
     # A declared app that is absent greys the row with a reason; no declaration is unknown, never "present".
     assert rows["everywhere"]["app_state"] == "missing_app" and "Everywhere App" in rows["everywhere"]["sentence"]
     assert rows["here-only"]["app_state"] == "unknown" and rows["here-only"]["sentence"] == ""
+
+
+def test_named_presence_rejects_catalog_platform_before_app_probe(catalog, monkeypatch):
+    monkeypatch.setattr(presence_mod, "_pinned_manifest", lambda *_: NEEDS_APP)
+    monkeypatch.setattr(presence_mod, "_server_presence", lambda *_: presence_mod.Presence("present", reason="available"))
+
+    row, = presence_mod.presence_for(["elsewhere"])
+
+    assert row["state"] != "present"
+    assert row["reason"] == "unsupported_os"
+    assert row["download_url"] is None

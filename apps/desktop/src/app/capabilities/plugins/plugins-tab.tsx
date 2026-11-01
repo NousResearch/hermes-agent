@@ -24,13 +24,17 @@ import { removeDesktopPluginHalf } from '@/store/agent-plugins'
 import {
   $agentPluginBusy,
   $agentPlugins,
+  $agentPluginsByOwner,
   $agentPluginsError,
+  $agentPluginsErrorByOwner,
+  $agentPluginsLoadingByOwner,
   $agentPluginsStatus,
   type AgentPluginRow,
   type AgentPluginServerState,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
+  pluginInventoryKey,
   removeAgentPlugin,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
@@ -38,6 +42,7 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { isRemotePluginOwner, pluginOwnerRequest, scopeConnectionId } from '@/store/plugin-owner-request'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
@@ -94,17 +99,17 @@ async function revealPluginsDir() {
 
 /** Copy any changed unified desktop halves into the app root FIRST, then
  *  rescan the root — a concurrent scan would read the pre-copy state. */
-async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
+async function rescanAll(requestGateway: GatewayRequest, scope: null | string, connectionId: string | null = null) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
-  await loadAgentPlugins(requestGateway, scope)
+  await loadAgentPlugins(requestGateway, scope, connectionId)
 }
 
 /** Open the dual-target install modal pre-filled to install ONLY the agent
  *  half of a unified package into the scoped profile (the desktop half is
  *  already here). Provenance comes from the package marker Electron stamped
  *  when it copied the half out (catalog sidecar or git remote). */
-function installAgentHalfHere(record: PluginRecord, profile: null | string) {
+function installAgentHalfHere(record: PluginRecord, profile: ProfileScope) {
   const origin = record.packageOrigin
 
   if (!origin?.repo) {
@@ -321,7 +326,8 @@ function PackageRow({
   const desktopRemovable = desktop?.kind === 'disk' && !desktop.packageName && !agent
   // Electron's desktop-half reconcile only walks THIS machine's homes, so a
   // package installed on a remote backend can never materialize here (#114079).
-  const remoteBackend = useStore($connection)?.mode === 'remote'
+  const foregroundConnection = useStore($connection)
+  const remoteBackend = isRemotePluginOwner(profile, foregroundConnection?.mode === 'remote')
 
   // #96969: when the feature's agent-side tools live in a toolset (the
   // built-in Kanban board has no agent-plugin half), the Desktop switch flips
@@ -505,7 +511,7 @@ function PackageRow({
                 <Button
                   className="h-5 px-1.5 text-[0.65rem]"
                   disabled={!desktop.packageOrigin?.repo}
-                  onClick={() => installAgentHalfHere(desktop, scope)}
+                  onClick={() => installAgentHalfHere(desktop, profile)}
                   size="xs"
                   variant="outline"
                 >
@@ -545,12 +551,19 @@ function PackageRow({
 export function PluginActions({ profile }: { profile: ProfileScope }) {
   const { t } = useI18n()
   const d = t.settings.plugins
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
   const scope = profileParam(profile)
+  const connectionId = scopeConnectionId(profile)
+
+  const requestGateway = useMemo(
+    // Built from the derived owner, not the scope object, whose identity may change every render.
+    () => pluginOwnerRequest(connectionId ? { connectionId, profile: scope } : null, ambientRequest),
+    [ambientRequest, connectionId, scope]
+  )
 
   return (
     <>
-      <Button onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })} size="xs" variant="textStrong">
+      <Button onClick={() => openPluginInstallRequest({ profile, repo: '' })} size="xs" variant="textStrong">
         {d.installModal.installFromGit}
       </Button>
       <Tip label={d.openFolder}>
@@ -563,7 +576,7 @@ export function PluginActions({ profile }: { profile: ProfileScope }) {
           aria-label={d.rescan}
           onClick={() => {
             triggerHaptic('selection')
-            void rescanAll(requestGateway, scope)
+            void rescanAll(requestGateway, scope, connectionId)
           }}
           size="icon-xs"
           variant="ghost"
@@ -594,10 +607,13 @@ export const PluginsTab = memo(function PluginsTab({
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const { requestGateway } = useGatewayRequest()
+  const { requestGateway: ambientRequest } = useGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
+  const ownerInventories = useStore($agentPluginsByOwner)
+  const ownerErrors = useStore($agentPluginsErrorByOwner)
+  const ownerLoading = useStore($agentPluginsLoadingByOwner)
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const gatewayState = useStore($gatewayState)
@@ -605,16 +621,27 @@ export const PluginsTab = memo(function PluginsTab({
 
   const scope = profileParam(profile)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
+  const connectionId = scopeConnectionId(profile)
+  const ownerKey = connectionId ? pluginInventoryKey(connectionId, scope) : null
+
+  const requestGateway = useMemo(
+    // Built from the derived owner, not the scope object, whose identity may change every render.
+    () => pluginOwnerRequest(connectionId ? { connectionId, profile: scope } : null, ambientRequest),
+    [ambientRequest, connectionId, scope]
+  )
+
+  const ownRows = connectionId ? ownerInventories[pluginInventoryKey(connectionId, scope)] : agentRows
+  const ownError = connectionId ? ownerErrors[pluginInventoryKey(connectionId, scope)] : error
 
   useEffect(() => {
-    if (gatewayState === 'open') {
-      void loadAgentPlugins(requestGateway, scope)
+    if (gatewayState === 'open' || connectionId) {
+      void loadAgentPlugins(requestGateway, scope, connectionId)
     }
-  }, [requestGateway, scope, gatewayState])
+  }, [requestGateway, scope, connectionId, gatewayState])
 
   const packages = useMemo(
-    () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
-    [agentRows, desktopRecords]
+    () => mergePluginPackages(Object.values(desktopRecords), (ownRows ?? []).filter(isDesktopRelevantPlugin)),
+    [ownRows, desktopRecords]
   )
 
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
@@ -673,6 +700,13 @@ export const PluginsTab = memo(function PluginsTab({
 
     for (const entry of installedEntries) {
       const pkg = packageById.get(entry.id)
+
+      // A Desktop half is app-wide, not evidence that this selected backend
+      // has the Agent half. Keep catalog Install available for that owner.
+      if (pkg?.agentMissingInProfile) {
+        continue
+      }
+
       const name = pkg?.agent?.catalog_name ?? pkg?.desktop?.packageOrigin?.catalogName
 
       if (name) {
@@ -702,19 +736,19 @@ export const PluginsTab = memo(function PluginsTab({
           return
         }
 
-        if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
+        if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope, connectionId)) {
           notify({ kind: 'success', message: p.uninstalled(row.name) })
 
           // Prunes the app-level desktop half whose source package just went
           // away; its folder grants go with it, and only then (another profile
           // may still install the package).
-          void rescanAll(requestGateway, scope)
+          void rescanAll(requestGateway, scope, connectionId)
             .then(() => desktop && revokeGrantsIfUninstalled(desktop.id))
             .catch(error => notifyError(error, p.folderAccess.revokeFailed(row.name)))
         }
       })
     },
-    [label, p, requestGateway, scope]
+    [connectionId, label, p, requestGateway, scope]
   )
 
   const handleDesktopRemove = useCallback(
@@ -754,7 +788,7 @@ export const PluginsTab = memo(function PluginsTab({
 
     const setEnabled = (enable: boolean) => {
       if (agent?.key) {
-        void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
+        void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope, connectionId)
       }
 
       if (desktop) {
@@ -774,13 +808,13 @@ export const PluginsTab = memo(function PluginsTab({
   }
 
   const notice =
-    status === 'error' ? (
+    (connectionId ? Boolean(ownError) : status === 'error') ? (
       <CatalogAlert
-        onRetry={() => void loadAgentPlugins(requestGateway, scope)}
+        onRetry={() => void loadAgentPlugins(requestGateway, scope, connectionId)}
         retryLabel={t.catalog.retry}
         title={p.loadFailed}
       >
-        {error}
+        {ownError}
       </CatalogAlert>
     ) : null
 
@@ -788,14 +822,24 @@ export const PluginsTab = memo(function PluginsTab({
     <CatalogBrowser
       headerActions={<PluginActions profile={profile} />}
       installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
+      installedPending={connectionId
+        ? ownRows === undefined || Boolean(ownError) || Boolean(ownerKey && ownerLoading[ownerKey])
+        : status !== 'ready'}
       isInstalled={isInstalled}
       kind="plugins"
       matchInstalled={matchInstalled}
       notice={notice}
       // A plugin row's `source` IS its catalog tier (catalog-data.ts::catalogEntry);
       // CatalogEntry has no `tier` field, so don't "fix" this to entry.tier.
-      onInstall={entry => openCatalogPluginInstall(entry, scope, { tier: entry.source })}
+      onInstall={entry => {
+        const missingAgentHalf = packages.some(pkg =>
+          pkg.agentMissingInProfile && pkg.desktop?.packageOrigin?.catalogName === entry.name)
+
+        openCatalogPluginInstall(entry, profile, {
+          tier: entry.source,
+          ...(missingAgentHalf ? { legacyHint: 'agent' as const } : {})
+        })
+      }}
       onQueryChange={onQueryChange}
       query={query}
       renderInstalledAction={entry => {
@@ -820,7 +864,7 @@ export const PluginsTab = memo(function PluginsTab({
                 return
               }
 
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
+              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope, connectionId).then(ok => {
                 // Turning a unified package on turns its desktop half on too
                 // (unless the user switched that half off on purpose). Off
                 // stays per half: the desktop half is app-wide, and another
@@ -833,9 +877,9 @@ export const PluginsTab = memo(function PluginsTab({
               })
             }}
             onAgentUpdate={row => {
-              void runPluginUpdate(requestGateway, row, scope, p).then(outcome => {
+              void runPluginUpdate(requestGateway, row, scope, p, connectionId).then(outcome => {
                 if (outcome.kind === 'applied') {
-                  void rescanAll(requestGateway, scope)
+                  void rescanAll(requestGateway, scope, connectionId)
                 }
               })
             }}

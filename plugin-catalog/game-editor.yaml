@@ -5,6 +5,8 @@ version: "1.2.3"
 requires_hermes: ">=0.21.6"
 description: "In the Godot 4 project open in your editor, it places assets into the scene, plays the game, and the next plan fixes each error from its file and line. Disclosure — Needs Godot 4.7 or later, the Godot AI 4.x add-on, and uv. The first start downloads godot-ai==4.3.0 from pypi.org and files.pythonhosted.org. There is no API key. The editor is reached only on 127.0.0.1. A server this plugin starts sends no telemetry. The add-on follows godot_ai/telemetry_enabled (on by default) and can send usage to godot-ai-telemetry-v2-pudmurzsnq-uw.a.run.app. plan_change sends only the session list. apply_plan asks once. A plan that deletes, overwrites, drops unsaved work, writes outside the project or runs code it wrote is not made when what is lost exceeds 1,700 characters, and otherwise runs only after confirm_risky_plan. Play and tests ask once and run the project's code. Tools are on by default on every surface, including the gateway, so anyone who can message Hermes there can ask and approve. This plugin keeps no user list of its own. Cron, hermes chat -q and unattended runs decline. Data stays in <HERMES_HOME>/plugin-data/agent-plugin-game-editor-<id> after removal. Stop with hermes plugins disable game-editor, or hermes tools for one surface. macOS only."
 maintainer: TakeshiTGAL
+title: Godot 4
+app_download_url: https://godotengine.org/download/macos/
 tier: community
 category: tools
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-game-editor

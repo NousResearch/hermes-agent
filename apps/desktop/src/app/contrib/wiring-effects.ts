@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { freshDraftScope, stashSessionDraft } from '@/store/composer'
+import { takePluginHelpDraft } from '@/store/plugin-install-request'
 import { $freshSessionRequest, refreshActiveProfile } from '@/store/profile'
 
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
@@ -65,6 +67,11 @@ export function useFreshSessionRequest(startFreshSessionDraft: () => void) {
 
     lastFreshRef.current = freshSessionRequest
     startFreshSessionDraft()
+    const help = takePluginHelpDraft()
+
+    if (help) {
+      stashSessionDraft(freshDraftScope(), help, [])
+    }
   }, [freshSessionRequest, startFreshSessionDraft])
 }
 

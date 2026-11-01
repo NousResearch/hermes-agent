@@ -38,14 +38,15 @@ export async function runPluginUpdate(
   request: GatewayRequest,
   row: Pick<AgentPluginRow, 'catalog_name' | 'name'>,
   scope: null | string,
-  p: PluginsCopy
+  p: PluginsCopy,
+  connectionId: string | null = null
 ): Promise<AgentPluginUpdateOutcome> {
   const { name } = row
   const gitInstall = !row.catalog_name
   const options: AgentPluginUpdateOptions = {}
 
   for (;;) {
-    const outcome = await updateAgentPlugin(request, name, p.updateFailed(name), scope, options)
+    const outcome = await updateAgentPlugin(request, name, p.updateFailed(name), scope, options, connectionId)
 
     if (outcome.kind === 'consent' && !options.acceptCapabilities) {
       // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop half); the backend

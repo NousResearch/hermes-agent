@@ -72,6 +72,24 @@ export const zhHantSettings = {
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
+        appGuidance: {
+          missing: name => `${name} 尚未安裝。請先在後端電腦安裝，再安裝此外掛。`,
+          oldVersion: (name, required, found) =>
+            `需要 ${name} ${required} 或更新版本（目前：${found || '舊版本'}）。請在後端電腦更新。`,
+          unreadableVersion: (name, required) =>
+            `無法讀取 ${name} 的已安裝版本。需要 ${required} 或更新版本；請先在後端電腦確認版本，再重試。`,
+          unsupportedOs: name => `後端作業系統不支援 ${name}。`,
+          unsupportedGpu: name => `後端 GPU 不支援 ${name}。`,
+          uncertain: name => `無法確認 ${name} 是否可用。你可以嘗試安裝外掛。`,
+          notRunning: name => `${name} 已安裝，但未在互動式桌面工作階段執行。`,
+          backendHost: '檢查的是已連線的後端，不是此桌面應用程式。',
+          download: name => `從官方網站下載 ${name}`,
+          recheck: '重新檢查',
+          checking: '正在後端檢查外掛的需求…',
+          askHermes: '請 Hermes 協助',
+          helpDraft: (name, profile) =>
+            `請協助我在後端電腦為 ${profile} 設定檔安裝或更新 ${name}。先檢查作業系統和需求，說明步驟，並在任何修改或下載前徵求我的同意。在安裝程式啟動之前，每一步都告訴我你在等待什麼：在背景執行下載並回報進度；需要我在 Hermes 中核准，或在那台電腦上確認系統管理員提示時，請告訴我。`
+        },
         installUncertain:
           'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
@@ -1027,7 +1045,8 @@ export const zhHantSettings = {
         lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
         noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
         modePublic: '我自己的網址',
-        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+        modePublicDetail: port =>
+          `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
       }
     },
     keys: {

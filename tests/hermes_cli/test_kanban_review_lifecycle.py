@@ -855,7 +855,7 @@ def test_request_review_on_unclaimed_ready_synthesizes_run(kanban_home: Path) ->
         assert kb.get_task(conn, tid).status == "ready"
         assert kb.get_task(conn, tid).current_run_id is None
 
-        ok = kb.request_review(conn, tid, summary="done without a claim")
+        ok = kb.request_review(conn, tid, summary="done without a claim", reviewer="reviewer")
         assert ok is True
         assert kb.get_task(conn, tid).status == "review"
 

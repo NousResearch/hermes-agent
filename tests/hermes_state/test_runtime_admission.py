@@ -92,3 +92,56 @@ def test_sqlite_failure_never_acknowledges_or_partially_claims(tmp_path):
         assert len(rt.list_session_admissions(db, session_id='s')) == 1
     finally:
         db.close()
+
+
+# Lone surrogates from surrogateescape-decoded tool output (a truncated multibyte char)
+# pass json.dumps but crash sqlite's strict TEXT encoding at write time (#144413).
+SURROGATE_TEXT = 'truncated umlaut \udcc3 end'
+
+
+def test_admission_with_surrogate_payload_round_trips(tmp_path):
+    import json
+
+    db = store(tmp_path)
+    import hermes_state_runtime as rt
+    try:
+        epoch = rt.begin_runtime_epoch(db, instance_id='boot')
+        args = dict(epoch=epoch, principal_id='human', session_id='s',
+                    request_id='one', payload={'text': SURROGATE_TEXT})
+        first = rt.admit_session_input(db, **args)
+        # The digest still derives from the caller's exact payload, so an exact retry
+        # replays, while the sanitized look-alike is a different request and conflicts.
+        assert rt.admit_session_input(db, **args) == first
+        with pytest.raises(rt.RuntimeStoreError) as exc:
+            rt.admit_session_input(db, **(args | {'payload': {'text': 'truncated umlaut \ufffd end'}}))
+        assert exc.value.reason == 'admission_conflict'
+        stored = db._conn.execute(
+            'SELECT payload_json FROM session_admissions WHERE admission_id=?',
+            (first['admission_id'],)).fetchone()[0]
+        stored.encode('utf-8')
+        assert json.loads(stored)['text'] == 'truncated umlaut \ufffd end'
+    finally:
+        db.close()
+
+
+def test_settlement_with_surrogate_result_stores_readable_row(tmp_path):
+    db = store(tmp_path)
+    import hermes_state_runtime as rt
+    from hermes_state_terminal import RESULT_PREFIX, load_result
+    try:
+        epoch = rt.begin_runtime_epoch(db, instance_id='boot')
+        rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id='s',
+                               request_id='one', payload={'text': 'hello'})
+        claimed = rt.claim_session_input(db, epoch=epoch, session_id='s')
+        settled = rt.settle_session_input(
+            db, epoch=epoch, admission_id=claimed['admission_id'],
+            generation=claimed['generation'], outcome='completed',
+            result={'note': SURROGATE_TEXT})
+        assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
+        raw = db._conn.execute(
+            'SELECT value FROM state_meta WHERE key=?',
+            (RESULT_PREFIX + claimed['admission_id'],)).fetchone()[0]
+        raw.encode('utf-8')
+        assert load_result(raw)['note'] == 'truncated umlaut \ufffd end'
+    finally:
+        db.close()

@@ -682,7 +682,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
     from gateway.config import Platform
+    from gateway.outbound_policy import enforce_outbound
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
+    chat_id, _, policy_metadata, decision = enforce_outbound(platform_name, chat_id, message,
+        metadata={'thread_id': thread_id} if thread_id else {}, kind='standalone',
+        references=tuple(str(item) for item in (media_files or ())))
+    thread_id = None if decision.rerouted else policy_metadata.get('thread_id')
     media_files = media_files or []
     if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, [message], media_files,

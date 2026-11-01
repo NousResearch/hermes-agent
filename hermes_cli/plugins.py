@@ -706,6 +706,15 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
+    @_serialized_replacement
+    def register_outbound_policy(self, key: str, provider) -> Optional[PluginRegistration]:
+        """Register one provider per key; rollback and unload revoke the registration."""
+        if not key or not callable(getattr(provider, 'evaluate', None)):
+            raise self._refuse("an invalid extension provider")
+        if key in self._manager._outbound_policies:
+            raise self._refuse("a duplicate extension provider")
+        return self._track_mapping_entry("register_outbound_policy", key, self._manager._outbound_policies, (self.manifest.name, provider))
+
     def register_context_reference(self, provider) -> None:
         """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix``
         defines ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are
@@ -1096,6 +1105,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._outbound_policies = {}  # Native load-owned extension registrations.
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers

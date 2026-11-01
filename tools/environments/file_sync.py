@@ -174,6 +174,16 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
     return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
 
 
+def remote_parent_dir(remote_path: str) -> str:
+    """POSIX parent of a remote sandbox path.
+
+    Remote paths stay POSIX even when Hermes runs on Windows.
+    ``str(Path(remote_path).parent)`` is host-dependent and would turn
+    ``/root/.hermes/x`` into a backslash path, so ``mkdir -p`` would miss.
+    """
+    return posixpath.dirname(remote_path)
+
+
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
     return sorted({posixpath.dirname(remote) for _, remote in files})

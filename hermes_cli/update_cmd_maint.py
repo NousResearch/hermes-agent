@@ -673,8 +673,13 @@ def _run_quick_snapshots() -> Optional[str]:
     """Quick snapshot of the root home plus every sibling profile; returns the root snapshot id."""
     from hermes_cli.update_cmd import _record_update_step
     from hermes_cli.backup import create_quick_snapshot
+    # Share the explicit recovery-set retention with full pre-update archives.
+    try:
+        keep = max(1, int(_load_updates_cfg().get("backup_keep", _PRE_UPDATE_SNAPSHOT_KEEP)))
+    except (TypeError, ValueError):
+        keep = _PRE_UPDATE_SNAPSHOT_KEEP
     snapshot_id = create_quick_snapshot(
-        label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        label="pre-update", keep=keep, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
     if snapshot_id:
         _verify_state_db_after_snapshot(snapshot_id)
@@ -685,7 +690,7 @@ def _run_quick_snapshots() -> Optional[str]:
     with _best_effort('Sibling profile snapshots failed: %s'):
         from hermes_cli.backup import create_pre_update_snapshots_all_profiles
         _sibling_snaps = create_pre_update_snapshots_all_profiles(
-            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            keep=keep, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
         )
         if _sibling_snaps:
             print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))

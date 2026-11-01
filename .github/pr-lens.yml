@@ -1,0 +1,24 @@
+schemaVersion: 0.1.0
+
+map:
+  rename:
+    - match: figma_mcp/server.py
+      to: MCP Server
+    - match: figma_mcp/client.py
+      to: Figma API Client
+    - match: figma_mcp/web_server.py
+      to: Web Server (FastAPI)
+    - match: Dockerfile
+      to: Container Config
+    - match: pyproject.toml
+      to: Python Dependencies
+    - match: tests/
+      to: Test Suite
+
+  exclude:
+    - "**/*.egg-info"
+    - "**.pyc"
+    - "__pycache__"
+    - "venv/"
+    - ".pytest_cache"
+    - ".mypy_cache"

@@ -80,6 +80,10 @@ export function beginPreviewGuestActivity(
     // The shared window controller must arbitrate this with live chat work.
     const releaseOwner = holdOwner()
 
+    // A new document can replace the hidden widget while the stored flag stays
+    // false. Lease-only work (input/capture) must wake it without another script.
+    const wake = () => guest.setBackgroundThrottling(false)
+
     const restore = () => {
       if (group.size) {
         return
@@ -88,6 +92,7 @@ export function beginPreviewGuestActivity(
       activeGuests.delete(guest)
       guest.removeListener('destroyed', discard)
       guest.removeListener('render-process-gone', discard)
+      guest.removeListener('did-navigate', wake)
       owner.removeListener('destroyed', discard)
       owner.removeListener('render-process-gone', discard)
       owner.removeListener('did-navigate', discard)
@@ -114,6 +119,7 @@ export function beginPreviewGuestActivity(
     release = restore
     guest.once('destroyed', discard)
     guest.once('render-process-gone', discard)
+    guest.on('did-navigate', wake)
     owner.once('destroyed', discard)
     owner.once('render-process-gone', discard)
     owner.on('did-navigate', discard)
@@ -181,8 +187,8 @@ export async function executePreviewGuestScript(owner: WebContents, token: numbe
     signal.throwIfAborted()
     navigated = () => cancelled.abort(new Error('Preview page navigated'))
     guest.once('did-navigate', navigated)
-    // Navigation can replace the hidden widget without waking it, even while
-    // getBackgroundThrottling() still reports false. Reapply to this document.
+    // Backstop for a lease acquired during loading: reapply once the document
+    // is ready, even if its navigation committed before the lease was acquired.
     guest.setBackgroundThrottling(false)
 
     // Readiness and dispatch share this main-process turn. Keep the existing

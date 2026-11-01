@@ -83,12 +83,37 @@ async function run() {
       )
     const execute = code => executePreviewGuestScript(window.webContents, begin(), code)
     const assertIdle = () => {
-      assert.equal(window.isVisible(), false)
+      assert.equal(window.isVisible() && !window.isMinimized(), false)
       assert.equal(window.webContents.getBackgroundThrottling(), true)
       assert.equal(guest.getBackgroundThrottling(), true)
     }
     const frame = 'new Promise(resolve => requestAnimationFrame(() => resolve(location.pathname)))'
-    window.hide()
+    if (process.argv.includes('--minimized')) {
+      const minimized = once(window, 'minimize')
+      window.minimize()
+      await bounded(minimized)
+      assert.equal(window.isMinimized(), true)
+    } else {
+      window.hide()
+    }
+
+    // No script-dispatch helper may heal the replacement widget: the surviving
+    // lease alone must keep rAF and capture working after its first holder exits.
+    const first = begin()
+    const second = begin()
+    endPreviewGuestActivity(window.webContents, first)
+    await guest.loadURL(base + '/lease-only')
+    assert.equal(await bounded(guest.executeJavaScript(frame)), '/lease-only')
+    const image = await bounded(guest.capturePage({ x: 0, y: 0, width: 100, height: 100 }))
+    assert.equal(image.isEmpty(), false)
+    assert.deepEqual(image.getSize(), { width: 100, height: 100 })
+    endPreviewGuestActivity(window.webContents, second)
+    assertIdle()
+
+    // Last release removes the navigation wake too, not just its current flag.
+    await guest.loadURL(base + '/lease-released')
+    assertIdle()
+    assert.equal(await guest.executeJavaScript('document.visibilityState'), 'hidden')
 
     // A queued script belongs to the incoming document, not the document whose
     // navigation commits before Electron would normally dispatch the script.

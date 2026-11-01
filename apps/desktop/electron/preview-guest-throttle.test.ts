@@ -102,9 +102,11 @@ describe('preview script activity', () => {
     endPreviewGuestActivity(owner, second)
     expect(guest.getBackgroundThrottling()).toBe(true)
     expect(owner.getBackgroundThrottling()).toBe(true)
-    expect(guest.setBackgroundThrottling.mock.calls).toEqual([[false], [true]])
     expect(owner.listenerCount('destroyed')).toBe(0)
     expect(guest.listenerCount('did-navigate')).toBe(0)
+    guest.emit('did-navigate', {}, 'https://idle.test', 200, 'OK')
+    expect(guest.getBackgroundThrottling()).toBe(true)
+    expect(owner.getBackgroundThrottling()).toBe(true)
   })
 
   it('rejects other owners, partitions, and untrusted guest senders before changing scheduling', () => {
@@ -156,6 +158,7 @@ describe('preview script activity', () => {
 
       expect(owner.listenerCount('destroyed')).toBe(0)
       expect(guest.listenerCount('destroyed')).toBe(0)
+      expect(guest.listenerCount('did-navigate')).toBe(0)
 
       if (!guest.isDestroyed()) {
         expect(guest.getBackgroundThrottling()).toBe(true)

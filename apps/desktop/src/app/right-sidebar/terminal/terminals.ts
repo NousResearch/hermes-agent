@@ -292,16 +292,26 @@ const newId = () => randomUuid()
 // stores. Unbound (or with no registry, like the Webapp) there is one host.
 let $defaultGateway: ReadableAtom<TerminalGateway | undefined> = atom(undefined)
 
+// Bound by the gateway layer, which owns session-to-host resolution.
+let resolveWorkspace = (gateway: TerminalGateway | undefined) => ({ cwd: $currentCwd.get(), gateway })
+
+export function bindTerminalWorkspace(resolve: typeof resolveWorkspace): void {
+  resolveWorkspace = resolve
+}
+
 let unbindDefaultGateway = () => {}
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
  *  tie to session/project state) and the gateway: an explicit one, else the one
  *  picked in Sessions now, so a failed first start can never retry elsewhere.
  *  Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get(), gateway?: TerminalGateway): string {
+export function createTerminal(cwd?: string, gateway?: TerminalGateway): string {
   const id = newId()
-  const owner = gateway ?? $defaultGateway.get()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user', ...owner }])
+  const target = resolveWorkspace($defaultGateway.get())
+  const owner = gateway ?? target.gateway ?? $defaultGateway.get()
+  const sameHost = !gateway || (gateway.connectionId === target.gateway?.connectionId && gateway.profile === target.gateway?.profile)
+  const directory = cwd ?? (sameHost ? target.cwd : '')
+  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd: directory, kind: 'user', ...owner }])
   $activeTerminalId.set(id)
 
   return id

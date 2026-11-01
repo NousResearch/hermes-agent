@@ -34,7 +34,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        command += ["--paginate"]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -44,13 +44,37 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        if (denied and denied[1] == "403" and "/rules/branches/" in endpoint
+                and "upgrade to github pro" in (exc.stderr or "").lower()):
+            raise _RulesetsUnavailable("GitHub rulesets API is unavailable on this plan") from None
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
-    value = json.loads(result.stdout)
-    if isinstance(value, dict) and value.get("errors"):
+    if paginate:
+        # `gh api --slurp` is not supported by the Ubuntu-packaged CLI (2.46)
+        # used by the harness. --paginate emits one JSON document per page, so
+        # decode the stream directly while retaining the list-of-pages contract.
+        decoder = json.JSONDecoder()
+        pages = []
+        offset = 0
+        output = result.stdout
+        while offset < len(output):
+            while offset < len(output) and output[offset].isspace():
+                offset += 1
+            if offset == len(output):
+                break
+            page, offset = decoder.raw_decode(output, offset)
+            pages.append(page)
+        if not pages:
+            raise ValueError("GitHub returned no paginated evidence")
+        value = pages
+    else:
+        value = json.loads(result.stdout)
+    if (isinstance(value, dict) and value.get("errors")) or (
+            isinstance(value, list) and any(isinstance(page, dict) and page.get("errors")
+                                            for page in value)):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
 
@@ -59,6 +83,10 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _RulesetsUnavailable(RuntimeError):
+    """GitHub's rulesets API is unavailable for this repository's plan."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -121,7 +149,7 @@ def collect_acceptance(contract: str, published_pr: str | None,
         repo, number = match[1], int(match[2])
         receipt["pr_url"] = url
         owner, name = repo.split("/")
-        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
+        query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state mergeCommit{{oid}}\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
         repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
@@ -129,19 +157,29 @@ def collect_acceptance(contract: str, published_pr: str | None,
         pr = repository["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
+        receipt["pr_state"] = pr["state"]
+        receipt["merge_commit_sha"] = ((pr.get("mergeCommit") or {}).get("oid"))
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        rules_unavailable = False
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _RulesetsUnavailable:
+            # Some GitHub plans cannot read rulesets. Classic branch protection
+            # remains covered by GraphQL above; for a merged PR, use all current
+            # exact-head check runs as a conservative completion fallback.
+            rules_unavailable = True
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
+        if not required and not rules_unavailable:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
@@ -149,30 +187,69 @@ def collect_acceptance(contract: str, published_pr: str | None,
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
-        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
-                                                       paginate=True, profile_home=profile_home) for s in page]
-        outcomes = []
-        for context, app_id in sorted(required, key=str):
-            matching = [r for r in runs if r["name"] == context and
-                        (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
-            if not selected:
-                outcomes.append("missing")
-                receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
-            for check in selected:
-                is_run = "conclusion" in check
-                outcome = check.get("conclusion") if is_run else check["state"]
-                classification = _classify(check, sha, outcome, is_run)
-                outcomes.append(classification)
-                receipt["checks"].append({"name": context, "id": check["id"],
-                    "url": check.get("html_url") or check.get("target_url"),
-                    "head_sha": check.get("head_sha", check.get("sha")),
-                    "classification": classification, "conclusion": outcome})
+        if not required and rules_unavailable:
+            if pr["state"] != "MERGED":
+                receipt.update(classification="missing",
+                               detail="GitHub rulesets are unavailable and an open PR cannot use the merged-PR check fallback.")
+                return receipt
+            if not re.fullmatch(r"[0-9a-f]{40}", str(receipt.get("merge_commit_sha") or "")):
+                receipt.update(classification="missing",
+                               detail="Merged PR fallback requires an exact merge commit SHA.")
+                return receipt
+            if not runs:
+                receipt.update(classification="missing",
+                               detail="Merged PR has no current-head check runs to verify.")
+                return receipt
+            observed = []
+            for run in runs:
+                if run.get("head_sha") != sha:
+                    classification = "stale"
+                elif run.get("status") != "completed":
+                    classification = "pending"
+                elif run.get("conclusion") in {"success", "neutral", "skipped"}:
+                    classification = "success"
+                else:
+                    classification = _classify(run, sha, run.get("conclusion"), True)
+                observed.append(classification)
+                receipt["checks"].append({"name": run.get("name"), "id": run.get("id"),
+                    "url": run.get("html_url"), "head_sha": run.get("head_sha"),
+                    "classification": classification, "conclusion": run.get("conclusion")})
+            if not any(item == "success" for item in observed) or any(
+                    item != "success" for item in observed):
+                receipt.update(classification=next((item for item in observed if item != "success"), "missing"),
+                               detail="Merged PR fallback requires completed exact-head checks with at least one success and no failed, pending, or stale checks.")
+                return receipt
+            receipt["check_policy"] = "merged_pr_all_latest_checks"
+            outcomes = ["success"]
+        else:
+            outcomes = []
+        if required:
+            statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
+                                                           paginate=True, profile_home=profile_home) for s in page]
+            for context, app_id in sorted(required, key=str):
+                matching = [r for r in runs if r["name"] == context and
+                            (app_id in (None, -1) or r["app"]["id"] == app_id)]
+                # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
+                legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
+                selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+                if not selected:
+                    outcomes.append("missing")
+                    receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
+                for check in selected:
+                    is_run = "conclusion" in check
+                    outcome = check.get("conclusion") if is_run else check["state"]
+                    classification = _classify(check, sha, outcome, is_run)
+                    outcomes.append(classification)
+                    receipt["checks"].append({"name": context, "id": check["id"],
+                        "url": check.get("html_url") or check.get("target_url"),
+                        "head_sha": check.get("head_sha", check.get("sha")),
+                        "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
-        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        if (current["head"]["sha"] != sha or current["base"]["ref"] != branch
+                or (current["state"] == "closed" and not current.get("merged"))
+                or (receipt.get("merge_commit_sha") and
+                    current.get("merge_commit_sha") != receipt["merge_commit_sha"])):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")

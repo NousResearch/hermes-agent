@@ -4,27 +4,58 @@ import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect
+from hermes_cli.kanban_pr_acceptance import _api
+
+
+def test_paginated_github_api_decodes_cli_json_stream_without_slurp():
+    output = '{"rules":[{"id":1}]}\n{"rules":[{"id":2}]}\n'
+    with patch("hermes_cli.kanban_pr_acceptance.subprocess.run",
+               return_value=SimpleNamespace(stdout=output)) as run:
+        assert _api("repos/acme/repo/rules/branches/main?per_page=100", paginate=True) == [
+            {"rules": [{"id": 1}]}, {"rules": [{"id": 2}]},
+        ]
+    command = run.call_args.args[0]
+    assert "--paginate" in command
+    assert "--slurp" not in command
+
+
+def test_paginated_github_api_preserves_single_page_as_page_list():
+    with patch("hermes_cli.kanban_pr_acceptance.subprocess.run",
+               return_value=SimpleNamespace(stdout='[{"id":1}]\n')):
+        assert _api("repos/acme/repo/rules/branches/main?per_page=100", paginate=True) == [[{"id": 1}]]
 
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [],
+             "merged": False, "rules_unavailable": False}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                branch_rule = None if state["rules_unavailable"] else {
+                    "requiredStatusChecks": [{"context": "required", "app": {"databaseId": 1}}]
+                }
                 value = {"data": {"repository": {"pullRequest": {
-                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "headRefOid": sha, "baseRefName": "main",
+                    "state": "MERGED" if state["merged"] else "OPEN",
+                    "mergeCommit": {"oid": "c" * 40} if state["merged"] else None,
+                    "baseRef": {"branchProtectionRule": branch_rule}}}}}
             elif "/rules/branches/" in self.path:
+                if state["rules_unavailable"]:
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'{"message":"Upgrade to GitHub Pro (HTTP 403)"}')
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -43,7 +74,10 @@ def github(tmp_path, monkeypatch):
             elif "/statuses" in self.path:
                 value = [[]]
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": sha}, "base": {"ref": "main"},
+                         "state": "closed" if state["merged"] else "open",
+                         "merged": state["merged"],
+                         "merge_commit_sha": "c" * 40 if state["merged"] else None}
             else:
                 self.send_error(404)
                 return
@@ -60,9 +94,17 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n"
+                  "    value=json.loads(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as error:\n"
+                  "    print(error.read().decode(), file=sys.stderr)\n"
+                  "    sys.exit(1)\n"
+                  "if '--paginate' in sys.argv:\n"
+                  "    [print(json.dumps(page)) for page in value]\n"
+                  "else:\n"
+                  "    print(json.dumps(value))\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -107,6 +149,37 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+def test_merged_pr_can_use_exact_head_checks_when_rulesets_require_paid_plan(github):
+    github.update(merged=True, rules_unavailable=True)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Published docs", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="merged",
+                                metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+    assert receipt["check_policy"] == "merged_pr_all_latest_checks"
+    assert receipt["pr_state"] == "MERGED"
+    assert receipt["merge_commit_sha"] == "c" * 40
+    assert receipt["ok"] is True
+    assert any(check["name"] == "required" and check["conclusion"] == "success"
+               for check in receipt["checks"])
+
+
+@pytest.mark.platforms("linux")
+def test_merged_pr_fallback_still_rejects_open_prs_and_failed_checks(github):
+    github.update(rules_unavailable=True, merged=False)
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Open docs", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        github.update(merged=True, conclusion="failure")
+        failed = kb.create_task(conn, title="Failed docs", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, failed, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
 
 
 @pytest.mark.platforms("linux")

@@ -298,8 +298,14 @@ def _iter_darwin_fd_targets():
             size *= 2
         else:
             continue
+        # ``listing.raw`` hands back a fresh copy of the WHOLE listing on every access, so it must be
+        # materialized once per process, not once per fd: a process with a large fd table (a
+        # hypervisor VM exposes every guest descriptor — ~186k vnodes here) turns the per-iteration
+        # form into hundreds of GB of memcpy per pass, and every scan then expires on the 5s budget.
+        # That fails open *silently*, so the guard stops guarding on exactly the hosts that need it.
+        listing_bytes = memoryview(listing)
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
-            fd = struct.unpack_from("<i", listing.raw, offset)[0]
+            fd = struct.unpack_from("<i", listing_bytes, offset)[0]
             record = ctypes.create_string_buffer(_DARWIN_FD_RECORD_SIZE)
             if lib.proc_pidfdinfo(pid, fd, _DARWIN_PIDFDVNODEPATHINFO, record,
                                   _DARWIN_FD_RECORD_SIZE) <= 0:

@@ -1,0 +1,60 @@
+# Proposed catalog entry; listing requires Nous maintainer review and merge.
+manifest_version: 1
+
+name: postedly
+description: >-
+  Prepare physical-mail quotes and private review links, and check owned order status.
+source: https://postedly.com/developers
+
+transport:
+  type: http
+  url: https://postedly.com/mcp/send
+
+auth:
+  type: oauth
+  oauth:
+    scope: orders:read quotes:write checkout:write
+
+# Preparation and status tools only. Payment and fulfillment require browser approval.
+tools:
+  default_enabled:
+    - postedly_services
+    - postedly_products
+    - postedly_upload_document
+    - postedly_prepare_document
+    - postedly_document_status
+    - postedly_quote
+    - postedly_checkout
+    - postedly_orders
+    - postedly_order_status
+    - postedly_delivery_report
+
+suggest:
+  keywords:
+    - postedly
+  hosts:
+    - postedly.com
+  examples:
+    - Show the currently available Postedly services and handwritten-card designs.
+    - Prepare a quote and private review link for my document without paying or sending.
+    - Check the recorded status of my existing Postedly order.
+
+post_install: |
+  Sign in to Postedly through Hermes's OAuth flow. To authorize explicitly, run:
+    hermes mcp login postedly
+  Start a new session or run /reload-mcp after connecting.
+
+  Check postedly_services for live availability and requirements before promising a
+  delivery channel. Use postedly_products for currently available cards and writing styles.
+  Preserve the user's actual document; do not substitute a sample or placeholder.
+  Uploading, quoting, and opening a private review link do not charge, mail, or fax.
+  The user must review the exact document or item, recipient, total, and terms in the
+  browser before approving payment and fulfillment. Card samples are not a rendered
+  proof of the user's exact message. Report payment and fulfillment separately.
+
+  This entry enables preparation and order-status tools by default. Contact and draft
+  storage tools are optional and need their corresponding OAuth scopes. Review tool
+  selection with `hermes mcp configure postedly`.
+
+  Documentation: https://postedly.com/developers
+  File transfer and recovery: https://postedly.com/agent-guide.md

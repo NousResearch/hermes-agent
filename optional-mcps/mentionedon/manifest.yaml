@@ -1,0 +1,54 @@
+# Proposed catalog entry; listing requires Nous maintainer review and merge.
+manifest_version: 1
+
+name: mentionedon
+description: >-
+  Review saved AI-visibility reports and prioritize supplied discovery evidence.
+source: https://mentioned-on.com/developers/mcp
+
+transport:
+  type: http
+  url: https://mentioned-on.com/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: brands:read
+
+# Saved-record reads plus deterministic tools for caller-supplied evidence.
+tools:
+  default_enabled:
+    - analyze_discovery_readiness
+    - build_visibility_action_plan
+    - summarize_scan_evidence
+    - list_monitored_businesses
+    - get_visibility_report
+    - get_website_fixes
+
+suggest:
+  keywords:
+    - mentionedon
+    - mentioned-on
+  hosts:
+    - mentioned-on.com
+  examples:
+    - Review the latest saved visibility report for one of my monitored businesses.
+    - Prioritize these supplied AI-discovery findings and preserve missing evidence.
+    - Summarize these dated AI-mention captures without claiming a new scan.
+
+post_install: |
+  Sign in to MentionedOn through Hermes's OAuth flow for saved businesses and reports:
+    hermes mcp login mentionedon
+  Start a new session or run /reload-mcp after connecting.
+
+  The default tools read saved reports or evaluate caller-supplied evidence. They do
+  not run a fresh AI-provider scan or establish current inclusion beyond the returned
+  dated evidence. Public evidence tools can work without an account; saved-record
+  tools require the connected owner's brands:read authorization and product access.
+
+  Website inspection, draft, and verification tools are optional writes and require
+  an entitled monitoring slot. To use them, explicitly authorize that workflow,
+  add website:write to the OAuth scope, sign in again, and review the tool selection
+  with `hermes mcp configure mentionedon`. A proposed fix is not a published change.
+
+  Documentation: https://mentioned-on.com/developers/mcp

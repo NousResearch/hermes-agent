@@ -79,11 +79,24 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    request_api_mode = agent.api_mode
+
+    def _finish_early_error(reason: str, retryable: bool) -> None:
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type=type(api_error).__name__, error_message=str(api_error),
+            status_code=getattr(api_error, "status_code", None), retry_count=retry_count,
+            max_retries=max_retries, retryable=retryable, reason=reason,
+            request_api_mode=request_api_mode,
+        )
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,
     )
     if _recovered:
+        _finish_early_error("request_rebuilt", True)
         return _verdict("continue")
 
     status_code = getattr(api_error, "status_code", None)
@@ -107,6 +120,7 @@ def handle_api_error(
     from tools.interpreter_shutdown import interpreter_shutting_down
 
     if interpreter_shutting_down(api_error):
+        _finish_early_error("interpreter_shutdown", False)
         logger.warning(
             "%sInterpreter is shutting down — abandoning turn "
             "during API call #%d (%s)",

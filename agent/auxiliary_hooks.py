@@ -155,10 +155,13 @@ class _AuxCallHooks:
             self.base, ended_at=ended_at, api_duration=max(0.0, ended_at - self.started_at),
             error=None if error is None else f"{type(error).__name__}: {error}"[:2000],
             error_type=None if error is None else type(error).__name__,
+            status_code=getattr(error, "status_code", None),
         )
+        from agent.usage_observer import response_fields
+        payload.update(response_fields(response))
         # A streamed response is handed back unconsumed (the MoA facade owns reassembly), so
         # there is no usage/finish_reason to report yet; ``streaming`` tells the observer why.
-        if error is not None or self.streaming:
+        if error is not None or (self.streaming and _field(response, "choices") is None):
             payload.update(finish_reason=None, response_model=None, usage=None, response=None,
                            assistant_content_chars=0, assistant_tool_call_count=0)
         else:
@@ -209,7 +212,7 @@ def _fire(name: str, **payload: Any) -> None:
 def start_aux_call_hooks(**kw: Any) -> Optional[_AuxCallHooks]:
     """Fire ``pre_auxiliary_call`` for one attempt; the handle for :func:`finish_aux_call_hooks`,
     or None when nothing subscribes. For callers that drive the provider call themselves."""
-    if not (_has_hook(PRE_AUXILIARY_CALL) or _has_hook(POST_AUXILIARY_CALL)):
+    if not (_has_hook(PRE_AUXILIARY_CALL) or _has_hook(POST_AUXILIARY_CALL) or _has_hook("auxiliary_stream_end")):
         return None
     try:
         hooks = _AuxCallHooks(**kw)
@@ -241,12 +244,16 @@ def run_with_aux_hooks(
     ``post_auxiliary_call``; the exception (if any) is reported in ``post`` and re-raised."""
     hooks = start_aux_call_hooks(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
                            provider=provider, model=model, api_mode=api_mode, streaming=streaming)
+    from agent.usage_observer import observe_aux_stream, request_scope
     try:
-        response = call()
+        with request_scope(hooks.base if hooks is not None else dict(metadata, aux_task=aux_task, provider=provider, model=model)):
+            response = call()
     except BaseException as exc:
         finish_aux_call_hooks(hooks, error=exc)
         raise
     finish_aux_call_hooks(hooks, response=response)
+    if hooks is not None and hooks.streaming and _has_hook("auxiliary_stream_end"):
+        response = observe_aux_stream(response, hooks.base, _fire)
     return response
 
 
@@ -256,11 +263,15 @@ async def arun_with_aux_hooks(
 ) -> Any:
     """Async twin of :func:`run_with_aux_hooks`."""
     hooks = start_aux_call_hooks(aux_task=aux_task, metadata=metadata, client=client, kwargs=kwargs,
-                           provider=provider, model=model, api_mode=api_mode, streaming=False)
+                           provider=provider, model=model, api_mode=api_mode, streaming=bool(kwargs.get("stream")))
+    from agent.usage_observer import observe_aux_stream, request_scope
     try:
-        response = await call()
+        with request_scope(hooks.base if hooks is not None else dict(metadata, aux_task=aux_task, provider=provider, model=model)):
+            response = await call()
     except BaseException as exc:
         finish_aux_call_hooks(hooks, error=exc)
         raise
     finish_aux_call_hooks(hooks, response=response)
+    if hooks is not None and hooks.streaming and _has_hook("auxiliary_stream_end"):
+        response = observe_aux_stream(response, hooks.base, _fire)
     return response

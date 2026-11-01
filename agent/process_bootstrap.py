@@ -287,6 +287,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     """
     try:
         import httpx
+        from agent.usage_observer import observe_http_client
         proxy = _get_proxy_for_base_url(base_url)
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
@@ -325,8 +326,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 }
                 # Default transport = the https view; otherwise httpx builds a third, never-used
                 # direct transport (pool + SSL context) per client.
-                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
-        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+                return observe_http_client(client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts))
+        return observe_http_client(client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify))
     except Exception:
         return None
 

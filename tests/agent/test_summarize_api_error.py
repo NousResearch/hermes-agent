@@ -73,6 +73,43 @@ def test_wrapped_dns_resolution_failure_gets_the_same_friendly_message():
     assert "Connection error" not in summary
 
 
+def _sdk_connection_error(cause_text: str):
+    import openai
+    request = httpx.Request("POST", "http://127.0.0.1:8080/v1/chat/completions")
+    try:
+        try:
+            raise httpx.ConnectError(cause_text)
+        except httpx.ConnectError as cause:
+            raise openai.APIConnectionError(request=request) from cause
+    except openai.APIConnectionError as error:
+        return error
+
+
+@pytest.mark.parametrize("cause_text, expected", [
+    ("[Errno 111] Connection refused", "Couldn't connect to 127.0.0.1:8080 (connection refused)"),
+    ("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1032)",
+     "TLS certificate verification failed for 127.0.0.1:8080 (self-signed certificate)"),
+    ("[Errno 113] No route to host", "Couldn't reach 127.0.0.1:8080 (no route to host)"),
+])
+def test_sdk_wrapped_connect_failure_names_the_cause_and_endpoint(cause_text, expected):
+    """The SDK's bare "Connection error." hides why the connect failed (port of oh-my-pi#16036)."""
+    summary = AIAgent._summarize_api_error(_sdk_connection_error(cause_text))
+
+    assert summary.startswith(expected)
+
+
+def test_sdk_wrapped_cert_verify_failure_fails_fast():
+    """The cert failure under the SDK's "Connection error." gets the non-retryable TLS verdict
+    (and its fix-it guidance) instead of a retry/auto-recovery loop."""
+    from agent.error_classifier import FailoverReason, classify_api_error
+
+    result = classify_api_error(_sdk_connection_error(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1032)"))
+
+    assert result.reason == FailoverReason.ssl_cert_verification
+    assert result.retryable is False
+
+
 def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_message():
     """Unread streaming responses must not replace the real provider error."""
 

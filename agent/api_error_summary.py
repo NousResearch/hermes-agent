@@ -48,6 +48,51 @@ _NETWORK_RESOLUTION_MARKERS = (
     "no address associated with hostname",
     "network is unreachable",
 )
+# The other connect failures SDKs also flatten to "Connection error." (port of can1357/oh-my-pi#16036).
+# Each sentence keeps its marker phrase so the gateway's endpoint-unreachable reply still matches it.
+_TLS_VERIFY_MARKERS = ("certificate verify failed", "certificate_verify_failed")
+_CONNECTION_REFUSED_MARKERS = ("connection refused", "actively refused", "winerror 10061")
+_HOST_UNREACHABLE_MARKERS = ("no route to host", "host is unreachable")
+_TLS_DETAIL_RE = re.compile(r"certificate verify failed:\s*([^(\]]+?)\s*(?:\(_ssl\.c|$)", re.IGNORECASE)
+
+
+def _request_host(error: BaseException) -> str:
+    """``host:port`` of the request an SDK connection error carries, else a generic name."""
+    try:  # httpx's ``request`` property raises when the error was built without one
+        url = getattr(getattr(error, "request", None), "url", None)
+    except RuntimeError:
+        url = None
+    host, port = getattr(url, "host", None), getattr(url, "port", None)
+    if not host:
+        return "the model provider"
+    return f"{host}:{port}" if port else str(host)
+
+
+def _connect_failure_summary(error: BaseException) -> Optional[str]:
+    """Name a connect failure the SDK flattened to "Connection error." from its cause chain."""
+    current: Optional[BaseException] = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current)
+        lowered = text.lower()
+        if any(marker in lowered for marker in _NETWORK_RESOLUTION_MARKERS):
+            return ("Hermes can't reach the model provider. You may be offline. "
+                    "Check your internet connection and try again.")
+        if any(marker in lowered for marker in _TLS_VERIFY_MARKERS):
+            detail = _TLS_DETAIL_RE.search(text)
+            return (f"TLS certificate verification failed for {_request_host(error)}"
+                    f"{f' ({detail.group(1).strip()})' if detail else ''}")
+        if any(marker in lowered for marker in _CONNECTION_REFUSED_MARKERS):
+            return (f"Couldn't connect to {_request_host(error)} (connection refused). "
+                    "Check that the model server is running and listening there.")
+        if any(marker in lowered for marker in _HOST_UNREACHABLE_MARKERS):
+            return (f"Couldn't reach {_request_host(error)} (no route to host). "
+                    "Check the URL, your network, or proxy.")
+        current = current.__cause__ or current.__context__
+    return None
+
+
 _XAI_ENTITLEMENT_HINT = (
     " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
     "include xAI API access — only standalone SuperGrok subscribers "
@@ -155,21 +200,14 @@ class ApiErrorSummaryMixin:
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
 
-        Cloudflare HTML pages → ``<title>``; network/DNS failures (even SDK-wrapped) → offline hint; else
-        truncated str(error).
+        Cloudflare HTML pages → ``<title>``; connect failures (even SDK-wrapped) → what failed and where;
+        else truncated str(error).
         """
         raw = str(error)
 
-        current: Optional[BaseException] = error
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            if any(marker in str(current).lower() for marker in _NETWORK_RESOLUTION_MARKERS):
-                return (
-                    "Hermes can't reach the model provider. You may be offline. "
-                    "Check your internet connection and try again."
-                )
-            current = current.__cause__ or current.__context__
+        connect_failure = _connect_failure_summary(error)
+        if connect_failure:
+            return connect_failure
 
         if is_provider_stream_parse_error(error):
             return f"Malformed provider streaming response: {raw[:300]}"

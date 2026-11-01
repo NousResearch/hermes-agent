@@ -121,6 +121,49 @@ def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
     assert "reasoning_details" in sibling.carriers
 
 
+def test_duplicate_field_rejection_drops_the_bare_alias_and_retries_once(tmp_path):
+    """A gateway whose schema ALIASES the carriers onto one field (Rust/serde: "duplicate field
+    `reasoning`") answers a message carrying both with a 400 that names no unknown field; either
+    carrier alone deserializes. Verified against api.ai.beeline.ru/api/v3 (both carriers -> 400;
+    either one alone -> 200), so the drop keeps the de-facto standard ``reasoning_content``."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="DeepSeek-V4.1-Flash")
+    gw = _agent("DeepSeek-V4.1-Flash", db)
+    gw.provider, gw.base_url = "custom", "https://api.ai.beeline.ru/api/v3"
+    sent = [{"role": "user", "content": "hi"}, deepcopy(_TURN)]
+    sent[1].pop("tool_calls")
+    body = ("Failed to deserialize the JSON body into the target type: messages[5]: "
+            "duplicate field `reasoning` at line 1 column 209666")
+    assert _recover(gw, body, sent) is True
+    rejected = gw._reasoning_rejecting_routes[("custom", "api.ai.beeline.ru", "DeepSeek-V4.1-Flash")]
+    assert rejected == {"reasoning"}
+    # The retry re-shapes the same api_messages for the narrowed route: reasoning_content survives.
+    route = reasoning_replay_route("chat_completions", "custom", gw.model, gw.base_url, rejected=rejected)
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[1]["reasoning_content"] == "thought"
+    assert "reasoning" not in sent[1] and "reasoning_details" not in sent[1]
+    # Same rejection again: nothing new to strip -> normal error path, no loop.
+    assert _recover(gw, body, sent) is False
+
+
+def test_duplicate_field_without_a_carried_pair_is_not_a_rejection():
+    from types import SimpleNamespace
+    from agent.message_sanitization import record_reasoning_field_rejection
+
+    agent = SimpleNamespace(provider="custom", model="m", base_url="https://gw.example/v1",
+                            api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
+    rc_only = [{"role": "assistant", "content": "", "reasoning_content": "t"}]
+    for body in (
+        "duplicate field `reasoning` at line 1 column 5",   # the bare alias was never sent
+        "duplicate field `temperature` at line 1 column 5",  # not a reasoning carrier
+        "Failed to deserialize: messages[1]: duplicate field `content`",  # message-path, not ours
+    ):
+        assert record_reasoning_field_rejection(agent, body, rc_only) == frozenset()
+    assert agent._reasoning_rejecting_routes == {}
+
+
 def test_route_shaping_keeps_private_native_carrier_for_the_transport():
     """A resumed Gemini/Copilot row carries its signature only as a private reasoning_details record;
     route shaping must leave it for ``shape_wire_carriers`` even on routes that never read the array."""

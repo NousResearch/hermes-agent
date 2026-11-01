@@ -83,6 +83,156 @@ def runtime(tmp_path, monkeypatch):
     lease._reset_for_tests()
 
 
+def test_slow_profile_start_leaves_other_profile_lifecycle_available(runtime, monkeypatch):
+    homes, _ = runtime
+    a_starting, finish_a = threading.Event(), threading.Event()
+    created = []
+    threads = []
+
+    with _profile(homes[0]):
+        owner_a = cu._scoped_sid("shared")
+
+    class Backend(cu._NoopBackend):
+        def __init__(self, owner):
+            super().__init__()
+            self.owner = owner
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            if self.owner == owner_a:
+                a_starting.set()
+                assert finish_a.wait(10), "test did not release profile A startup"
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: Backend(cu._scoped_sid("shared")))
+
+    with _profile(homes[1]):
+        old_b = cu._get_backend("shared")
+    with _profile(homes[0]):
+        thread, started_a = _spawn(lambda: cu._get_backend("shared"), "slow-start-a")
+        threads.append(thread)
+
+    try:
+        assert a_starting.wait(10)
+        with _profile(homes[1]):
+            thread, released_b = _spawn(
+                lambda: cu.release_computer_use_session("shared"), "release-b"
+            )
+            threads.append(thread)
+        assert released_b.result(timeout=2) is True
+        assert old_b.stopped
+
+        with _profile(homes[1]):
+            thread, restarted_b = _spawn(lambda: cu._get_backend("shared"), "restart-b")
+            threads.append(thread)
+        new_b = restarted_b.result(timeout=2)
+        assert new_b is not old_b
+        assert getattr(new_b, "owner") != owner_a
+        assert not getattr(new_b, "stopped")
+    finally:
+        finish_a.set()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+    assert getattr(started_a.result(timeout=1), "owner") == owner_a
+
+
+def test_owner_start_retry_and_reset_keep_single_flight_bounded(runtime, monkeypatch):
+    homes, _ = runtime
+    first_starting, close_starting = threading.Event(), threading.Event()
+    finish_first, finish_close = threading.Event(), threading.Event()
+    follower_waiting = threading.Event()
+    created = []
+    threads = []
+    active_starts = peak_starts = 0
+    state_lock = threading.Lock()
+
+    class UserCounts(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value == 2:
+                follower_waiting.set()
+
+    user_counts = UserCounts()
+    monkeypatch.setattr(cu, "_backend_owner_lock_users", user_counts)
+
+    class Backend(cu._NoopBackend):
+        def __init__(self):
+            super().__init__()
+            self.index = len(created)
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            nonlocal active_starts, peak_starts
+            with state_lock:
+                active_starts += 1
+                peak_starts = max(peak_starts, active_starts)
+            try:
+                if self.index == 0:
+                    first_starting.set()
+                    assert finish_first.wait(10), "test did not release failed startup"
+                    raise RuntimeError("planned startup failure")
+                if self.index == 1:
+                    assert created[0].stopped, "retry began before failed-start cleanup"
+                if self.index == 2:
+                    close_starting.set()
+                    assert finish_close.wait(10), "test did not release cancelled startup"
+            finally:
+                with state_lock:
+                    active_starts -= 1
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(cu, "_new_backend", lambda mode: Backend())
+
+    with _profile(homes[0]):
+        sid = cu._scoped_sid("shared")
+        thread, first = _spawn(lambda: cu._get_backend("shared"), "first-start")
+        threads.append(thread)
+    try:
+        assert first_starting.wait(10)
+        with _profile(homes[0]):
+            thread, retry = _spawn(lambda: cu._get_backend("shared"), "same-owner-retry")
+            threads.append(thread)
+        assert follower_waiting.wait(10)
+        assert len(created) == 1
+        finish_first.set()
+        with pytest.raises(RuntimeError, match="planned startup failure"):
+            first.result(timeout=10)
+        replacement = retry.result(timeout=10)
+        assert replacement is created[1]
+        assert peak_starts == 1
+
+        with _profile(homes[0]):
+            assert cu.release_computer_use_session("shared") is True
+            thread, closing_start = _spawn(lambda: cu._get_backend("shared"), "closing-start")
+            threads.append(thread)
+        assert close_starting.wait(10)
+        thread, reset = _spawn(cu.reset_backend_for_tests, "backend-reset")
+        threads.append(thread)
+        assert reset.result(timeout=2) is None
+        finish_close.set()
+        with pytest.raises(RuntimeError, match="cancelled by shutdown"):
+            closing_start.result(timeout=10)
+        assert created[2].stopped
+        assert sid not in cu._backends
+    finally:
+        finish_first.set()
+        finish_close.set()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+    assert not cu._backend_owner_locks
+    assert not user_counts
+
+
 @pytest.mark.parametrize("pause_at", ["after_lookup", "before_acquire"])
 @pytest.mark.parametrize("change", ["display", "mode", "release", "queued_display"])
 def test_dispatch_rechecks_admission(runtime, monkeypatch, pause_at, change):

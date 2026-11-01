@@ -3,8 +3,8 @@
 Stdlib + pytest only; NO live network, NO browser, NO email. Each test runs against
 an isolated temp PDD_DATA_DIR. Runnable with pytest or directly:
 
-    python3 -m pytest tests/test_unbroker_skill.py -q
-    python3 tests/test_unbroker_skill.py        # portable fallback runner
+    python3 -m pytest tests/skills/test_unbroker_skill.py -q
+    python3 tests/skills/test_unbroker_skill.py       # portable fallback runner
 """
 from __future__ import annotations
 

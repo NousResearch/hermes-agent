@@ -369,16 +369,26 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
     vi.clearAllMocks()
   })
 
-  it.each(['streamed', 'standalone'])('voices %s replies without animation frames', async mode => {
+  it.each(['streamed', 'standalone', 'deferred-claim'])('voices %s replies without animation frames', async mode => {
     vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1)
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
     setActiveSessionId(SESSION_ID)
     setSelectedStoredSessionId(SESSION_ID)
     // The main-process arbiter within its speech TTL: first claim of a key wins.
     const claimed = new Set<string>()
+    const { promise: turnAccepted, resolve: acceptTurn } = Promise.withResolvers<void>()
+    const claimAmbientCue = async (key: string) => {
+      const won = !claimed.has(key) && Boolean(claimed.add(key))
+
+      if (mode === 'deferred-claim' && key.startsWith('speak:turn:') && won) {
+        await turnAccepted
+      }
+
+      return won
+    }
 
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
-      claimAmbientCue: async (key: string) => !claimed.has(key) && Boolean(claimed.add(key)),
+      claimAmbientCue,
       notify: vi.fn(async () => undefined)
     }
 
@@ -485,27 +495,39 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
     await send('message.interim', { text: 'Looking into it.' })
     expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(SESSION_ID)?.busy).toBe(true)
     expect($messages.get().at(-1)).toMatchObject({ interim: true, pending: false })
-    expect(playSpeechText).toHaveBeenLastCalledWith(
-      'Looking into it.',
-      expect.objectContaining({ source: 'read-aloud' })
-    )
-    expect(playSpeechText).toHaveBeenCalledTimes(1)
+    if (mode === 'deferred-claim') {
+      expect(playSpeechText).not.toHaveBeenCalled()
+    } else {
+      expect(playSpeechText).toHaveBeenLastCalledWith(
+        'Looking into it.',
+        expect.objectContaining({ source: 'read-aloud' })
+      )
+      expect(playSpeechText).toHaveBeenCalledTimes(1)
+    }
 
-    // The final reply lands while the progress update is still playing: held.
+    // The final lands while interim playback OR its turn-claim IPC is pending.
     await send('message.delta', { text: 'Here is the final report.' })
     act(() => flushStreamDeltas(SESSION_ID))
     expect(chatMessageText($messages.get().at(-1)!)).toBe('Looking into it.')
     await send('message.complete', { text: 'Here is the final report.' })
     expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(SESSION_ID)?.busy).toBe(false)
     expect(chatMessageText($messages.get().at(-1)!)).toBe('Here is the final report.')
+    if (mode === 'deferred-claim') {
+      expect(playSpeechText).not.toHaveBeenCalled()
+      await act(async () => acceptTurn())
+      expect(playSpeechText).toHaveBeenLastCalledWith(
+        'Here is the final report.',
+        expect.objectContaining({ source: 'read-aloud' })
+      )
+    }
     expect(playSpeechText).toHaveBeenCalledTimes(1)
 
-    // The progress update's clip ends.
+    // Playback ending must not re-speak the reply or resurrect the superseded interim.
     await act(async () => {
       setVoicePlaybackState({ ...IDLE_STATE })
     })
 
-    expect(playSpeechText).toHaveBeenCalledTimes(2)
+    expect(playSpeechText).toHaveBeenCalledTimes(mode === 'deferred-claim' ? 1 : 2)
     expect(playSpeechText).toHaveBeenLastCalledWith(
       'Here is the final report.',
       expect.objectContaining({ messageId: $messages.get().at(-1)!.id, source: 'read-aloud' })

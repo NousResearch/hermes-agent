@@ -18,6 +18,7 @@ import { $paneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { usePluginAgentRows } from '@/contrib/agent-rows'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
@@ -177,9 +178,15 @@ export function useStatusbarItems({
   // Only two COUNTS are read, so select scalars — a whole-map `useStore` re-ran
   // this hook (rebuilding all ~9 statusbar items) on every subagent progress
   // tick in ANY session, including background ones.
-  const subagentsRunning = useStoreSelector($subagentsBySession, bySession =>
+  const ownSubagentsRunning = useStoreSelector($subagentsBySession, bySession =>
     Object.values(bySession).reduce((sum, items) => sum + activeSubagentCount(items), 0)
   )
+
+  // Agents plugins report through `agents.rows` (a workflow's Kanban workers,
+  // a harness's subagents) count with Hermes's own: one indicator, and the
+  // Agents page it opens lists both. Only their running/queued rows count; a
+  // plugin's finished rows never turn the indicator red.
+  const subagentsRunning = ownSubagentsRunning + activeSubagentCount(usePluginAgentRows())
 
   // Terminal rows only from the session the user is in — the panel drops other
   // sessions' finished history (#75505), so the count the indicator shows must

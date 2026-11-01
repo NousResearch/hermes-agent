@@ -8,9 +8,18 @@ import {
 
 describe("shouldTreatInputAsMobileReplacement", () => {
   it("recognizes explicit browser replacement input", () => {
-    expect(shouldTreatInputAsMobileReplacement("insertReplacementText", "Kain", false)).toBe(true);
-    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "Kain", false)).toBe(true);
-    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "Kain", false)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertReplacementText", "Kain", true)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "Kain", true)).toBe(true);
+    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "Kain", true)).toBe(true);
+  });
+
+  it("never rewrites desktop IME commits as replacements (#106487)", () => {
+    // On a desktop these input types are how every CJK IME commits text; the
+    // Gboard replacement heuristic must stay mobile-only.
+    expect(shouldTreatInputAsMobileReplacement("insertFromComposition", "你好", false)).toBe(false);
+    expect(shouldTreatInputAsMobileReplacement("insertCompositionText", "你好", false)).toBe(false);
+    expect(shouldTreatInputAsMobileReplacement("insertReplacementText", "Kain", false)).toBe(false);
+    expect(shouldTreatInputAsMobileReplacement("insertText", "你好", false)).toBe(false);
   });
 
   it("treats multi-character mobile insertText as replacement-like", () => {

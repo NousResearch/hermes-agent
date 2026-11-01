@@ -228,15 +228,16 @@ def build_otp_fills(otp_controls: list[ClassifiedLoginControl], code: str) -> li
     """One fill per box. Default: the single best-scoring code field takes the whole code.
 
     Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
-    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget). Anything
-    looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
-    unrelated inputs."""
+    ``maxlength=1`` (or, for widgets that set no maxlength, all ``autocomplete=one-time-code``), all in the
+    same form, and adjacent in DOM order (the classic N-box widget). Anything looser (several code-like
+    inputs scattered over a page) gets ONE field, never a digit sprayed across unrelated inputs."""
     best = max(otp_controls, key=lambda c: c.score)
-    boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
-    if (len(boxes) == len(code)
-            and len({b.control.form_index for b in boxes}) == 1
-            and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):
-        return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
+    for is_box in (lambda c: c.control.max_length == 1, lambda c: c.score >= 100):
+        boxes = sorted((c for c in otp_controls if is_box(c)), key=lambda c: c.control.index)
+        if (len(boxes) == len(code)
+                and len({b.control.form_index for b in boxes}) == 1
+                and all(b.control.index - a.control.index == 1 for a, b in itertools.pairwise(boxes))):
+            return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 

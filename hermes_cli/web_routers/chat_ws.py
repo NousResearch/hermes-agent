@@ -681,7 +681,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         # listener stops: serving the launch profile now would answer the tab for the wrong one.
         await ws.close(code=1013)
         return
-    if ticket_home and identity is not None:
+    if ticket_home:
         # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
         # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
         # that names no profile is answered for the tab's profile, not the launch profile.
@@ -692,8 +692,8 @@ async def gateway_ws(ws: WebSocket) -> None:
         ws.scope['hermes.session_authority'] = served
         identity = {**identity, 'profile_id': served.profile_id, 'instance_id': served.instance_id}
     # The socket runs in the served profile's scope, as a native ticket's does (``gateway/run_api.py``):
-    # legacy handlers (billing, usage, subscription) read that profile's secrets with no scope of
-    # their own, and a multiplexed gateway refuses an unscoped read.
+    # a legacy handler with no scope of its own (not ``_profile_scoped``) reads that profile's
+    # secrets through it, and a multiplexed gateway refuses an unscoped read.
     profile_scope = contextlib.nullcontext()
     if served is not None:
         from gateway.session_authorities import owner_scope

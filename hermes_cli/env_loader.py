@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
@@ -64,6 +65,13 @@ _SECRET_SOURCE_WRITES_BY_HOME: dict[str, dict[str, tuple[str, str, str | None]]]
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
 _APPLIED_HOMES: set[str] = set()
+# When a profile-scoped load last returned for a home, whatever the outcome: a polled read reuses that
+# attempt instead of rerunning a failing (never cached) source on every poll (``secret_sources_tried``).
+_SECRET_SOURCE_TRIED_AT: dict[str, float] = {}
+# How long a polled read reuses a failed or partial attempt before retrying it: the sources' own
+# default fetch cache (``cache_ttl_seconds``, 300 s), so a recovered vault is picked up within minutes.
+SECRET_SOURCE_RETRY_INTERVAL_S = 300.0
+_monotonic = time.monotonic  # clock seam for tests
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 
 # What THIS process has published from dotenv files, per variable: (value before our first publish, or
@@ -175,18 +183,48 @@ def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
 
 
-def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
+def hydrate_profile_secret_sources(hermes_home: str | os.PathLike, *, if_untried: bool = False) -> dict[str, str]:
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
     seeded from that ``.env`` and record the per-home snapshot for ``build_profile_secret_scope()``.
     Fail-open / once-per-home like ``_apply_external_secret_sources``; never returns plaintext .env entries.
     The one fail-closed case is D32's: under the remote config backend, a source that supplies a
-    protected name raises :class:`ConfigBackendUnavailable` and records nothing for the home."""
+    protected name raises :class:`ConfigBackendUnavailable` and records nothing for the home.
+
+    ``if_untried=True`` (polled reads) returns the snapshot without loading while
+    :func:`secret_sources_tried` is true: checked first without the lock, so a cached read never waits
+    behind another profile's slow fetch, then again under it, so callers that overlap a cold profile
+    share one attempt instead of each rerunning a failing source."""
+    home_key = str(Path(hermes_home).resolve())
+    if if_untried and secret_sources_tried(hermes_home):
+        return get_secret_source_values(hermes_home)
     with _SECRET_SOURCE_CACHE_LOCK:
-        return _hydrate_profile_secret_sources(Path(hermes_home))
+        if if_untried and secret_sources_tried(hermes_home):
+            return get_secret_source_values(hermes_home)
+        try:
+            values = _replace_profile_secret_snapshot(Path(hermes_home))
+        except BaseException:
+            # A D32 refusal also forgets the earlier attempt, so polled reads rerun the load and refuse.
+            _SECRET_SOURCE_TRIED_AT.pop(home_key, None)
+            raise
+        # Recorded only after the snapshot is published, so a polled read never skips the load for it
+        # while its values are still missing.
+        _SECRET_SOURCE_TRIED_AT[home_key] = _monotonic()
+        return values
 
 
-def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
+def secret_sources_tried(hermes_home: str | os.PathLike) -> bool:
+    """True while a polled read may reuse ``hermes_home``'s snapshot instead of loading its sources:
+    :func:`hydrate_profile_secret_sources` returned for it less than ``SECRET_SOURCE_RETRY_INTERVAL_S``
+    ago, whatever the outcome (all sources ok, partial, failed, or an early return: no ``secrets:``
+    section, unreadable config, safe-worker snapshot). After that, a home whose sources all succeeded
+    reloads nothing (the next attempt returns its snapshot). A D32 refusal raises and clears the
+    record, so polled reads keep refusing."""
+    tried_at = _SECRET_SOURCE_TRIED_AT.get(str(Path(hermes_home).resolve()))
+    return tried_at is not None and _monotonic() - tried_at < SECRET_SOURCE_RETRY_INTERVAL_S
+
+
+def _replace_profile_secret_snapshot(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
     from agent.safe_worker_policy import worker_config_snapshot
 
@@ -197,16 +235,32 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         return get_secret_source_values(home)
 
     # A retry must not keep serving a partial result after the source is removed, disabled, or can no
-    # longer be evaluated. Publish only the snapshot established by this attempt.
-    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
-    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+    # longer be evaluated: publish only the snapshot this attempt established (none when it ended early or
+    # raised). Replaced in one step at the end, so a concurrent unlocked reader (a polled read's scope)
+    # keeps the previous snapshot during a slow fetch instead of an empty one.
+    values = None
+    try:
+        values = _hydrate_profile_secret_sources(home, home_key)
+    finally:
+        _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+        if values is None:
+            # Forget the attempt first, so a poll that checks from here on reloads
+            # instead of reusing the empty snapshot.
+            _SECRET_SOURCE_TRIED_AT.pop(home_key, None)
+            _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        else:
+            _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    return dict(values or {})
 
+
+def _hydrate_profile_secret_sources(home: Path, home_key: str) -> dict[str, str] | None:
+    """One load attempt for :func:`_replace_profile_secret_snapshot`; None when it ended before any source ran."""
     try:
         cfg = _load_secrets_config(home)
     except Exception:
-        return {}
+        return None
     if not cfg:
-        return {}
+        return None
 
     try:
         from agent.secret_scope import _is_global_env, load_env_file
@@ -226,10 +280,10 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         env_before = dict(local_env)
         report = apply_all(cfg, home, environ=local_env)
     except Exception:
-        return {}
+        return None
 
     if not report.sources:
-        return {}
+        return None
     # D32, as on the process-global path: a source must never supply the config backend's own
     # deployment or plane credential, for a routed profile either (this snapshot feeds that
     # profile's secret scope, which the Portal/plane resolvers read). Checked before anything of
@@ -255,8 +309,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
-    return dict(values)
+    return values
 
 
 def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> None:
@@ -268,6 +321,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     (#102041)."""
     if hermes_home is None:
         _APPLIED_HOMES.clear()
+        _SECRET_SOURCE_TRIED_AT.clear()
         _SECRET_SOURCES.clear()
         _SOURCE_SUPPLIED_NAMES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
@@ -276,6 +330,7 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
+    _SECRET_SOURCE_TRIED_AT.pop(home_key, None)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
     _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 

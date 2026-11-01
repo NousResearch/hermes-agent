@@ -150,7 +150,15 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
 
 def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
-    the pool path copies this context, so long handlers see it too)."""
+    the pool path copies this context, so long handlers see it too).
+
+    The bound scope never loads the profile's external secret sources (``op``, ``bws``: a CLI with
+    a 30s budget under a process-global lock). This runs on the socket's serial lane, before a long
+    verb is handed to the pool, so loading here held every later frame on the socket, interrupts
+    included. The scope carries the profile's ``.env`` plus its sources' last successful load in
+    this process (empty or partial if that load failed, none if it never ran). A ``_profile_scoped``
+    handler binds its own scope and, unless it opts out (``hydrate_secrets``), loads them where it
+    runs (the pool, for a long verb); a handler that is not ``_profile_scoped`` triggers no load."""
     try:
         home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
     except OSError:
@@ -168,7 +176,7 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
         # "" = an explicit ``profile`` naming the launch home: the socket runs in the ticket's
         # scope (``chat_ws.gateway_ws``), so bind the launch scope (``None`` selects it, process env
         # credentials included) or a handler that ignores ``profile`` would use the secondary's.
-        scope = server._session_profile_runtime_scope({"profile_home": target or None})
+        scope = server._session_profile_runtime_scope({"profile_home": target or None}, hydrate_secrets=False)
     elif (req.get("method") not in _SESSION_FALLBACK_ALLOWED
           and (explicit := _explicit_profile_request(server, req)) is not None):
         # A launch-profile socket runs in the launch scope (``chat_ws.gateway_ws``), so a verb that
@@ -178,7 +186,7 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
         if target is None:
             return req
         if target:
-            scope = server._session_profile_runtime_scope({"profile_home": target})
+            scope = server._session_profile_runtime_scope({"profile_home": target}, hydrate_secrets=False)
     token = _connection_profile_home.set(home)
     try:
         with scope:

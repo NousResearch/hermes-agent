@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -19,10 +20,37 @@ logger = logging.getLogger("hermes_state")
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
+_SOURCE_RETENTION_SOURCES = ("cron", "kanban", "subagent")
 
 
 def _like(value: str) -> str:
     return f"%{_escape_like(value.lower())}%"
+
+
+def _normalize_source_retention(raw, *, warn: bool = True) -> dict[str, float]:
+    """Normalize ``sessions.source_retention_days`` (``{source: days}``); ``{}`` when unset/invalid.
+
+    Per-source retention overrides for the auto-prune sweep (#110589): automation-heavy
+    installs (a cron-dominant store with FTS amplification) age that class out on a
+    shorter window without touching the human-history default. Overrides only tighten —
+    when global pruning is enabled, a source cannot be kept longer than
+    ``sessions.retention_days``.
+    """
+    if isinstance(raw, dict):
+        out: dict[str, float] = {}
+        for source, days in raw.items():
+            if not isinstance(source, str) or source not in _SOURCE_RETENTION_SOURCES:
+                if warn:
+                    logger.warning("Ignoring source_retention_days key %r: human history is never pruned by this key", source)
+                continue
+            try:
+                days_f = float(days)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not isinstance(days, bool) and math.isfinite(days_f) and days_f > 0:
+                out[source] = days_f
+        return out
+    return {}
 
 
 def _cwd_prefix_filter(value: str) -> tuple[list[str], list]:
@@ -77,6 +105,19 @@ _PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archi
 
 # Child ``c`` continues compression-ended ``p`` (same predicate as compression's child lookup).
 _CONTINUATION_EDGE_SQL = "p.end_reason = 'compression'\n" + _non_continuation_child_sql("c.", "p.id")
+
+# Resume preserves source: inspect every compression segment, including inactive user rows.
+_AUTOMATION_ONLY_SQL = (
+    "NOT EXISTS (WITH RECURSIVE lineage(id) AS (SELECT s.id UNION "
+    "SELECT c.id FROM lineage l JOIN sessions p ON p.id=l.id JOIN sessions c ON c.parent_session_id=p.id "
+    f"WHERE {_CONTINUATION_EDGE_SQL} UNION "
+    "SELECT p.id FROM lineage l JOIN sessions c ON c.id=l.id JOIN sessions p ON p.id=c.parent_session_id "
+    f"WHERE {_CONTINUATION_EDGE_SQL}) SELECT 1 FROM lineage l JOIN sessions a ON a.id=l.id WHERE "
+    f"a.source NOT IN {_SOURCE_RETENTION_SOURCES!s} OR "
+    "(a.source='cron' AND COALESCE(a.end_reason,'') NOT IN ('cron_complete','cron_incomplete_no_output','startup_orphan_reap','compression')) OR "
+    "(SELECT COUNT(*) FROM messages m WHERE m.session_id=a.id AND m.role='user') > 1 OR "
+    "EXISTS (SELECT 1 FROM messages m WHERE m.session_id=a.id AND m.role='user' AND m.timestamp > a.started_at+30))"
+)
 
 
 def _continued_ancestors_sql(candidates_where: str) -> str:
@@ -249,7 +290,8 @@ class SessionMaintenanceMixin:
             clauses.append(_not_pinned_sql())
         return " AND ".join(clauses), params
 
-    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> tuple[str, list]:
+    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False,
+                     automation_only: bool = False) -> tuple[str, list]:
         """Translate the legacy age window into the shared activity filter, then build WHERE.
         ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
         is unmatched."""
@@ -261,6 +303,8 @@ class SessionMaintenanceMixin:
                     "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         where, params = self._prune_filter_where(source=source, **filters)
+        if automation_only:
+            where += f" AND {_AUTOMATION_ONLY_SQL}"
         if not whole_lineages:
             return where, params
         # A compressed-away segment ages with its conversation, not on its own: while any later
@@ -363,7 +407,7 @@ class SessionMaintenanceMixin:
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
-                       deleted_ids: Optional[list] = None, **filters) -> int:
+                       deleted_ids: Optional[list] = None, automation_only: bool = False, **filters) -> int:
         """Delete ended sessions inactive for ``older_than_days`` (an explicit ``started_before`` /
         ``last_active_before`` overrides it; None = no implicit bound) matching the filters.
         Children outside the window are orphaned (parent NULLed), not cascade-deleted.  With
@@ -377,7 +421,8 @@ class SessionMaintenanceMixin:
             # Deletion is not reversible, so the ended-session guard is structural here: the
             # archive-only escape hatch (#139597) must never reach the delete path.
             raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
-        where, where_params = self._prune_where(older_than_days, source, filters, whole_lineages=True)
+        where, where_params = self._prune_where(
+            older_than_days, source, filters, whole_lineages=True, automation_only=automation_only)
         removed_ids: list[str] = []
         def _do(conn):
             cursor = conn.execute(f"SELECT s.id FROM sessions s WHERE {where}", where_params)
@@ -475,10 +520,24 @@ class SessionMaintenanceMixin:
             self._record_db_file_identity()
         return optimized
 
+    def _prune_by_source(self, raw, sessions_dir) -> tuple[int, int]:
+        pruned = closed = 0
+        for source, days in sorted(_normalize_source_retention(raw).items()):
+            report_startup_progress(900.0, phase="state_db_source_prune")
+            count = self.prune_sessions(older_than_days=days, source=source, sessions_dir=sessions_dir,
+                                        exclude_active_write_guards=True, automation_only=True)
+            pruned += count
+            report_startup_progress(900.0, phase="state_db_source_sweep")
+            closed += len(self.sweep_orphaned_sessions(max_idle_seconds=days * 86400, sources=(source,),
+                          exclude_pinned=True, respect_gateway_heartbeats=False))
+            logger.info("state.db source retention: %s pruned %d session(s)", source, count)
+        return pruned, closed
+
     def maybe_auto_prune_and_vacuum(
         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
         sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
         min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
+        source_retention_days: Optional[dict] = None, global_prune: bool = True,
     ) -> dict[str, Any]:
         """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
         state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
@@ -500,7 +559,7 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
-        if retention_days is None or retention_days < 0:
+        if global_prune and (retention_days is None or retention_days < 0):
             # A negative retention would build a future cutoff and match every ended
             # session; auto_prune=false is the disable switch, not a negative bound.
             logger.warning(
@@ -525,15 +584,18 @@ class SessionMaintenanceMixin:
             # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
             # once at entry. No-op when the watchdog is not armed; never raises.
             report_startup_progress(900.0, phase="state_db_auto_prune")
-            result["pruned"] = pruned = self.prune_sessions(
-                older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            pruned = self.prune_sessions(
+                older_than_days=retention_days, sessions_dir=sessions_dir,
+                exclude_active_write_guards=True) if global_prune else 0
             report_startup_progress(900.0, phase="state_db_auto_sweep")
-            closed = self.sweep_orphaned_sessions(
+            closed = len(self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
                 respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
-            )
-            result["closed"] = len(closed)
+            )) if global_prune else 0
+            source_pruned, source_closed = self._prune_by_source(source_retention_days, sessions_dir)
+            result["pruned"] = pruned = pruned + source_pruned
+            result["closed"] = closed = closed + source_closed
             # VACUUM only if rows were freed, the time throttle passed AND the
             # freelist ratio passed — it holds an exclusive lock for a full rewrite.
             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
@@ -575,8 +637,8 @@ class SessionMaintenanceMixin:
             self.set_meta("last_auto_prune", str(now))
             if closed or pruned > 0:
                 logger.info("state.db auto-maintenance: closed %d stale open session(s), "
-                            "pruned %d session(s) inactive for %d days%s",
-                            len(closed), pruned, retention_days, " + VACUUM" if result["vacuumed"] else "")
+                            "pruned %d session(s)%s",
+                            closed, pruned, " + VACUUM" if result["vacuumed"] else "")
         except Exception as exc:
             # Maintenance must never block startup.
             logger.warning("state.db auto-maintenance failed: %s", exc)

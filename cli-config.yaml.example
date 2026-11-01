@@ -1107,6 +1107,7 @@ hosted_rooms:
 # sessions:
 #   auto_prune: false
 #   retention_days: 90
+#   source_retention_days: {}  # cron/kanban/subagent only; works without auto_prune (e.g. {cron: 30})
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24

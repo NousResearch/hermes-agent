@@ -175,9 +175,12 @@ def test_preset_restores_grown_window_capped_at_native(hermes_home, tmp_path, mo
     assert capped.window == 131072
 
 
-def test_preset_ignores_override_below_launch_window(hermes_home, tmp_path, monkeypatch):
-    """Overrides only ever RAISE the window (growth is monotone); a stale
-    smaller override never shrinks a launch decision."""
+def test_preset_honours_override_below_launch_window(hermes_home, tmp_path, monkeypatch):
+    """A window_overrides entry below the granted rung is the supported per-model escape
+    hatch (#133261): when the estimate is over-optimistic for this host, the smaller
+    override must cap the launch decision, not be silently ignored. A stale smaller
+    override (a bigger card has fitted since) only lowers the launch starting rung —
+    growth re-climbs it under occupancy pressure."""
     import hermes_cli.local_runtime.presets as presets_mod
 
     from hermes_cli.local_runtime.estimator import HardwareBudget
@@ -195,7 +198,8 @@ def test_preset_ignores_override_below_launch_window(hermes_home, tmp_path, monk
                             total_device_bytes=24 * gib,
                             ram_available_bytes=64 * gib)
     entry = presets_mod.generate_presets(mdir, budget, tmp_path / "p.ini")[0]
-    assert entry.window == 131072
+    assert entry.window == 65536
+    assert entry.keys["ctx-size"] == "65536"
 
 
 def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypatch):

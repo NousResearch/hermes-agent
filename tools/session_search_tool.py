@@ -351,6 +351,28 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         detail=result_detail)
 
 
+def _fill_thin_and_results(db, query: str, raw_results: list, limit: int, role_filter, sort,
+                           after_ts, before_ts) -> list:
+    """Append OR-relaxed rows when the implicit-AND match spans fewer than ``limit`` sessions.
+
+    The storage layer relaxes to OR only on a zero-row miss, so one incidental full-term match
+    hides the session that holds the answer under a paraphrase. AND rows keep the lead; explicit
+    OR/NOT queries and single terms are left as written (``_or_relaxed_query`` returns None)."""
+    if len({r.get("session_id") for r in raw_results}) >= limit:
+        return raw_results
+    relaxed = type(db)._or_relaxed_query(query) if hasattr(type(db), "_or_relaxed_query") else None
+    if not relaxed:
+        return raw_results
+    extra, err = _loud(lambda: db.search_messages(
+        query=relaxed, role_filter=role_filter or ["user", "assistant"],
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "OR fill failed: %s", "Search failed")
+    if err or not extra:
+        return raw_results
+    seen = {r.get("id") for r in raw_results}
+    return raw_results + [r for r in extra if r.get("id") not in seen]
+
+
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
@@ -372,6 +394,7 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
+    raw_results = _fill_thin_and_results(db, query, raw_results or [], limit, role_filter, sort, after_ts, before_ts)
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.

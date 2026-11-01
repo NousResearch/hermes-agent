@@ -1415,6 +1415,8 @@ model:
 
 The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
 
+A custom endpoint that is a **LiteLLM proxy** needs no override: when models.dev does not know the model name (an operator alias such as `team-vision`), Hermes reads the proxy's `/model/info` route with your key and uses the `supports_vision` LiteLLM reports for that alias. An alias LiteLLM reports nothing for stays unknown, so images are pre-described as before; an explicit `supports_vision` in your config always wins.
+
 A `model_overrides` entry that only corrects metadata (for example `context_window`) for a model the catalog does not know leaves vision and reasoning capability and the output-token limit **unknown** — `vision_analyze`, `video_analyze` and the reasoning-effort picker stay available. Only an explicit `supports_vision: false` / `supports_reasoning: false` in the override marks the model as text-only or non-reasoning.
 
 **Inheriting a catalogued vendor's metadata (`catalog_provider`).** When a named custom provider (a gateway, proxy or reseller) serves models that Hermes already knows under a built-in provider, point the entry at that vendor and its models inherit the catalogued context window, output limit, vision and reasoning flags — no `model_overrides` needed:

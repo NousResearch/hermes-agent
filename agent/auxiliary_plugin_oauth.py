@@ -8,6 +8,7 @@ rotates an expiring row before leasing it, so compression and titling never send
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 
@@ -18,6 +19,98 @@ def _configured_endpoint(provider: str) -> str:
     from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
     pconfig = PROVIDER_REGISTRY.get(provider)
     return _config_base_url_for_provider(_get_model_config(), provider) or (pconfig.inference_base_url if pconfig else "")
+
+
+def is_plugin_oauth_pool(provider: str) -> bool:
+    """The provider's pooled OAuth rows refresh through its profile's ``refresh_credential`` hook."""
+    from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+    return plugin_refresh_hook(provider) is not None
+
+
+def refresh_pooled_row(provider: str, failed_api_key: str) -> bool:
+    """Force-refresh the pooled row that sent ``failed_api_key`` — the refresh the main agent's pool
+    performs on a 401. False when no row holds that key: a key the pool never issued is not its to fix,
+    and spending another row's single-use refresh token for it would lose that sign-in."""
+    from agent import auxiliary_client as aux
+
+    pool = aux._load_pool_with_credentials(provider, " (auth refresh)") if failed_api_key else None
+    if pool is None or not pool.entry_id_for_api_key(failed_api_key):
+        return False
+    return pool.try_refresh_matching(api_key_hint=failed_api_key) is not None
+
+
+@contextlib.contextmanager
+def attribute_failure(client: Any):
+    """Stamp a failed request's exception with the bearer that sent it, so recovery acts on the row and
+    token generation that actually failed rather than one looked up before a refresh or retry."""
+    try:
+        yield
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            exc.hermes_aux_api_key = getattr(client, "api_key", None)
+        raise
+
+
+def bench_pooled_row(provider: str, exc: Exception) -> None:
+    """Bench the plugin OAuth row whose freshly refreshed token was rejected too. Without this the row stays
+    "ok" and every later auxiliary call spends another refresh on it, against the broker's per-user refresh
+    limit. Only the row still holding the exact rejected bearer is benched: a different row the retry did not
+    use, or a newer token another process has since minted, stays available."""
+    from agent import auxiliary_client as aux
+
+    key = getattr(exc, "hermes_aux_api_key", None)
+    if not isinstance(key, str) or not key or not is_plugin_oauth_pool(provider) or not aux._is_auth_error(exc):
+        return
+    from hermes_cli.auth import _auth_store_lock
+
+    status = getattr(exc, "status_code", None)
+    # Check and write under the auth-store lock, which a peer's refresh also holds: otherwise a token a peer
+    # persists between our read and our write inherits this stale bearer's cooldown on disk.
+    with contextlib.suppress(TimeoutError), _auth_store_lock():
+        pool = aux._load_pool_with_credentials(provider, " (bench after refresh)")
+        if pool is not None and pool.entry_id_for_api_key(key):
+            pool.mark_exhausted_and_rotate(status_code=status if isinstance(status, int) else 401,
+                                           error_context={"message": str(exc)}, api_key_hint=key)
+
+
+def pool_superseded_key(provider: str, api_key: Any) -> bool:
+    """True when a plugin OAuth pool no longer vouches for the session's ``api_key``: the row that held
+    it has since been refreshed to a new token, or its stored expiry has passed. Pinning that key would
+    send a bearer the pool already knows is dead; leasing from the pool refreshes it first."""
+    if not isinstance(api_key, str) or not api_key or not is_plugin_oauth_pool(provider):
+        return False
+    from agent import auxiliary_client as aux
+    from agent.credential_pool_plugin import plugin_row_is_expiring
+
+    pool = aux._load_pool_with_credentials(provider, " (session key check)")
+    if pool is None:
+        return False
+    entry_id = pool.entry_id_for_api_key(api_key)
+    entry = next((e for e in pool.entries() if e.id == entry_id), None) if entry_id else None
+    return entry is None or plugin_row_is_expiring(entry)
+
+
+def _row_expired(provider: str, entry: Any) -> bool:
+    if entry is None or getattr(entry, "expires_at_ms", None) is None:
+        return False
+    from agent.credential_pool_plugin import plugin_row_is_expiring
+
+    return plugin_row_is_expiring(entry) and is_plugin_oauth_pool(provider)
+
+
+def expired_cache_hint(provider: str, entry: Any) -> str:
+    """``":expired"`` for a plugin OAuth row past its stored expiry, so the aux client cache key changes.
+    The row keeps its token until refreshed; a client cached while it was valid would keep sending it
+    and pay a 401 before the refresh."""
+    return ":expired" if _row_expired(provider, entry) else ""
+
+
+def fresh_entry(provider: str, pool: Any, entry: Any) -> Any:
+    """``entry``, refreshed first when it is a plugin OAuth row past its stored expiry: sending its token
+    is a certain 401. A failed refresh returns the row unchanged for the 401 recovery to handle."""
+    if not _row_expired(provider, entry):
+        return entry
+    return pool.try_refresh_matching(credential_id=entry.id) or entry
 
 
 def resolve_plugin_oauth_client(req: Any) -> tuple[Any, Any]:

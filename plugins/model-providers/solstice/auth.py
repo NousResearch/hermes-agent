@@ -15,6 +15,9 @@ DEFAULT_NAS_BASE_URL = "https://portal.nousresearch.com"
 _CONFIG_PATH = "/api/oauth/gemini-auth/config"
 _TOKEN_PATHS = {"authorization_code": "/api/oauth/gemini-auth/exchange", "refresh_token": "/api/oauth/gemini-auth/refresh"}
 _TIMEOUT_SECONDS = 30.0
+# Google token-endpoint codes NAS relays when a refresh token can never work again: revoked or expired
+# (invalid_grant), or issued to an OAuth client NAS no longer uses (unauthorized_client).
+_DEAD_GRANT_ERRORS = frozenset({"invalid_grant", "unauthorized_client"})
 
 
 def _err(message: str, code: str, *, relogin: bool = False):
@@ -35,8 +38,8 @@ def _nas_request(method: str, path: str, *, json: Mapping[str, Any] | None = Non
     try:
         token = resolve_nous_access_token()
     except Exception as exc:
-        raise _err("sign in to Nous Portal first (`hermes auth add nous`).", "solstice_nous_login_required",
-                   relogin=True) from exc
+        # Not a re-login of Solstice: its grant is intact, and marking it dead would outlive the Nous fix.
+        raise _err("sign in to Nous Portal first (`hermes auth add nous`).", "solstice_nous_login_required") from exc
     try:
         response = httpx.request(method, _nas_base_url() + path, json=json, timeout=_TIMEOUT_SECONDS,
                                  headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
@@ -46,8 +49,20 @@ def _nas_request(method: str, path: str, *, json: Mapping[str, Any] | None = Non
     if response.status_code == 404:
         raise _err("not available on this Nous account yet.", "solstice_not_configured")
     if response.status_code >= 400:
-        raise _err(f"Nous portal returned HTTP {response.status_code}.", "solstice_broker_failed")
+        error = _error_code(response)
+        exc = _err(f"Nous portal returned HTTP {response.status_code}" + (f" ({error})." if error else "."),
+                   "solstice_broker_failed")
+        exc.broker_error = error
+        raise exc
     return response.json()
+
+
+def _error_code(response: Any) -> str:
+    try:
+        payload = response.json()
+    except ValueError:  # a non-JSON error body (proxy page): no code to relay
+        return ""
+    return str(payload.get("error") or "").strip() if isinstance(payload, dict) else ""
 
 
 def discover_client() -> dict[str, str]:
@@ -62,15 +77,16 @@ def discover_client() -> dict[str, str]:
 def broker_token_request(grant: Mapping[str, str]) -> Mapping[str, Any]:
     """``OAuthPKCEConfig.token_request``: send the grant to NAS, which adds the client secret.
 
-    NAS folds every Google token-endpoint failure into HTTP 502, so a refresh it rejects is treated as
-    a dead grant (re-login) rather than retried against a token Google already refused.
+    A refresh is a dead sign-in only when NAS relays Google's verdict that the grant itself is dead
+    (``_DEAD_GRANT_ERRORS``). Anything else (a Google or portal 5xx, the portal's rate limit, a Nous
+    token the portal rejects) leaves the sign-in in place for the pool to retry after a cooldown.
     """
     path = _TOKEN_PATHS[grant["grant_type"]]
     body = {k: v for k, v in grant.items() if k in ("code", "code_verifier", "redirect_uri", "refresh_token")}
     try:
         return _nas_request("POST", path, json=body)
     except Exception as exc:
-        if grant["grant_type"] == "refresh_token" and getattr(exc, "code", "") == "solstice_broker_failed":
-            raise _err("the stored sign-in was rejected; run `hermes auth add solstice` again.",
-                       "invalid_grant", relogin=True) from exc
+        if grant["grant_type"] == "refresh_token" and getattr(exc, "broker_error", "") in _DEAD_GRANT_ERRORS:
+            raise _err(f"Google no longer accepts this sign-in ({exc.broker_error}); run `hermes auth add solstice` "
+                       "again.", "invalid_grant", relogin=True) from exc
         raise

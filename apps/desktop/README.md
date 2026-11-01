@@ -269,3 +269,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes\hermes-agent\venv"
 MIT — see [LICENSE](../../LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+### Instance model preferences
+
+Compatible backends expose GET/POST `/api/model/preferences`. Favorites and visibility are cached from that instance and read back while the picker is open. Each field uses its own string revision and compare-and-set; failed or ambiguous writes are read back, never silently replayed. Previous renderer favorites/visibility require an explicit import confirmation, preserve originals and cannot overwrite cancellations. Unsupported backends retain local mode with a visible notice. Preferences never change a running model. The backend stores only picker presentation preferences in the launch home's model-preferences.db, independently of conversation state.

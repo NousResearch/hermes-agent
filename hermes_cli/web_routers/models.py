@@ -7,9 +7,14 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import concurrent.futures
 import logging
+import sqlite3
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from typing import Literal
+from hermes_constants import get_routing_process_hermes_home
+from hermes_cli.model_preferences import ModelPreferences, PreferenceConflict
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
@@ -23,6 +28,46 @@ from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_s
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
+
+
+class ModelPreferenceMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    instanceId: str = Field(min_length=36, max_length=36)
+    provider: str = Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f]+$")
+    # Empty model denotes an explicit provider-wide visibility choice.
+    model: str = Field(max_length=512, pattern=r"^[^\x00-\x1f]*$")
+    field: Literal["favorite", "hidden"]
+    baseRevision: str = Field(pattern=r"^(0|[1-9][0-9]{0,18})$")
+    value: StrictBool | None
+
+    @model_validator(mode="after")
+    def valid_favorite(self):
+        if self.field == "favorite" and (self.value is None or not self.model):
+            raise ValueError("Favorites require a model and boolean value")
+        return self
+
+
+@router.get("/api/model/preferences")
+def get_model_preferences(response: Response):
+    """One instance-wide picker preference set; no profile or config is exposed."""
+    response.headers["Cache-Control"] = "private, no-store"
+    with http_failure("Reading model preferences failed", 503, detail="Model preferences unavailable"):
+        return ModelPreferences(get_routing_process_hermes_home()).snapshot()
+
+
+@router.post("/api/model/preferences")
+def set_model_preference(body: ModelPreferenceMutation, response: Response):
+    response.headers["Cache-Control"] = "private, no-store"
+    store = ModelPreferences(get_routing_process_hermes_home())
+    try:
+        return store.set(body.instanceId, body.provider, body.model, body.field, int(body.baseRevision), body.value)
+    except PreferenceConflict:
+        raise HTTPException(status_code=409, detail="Model preference changed; reload before choosing again")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (OSError, sqlite3.Error):
+        _log.exception("Writing model preferences failed")
+        raise HTTPException(status_code=503, detail="Model preferences unavailable")
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")

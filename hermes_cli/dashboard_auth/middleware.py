@@ -44,6 +44,8 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
     "/api/auth/providers", "/api/mcp/oauth/callback/",
+    # A hub's code exchange: authenticated by its PKCE verifier and key (webapp_relay_grants).
+    "/api/webapp/relay/token",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 # Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
@@ -215,6 +217,12 @@ async def gated_auth_middleware(
     if (getattr(request.state, "token_authenticated", False)
             or getattr(request.state, "native_http_principal", None)):
         return await call_next(request)
+    # A request another gateway relays carries its grant's signature instead of a login: it is
+    # served as the grant's identity, or refused, whatever the path (hermes_cli.webapp_relay).
+    from hermes_cli import webapp_relay
+    if webapp_relay.presented(request.headers):
+        from hermes_cli.webapp_relay_grants import serve_relayed
+        return await serve_relayed(request, call_next)
     # Login/callback routes have their own credentials/state checks. Logout is public so an
     # expired session can leave; where cookie writes must come from the listener's own origin it
     # still consumes cookies, so it goes through that check.

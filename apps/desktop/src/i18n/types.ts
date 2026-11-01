@@ -21,6 +21,7 @@ import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
+import type { GatewayRelayTranslations } from './types_gateway_relay'
 import type { MemoryLayersTranslations } from './types_memory_layers'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
@@ -1144,6 +1145,7 @@ export interface Translations extends NoticeTranslations {
     }
     gateway: GatewayHostTranslations & {
       loading: string
+      relay: GatewayRelayTranslations
       title: string
       envOverride: string
       intro: string

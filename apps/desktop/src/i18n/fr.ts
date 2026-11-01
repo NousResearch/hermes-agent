@@ -11,6 +11,7 @@ import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
+import { frGatewayRelay } from './fr_gateway_relay'
 import { frLocalModels } from './fr_local_models'
 import { frMemoryLayers } from './fr_memory_layers'
 import { frModelMenu } from './fr_model_menu'
@@ -1703,6 +1704,7 @@ export const frOverrides = {
     gateway: {
       loading: 'Chargement des paramètres du gateway...',
       ...frGatewayHost,
+      relay: frGatewayRelay,
       title: 'Connexion au gateway',
       envOverride: "remplacement par variable d'environnement",
       intro:

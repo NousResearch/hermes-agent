@@ -10,6 +10,7 @@ import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
+import { ruGatewayRelay } from './ru_gateway_relay'
 import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
@@ -1067,6 +1068,7 @@ export const ruOverrides = {
     gateway: {
       loading: 'Загрузка настроек шлюза…',
       ...ruGatewayHost,
+      relay: ruGatewayRelay,
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:

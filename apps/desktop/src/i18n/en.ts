@@ -16,6 +16,7 @@ import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
+import { enGatewayRelay } from './en_gateway_relay'
 import { enLocalModels } from './en_local_models'
 import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
@@ -1359,6 +1360,7 @@ export const en: Translations = {
     gateway: {
       loading: 'Loading gateway settings...',
       ...enGatewayHost,
+      relay: enGatewayRelay,
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:

@@ -96,11 +96,15 @@ async def display_ws(ws: WebSocket) -> None:
 
 def _signed_out(ws: WebSocket, info: dict) -> bool:
     """True when the browser tab that asked for this viewer has signed out since (the ticket's
-    browser credential generation is no longer current); otherwise the viewer is tracked with that
-    tab's sockets, so signing out closes it too. A ticket a native client minted carries no browser
-    credential and is left alone."""
+    browser credential generation is no longer current), or reached this gateway through a relay
+    grant that has since ended or does not cover screens; otherwise the viewer is tracked with that
+    tab's sockets, so signing out (or revoking the grant) closes it too. A ticket a native client
+    minted carries no browser credential and is left alone."""
     from hermes_cli.browser_credential import is_current
     from hermes_cli.web_session_sockets import track
+    from hermes_cli.webapp_relay_grants import admit_relayed_socket
+    if info.get("relay_grant") and admit_relayed_socket(ws, info["relay_grant"]) is not None:
+        return True
     admitted = info.get("admitted_with")
     if admitted is None:
         return False

@@ -11,6 +11,7 @@ import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
+import { esGatewayRelay } from './es_gateway_relay'
 import { esLocalModels } from './es_local_models'
 import { esMemoryLayers } from './es_memory_layers'
 import { esModelMenu } from './es_model_menu'
@@ -1697,6 +1698,7 @@ export const esOverrides = {
     gateway: {
       loading: 'Cargando ajustes del gateway...',
       ...esGatewayHost,
+      relay: esGatewayRelay,
       title: 'Conexión del gateway',
       envOverride: 'anulación de entorno',
       intro:

@@ -312,8 +312,8 @@ describe('browser folder saved by an older build', () => {
   it('shows the copied folder in Settings for a tab that names no profile, and for default', async () => {
     serveAlphaWithLegacy('/srv/legacy')
 
-    const unnamed = createBrowserSettings({ basePath: '/hermes', currentProfile: () => null })
-    const named = createBrowserSettings({ basePath: '/hermes', currentProfile: () => 'default' })
+    const unnamed = createBrowserSettings({ basePath: () => '/hermes', currentProfile: () => null })
+    const named = createBrowserSettings({ basePath: () => '/hermes', currentProfile: () => 'default' })
 
     await expect(unnamed.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/legacy' })
     await expect(named.getDefaultProjectDir()).resolves.toMatchObject({ dir: '/srv/legacy' })

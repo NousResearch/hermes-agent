@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 from hermes_cli.web_server_surface import policy, private_launch
 from hermes_cli.web_session_sockets import (
-    GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET)
+    GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, RELAY_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -180,14 +180,16 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
 
 
 def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None,
-                       sign_in: str | None = None, profile_home: str | None = None) -> str:
+                       sign_in: str | None = None, profile_home: str | None = None,
+                       relay_grant: str | None = None) -> str:
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
     *session_token*, or by a login whose sign-in binding was checked against the browser credential
     of generation *sign_in* (``hermes_cli.webapp_sign_in``), it records that credential's generation
     (``hermes_cli.browser_credential``): it opens nothing once that credential is replaced, and the
     socket it opens closes when the browser signs out. With *profile_home* the socket it opens answers
-    for that profile (``chat_ws.gateway_ws``)."""
+    for that profile (``chat_ws.gateway_ws``). Minted for a hub's relayed request, it names that
+    *relay_grant*: it opens nothing once the grant is revoked, and the socket closes with it."""
     from hermes_cli.browser_credential import generation_of
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
 
@@ -198,6 +200,8 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
         extra["sign_in"] = sign_in
     if profile_home is not None:
         extra["profile_home"] = profile_home
+    if relay_grant is not None:
+        extra["relay_grant"] = relay_grant
     return mint_ticket(user_id=identity["user_id"], provider=identity["provider"],
                        issuer=identity.get("issuer", ""), extra=extra)
 
@@ -207,8 +211,9 @@ def _socket_ticket_response(request: Request, identity: dict, socket: str, sessi
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
     from hermes_cli.webapp_sign_in import sign_in_of
 
+    relayed = getattr(request.state, "relay_grant", None)
     ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request),
-                                profile_home=profile_home)
+                                profile_home=profile_home, relay_grant=relayed["id"] if relayed else None)
     return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
@@ -221,6 +226,7 @@ SOCKET_TICKETS: dict[str, tuple[str, bool]] = {
     HOST_TERMINAL_SOCKET: ("host_terminal", False),
     SPEAK_STREAM_SOCKET: ("gateway_ticket", False),
     TRANSCRIBE_STREAM_SOCKET: ("gateway_ticket", False),
+    RELAY_SOCKET: ("relay", False),
 }
 
 
@@ -241,6 +247,11 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
     surface, checks_profile = SOCKET_TICKETS[socket]
     if not getattr(policy(request.app.state), surface):
         raise HTTPException(404, f"Webapp {socket} tickets are unavailable on this surface")
+    if socket == RELAY_SOCKET:
+        from hermes_cli.webapp_relay import relay_enabled
+        # One hop: a relayed request never opens a relay of its own.
+        if not relay_enabled(request.app.state) or getattr(request.state, "relay_grant", None):
+            raise HTTPException(404, "Gateway relay tickets are unavailable here")
     identity, session_token = _ticket_principal(request)
     profile_home = None
     if checks_profile:

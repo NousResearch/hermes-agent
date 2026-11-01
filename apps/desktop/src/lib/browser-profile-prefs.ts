@@ -1,6 +1,12 @@
 import { $defaultProfileRoute, noteDefaultProfileRoute } from '@/store/default-profile'
+import { $connection } from '@/store/session'
 
-import { browserPageBasePath, dropBrowserFolderPref, migrateBrowserFolderPref } from './browser-settings'
+import {
+  browserFolderBasePath,
+  browserPageBasePath,
+  dropBrowserFolderPref,
+  migrateBrowserFolderPref
+} from './browser-settings'
 import {
   dropBrowserStartupProfile,
   migrateBrowserStartupProfile,
@@ -10,6 +16,11 @@ import { hostHas } from './host-capabilities'
 
 function hostedBasePath(): string | null {
   return hostHas('originScopedPrefs') ? browserPageBasePath() : null
+}
+
+// A folder names a path on the gateway the window is on; the startup profile stays this page's own.
+function folderBasePath(): string {
+  return browserFolderBasePath($connection.get()?.connectionId)
 }
 
 function namesProfile(profile: string | undefined, target: string): boolean {
@@ -29,7 +40,7 @@ export function migrateBrowserProfilePrefs(from: string, to: string): void {
   // profile already stored under the new name was left by a deleted profile.
   // The renamed profile's own prefs, or their absence, replace it.
   dropBrowserProfilePrefs(toName)
-  migrateBrowserFolderPref(basePath, fromName, toName)
+  migrateBrowserFolderPref(folderBasePath(), fromName, toName)
 
   const movedStartup = migrateBrowserStartupProfile(basePath, fromName, toName)
   const current = $defaultProfileRoute.get()
@@ -53,7 +64,7 @@ export function dropBrowserProfilePrefs(profile: string): void {
     return
   }
 
-  dropBrowserFolderPref(basePath, name)
+  dropBrowserFolderPref(folderBasePath(), name)
   dropBrowserStartupProfile(basePath, name)
 
   if (namesProfile($defaultProfileRoute.get()?.profile, name)) {

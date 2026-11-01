@@ -382,6 +382,12 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
     from hermes_cli.process_identity import serving_local_desktop
+    from hermes_cli.webapp_relay_grants import relay_rpc_refusal
+    # A socket another gateway relays here reaches a scope's methods only under a grant with that scope.
+    params = req.get("params") if isinstance(req, dict) else None
+    if (refused := relay_rpc_refusal(getattr(transport, "ws", None), req_method, params)) is not None:
+        return {"jsonrpc": "2.0", "error": {"code": 4030, "message": refused},
+                "id": req.get("id") if isinstance(req, dict) else None}
     with serving_local_desktop(getattr(transport, "desktop_local", False)):
         if authority_connection is None:
             return await asyncio.to_thread(server.dispatch, req, transport)

@@ -23,15 +23,18 @@ import { useState } from 'react'
 
 import {
   autoDescribeProfile,
+  boardsKey,
   fetchOrchestration,
   fetchProfiles,
   orchestrationKey,
   profilesKey,
   saveOrchestration,
   saveProfileDescription,
+  updateBoard,
   useKanbanScope
 } from './api'
-import type { KanbanProfile } from './types'
+import { ProjectPicker } from './board-switcher'
+import type { BoardMeta, KanbanProfile } from './types'
 import { errText, FIELD_LABEL, useKanban } from './ui'
 
 const DEFAULT_SENTINEL = '__default__'
@@ -131,7 +134,7 @@ function ProfileDescriptionRow({ profile }: { profile: KanbanProfile }) {
   )
 }
 
-export function OrchestrationPanel() {
+export function OrchestrationPanel({ board }: { board?: BoardMeta | null } = {}) {
   const k = useKanban()
   const qc = useQueryClient()
   const scope = useKanbanScope()
@@ -144,6 +147,12 @@ export function OrchestrationPanel() {
     onSuccess: () => void qc.invalidateQueries({ queryKey: orchestrationKey(scope) })
   })
 
+  const saveProject = useMutation({
+    mutationFn: (projectId: string) => updateBoard(board?.slug ?? '', { project_id: projectId }),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: boardsKey(scope) })
+  })
+
   if (!settings || !roster) {
     return null
   }
@@ -151,6 +160,7 @@ export function OrchestrationPanel() {
   return (
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
       <div className="flex flex-wrap items-end gap-4">
+        {board && <ProjectPicker onChange={id => saveProject.mutate(id)} value={board.project_id || ''} />}
         <ProfilePicker
           label={k.orchestratorProfile}
           onSave={name => save.mutate({ orchestrator_profile: name })}

@@ -73,6 +73,7 @@ import {
   bulkTasks,
   createTask,
   deleteTask,
+  emergencyStopAllBoards,
   estimateNew,
   fetchBoard,
   fetchBoards,
@@ -80,13 +81,14 @@ import {
   patchTask,
   profilesKey,
   taskKey,
+  updateBoard,
   useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { type BoardsResponse, columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -1114,6 +1116,44 @@ export function KanbanBoardPage() {
     refetchInterval: 60_000
   })
 
+  // Fetch board metadata for the toggle switches
+  const boardsQueryKey = boardsKey(scope)
+  const { data: boards } = useQuery({ queryKey: boardsQueryKey, queryFn: fetchBoards, staleTime: 30_000 })
+  const currentBoard = boards?.boards?.find(b => b.slug === slug)
+
+  // Toggle mutation for per-board settings
+  const toggleBoardSetting = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => updateBoard(slug, patch),
+    onError: err => host.notify({ kind: 'error', message: errText(err) }),
+    onSuccess: (_, patch) => {
+      // Optimistically update via an immutable cache write (never mutate the
+      // cached board object in place) so react-query's reference-identity
+      // and reconciliation stay correct.
+      qc.setQueryData<BoardsResponse>(boardsQueryKey, prev =>
+        prev ? { ...prev, boards: prev.boards.map(b => (b.slug === slug ? { ...b, ...patch } : b)) } : prev
+      )
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+    }
+  })
+
+  // Emergency stop is deliberately global: a selected-board toggle is not
+  // enough when several boards can dispatch concurrently. Write all three
+  // narrowing flags to every known board, then invalidate the shared roster.
+  const emergencyStop = useMutation({
+    mutationFn: () => emergencyStopAllBoards(boards?.boards ?? []),
+    onSuccess: ({ count, patch }) => {
+      qc.setQueryData<BoardsResponse>(boardsQueryKey, prev =>
+        prev ? { ...prev, boards: prev.boards.map(board => ({ ...board, ...patch })) } : prev
+      )
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+      host.notify({ kind: 'success', message: k.emergencyStopSuccess(count) })
+    },
+    onError: err => {
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+      host.notify({ kind: 'error', message: errText(err) })
+    }
+  })
+
   const [openId, setOpenId] = useState<null | string>(null)
   const [addStatus, setAddStatus] = useState<null | string>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1365,7 +1405,59 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-2">
+          {currentBoard && (
+            <>
+              <Tip label={k.boardDispatchEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardDispatchEnabled}
+                    checked={currentBoard.dispatch_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ dispatch_enabled: enabled })}
+                  />
+                  <span>Dispatch</span>
+                </label>
+              </Tip>
+              <Tip label={k.boardAutoDecomposeEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardAutoDecomposeEnabled}
+                    checked={currentBoard.auto_decompose_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ auto_decompose_enabled: enabled })}
+                  />
+                  <span>Decompose</span>
+                </label>
+              </Tip>
+              <Tip label={k.boardReviewDispatchEnabled}>
+                <label className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary) cursor-pointer">
+                  <Switch
+                    aria-label={k.boardReviewDispatchEnabled}
+                    checked={currentBoard.review_dispatch_enabled ?? true}
+                    onCheckedChange={enabled => toggleBoardSetting.mutate({ review_dispatch_enabled: enabled })}
+                  />
+                  <span>Review</span>
+                </label>
+              </Tip>
+              <Tip label={k.emergencyStop}>
+                <Button
+                  aria-label={k.emergencyStop}
+                  className="text-destructive"
+                  disabled={emergencyStop.isPending}
+                  onClick={() => {
+                    if (window.confirm(k.emergencyStopConfirm)) {
+                      emergencyStop.mutate()
+                    }
+                  }}
+                  size="xs"
+                  variant="outline"
+                >
+                  <Codicon name="debug-stop" size="0.75rem" />
+                  {k.emergencyStop}
+                </Button>
+              </Tip>
+              <div className="h-4 w-px bg-(--ui-border)" />
+            </>
+          )}
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}
@@ -1384,7 +1476,7 @@ export function KanbanBoardPage() {
         </div>
       </header>
 
-      {settingsOpen && <OrchestrationPanel />}
+      {settingsOpen && <OrchestrationPanel board={currentBoard} />}
 
       {board && <Intro />}
 

@@ -74,19 +74,21 @@ export const PetSprite = memo(function PetSprite({ grid }: { grid: PetGrid }) {
  * drawn by the terminal (the frame image is transmitted out-of-band by
  * `usePet`); this only emits the placeholder text Ink can measure as width-1
  * cells. Truecolor-only — the color must reach the terminal verbatim for the
- * id to decode, which Ghostty/kitty support.
+ * id to decode, which Ghostty/kitty support. Raw SGR avoids Chalk's
+ * color-level clamp, which can quantize the image id under tmux.
  */
 export const PetKitty = memo(function PetKitty({ color, placeholder }: { color: string; placeholder: string[] }) {
   if (!placeholder.length) {
     return null
   }
 
+  const rgb = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(color)
+  const foreground = rgb ? rgb.slice(1).map(channel => Number.parseInt(channel, 16)).join(';') : null
+
   return (
     <Box flexDirection="column">
       {placeholder.map((row, y) => (
-        <Text color={color} key={y}>
-          {row}
-        </Text>
+        <Text key={y}>{foreground === null ? row : `\x1b[38;2;${foreground}m${row}\x1b[39m`}</Text>
       ))}
     </Box>
   )

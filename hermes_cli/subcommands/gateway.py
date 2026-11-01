@@ -75,7 +75,7 @@ def build_gateway_parser(
         "--verbose",
         action="count",
         default=0,
-        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)",
+        help="Set stderr log verbosity (default and -v=INFO, -vv=DEBUG)",
     )
     gateway_run.add_argument(
         "-q", "--quiet", action="store_true", help="Suppress all stderr log output"

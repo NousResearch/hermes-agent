@@ -76,3 +76,33 @@ def test_run_gateway_hard_exits_after_keyboard_interrupt(monkeypatch):
         gateway_cli.run_gateway()
 
     assert excinfo.value.code == 0
+
+
+@pytest.mark.parametrize(
+    ("verbose", "quiet", "expected"),
+    [(0, False, 1), (2, False, 2), (0, True, None)],
+)
+def test_foreground_gateway_passes_visible_default_verbosity(
+    monkeypatch, verbose, quiet, expected
+):
+    gateway_cli = _prepare(monkeypatch)
+    import gateway.run as gateway_run
+
+    calls = []
+
+    async def _start_gateway(*args, **kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(gateway_run, "start_gateway", _start_gateway)
+
+    with pytest.raises(_HardExitObserved) as excinfo:
+        gateway_cli.run_gateway(verbose=verbose, quiet=quiet)
+
+    assert excinfo.value.code == 0
+    assert calls == [{
+        "replace": False,
+        "force": False,
+        "verbosity": expected,
+        "idle_exit": False,
+    }]

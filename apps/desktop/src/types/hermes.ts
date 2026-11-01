@@ -1255,6 +1255,8 @@ export interface SkillInfo {
   /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed,
    * 'external' = mounted from skills.external_dirs (externally authored, still editable). */
   provenance?: 'agent' | 'bundled' | 'external' | 'hub'
+  /** User lock: the AGENT may not change this skill (the user still can). Absent on older backends. */
+  locked?: boolean
 }
 
 /** One entry of the built-in optional-skills catalog (optional-skills/ in the

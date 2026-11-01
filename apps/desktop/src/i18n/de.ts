@@ -2457,6 +2457,11 @@ export const deOverrides = {
     changesApplyNewSessions: 'Änderungen gelten für neue Sessions.',
     skillUpdated: 'Skill aktualisiert',
     edit: 'Bearbeiten',
+    lock: 'Sperren',
+    locked: 'Gesperrt',
+    lockHint:
+      'Der Agent kann diesen Skill nicht ändern, solange er gesperrt ist. Du kannst ihn weiterhin selbst bearbeiten.',
+    unlockedHint: 'Sperren, damit der Agent diesen Skill nicht ändert. Du kannst ihn weiterhin selbst bearbeiten.',
     archive: 'Archivieren',
     skillArchivedTitle: 'Skill archiviert',
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',

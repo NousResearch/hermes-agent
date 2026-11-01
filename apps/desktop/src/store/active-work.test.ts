@@ -4,6 +4,7 @@ import type { ClientSessionState } from '@/app/types'
 import type { HermesActiveWork } from '@/global'
 
 import { createStreamThrottle } from '../../electron/stream-throttle'
+
 import { $sessions } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $autoSpeakReplies } from './voice-prefs'

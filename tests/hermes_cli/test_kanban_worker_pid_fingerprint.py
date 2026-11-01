@@ -110,6 +110,26 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_drifted_composed_fingerprint_keeps_the_live_worker(board):
+    """The composed fingerprint's start-time half can drift a few ticks between the claim-time write
+    and a later liveness read on hosts without /proc (macOS ``kern.boottime`` adjustment, #117505):
+    within the liveness tolerance the worker stays ours (expired claim extended, not reaped into a
+    duplicate spawn, #135344); beyond it — or on an unparseable start half — the worker is foreign."""
+    conn = board
+    live_fingerprint = kbd._process_fingerprint(os.getpid())
+    assert live_fingerprint is not None
+    epoch, _, start = live_fingerprint.partition("|")
+
+    for drift in (200, -200):
+        assert kbd._worker_alive(os.getpid(), f"{epoch}|{int(start) + drift}") is True
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=f"{epoch}|{int(start) + 200}")
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).status == "running"
+
+    assert kbd._worker_alive(os.getpid(), f"{epoch}|{int(start) + 100000}") is False
+    assert kbd._worker_alive(os.getpid(), f"{epoch}|not-a-number") is False
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

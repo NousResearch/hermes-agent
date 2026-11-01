@@ -142,13 +142,14 @@ def _error_text(error: Any) -> str:
 
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
     """True only for the narrow Z.AI Coding Plan overload shape (429 + code
-    1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
+    1305 / "temporarily overloaded", or 1302 "rate limit reached" on the
+    shared account budget), so ordinary quota 429s still fail fast."""
     text = _error_text(error)
     return (
         getattr(error, "status_code", None) == 429
-        and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
-        and ("1305" in text or "temporarily overloaded" in text)
+        and "api.z.ai" in (base_url or "").lower()
+        and ("glm-5.2" in (model or "").lower() or "glm-5.3" in (model or "").lower())
+        and ("1305" in text or "1302" in text or "rate limit" in text or "temporarily overloaded" in text)
     )
 
 

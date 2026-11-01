@@ -1,7 +1,9 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
+import base64
 import os
 import struct
+import subprocess
 import time
 import wave
 from pathlib import Path
@@ -28,6 +30,23 @@ def sample_wav(tmp_path):
         wf.writeframes(silence)
 
     return str(wav_path)
+
+
+@pytest.fixture
+def opus_ogg(tmp_path):
+    """0.3 s of 440 Hz Ogg/Opus, embedded because the CI macOS runners have afconvert but no
+    ffmpeg. Made with: ffmpeg -f lavfi -i sine=frequency=440:duration=0.3 -ac 1 -c:a libopus
+    -b:a 6k -map_metadata -1 -fflags +bitexact -flags:a +bitexact reply.ogg"""
+    ogg_path = tmp_path / "reply.ogg"
+    ogg_path.write_bytes(base64.b64decode(
+        "T2dnUwACAAAAAAAAAAAAAAAAAAAAAAIotXIBE09wdXNIZWFkAQE4AYC7AAAAAABPZ2dTAAAAAAAAAAAAAAAAAAAB"
+        "AAAASZW+VAEuT3B1c1RhZ3MGAAAAZmZtcGVnAQAAABQAAABlbmNvZGVyPUxhdmMgbGlib3B1c09nZ1MABHg5AAAA"
+        "AAAAAAAAAAIAAADVFyDfEA0WDw8PEhATDREQDRAQERAIg22C0Bz96kn+AT/ACKcapav68kXTbuc7dXrFEO7ML9C8"
+        "4AihLxDkhGG/YTNcfYRsfAihONB3MqpcS+1dX5UK8AihONB3MqpeUo8gYI5vkAihTMA96uaZjQ4iFrJaDF6nEAih"
+        "ONB3MqpWvrkkZcloXyAIoN9Ixunc+Zd7RifOhn7lmmSYCKE40Hcyqlc9/nHMBgihONB3MqpelEl14iK0uxOACKFI"
+        "A0bVUnNhy1C7n6MJhAihONB3MqpWm26R+jsIoTjQdzKqW/C+IEcS94WwCKEvEORd+4iNAsZK7zXUzgihONB3Mqpe"
+        "WEwTKtk6EY6ACAZEPkI3rwUu/zk3ONLwgA=="))
+    return str(ogg_path)
 
 
 @pytest.fixture
@@ -639,6 +658,31 @@ class TestMacOSAudioOutputPolicy:
         assert n_samples > 0
         assert sample_rate == vm.SAMPLE_RATE
 
+    @pytest.mark.platforms("macos")
+    def test_ogg_reaches_afplay_as_the_whole_decoded_clip(self, monkeypatch, opus_ogg, temp_voice_dir):
+        """afplay plays ~2 s of an Ogg/Opus file and exits 0, so a cut-off reply counted
+        as played (#122494). afplay must get the decoded clip, and the temp WAV must go."""
+        formats = subprocess.run(["afconvert", "-hf"], capture_output=True, text=True)
+        if "'Oggf'" not in formats.stderr:
+            pytest.skip("CoreAudio has no Ogg reader before macOS 15")
+        handed = []
+
+        def _fake_player(cmd, *_):
+            # wave.open raises on anything that is not a WAV, e.g. the original Ogg.
+            with wave.open(cmd[-1], "rb") as wf:
+                handed.append((cmd[0], wf.getnframes() / wf.getframerate()))
+            return True
+
+        monkeypatch.setattr("tools.voice_mode._run_system_player", _fake_player)
+
+        from tools.voice_mode import play_audio_file
+
+        assert play_audio_file(opus_ogg) is True
+        player, seconds = handed[0]
+        assert player == "afplay"
+        assert seconds == pytest.approx(0.3, abs=0.02)
+        assert not any(temp_voice_dir.iterdir())
+
 # ============================================================================
 # cleanup_temp_recordings
 # ============================================================================
@@ -894,6 +938,74 @@ class TestPlaybackInterrupt:
         mock_proc.terminate.assert_called_once()
 
         with _playback_lock:
+            assert vm._active_playback is None
+
+    def test_stopped_reply_is_not_restarted_by_the_next_player(self, monkeypatch, tmp_path):
+        """A player killed by stop_playback() exits non-zero. Reading that as a broken player
+        sent the reply to the next one, which played it again from the start."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        tried = []
+
+        def _barged_in_player(cmd, *_):
+            tried.append(cmd[0])
+            vm.stop_playback()
+            return False  # what the terminated player reports
+
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path], ["second", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm, "_run_system_player", _barged_in_player)
+
+        vm.play_audio_file(str(reply))
+
+        assert tried == ["first"]
+
+    def test_stop_before_the_call_keeps_the_reply_silent(self, monkeypatch, tmp_path):
+        """Callers take the baseline before synthesis; a stop after it means the reply was
+        cut while it was being generated."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        tried = []
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm, "_run_system_player", lambda cmd, *_: tried.append(cmd[0]))
+
+        baseline = vm.playback_stop_count()
+        vm.stop_playback()
+
+        assert vm.play_audio_file(str(reply), stops=baseline) is False
+        assert tried == []
+
+    def test_stop_while_the_player_starts_kills_it(self, monkeypatch, tmp_path):
+        """stop_playback() during Popen finds no registered player to terminate. The new
+        process must not be left to play the whole clip, and no other player may take over."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        spawned = []
+
+        def _popen_racing_a_stop(cmd, **_kw):
+            vm.stop_playback()  # lands before the player is registered
+            proc = MagicMock()
+            proc.poll.return_value = None
+            spawned.append((cmd[0], proc))
+            return proc
+
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path], ["second", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm.subprocess, "Popen", _popen_racing_a_stop)
+
+        assert vm.play_audio_file(str(reply)) is False
+        assert [name for name, _ in spawned] == ["first"]
+        proc = spawned[0][1]
+        proc.kill.assert_called_once()
+        assert all(c.kwargs.get("timeout") != 300 for c in proc.wait.call_args_list)
+        with vm._playback_lock:
             assert vm._active_playback is None
 
 # ============================================================================

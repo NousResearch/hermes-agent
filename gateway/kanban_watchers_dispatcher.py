@@ -44,8 +44,16 @@ class _DispatcherSettings:
     max_in_progress_per_profile: Optional[int]
 
 
-def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
-    """Parse and log the dispatcher settings in their established order."""
+def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any, *, quiet: bool = False) -> _DispatcherSettings:
+    """Parse and log the dispatcher settings in their established order.
+
+    Called once at boot, and then again at the top of every tick so a
+    ``config.yaml`` edit (e.g. ``kanban.max_in_progress``) takes effect
+    without a gateway restart. ``quiet=True`` suppresses the per-field info
+    logs on those repeat calls — the caller logs a single consolidated
+    "settings changed" line instead when something actually differs,
+    avoiding one log line per tick forever for settings that are simply set.
+    """
     try:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
     except (ValueError, TypeError):
@@ -55,7 +63,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
     max_spawn = kanban_cfg.get("max_spawn")
-    if max_spawn is not None:
+    if max_spawn is not None and not quiet:
         logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
     # Cap simultaneously running tasks so slow workers don't pile up and time
@@ -63,7 +71,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     # fan-out swap-thrashes small hosts), or None where total memory can't be read.
     max_in_progress = _positive_int_setting(kanban_cfg, "max_in_progress")
     effective_max_in_progress = _kbd().resolve_max_in_progress(max_in_progress)
-    if max_in_progress is None and effective_max_in_progress is not None:
+    if max_in_progress is None and effective_max_in_progress is not None and not quiet:
         logger.info(
             "kanban dispatcher: kanban.max_in_progress unset; using "
             "memory-derived default max_in_progress=%d "
@@ -98,7 +106,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
     # (#27145). Empty string (the schema default) means "no fallback, keep skipping" — backward-compatible
     # with existing installs.
     default_assignee = (kanban_cfg.get("default_assignee") or "").strip() or None
-    if default_assignee:
+    if default_assignee and not quiet:
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 

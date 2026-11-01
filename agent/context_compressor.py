@@ -2190,6 +2190,16 @@ def _json_dict(text: Any) -> dict:
     # Just-loaded / actively-referenced skills survive verbatim (#32106). Pass-4 pressure demotion overrides
     # this.
     except (json.JSONDecodeError, TypeError):
+        if isinstance(text, str):
+            stripped = text.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    parsed, end = json.JSONDecoder().raw_decode(stripped)
+                    tail = stripped[end:].strip()
+                    if isinstance(parsed, dict) and tail.startswith(("[", "---")):
+                        return parsed
+                except (json.JSONDecodeError, ValueError):
+                    pass
         return {}
     return parsed if isinstance(parsed, dict) else {}
 

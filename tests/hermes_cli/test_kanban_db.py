@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the two in-file Popen fakes gain poll() because the Windows reaper polls every live worker; no test is added here
 """Tests for the Kanban DB layer (hermes_cli.kanban_db)."""
 
 from __future__ import annotations
@@ -1137,6 +1138,9 @@ class TestSharedBoardPaths:
                 captured["env"] = kwargs.get("env", {})
                 self.pid = 4242
 
+            def poll(self):
+                return None  # still running: the Windows reaper branch polls every live worker
+
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
         task = kb.Task(
@@ -1652,6 +1656,9 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("env", {})
             self.pid = 4242
+
+        def poll(self):
+            return None  # still running: the Windows reaper branch polls every live worker
 
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
 

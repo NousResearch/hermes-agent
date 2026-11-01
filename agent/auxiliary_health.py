@@ -30,11 +30,15 @@ def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = No
         return explicit
     with contextlib.suppress(ImportError):
         from hermes_cli.runtime_provider import _get_named_custom_provider, _resolves_to_custom
-        if _resolves_to_custom(label):
-            return explicit or _current_custom_base_url()
+        # A providers:/custom_providers: entry owns its endpoint even when its name is a
+        # local-server alias (ollama, vllm) that resolves to custom: the entry's base_url
+        # is where traffic actually goes, so it must own the quarantine key; two distinct
+        # entries otherwise share the ambient endpoint's key and quarantine each other.
         entry = _get_named_custom_provider(provider)
         if entry:
             return explicit or str(entry.get("base_url") or "").strip()
+        if _resolves_to_custom(label):
+            return explicit or _current_custom_base_url()
     return ""
 
 

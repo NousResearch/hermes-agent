@@ -1437,7 +1437,6 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
-
     _is_qwen = agent._is_qwen_portal()
     _is_or = agent._is_openrouter_url()
     _host = agent._base_url_lower
@@ -1452,9 +1451,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         _ft = _fixed_temperature_for_model(agent.model, agent.base_url)
         _omit_temp = _ft is OMIT_TEMPERATURE
         _fixed_temp = None if _omit_temp else _ft
-
     _prefs = _provider_preferences_for_agent(agent)
-
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
@@ -1473,13 +1470,16 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
+        # A rejected effort must not be reintroduced by the profile's unset-effort default.
+        supports_reasoning=agent._supports_reasoning_extra_body() and not getattr(agent, "_reasoning_effort_rejected", False),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         qwen_session_metadata=_qwen_meta)
     if _profile:
-        # Profiles handle per-provider quirks via hooks fed the context above.
-        return transport.build_kwargs(provider_profile=_profile, **_common)
-
+        api_kwargs = transport.build_kwargs(provider_profile=_profile, **_common)
+        if _is_or and reasoning_config is None:
+            # Record a profile-generated effort so recovery does not mistake it for a disable.
+            agent._wire_reasoning_config = api_kwargs.get("extra_body", {}).get("reasoning")
+        return api_kwargs
     # Legacy flag path: only for a provider absent from the providers/ registry.
     return transport.build_kwargs(
         **_common,

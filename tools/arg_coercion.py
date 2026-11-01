@@ -18,6 +18,69 @@ from tools.schema_sanitizer import resolve_local_schema_ref
 logger = logging.getLogger("model_tools")
 
 
+class ToolArgUnparseableError(Exception):
+    """A container-typed arg holds a bracket-prefixed string that will not parse.
+
+    Salvaging such a value (wrap-and-execute) only moved the failure into the
+    tool with a misleading downstream error (e.g. "operations[0] needs an
+    'action'"); instead dispatch is refused so the model sees an actionable
+    re-issue instruction. Call sites MUST catch this per tool call — never
+    batch-fatal.
+    """
+
+    def __init__(self, tool_name: str, param: str, expected_kind: str,
+                 detail: str, preview: str):
+        self.tool_name = tool_name
+        self.param = param
+        self.expected_kind = expected_kind  # "array" | "object"
+        self.detail = detail
+        self.preview = preview
+        super().__init__(
+            f"{tool_name}.{param}: unparseable JSON-encoded {expected_kind}: {detail}"
+        )
+
+
+def unparseable_container_message(exc: ToolArgUnparseableError) -> str:
+    """Model-actionable refusal text; shared by every call site."""
+    return (f"Error: tool call not executed. Arguments for '{exc.param}' look like a "
+            f"truncated or corrupt JSON-encoded {exc.expected_kind} ({exc.detail}). "
+            "Re-issue the complete tool call with valid JSON arguments.")
+
+
+def _unparseable_container_error(tool_name: str, param: str, expected_kind: str,
+                                 value: str) -> ToolArgUnparseableError:
+    """Build (and log) the refusal for *value*; it reached here because its parse failed."""
+    try:
+        json.loads(value)
+        # Defensive: a string starting with the matching bracket that still parses
+        # cannot be produced by the coercion paths that call this; keep a sane detail.
+        detail = f"parsed but unusable as a JSON-encoded {expected_kind}"
+    except json.JSONDecodeError as exc:
+        detail = str(exc)
+    logger.warning("refusing to dispatch %s: %s holds an unparseable JSON-encoded %s (%s) "
+                   "— tool not executed.", tool_name, param, expected_kind, detail)
+    return ToolArgUnparseableError(tool_name, param, expected_kind,
+                                   detail=detail, preview=value[:120])
+
+
+def _refuse_unparseable_container(tool_name: str, param: str, schema: Any,
+                                  root_schema: Any, value: str) -> None:
+    """Refuse (raise) when *value* is a bracket-prefixed string at a position whose
+    schema requires a container and json.loads fails.
+
+    Union-typed positions (anyOf/oneOf/type-lists) are covered too, EXCEPT when the
+    union also accepts a plain string — there the raw string is schema-valid and
+    passes through untouched.
+    """
+    if _schema_accepts_kind(schema, "string", root_schema):
+        return
+    trimmed = value.strip()
+    if trimmed.startswith("[") and _schema_accepts_kind(schema, "array", root_schema):
+        raise _unparseable_container_error(tool_name, param, "array", value)
+    if trimmed.startswith("{") and _schema_accepts_kind(schema, "object", root_schema):
+        raise _unparseable_container_error(tool_name, param, "object", value)
+
+
 def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
     if not args or not isinstance(args, dict):
@@ -42,6 +105,13 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not prop_schema:
             continue
         prop_schema = resolve_local_schema_ref(prop_schema, parameters)
+        # Normalize first, coerce second: refusal then covers EVERY container
+        # position — type-less anyOf/oneOf unions, nested dict fields, native-list
+        # elements — rather than only top-level typed params.
+        value = _normalize_json_strings_for_schema(
+            value, prop_schema, root_schema=parameters,
+            tool_name=tool_name, path=key,
+        )
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))
 
@@ -56,10 +126,12 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                     args[key] = coerced
                     continue
                 if value.strip().startswith("["):
-                    logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
-                                   "but could not be parsed — model may have emitted a "
-                                   "JSON-encoded string instead of a native array. "
-                                   "Falling back to single-element list.", tool_name, key)
+                    # Bracket-prefixed and unparseable at a container-requiring position:
+                    # salvage-wrapping the corrupt string into [value] only moved the
+                    # failure into the tool with a misleading error — refuse so the
+                    # model re-issues the call.
+                    _refuse_unparseable_container(
+                        tool_name, key, prop_schema, parameters, value)
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue
@@ -77,6 +149,13 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not expected and not _schema_allows_null(prop_schema):
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
+        if coerced is value and isinstance(value, str):
+            # Mirror of the array refusal above: the tool would otherwise receive
+            # a raw string where a container was required and fail with an
+            # opaque error. Union positions are covered unless they also accept
+            # a plain string (then the string is valid and passes through).
+            _refuse_unparseable_container(
+                tool_name, key, prop_schema, parameters, value)
         if coerced is not value:
             args[key] = coerced
             if isinstance(coerced, (list, tuple, dict)):
@@ -114,12 +193,21 @@ def _normalize_json_strings_for_schema(
     value: Any,
     schema: Any,
     root_schema: Any = None,
+    *,
+    tool_name: str | None = None,
+    path: str | None = None,
 ) -> Any:
     """Recursively parse JSON-encoded strings where the schema expects array/object.
 
     Schema-guided: a string is only parsed when its schema position expects a
     container, so legitimate JSON-looking ``type: string`` fields survive.
     Returns the same object when nothing changed (identity = cheap no-op check).
+
+    When *tool_name* is threaded in, a bracket-prefixed string whose parse fails at
+    a container-REQUIRING position raises ToolArgUnparseableError (with the true
+    *path*, e.g. ``items[0]``) instead of leaving the corrupt string in place —
+    unless the position's schema also accepts a plain string, where the raw string
+    is schema-valid and passes through untouched.
 
     Ported from cline/cline#11803, adapted to hermes-agent's coercion layer.
     """
@@ -138,6 +226,12 @@ def _normalize_json_strings_for_schema(
         try:
             parsed = json.loads(trimmed)
         except (ValueError, TypeError):
+            if tool_name is not None and not _schema_accepts_kind(schema, "string", root_schema):
+                # Bracket-prefixed + container-required + parse failed = a corrupt
+                # emission at a position that cannot accept a string. Refuse so the
+                # model re-issues, instead of dispatching the corrupt string.
+                kind = "array" if trimmed.startswith("[") else "object"
+                raise _unparseable_container_error(tool_name, path or "?", kind, trimmed) from None
             return value
         if not ((isinstance(parsed, list) and expects_array) or (isinstance(parsed, dict) and expects_object)):
             return value
@@ -149,9 +243,11 @@ def _normalize_json_strings_for_schema(
             return value
         out = [
             _normalize_json_strings_for_schema(
-                item, items_schema, root_schema=root_schema
+                item, items_schema, root_schema=root_schema,
+                tool_name=tool_name,
+                path=f"{path}[{i}]" if path is not None else None,
             )
-            for item in value
+            for i, item in enumerate(value)
         ]
         return out if any(n is not o for n, o in zip(out, value)) else value
 
@@ -163,7 +259,9 @@ def _normalize_json_strings_for_schema(
         for k, prop_schema in props.items():
             if k in value and isinstance(prop_schema, dict):
                 out[k] = _normalize_json_strings_for_schema(
-                    value[k], prop_schema, root_schema=root_schema
+                    value[k], prop_schema, root_schema=root_schema,
+                    tool_name=tool_name,
+                    path=f"{path}.{k}" if path is not None else None,
                 )
         return out if any(out[k] is not v for k, v in value.items()) else value
 

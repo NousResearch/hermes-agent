@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
-from tools.arg_coercion import coerce_tool_args
+from tools.arg_coercion import ToolArgUnparseableError, coerce_tool_args, unparseable_container_message
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -879,7 +879,12 @@ def handle_function_call(
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
     """
-    function_args = coerce_tool_args(function_name, function_args)
+    coercion_error: Optional[ToolArgUnparseableError] = None
+    try:
+        function_args = coerce_tool_args(function_name, function_args)
+    except ToolArgUnparseableError as exc:
+        # Deferred until post_tool_call can be emitted (see the refusal below).
+        coercion_error = exc
     if not isinstance(function_args, dict):
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
@@ -892,6 +897,14 @@ def handle_function_call(
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result
+
+    # Container arg held a bracket-prefixed unparseable JSON string: refuse this
+    # call (per-call, never batch-fatal) with a model-actionable error. Hooks and
+    # metrics still fire via _emit.
+    if coercion_error is not None:
+        result = tool_error(unparseable_container_message(coercion_error))
+        return _emit(result, duration_ms=_elapsed_ms(start), status="error",
+                     error_type=type(coercion_error).__name__, error_message=str(coercion_error))
 
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit

@@ -1,0 +1,31 @@
+name: graph-loop-orchestrator
+version: 1.0.0
+description: "Persistent Graph-and-Loop control plane for master, worker, verifier, and asynchronous inter-agent orchestration."
+author: "MIFECO / Iris"
+license: MIT
+kind: standalone
+api_version: 1
+provides_tools:
+  - graph_loop_status
+  - graph_create
+  - graph_runnable_nodes
+  - graph_claim_node
+  - graph_complete_node
+  - graph_verify
+  - agent_ping
+emits:
+  - graph_created
+  - node_claimed
+  - node_completed
+  - verification_finished
+  - ping
+listens:
+  - graph-loop-orchestrator:ping
+  - graph-loop-orchestrator:verification
+config_schema:
+  type: object
+  properties:
+    max_iterations:
+      type: integer
+      minimum: 1
+      maximum: 20

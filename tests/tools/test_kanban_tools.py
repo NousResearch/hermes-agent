@@ -1483,3 +1483,25 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+def test_list_exclude_status_reaches_the_kernel(monkeypatch, worker_env):
+    """The tool row must honour the negative filter; otherwise an orchestrator
+    still has to pull every finished card to answer "what is in flight"."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        live = kb.create_task(conn, title="live", assignee="factory")
+        finished = kb.create_task(conn, title="finished", assignee="factory")
+        kb.complete_task(conn, finished, summary="done")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_list({"exclude_status": ["done"], "limit": 10}))
+    ids = [t["id"] for t in d["tasks"]]
+    assert live in ids
+    assert finished not in ids

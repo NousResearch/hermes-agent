@@ -1,0 +1,15 @@
+name: dj-hermes
+repo: https://github.com/frankiethull/dj-hermes
+sha: 7de049c23f06311b165b341664f8e0be0fa342a9
+subdir: ""
+description: "The DJ that grows with you — Hermes plugin for uzu-language beat making. Disclosure — Rhythmancer 3B GGUF proposes a Strudel-dialect pattern (run locally via llama.cpp, model downloaded separately from Hugging Face), maelstrom (R) validates and renders an offline WAV, and Strudel exports give a strudel.cc share link. The agent runs Rscript and llama-cli as subprocesses and writes WAV files to ~/dj-hermes/output. Without RHYTHMANCER_GGUF set, /generate returns a clearly-flagged stub pattern. No tools, hooks or middleware are registered; the plugin ships a Desktop pane/palette command and a dashboard API."
+maintainer: frankiethull
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+version: "0.3.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

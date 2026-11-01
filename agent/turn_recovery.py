@@ -225,8 +225,10 @@ def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
     """Strip image parts from the per-call ``api_messages`` copy; True if anything was removed.
 
     Shared by the corrupt-image recoveries: a bad payload says nothing about the model, so it
-    is stripped for this attempt only and the model is never recorded as image-rejecting."""
-    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+    is stripped for this attempt only and the model is never recorded as image-rejecting.
+    Emptied turns keep role alternation, as in ``strip_images_for_rejecting_model``: the bad
+    image is replayed from history on every request, so an image-only turn is stripped each time."""
+    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages, preserve_alternation=True):
         _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
         return True
     return False

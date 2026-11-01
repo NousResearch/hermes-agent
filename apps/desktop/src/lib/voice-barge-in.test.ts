@@ -124,6 +124,30 @@ describe('monitorSpeechDuringPlayback — voice.barge_in_threshold_multiplier (#
     expect(await talkOverPlayback(loud, DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER * 2)).toBe(false)
   })
 
+  it('keeps playback-onset grace when old microphone samples arrive after playback starts', async () => {
+    let playing = false
+    const onSpeech = vi.fn()
+    const stop = monitorSpeechDuringPlayback({ isPlaying: () => playing, onSpeech })
+
+    try {
+      await flushMicrotasks()
+      advance(600)
+      // Playback starts before one second of queued quiet audio is delivered.
+      captureClock = now + 1_000
+      playing = true
+      advance(1_000)
+      micLevel = 0.4
+      advance(320)
+      expect(onSpeech).not.toHaveBeenCalled()
+
+      // Genuine sustained speech still interrupts once onset grace has elapsed.
+      advance(500)
+      expect(onSpeech).toHaveBeenCalledOnce()
+    } finally {
+      stop()
+    }
+  })
+
   it('invalid multipliers keep the stock trigger levels', () => {
     for (const value of [null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(bargeInTriggerLevels(value)).toEqual(bargeInTriggerLevels(DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER))

@@ -250,9 +250,12 @@ class PluginContext(PluginCapabilityCtxMixin):
     def has_plugin(self, plugin_id: str) -> bool:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory
         ``requires_plugins``, #64165). Matches on registry key or manifest name."""
+        # Snapshot ``_plugins`` before iterating: a concurrent plugin-load callback can mutate the
+        # parent's registry mid-loop and raise ``RuntimeError: dictionary changed size during
+        # iteration`` (#137439). ``list(items)`` is the cheapest take-a-copy that keeps insertion order.
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
-            for key, loaded in self._manager._plugins.items()
+            for key, loaded in list(self._manager._plugins.items())
         )
 
     def _segments(self, key: str) -> tuple[str, ...]:
@@ -1219,7 +1222,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 return
             # ``on_plugin_loaded`` reports the plugins this sweep loads that the process did not have before
             # (boot: everything; a mid-run install/enable: just the newcomer), keyed on the pre-sweep set.
-            loaded_before = frozenset(k for k, p in self._plugins.items() if not p.error and not p.deferred)
+            # Snapshot ``self._plugins`` first: a concurrent loader can resize the dict while the
+            # frozenset comprehension iterates and raise ``RuntimeError: dictionary changed size during
+            # iteration`` (#137439).
+            loaded_before = frozenset(k for k, p in list(self._plugins.items()) if not p.error and not p.deferred)
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1354,7 +1360,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             self._load_plugin(manifest)
         if manifests:
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
-                        sum(1 for p in self._plugins.values() if p.enabled))
+                        # Snapshot ``self._plugins.values()`` before the generator consumes it; a concurrent
+                        # loader can mutate the dict mid-sum and raise ``RuntimeError: dictionary changed size
+                        # during iteration`` (#137439).
+                        sum(1 for p in list(self._plugins.values()) if p.enabled))
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]],
@@ -1467,7 +1476,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
                 "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
                 "commands": len(p.commands_registered), "error": p.error,
-            } for _key, p in sorted(self._plugins.items())
+            } for _key, p in sorted(list(self._plugins.items()))
         ]
 
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
@@ -1547,7 +1556,10 @@ def _clear_plugin_submodules(manager: Optional[PluginManager]) -> None:
     """
     if manager is None:
         return
-    for loaded in getattr(manager, "_plugins", {}).values():  # tolerates test-double managers
+    for loaded in list(getattr(manager, "_plugins", {}).values()):  # tolerates test-double managers
+        # Snapshot the values before iterating; a concurrent plugin-load callback can mutate
+        # ``manager._plugins`` mid-loop and raise ``RuntimeError: dictionary changed size during
+        # iteration`` (#137439).
         module_name = getattr(getattr(loaded, "module", None), "__name__", None)
         if not module_name or not module_name.startswith(f"{_NS_PARENT}."):
             continue
@@ -2150,7 +2162,10 @@ def get_plugin_toolsets() -> list[tuple]:
         if entry:
             toolset_tools.setdefault(entry.toolset, []).append(entry.name)
     toolset_plugin: dict[str, LoadedPlugin] = {}
-    for loaded in manager._plugins.values():
+    # Snapshot ``manager._plugins.values()`` before iterating; a concurrent loader can mutate
+    # the dict mid-loop and raise ``RuntimeError: dictionary changed size during iteration``
+    # (#137439).
+    for loaded in list(manager._plugins.values()):
         for tool_name in loaded.tools_registered:
             entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:

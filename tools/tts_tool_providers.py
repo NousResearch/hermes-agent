@@ -17,7 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
@@ -178,6 +178,7 @@ _TAG_REWRITE_TAIL = "- Do not explain or comment.\n- Return only the tagged TTS 
 
 def _rewrite_with_auxiliary_model(
     system_prompt: str, user_prompt: str, fallback: str, *, label: str, fallback_label: str, level: int,
+    validate: Optional[Callable[[str, str], bool]] = None,
 ) -> str:
     """Ask the auxiliary model (task ``tts_audio_tags``) to rewrite a script; *fallback* on any failure/empty reply."""
     try:
@@ -186,7 +187,11 @@ def _rewrite_with_auxiliary_model(
             task=GEMINI_AUDIO_TAG_REWRITE_TASK, temperature=0.7,
             messages=[{"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt}])
-        return _auxiliary_reply_text(response) or fallback
+        tagged = _auxiliary_reply_text(response)
+        if tagged and validate is not None and not validate(tagged, fallback):
+            logger.log(level, "%s audio tag rewrite was invalid; using %s", label, fallback_label)
+            return fallback
+        return tagged or fallback
     except Exception as exc:
         logger.log(level, "%s audio tag rewrite failed; using %s: %s", label, fallback_label, exc)
         return fallback
@@ -235,11 +240,43 @@ _XAI_INLINE_SPEECH_TAGS = (
     "tongue-click", "lip-smack", "breath", "inhale", "exhale", "sigh")
 _XAI_WRAPPING_SPEECH_TAGS = (
     "soft", "whisper", "loud", "build-intensity", "decrease-intensity", "higher-pitch",
-    "lower-pitch", "slow", "fast", "sing-song", "singing", "laugh-speak", "emphasis")
+    "lower-pitch", "slow", "fast", "sing-song", "singing", "emphasis")
 _XAI_SPEECH_TAG_RE = re.compile(
     rf"(\[(?:{'|'.join(_XAI_INLINE_SPEECH_TAGS)})\]|</?(?:{'|'.join(_XAI_WRAPPING_SPEECH_TAGS)})>)",
     flags=re.IGNORECASE)
 _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.DOTALL)
+
+
+def _is_valid_xai_speech_tag_rewrite(tagged: str, transcript: str) -> bool:
+    """Return whether tags are balanced and the spoken text is unchanged."""
+    wrapping_tags: list[str] = []
+
+    for match in _XAI_SPEECH_TAG_RE.finditer(tagged):
+        token = match.group(0)
+        if token.startswith("["):
+            continue
+
+        closing = token.startswith("</")
+        name = token[2:-1] if closing else token[1:-1]
+        name = name.casefold()
+
+        if not closing:
+            wrapping_tags.append(name)
+            continue
+
+        if not wrapping_tags or wrapping_tags[-1] != name:
+            return False
+
+        wrapping_tags.pop()
+
+    if wrapping_tags:
+        return False
+
+    def spoken_text(value: str) -> str:
+        without_tags = _XAI_SPEECH_TAG_RE.sub(" ", value)
+        return re.sub(r"\s+", " ", without_tags).strip()
+
+    return spoken_text(tagged) == spoken_text(transcript)
 
 
 def _apply_xai_auto_speech_tags(text: str) -> str:
@@ -259,15 +296,16 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + ", ".join(_XAI_INLINE_SPEECH_TAGS) + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
         + _TAG_REWRITE_RULES +
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         + _TAG_REWRITE_TAIL)
     return _rewrite_with_auxiliary_model(
         system_prompt, f"TRANSCRIPT TO TAG:\n{local}", local, label="xAI TTS", fallback_label="locally-tagged text", level=logging.DEBUG,
+        validate=_is_valid_xai_speech_tag_rewrite,
     )
 
 

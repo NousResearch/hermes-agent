@@ -83,6 +83,8 @@ export interface ToolMetaSpec {
 
 export interface MessageRunningStateSlice {
   message: {
+    metadata?: { custom?: { interim?: unknown } }
+    parts?: readonly { type: string; result?: unknown; completedAt?: number }[]
     status?: {
       type?: string
     }

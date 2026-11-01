@@ -883,3 +883,121 @@ def test_connector_describe_is_empty_on_unavailable_and_names_the_failure_reason
     assert connector_describe(
         ["connectors__g__T"], availability=lambda: True, client_factory=rejected
     ) == ConnectorLeg(failure="sign_in_expired")
+
+
+# ---------------------------------------------------------------------------
+# Missing-entry-name recovery (10-24 measured shape, session mvm57ofwgwwvvu)
+# ---------------------------------------------------------------------------
+
+_UPDATE_PLAN_NAME = "mcp__ekko_studio_interaction__ekko_studio_update_plan"
+_UPDATE_PLAN_PROPS = {"token": {"type": "string"}, "profile": {"type": "string"},
+                      "context_id": {"type": "string"}, "explanation": {"type": "string"},
+                      "plan": {"type": "array"}}
+
+
+def _register_like_update_plan(name, required, props, toolset):
+    from tools.registry import registry
+    registry.register(
+        name=name, toolset=toolset,
+        handler=lambda a, **kw: "{}",
+        schema={"name": name, "description": "test tool",
+                "parameters": {"type": "object", "properties": props, "required": required}})
+
+
+def _deregister(name):
+    from tools.registry import registry
+    registry.deregister(name)
+
+
+def test_normalize_recovers_missing_name_unique_fingerprint_broken_tail():
+    """Measured on mvm57ofwgwwvvu (2026-10-24, 8/8 attempts): the stringified
+    single-entry batch dropped BOTH the entry's "name" field and its closing
+    "}", so the tail reads "...<arguments>}]}]". When the entry's argument keys
+    are the UNIQUE fingerprint of one registered deferrable tool, the call is
+    recovered instead of dying on an opaque "Expecting ',' delimiter" error the
+    model cannot act on."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        args = {"context_id": "ctx-1", "explanation": "test",
+                "plan": [{"id": "s1", "step": "a", "status": "completed"},
+                         {"id": "s2", "step": "b", "status": "in_progress"}]}
+        # Measured shape: after the arguments object closes, the batch's "]"
+        # lands directly — the entry's closing "}" was never emitted.
+        broken = '[{"arguments": ' + json.dumps(args, ensure_ascii=False) + ']'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(broken)  # premise: naive parse fails
+        entries, err = normalize_tool_call_entries({"calls": broken})
+        assert err is None
+        assert entries == [{"name": _UPDATE_PLAN_NAME, "arguments": args}]
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)
+
+
+def test_normalize_recovers_missing_name_valid_json_unique_fingerprint():
+    """Same fingerprint rule applies when the batch parses but the entry simply
+    has no "name" (the per-entry path, not the string-tail path)."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        args = {"context_id": "ctx-2",
+                "plan": [{"id": "s", "step": "t", "status": "pending"}]}
+        entries, err = normalize_tool_call_entries({"calls": json.dumps([{"arguments": args}])})
+        assert err is None
+        assert entries == [{"name": _UPDATE_PLAN_NAME, "arguments": args}]
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)
+
+
+def test_missing_name_ambiguous_fingerprint_is_not_guessed():
+    """Two registered tools share the fingerprint: the slip is ambiguous and
+    must be left to the model's retry, with the candidates named so the retry
+    is one edit, not a guess."""
+    _register_like_update_plan("mcp__amb__a", ["zeta_ctx"],
+                               {"zeta_ctx": {"type": "string"}, "zeta_plan": {"type": "array"}},
+                               "mcp-amb")
+    _register_like_update_plan("mcp__amb__b", ["zeta_ctx"],
+                               {"zeta_ctx": {"type": "string"}, "zeta_plan": {"type": "array"}},
+                               "mcp-amb")
+    try:
+        entries, err = normalize_tool_call_entries(
+            {"calls": json.dumps([{"arguments": {"zeta_ctx": "1", "zeta_plan": []}}])})
+        assert entries == []
+        assert "Closest matches" in err
+        assert "mcp__amb__a" in err and "mcp__amb__b" in err
+    finally:
+        _deregister("mcp__amb__a")
+        _deregister("mcp__amb__b")
+
+
+def test_missing_name_no_fingerprint_match_teaches_the_shape():
+    """No candidate: the error must state the required entry shape so the
+    model's retry is mechanical (keeps the 'requires a name' contract)."""
+    entries, err = normalize_tool_call_entries(
+        {"calls": json.dumps([{"arguments": {"zz_unknown_key": 1}}])})
+    assert entries == []
+    assert "requires a 'name'" in err
+    assert "retry with 'name'" in err
+
+
+def test_normalize_recovers_real_1024_session_payload():
+    """Regression fixture: the EXACT stringified payload from session
+    mvm57ofwgwwvvu (message 609649) that failed 8 consecutive task-card
+    updates before this fix. With the update_plan schema registered it must
+    recover to the single intended entry."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        payload = r'[{"arguments": {"context_id": "c952bbe4-1424-405c-bfcf-e45ae636df34", "explanation": "Phase 1a 完成：main 对齐 0.7.39+7、6 分支 rebase（1 冲突已合）、local-fixes 重建 5 fixes", "plan": [{"id": "preflight", "status": "completed", "step": "Pre-flight：remotes/工作区/HFC 5.0.7 fixtures 定 Agent 目标"}, {"id": "webui-sync", "status": "in_progress", "step": "Phase 1a Web UI：main→upstream、rebase fix/*、重建 local-fixes、push fork"}, {"id": "webui-deploy", "status": "pending", "step": "Phase 1b Web UI：npm ci+build、部署验证、重启 :81"}, {"id": "agent-sync", "status": "pending", "step": "Phase 2a Agent：对齐 HFC 钉 v0.22.4、rebase、重建 local-fixes"}, {"id": "agent-hfc", "status": "pending", "step": "Phase 2b Agent：HFC 5.0.7 三环境对齐 + hooks 重注入 + sidecar 验证"}, {"id": "verify", "status": "pending", "step": "升级后验证矩阵（版本/HTTP/doctor/平台连接）"}, {"id": "gateway-restart", "status": "pending", "step": "Phase 3：gateway 重启（等用户确认）"}]}]'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(payload)
+        entries, err = normalize_tool_call_entries({"calls": payload})
+        assert err is None
+        assert len(entries) == 1
+        assert entries[0]["name"] == _UPDATE_PLAN_NAME
+        assert entries[0]["arguments"]["context_id"] == "c952bbe4-1424-405c-bfcf-e45ae636df34"
+        assert len(entries[0]["arguments"]["plan"]) == 7
+        assert entries[0]["arguments"]["plan"][0] == {"id": "preflight", "status": "completed",
+                                                     "step": "Pre-flight：remotes/工作区/HFC 5.0.7 fixtures 定 Agent 目标"}
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)

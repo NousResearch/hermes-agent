@@ -273,6 +273,18 @@ def _sample_rate_from_headers(headers) -> Optional[int]:
     return rate if rate > 0 else None
 
 
+def _openai_stream_timeout_seconds(section: dict) -> float:
+    """Bound each SDK network operation, not the total sentence duration."""
+    configured = section.get("stream_timeout_seconds", 15.0)
+    if isinstance(configured, bool) or not isinstance(configured, (int, float)) \
+            or not 0 < configured <= 120:
+        # Do not echo invalid config: it may contain credentials or other private text.
+        logger.warning("Invalid tts.openai.stream_timeout_seconds; expected a finite number "
+                       "greater than 0 and at most 120; using 15 seconds")
+        return 15.0
+    return float(configured)
+
+
 @register("openai")
 class OpenAIStreamer(StreamingTTSProvider):
     """OpenAI speech with ``response_format=pcm`` (OpenAI itself: 24 kHz mono int16).
@@ -300,7 +312,10 @@ class OpenAIStreamer(StreamingTTSProvider):
         from hermes_cli.config import get_env_value
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
-            base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
+            base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None),
+            timeout=_openai_stream_timeout_seconds(self.section),
+            # A sentence may already have played when a stream fails; never replay it.
+            max_retries=0)
         from tools.tts_tool_openai import _openai_extra_body
         extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
         with client.audio.speech.with_streaming_response.create(

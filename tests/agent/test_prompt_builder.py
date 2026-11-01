@@ -277,6 +277,24 @@ class TestBuildSkillsSystemPrompt:
         assert result.count("- search") == 1
 
 
+    def test_relevant_skills_stay_mandatory_with_same_thread_reuse(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "matches or is even partially relevant" in result
+        assert "MUST load it with skill_view(name)" in result
+        assert "If that same relevant skill is already loaded for the current task or thread" in result
+        assert "Only proceed without loading a skill if genuinely none are relevant" in result
+
+
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
     ):

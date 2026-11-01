@@ -269,7 +269,7 @@ class SkillsShSource(SkillSource):
         # Fallback: scan repo root for directories that might contain skills.
         try:
             entries = _get_json(f"https://api.github.com/repos/{repo}/contents/",
-                                headers=self.github.auth.get_headers(), timeout=15, follow_redirects=True)
+                                headers=self.github.auth.get_headers(), timeout=15)
             for entry in entries if isinstance(entries, list) else []:
                 if entry.get("type") != "dir":
                     continue

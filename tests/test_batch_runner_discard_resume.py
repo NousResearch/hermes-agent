@@ -188,3 +188,24 @@ def test_combine_batch_files_skips_non_dict_lines(tmp_path):
     assert kept == 1
     out = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
     assert "kept" in out and "42" not in out
+
+
+def test_combine_batch_files_keeps_tool_search_bridge_tools(tmp_path):
+    (tmp_path / "batch_1.jsonl").write_text(
+        json.dumps(
+            {
+                "conversations": [{"from": "human", "value": "bridge q"}],
+                "completed": True,
+                "tool_stats": {"tool_call": {"count": 1, "success": 1, "failure": 0}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    runner = _scan_runner(tmp_path)
+    kept, _found = runner._combine_batch_files()
+
+    assert kept == 1
+    out = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
+    assert "bridge q" in out

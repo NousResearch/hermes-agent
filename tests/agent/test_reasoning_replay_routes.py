@@ -1,6 +1,8 @@
 """Stored reasoning is replayed to every chat-completions route that can read it, on the
-carriers that route reads; strict schemas never receive a reasoning key; a route that still
-rejects one is learned per (provider, host, model) and stripped on a single retry."""
+carriers that route reads; strict schemas never receive a reasoning key; a bare model name
+whose vendor aliases the carriers together takes exactly ``reasoning_content`` wherever it is
+served; a route that still rejects one is learned per (provider, host, model) and stripped on
+a single retry."""
 
 from copy import deepcopy
 from types import SimpleNamespace
@@ -37,9 +39,19 @@ def _wire(provider, base_url, model="m", rejected=()):
     ("custom", "https://api.groq.com/openai/v1", "m", set()),
     ("custom", "https://api.cerebras.ai/v1", "m", set()),
     ("fireworks", "https://api.fireworks.ai/inference/v1", "m", {"reasoning_content"}),
-    # OpenRouter-format gateways, incl. the Portal (#118182 does not reproduce)
+    # OpenRouter-format gateways, incl. the Portal (#118182 does not reproduce). A namespaced
+    # official model id is NOT hijacked by the bare-alias strict list, even when its tail matches.
     ("nous", "https://inference-api.nousresearch.com/v1", "z-ai/glm-5.3",
      {"reasoning_content", "reasoning", "reasoning_details"}),
+    # Vendor schemas that alias reasoning onto reasoning_content 400 on the duplicate field;
+    # they ride custom rows and private relays under any host (NVIDIA, SenseNova behind new-api).
+    ("custom", "https://ai.example-relay.com/v1", "sensenova-chat-pro", {"reasoning_content"}),
+    ("custom", "https://integrate.api.nvidia.com/v1", "glm-5.3-flash", {"reasoning_content"}),
+    ("custom", "https://integrate.api.nvidia.com/v1", "nemotron-3-ultra-450b", {"reasoning_content"}),
+    # The namespaced form of a listed alias rides its route untouched; a sibling model served
+    # by the same gateway keeps the carriers its route reads.
+    ("custom", "https://integrate.api.nvidia.com/v1", "z-ai/glm-5.3-flash", {"reasoning_content", "reasoning"}),
+    ("custom", "https://integrate.api.nvidia.com/v1", "moonshotai/kimi-k2", {"reasoning_content", "reasoning"}),
     ("kilocode", "https://api.kilo.ai/api/gateway", "m", {"reasoning_content", "reasoning", "reasoning_details"}),
     ("novita", "https://api.novita.ai/openai/v1", "m", {"reasoning_content", "reasoning_details"}),
     ("ollama-cloud", "https://ollama.com/v1", "m", {"reasoning_content", "reasoning"}),
@@ -64,6 +76,15 @@ def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     assert bare["reasoning_content"] == " "  # DeepSeek 400s without it; "" is rejected too
     gemini_alias, _ = _wire("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "my-alias")
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
+
+
+def test_model_strict_narrows_the_set_but_keeps_the_must_echo_pad():
+    """A model-strict name that also falls in the must-echo tier keeps the pad: strict selects
+    WHICH carrier is replayed, it never withholds the field DeepSeek-class hosts demand back."""
+    turn, bare = _wire("custom", "https://integrate.api.nvidia.com/v1", "deepseek-v4.1-flash")
+    assert turn["reasoning_content"] == "thought"
+    assert "reasoning" not in turn and "reasoning_details" not in turn
+    assert bare["reasoning_content"] == " "
 
 
 class _Rejection(Exception):

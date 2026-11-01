@@ -44,7 +44,10 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return max(0.0, float(raw))
+        try:
+            return max(0.0, float(raw))
+        except OverflowError:  # a JSON integer past float range
+            return None
     text = str(raw).strip()
     if not text:
         return None
@@ -55,7 +58,7 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.
     try:
         when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: a year too large for datetime
         return None
     if when is None:  # older stdlib returns None instead of raising
         return None

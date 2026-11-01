@@ -155,6 +155,10 @@ class TestParseRetryAfterSeconds:
         past = datetime.now(UTC) - timedelta(seconds=90)
         assert parse_retry_after_seconds(format_datetime(past, usegmt=True)) == 0.0
 
+    def test_http_date_with_an_overflowing_year_is_unreadable(self):
+        from agent.retry_utils import parse_retry_after_seconds
+        assert parse_retry_after_seconds("Fri, 01 Jan 100000000000000000000000 00:00:00 GMT") is None
+
 
 
     def test_headers_get_raises(self):

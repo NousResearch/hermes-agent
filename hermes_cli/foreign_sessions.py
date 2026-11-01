@@ -75,7 +75,7 @@ def _block_text(block: Any) -> str:
         return text if isinstance(text := block.get("text"), str) else ""
     if btype == "tool_use":  # Claude Code assistant block
         return f"[ran tool: {block.get('name') or 'tool'}]"
-    return "[image]" if btype == "image" else ""
+    return "[image]" if btype in ("image", "input_image") else ""
 
 
 def _flatten_blocks(content: Any) -> str:

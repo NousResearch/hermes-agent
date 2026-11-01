@@ -387,6 +387,65 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
     assert client.list_models(timeout_seconds=30) == ["model-sol"]
 
 
+_REPLY_THEN_EXIT_ACP_CLI = """
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["method"] == "initialize":
+        result = {"protocolVersion": 1}
+    else:
+        result = {"sessionId": "s", "configOptions": [{"id": "model", "options": [{"value": "model-sol"}]}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+    if request["method"] == "session/new":
+        sys.exit(0)
+"""
+
+
+def _list_models_reading_the_final_reply_late(tmp_path, monkeypatch, *, timeouts: int) -> list[str]:
+    """Run a write-then-exit CLI, holding its final reply back from the client until the CLI has
+    exited and every pump reached EOF; each hold reports one ``get()`` timeout with the reply
+    still queued, the way a slow reader meets it."""
+    import queue as queue_module
+    import threading
+
+    from agent import acp_client
+
+    held_back = []
+
+    class _ReplyReadAfterExit(queue_module.Queue):
+        def get(self, block=True, timeout=None):
+            msg = super().get(block, timeout)
+            if len(held_back) < timeouts and "sessionId" in str(msg.get("result")):
+                with self.mutex:
+                    self.queue.appendleft(msg)
+                wait_until(lambda: all(p.poll() is not None for p in client._active_processes)
+                           and not any(t.name.endswith("(_pump)") for t in threading.enumerate()),
+                           what="the ACP CLI to exit and its pumps to reach EOF")
+                held_back.append(True)
+                raise queue_module.Empty
+            return msg
+
+    monkeypatch.setattr(acp_client.queue, "Queue", _ReplyReadAfterExit)
+    server = tmp_path / "reply_then_exit_acp.py"
+    server.write_text(_REPLY_THEN_EXIT_ACP_CLI, encoding="utf-8")
+    client = _AcmeClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+    models = client.list_models(timeout_seconds=30)
+    assert len(held_back) == timeouts
+    return models
+
+
+def test_final_reply_written_before_exit_is_read_not_reported_as_early_exit(tmp_path, monkeypatch):
+    """The CLI writes its final reply and exits, and the pump reaches EOF, all before the client
+    reads that reply: seeing the exit must not discard it."""
+    assert _list_models_reading_the_final_reply_late(tmp_path, monkeypatch, timeouts=1) == ["model-sol"]
+
+
+def test_final_reply_queued_as_the_pump_finishes_is_still_read(tmp_path, monkeypatch):
+    """The pump's last put can land between a get() timeout and the pump's death; the dead pump
+    alone must not end the read while that reply sits in the queue."""
+    assert _list_models_reading_the_final_reply_late(tmp_path, monkeypatch, timeouts=2) == ["model-sol"]
+
+
 # ── OpenAI facade ───────────────────────────────────────────────────────────────────────────
 
 

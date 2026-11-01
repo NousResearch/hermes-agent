@@ -703,6 +703,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # receive messages sent while the gateway was offline (e.g. nightly-off hosts).
         # Watcher reconnects always preserve the queue regardless of this setting.
         self._drop_pending_on_cold_boot: bool = self._coerce_bool_extra("drop_pending_on_cold_boot", True)
+        # Conflict recovery defaults to terminating the competing getUpdates session, which also
+        # drops the server-side queue. Operators can preserve queued inbound messages by opting out;
+        # repeated conflicts may then need more retries before the competing session expires.
+        self._drop_pending_on_conflict_retry: bool = self._coerce_bool_extra(
+            "drop_pending_on_conflict_retry", True
+        )
         self._dm_topics_config: list[dict[str, Any]] = extra.get("dm_topics", [])
         # chat_ids with DM topics configured (O(1) root-DM ignore check)
         self._dm_topic_chat_ids: set[str] = {str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e}
@@ -2427,15 +2433,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             expected_generation = self._polling_generation + 1
             if not app:
                 raise RuntimeError("Telegram application was torn down during conflict reconnect")
-            # drop_pending_updates=True makes Telegram terminate any other getUpdates session for this
-            # token (zombie or our own prior retry); without it each retry is immediately 409'd.
-            # The competing session is either a zombie from the previous gateway process (whose long-poll
-            # hasn't expired server-side yet) or our own previous retry's still-expiring session. Without
-            # this, each retry starts a new getUpdates session that immediately gets 409'd by the previous
-            # one, creating the very conflict we are trying to recover from (#75017).
+            # The default terminates any other getUpdates session for this token (zombie or our own
+            # prior retry), but that also discards queued inbound updates. Operators who prefer the
+            # queue to survive a transient conflict can opt out and rely on the retry wait.
             self._polling_conflict_recovery_generation = expected_generation
             try:
-                await self._start_polling_once(app, drop_pending_updates=True, error_callback=self._polling_error_callback_ref)
+                await self._start_polling_once(
+                    app,
+                    drop_pending_updates=self._drop_pending_on_conflict_retry,
+                    error_callback=self._polling_error_callback_ref,
+                )
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES)

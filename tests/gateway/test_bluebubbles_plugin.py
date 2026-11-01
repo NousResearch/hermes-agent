@@ -585,6 +585,31 @@ class TestBlueBubblesGateBeforeDownload:
         assert len(handled) == handled_count
 
 
+class TestBlueBubblesWebhookPassword:
+    @pytest.mark.asyncio
+    async def test_whitespace_only_password_is_unset_and_never_matches(self, monkeypatch):
+        """A blank password must fail closed, not authenticate a webhook that sends the same blanks."""
+        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "   ")
+        from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+        adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234"}))
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {"guid": "msg-ws", "text": "hello", "handle": {"address": "+15555550100"},
+                     "isFromMe": False, "chats": [{"guid": "iMessage;-;+15555550100"}]},
+        }, password="   "))
+        await asyncio.sleep(0)
+
+        assert not adapter.password
+        assert response.status == 401
+        assert handled == []
+
+
 class TestBlueBubblesPluginRegistration:
     def test_register_declares_platform_entry_hooks(self):
         """Plugin shape: the former core wiring (_BUILTIN_ADAPTERS row, _send_bluebubbles,

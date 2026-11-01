@@ -119,7 +119,7 @@ natively, but some optional SDKs are excluded from particular targets.
 | Feature | Native Windows | WSL2 |
 |---|---|---|
 | CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …) | ✓ | ✓ |
-| Interactive TUI (`hermes --tui`) | ✓ | ✓ |
+| Interactive TUI (`hermes --tui`) | ✓ (inline by default; see below) | ✓ |
 | Messaging gateway (Telegram, Discord, Slack, WhatsApp, 15+ platforms) | ✓ | ✓ |
 | Cron scheduler | ✓ | ✓ |
 | Browser tool (Chromium via Node) | ✓ | ✓ |
@@ -145,6 +145,8 @@ unavailable; WSL is an alternative, not a requirement of the current design.
 
 The platform markers in `pyproject.toml` define the packaged dependency set.
 A general gateway or voice feature claim does not override those markers.
+
+**TUI on Windows Terminal / ConPTY:** DEC mouse sequences never reach `hermes --tui`, so the AlternateScreen + mouse-tracking default would swallow the wheel and native text selection. Native Windows ConPTY therefore defaults to inline mode (primary buffer), matching Termux. Wheel scroll and copy/select then use Windows Terminal's own behavior. Restore AlternateScreen with `HERMES_TUI_INLINE=0`. Git Bash/MSYS mintty outside Windows Terminal is unchanged.
 
 ## How Hermes runs shell commands on Windows
 

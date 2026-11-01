@@ -50,6 +50,9 @@ _PASTE_PREVIEW_LABEL = "\n\nPasted content:\n"
 _ATTACHMENT_REF_RE = re.compile(r"@(?:file|folder):\S+")
 # Footers the @-reference expander appends below the typed text (agent/context_references.py).
 _CONTEXT_FOOTER_RE = re.compile(r"\n+--- (?:Context Warnings|Attached Context) ---\n.*", re.DOTALL)
+# Discord adds this marker when a voice-note event has no typed text. It is useful in the
+# conversation transcript, but carries no topic for the title generator.
+_EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
 # Cap on the instant derived title; a raw fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 # Answer-shaped guard: a tiny model sometimes answers instead of titling; longer is rejected, not truncated.
@@ -301,7 +304,8 @@ def _summarize_user_message(user_message: str) -> str:
         described = describe_skill_invocation(user_message)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    text = strip_control_wrappers(user_message if described is None else described)
+    return text.replace(_EMPTY_TEXT_PLACEHOLDER, " ").strip()
 
 
 def build_title_input(user_message: str, title_preview: str | None = None) -> str:

@@ -57,3 +57,32 @@ def test_npm_self_install_leaves_download_entry_holding_only_the_archive(tmp_pat
 
     assert [p.name for p in entry.iterdir()] == [archive.name]
     assert caches and not caches[0].is_relative_to(staged)
+
+
+def test_npm_self_install_precreates_the_global_root(tmp_path, monkeypatch):
+    target = current_target()
+    store = Store(tmp_path / "store")
+    _fake_node(store, target)
+    monkeypatch.setattr(pm.install, "_lockfile", lambda: None)
+    monkeypatch.setattr(pm.install, "_installed_location",
+                        lambda package, lockfile, target: ({"node": {"entry": "node-1"}}, store))
+
+    roots_when_npm_ran: list[bool] = []
+
+    def fake_npm(cmd, **kwargs):
+        prefix = cmd[cmd.index("--prefix") + 1]
+        global_root = Path(prefix) / ("node_modules" if target.startswith("win32") else "lib")
+        roots_when_npm_ran.append(global_root.is_dir())
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pm.packages.subprocess, "run", fake_npm)
+
+    entry = store.entry("fetch-" + "b" * 64)
+    entry.mkdir(parents=True)
+    archive = entry / "npm-1.0.0.tgz"
+    archive.write_bytes(b"archive")
+    staged = tmp_path / "scratch" / "tree"
+
+    get_package("npm").unpack(archive, staged, target)
+
+    assert roots_when_npm_ran == [True]

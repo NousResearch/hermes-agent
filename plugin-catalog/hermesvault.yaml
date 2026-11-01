@@ -1,0 +1,19 @@
+name: hermesvault
+repo: https://github.com/Guerilla-ops/floorvault
+sha: d6a2621360a38b3fc92ce0e33be277e80d723b13
+subdir: plugins/hermesvault
+description: "Keep secrets out of plaintext .env files: a local encrypted vault (FloorVault, AES-256-SIV) whose items Hermes loads as environment variables at startup (mapped source \"hermesvault\", hv: references), with a hermes hvault CLI to manage items. The vault key lives in your OS key store (Keychain, Secret Service, DPAPI), a key file, a systemd-creds credential, or HERMES_VAULT_KEY. Disclosure — reads an encrypted store under <HERMES_HOME>/agent-vault (or secrets.hermesvault.dir) at startup; hermes hvault commands write to it and hermes hvault setup creates it; reads its own master key only from the variable named by token_env (default HERMES_VAULT_KEY) in the environment Hermes scopes to the profile being fetched, else from the custody set in secrets.hermesvault.custody: os (default; macOS Keychain, Linux Secret Service or Windows DPAPI, service floor-vault, shared with other FloorVault apps on the same account), key_file (the file named by secrets.hermesvault.key_file, which must not be writable by group or others), or systemd-creds (master.key.sdcred beside the store) — never from FLOOR_VAULT_KEY, VAULT_MASTER_KEY or FLOOR_VAULT_KEY_FILE, which it also protects from being overwritten; a configured custody that fails is reported, never replaced by another; startup never prompts and never creates a key, a credential or a store (a locked or missing key is reported and Hermes starts without those variables), and only hermes hvault setup may unlock the key store or create the key; reads Hermes' own command line (sys.argv and sys.orig_argv, no other process's) to compare with the command bindings stored on an item by floorvault secrets allow, and resolves a bound item only when Hermes was started with one of them (secrets.hermesvault.require_binding, default off, also skips items with no binding); resolved values become environment variables of the Hermes process and its children, like .env entries; installs floorvault>=0.2.8,<0.3 from PyPI (plus secretstorage on Linux, pyobjc-framework-Security on macOS); one subprocess, only with custody: systemd-creds: the system's own systemd-creds (decrypt --user at startup; encrypt and decrypt in hermes hvault setup), found only in system directories, run as an argument list with no shell and a minimal environment, the key passed through a pipe; otherwise no subprocesses; no network calls, no self-update; protection is at rest, not against code already running as the same user."
+maintainer: Guerilla-ops
+tier: community
+category: tools
+requires_hermes: ">=0.21.2"
+docs_url: https://github.com/Guerilla-ops/floorvault/blob/d6a2621360a38b3fc92ce0e33be277e80d723b13/plugins/hermesvault/README.md
+image: https://raw.githubusercontent.com/Guerilla-ops/floorvault/d6a2621360a38b3fc92ce0e33be277e80d723b13/docs/assets/hermesvault-banner.png
+version: "0.2.9"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

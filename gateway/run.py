@@ -3708,12 +3708,6 @@ class GatewayRunner(
             restart_requested=self._restart_requested, active_agents=self._active_work_count(),
             active_work=active_work)
 
-    def _persist_active_agents(self) -> None:
-        """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
-        Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
-        would clobber it). Best-effort: a failed write must never disrupt a turn."""
-        _write_runtime_status_quiet(active_agents=self._active_work_count())
-
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
         ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""

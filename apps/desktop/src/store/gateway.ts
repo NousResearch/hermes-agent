@@ -32,6 +32,7 @@ import {
 } from '@/lib/with-timeout'
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
+import { isKeptRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import {
   isPrimaryRider,
@@ -831,6 +832,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
     entry.livenessProbeFailures = 0
     clearSecondaryLivenessReprobe(entry)
     openedScopes.add(entry.scope)
+    keptRouteOpened(entry.connectionId, entry.profile)
 
     try {
       reconcileBusyAfterOpen?.()
@@ -1368,22 +1370,20 @@ function foregroundPinned(entry: Secondary): boolean {
   return scopes.has(entry.scope) || (!entry.connectionId && scopes.has(entry.profile))
 }
 
-/** True when the bot relay currently pins this entry open. Number guard:
- *  dev-HMR entries predate the field. */
+/** Pinned open: the bot relay holds it, or it is kept connected (gateway-kept-routes). */
 function relayRetained(entry: Secondary): boolean {
-  return Number.isFinite(entry.relayRetainCount) && entry.relayRetainCount > 0
+  return entry.relayRetainCount > 0 || isKeptRoute(entry.connectionId, entry.profile)
 }
 
 /**
- * Finish a material-edit redial once no request, relay, or foreground surface
- * still owns the old socket. Removal deliberately bypasses this drain: a
- * deleted source can never become valid again and must fail-stop immediately.
+ * Finish a material-edit redial once no request, relay lease or foreground surface owns the old socket (a keep
+ * pin never defers it). Removal bypasses this drain: a deleted source must fail-stop immediately.
  */
 function drainPendingConnectionRedial(entry: Secondary): boolean {
   if (
     entry.pendingConnectionRedial !== true ||
     entry.activeRequests > 0 ||
-    relayRetained(entry) ||
+    entry.relayRetainCount > 0 ||
     foregroundPinned(entry) ||
     g.secondaries.get(entry.scope) !== entry
   ) {
@@ -1465,7 +1465,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
 
     if (
       !drainPendingConnectionRedial(entry) &&
-      entry.relayRetainCount === 0 &&
+      !relayRetained(entry) &&
       entry.activeRequests === 0 &&
       !entry.retained &&
       !foregroundPinned(entry) &&
@@ -2438,7 +2438,7 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
     const wasActive = key === g.activeKey
     activeInvalidated ||= wasActive
 
-    if (opts.redial && (entry.activeRequests > 0 || relayRetained(entry) || foregroundPinned(entry))) {
+    if (opts.redial && (entry.activeRequests > 0 || entry.relayRetainCount > 0 || foregroundPinned(entry))) {
       entry.pendingConnectionRedial = true
 
       continue

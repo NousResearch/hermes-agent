@@ -1622,7 +1622,7 @@ export const frOverrides = {
       intro:
         'Enregistrez tous les emplacements où vivent vos agents : cet appareil, les gateways distantes de votre réseau et les instances Hermes Cloud. Ils sont tous conservés ici.',
       stagedNote:
-        "Les conversations et la liste des agents suivent la source choisie ; le backend de fenêtre géré par l'application reste sélectionné dans Paramètres → Gateway.",
+        'Chaque gateway reste connectée. Les profils, conversations, messageries et tâches cron restent sur leur gateway, et Sessions peut toutes les afficher à la fois.',
       launchModeTitle: 'Au démarrage, revenir aux sessions de la dernière gateway utilisée',
       launchModeDesc: "Si cette option est désactivée, les sessions s'ouvrent sur la gateway principale.",
       searchPlaceholder: 'Rechercher des gateways…',
@@ -3237,14 +3237,10 @@ export const frOverrides = {
       gateway: gateway => `Profils sur ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · inaccessible`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Basculer vers ${name} sur ${gateway}`,
+      switchTo: (name, gateway) => `Ouvrir ${name} sur ${gateway}`,
       deleteOn: gateway => ` sur ${gateway}`,
       localDevice: 'Cet appareil (backend local — installe Hermes s’il manque, sinon ouvre une nouvelle session)',
-      switchDeviceTitle: 'Basculer vers cet appareil ?',
-      switchDeviceDesc:
-        'Cela ouvre une nouvelle session sur cet ordinateur. La conversation en cours reste sur l’autre gateway.',
-      switchDeviceConfirm: 'Basculer',
-      installDeviceTitle: 'Basculer vers cet appareil ?',
+      installDeviceTitle: 'Installer Hermes sur cet appareil ?',
       installDeviceDesc:
         'Hermes sera installé localement, puis une nouvelle session s’ouvrira sur cet ordinateur. Rien n’est installé tant que vous ne confirmez pas.',
       installDeviceConfirm: 'Installer localement',

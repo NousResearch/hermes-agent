@@ -122,6 +122,11 @@ def _run_setup_command(
     )
 
 
+# A provider check spawns real CLIs (npm, brv, uv); their cold start alone can exceed 20s on
+# low-power platforms, which marked correctly installed providers unavailable (#139954).
+_PROVIDER_CHECK_TIMEOUT_S = 60
+
+
 def _memory_provider_external_dependencies_installed(setup: dict[str, Any]) -> bool:
     external_ok = True
     for dep in setup.get("external_dependencies") or []:
@@ -133,7 +138,7 @@ def _memory_provider_external_dependencies_installed(setup: dict[str, Any]) -> b
                 external_ok = False
             continue
         try:
-            completed = _run_setup_command(shlex.split(check_cmd), display=check_cmd, timeout=20)
+            completed = _run_setup_command(shlex.split(check_cmd), display=check_cmd, timeout=_PROVIDER_CHECK_TIMEOUT_S)
         except Exception:
             external_ok = False
             continue

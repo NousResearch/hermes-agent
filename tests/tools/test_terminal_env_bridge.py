@@ -7,9 +7,11 @@ config.yaml.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
+from agent import runtime_cwd
 from tools import terminal_tool
 from hermes_constants import get_hermes_home
 
@@ -18,6 +20,7 @@ from hermes_constants import get_hermes_home
 def _reset_bridge_state(monkeypatch):
     """Each test starts with an un-attempted bridge and clean mapped env."""
     monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+    monkeypatch.setattr(runtime_cwd, "_cli_owns_cwd", False)
     for name in (
         "TERMINAL_ENV",
         "TERMINAL_CWD",
@@ -95,6 +98,49 @@ def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):
 
     assert os.environ["TERMINAL_CWD"] == "~"
     assert config["cwd"] == "~"
+
+
+def test_local_cli_keeps_its_launch_cwd_through_config_bridges(tmp_path, monkeypatch):
+    """#86411: a local CLI runs where it was launched, even with an explicit terminal.cwd.
+
+    Every ``hermes`` process bridges config at import, before it knows it is a CLI, again on each
+    dotenv reload, and once more on the terminal tool's first use. ``hermes chat`` and ``-z`` claim
+    the launch dir (``--in`` or a resumed session already moved it), so none of these re-pins it.
+    """
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    configured = tmp_path / "configured"
+    launch = tmp_path / "launch"
+    configured.mkdir()
+    launch.mkdir()
+    _write_config(f"terminal:\n  backend: local\n  cwd: '{configured}'\n")
+    monkeypatch.chdir(launch)
+    load_hermes_dotenv(load_external_secrets=False)
+
+    runtime_cwd.claim_local_cli_cwd()
+    load_hermes_dotenv(load_external_secrets=False)
+
+    assert terminal_tool._get_env_config()["cwd"] == os.getcwd()
+    assert runtime_cwd.resolve_agent_cwd() == Path(os.getcwd())
+
+
+@pytest.mark.parametrize(
+    ("backend", "claimed"), [("local", False), ("ssh", True)], ids=["not-a-local-cli", "remote-backend"])
+def test_terminal_cwd_keeps_config_authority_outside_a_local_cli(tmp_path, monkeypatch, backend, claimed):
+    """Gateways, cron, ACP and the dashboard never claim a cwd, even after importing cli.py (which
+    exports its launch dir); a remote backend's cwd is never a host launch dir."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    local_dir = tmp_path / "configured"
+    local_dir.mkdir()
+    configured = "~/work" if backend == "ssh" else str(local_dir)
+    _write_config(f"terminal:\n  backend: {backend}\n  cwd: '{configured}'\n")
+    load_hermes_dotenv(load_external_secrets=False)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    if claimed:
+        runtime_cwd.claim_local_cli_cwd()
+
+    assert terminal_tool._get_env_config()["cwd"] == configured
 
 
 def test_env_is_preserved_when_config_has_no_terminal_section(monkeypatch):

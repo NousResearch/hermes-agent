@@ -1745,10 +1745,12 @@ def main(
         return
 
     if not (list_tools or list_toolsets):
+        from agent.runtime_cwd import claim_local_cli_cwd
         from hermes_cli.process_identity import register_self
         from hermes_cli.shared_profile_warning import shared_profile_warning
 
         register_self("cli")
+        claim_local_cli_cwd()
         warning = shared_profile_warning()
         if warning:
             print(_t("cli.startup.warning", warning=warning), file=sys.stderr)

@@ -410,18 +410,37 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
 // union (the field is free-input anyway — this only narrows suggestions).
 const OPENAI_TTS1_VOICES = new Set(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
 
+// Plugin-registered providers reach Desktop only through the backend schema's
+// options; append them after the built-ins, unique case-insensitively as the
+// backend dedupes them. The current value counts as seen, so a differently
+// cased stored name is offered once, as stored.
+function withSchemaProviders(opts: string[], schemaOptions: readonly unknown[] = [], current = ''): string[] {
+  const seen = new Set([...opts, current].map(name => name.trim().toLowerCase()))
+  const extra: string[] = []
+
+  for (const entry of schemaOptions) {
+    const name = typeof entry === 'string' ? entry.trim() : ''
+
+    if (name && !seen.has(name.toLowerCase())) {
+      extra.push(name)
+      seen.add(name.toLowerCase())
+    }
+  }
+
+  return extra.length > 0 ? [...opts, ...extra] : opts
+}
+
 export function enumOptionsFor(
   key: string,
   value: unknown,
   config: HermesConfigRecord,
-  dynamicOptions?: string[]
+  dynamicOptions?: string[],
+  schemaOptions?: readonly unknown[]
 ): string[] | undefined {
   let opts = dynamicOptions ?? (key === 'display.personality' ? personalityOptions(config) : ENUM_OPTIONS[key])
 
-  // Merge in user-defined command-type providers so custom local TTS/STT
-  // backends declared in config.yaml are selectable, not just the built-ins.
-  // The `includes` guard keeps the list duplicate-free should the display list
-  // ever carry a name we also enumerate.
+  // Merge command providers and plugin-registered providers from the backend
+  // schema, keeping built-ins first (#136485).
   if (!dynamicOptions && opts && (key === 'tts.provider' || key === 'stt.provider')) {
     const section = key.slice(0, 3) as 'tts' | 'stt'
     const custom = commandProviderNames(config, section).filter(name => !opts!.includes(name))
@@ -429,6 +448,8 @@ export function enumOptionsFor(
     if (custom.length > 0) {
       opts = [...opts, ...custom]
     }
+
+    opts = withSchemaProviders(opts, schemaOptions, asText(value))
   }
 
   // Narrow OpenAI voice suggestions to what the selected model actually

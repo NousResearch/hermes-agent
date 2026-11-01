@@ -129,3 +129,47 @@ class TestBenignNotFlagged:
     def test_benign_not_flagged(self, cmd):
         assert detect_dangerous_command(cmd)[0] is False, f"false positive: {cmd!r}"
         assert detect_hardline_command(cmd)[0] is False, f"false positive (hardline): {cmd!r}"
+
+
+# ---------------------------------------------------------------------------
+# Quoted literal argument words: the shell removes the quotes before argv.
+# ---------------------------------------------------------------------------
+
+class TestQuotedLiteralArguments:
+    @pytest.mark.parametrize(
+        ("quoted", "plain"),
+        [
+            ("rm '-rf' /", "rm -rf /"),
+            ('rm "-rf" /etc', "rm -rf /etc"),
+            ("rm $'-rf' /", "rm -rf /"),
+            ("sudo rm '-r'f ~", "sudo rm -rf ~"),
+            ("kill -9 '-1'", "kill -9 -1"),
+            ("chmod '-R' 777 build", "chmod -R 777 build"),
+            ("chown '-R' root build", "chown -R root build"),
+            ("git reset '--hard'", "git reset --hard"),
+            ('git clean "-fdx"', "git clean -fdx"),
+            ("git branch '-D' topic", "git branch -D topic"),
+            ("find . '-exec' rm {} +", "find . -exec rm {} +"),
+            ("sed '-i' s/a/b/ '/etc/hosts'", "sed -i s/a/b/ /etc/hosts"),
+            ("systemctl 'stop' nginx", "systemctl stop nginx"),
+        ],
+    )
+    def test_quoted_literal_argument_matches_unquoted_verdict(self, quoted, plain):
+        assert detect_dangerous_command(plain)[0] is True
+        assert detect_dangerous_command(quoted)[0] is True, f"quoted spelling bypassed: {quoted!r}"
+        assert detect_hardline_command(quoted) == detect_hardline_command(plain)
+
+    @pytest.mark.parametrize(
+        ("cmd", "detector"),
+        [
+            # A quoted separator is data: unquoting it would invent a command start.
+            ("echo 'done; rm -rf /'", detect_hardline_command),
+            ('git commit -m "fix && kill -9 -1"', detect_hardline_command),
+            # A quoted glob is a literal the shell never expands into a flag.
+            ("find . -name '-del*'", detect_dangerous_command),
+            # Inside double quotes the backslash stays, so rm receives `-r\f`, not `-rf`.
+            (r'rm "-r\f" build', detect_dangerous_command),
+        ],
+    )
+    def test_quoted_non_literal_text_stays_data(self, cmd, detector):
+        assert detector(cmd)[0] is False, f"quoted data was promoted: {cmd!r}"

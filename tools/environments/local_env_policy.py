@@ -3,14 +3,28 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 ``_sanitize_subprocess_env``, ``hermes_subprocess_env``) live in ``tools.environments.local``."""
 
 import functools
+import logging
 import os
 import re
 from typing import Any, Iterable, Optional
 
 from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
 
+logger = logging.getLogger(__name__)
+
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+
+# Shape of the names Hermes mints per custom endpoint (``hermes_cli.config.custom_endpoint_key_env``):
+# ``HERMES_CUSTOM[_<SLUG>]_API_KEY``. No registry can enumerate them, so they are matched by shape (#147329).
+_CUSTOM_ENDPOINT_KEY_PREFIX, _CUSTOM_ENDPOINT_KEY_SUFFIX = "HERMES_CUSTOM_", "_API_KEY"
+
+# Config sections whose entries may declare an env name holding that entry's credential.
+# ``custom_providers`` is the legacy list form of ``providers``; both are read.
+_KEY_ENV_CONFIG_SECTIONS = ("providers", "model", "fallback_providers", "custom_providers")
+_KEY_ENV_FIELDS = ("key_env", "api_key_env")
+# A declared holder must be a legal identifier: a placeholder or prose in config.yaml blocks nothing.
+_KEY_ENV_NAME_RE = re.compile(r"\A[A-Z_][A-Z0-9_]*\Z")
 
 # Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
 # only the Bedrock bearer token, which no aws/terraform/boto3 toolchain uses. The
@@ -190,6 +204,84 @@ def _registered_adapter_secret_env() -> frozenset:
     return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
+def _declared_key_env_names(node) -> set[str]:
+    """Collect ``key_env`` / ``api_key_env`` values from any config node (dict, list or tuple).
+
+    Only names that are legal env-var identifiers count; a placeholder or a typo is left alone
+    rather than silently blocking some unrelated variable.
+    """
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for field in _KEY_ENV_FIELDS:
+            value = node.get(field)
+            if isinstance(value, str):
+                name = value.strip().upper()
+                if _KEY_ENV_NAME_RE.match(name):
+                    found.add(name)
+        for value in node.values():
+            found |= _declared_key_env_names(value)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            found |= _declared_key_env_names(value)
+    return found
+
+
+def _config_stamp(path) -> tuple:
+    """Change-detection key over the profile's ``config.yaml``; an absent file keys as ``()``."""
+    from utils import file_signature
+    try:
+        return file_signature(os.stat(str(path)))
+    except OSError:
+        return ()
+
+
+_HOME_DECLARED_KEY_ENV_CACHE: dict[str, tuple] = {}
+
+
+def _home_declared_key_env() -> frozenset:
+    """Env names the bound profile declares as holders of a provider credential.
+
+    A custom endpoint's key may live under a name Hermes minted (see
+    :func:`_is_provider_env_blocklisted`) *or* under one the operator chose themselves —
+    ``providers:<id>.key_env``, ``model.key_env``, ``fallback_providers[]`` and the legacy
+    ``custom_providers[]``. Neither ``PROVIDER_REGISTRY`` nor ``OPTIONAL_ENV_VARS`` can know
+    those names, so before this they passed every scrub and were written in plaintext into the
+    persisted terminal session snapshot (#147329). Provider tier, not internal: an inheriting
+    child must keep the key to drive the endpoint it belongs to.
+
+    Per home and keyed on the config file signature, like :func:`_home_adapter_secret_env`, so an
+    edit takes effect on the next spawn. Reading through ``read_raw_config_readonly`` keeps the
+    worker-snapshot and cache semantics of every other behavioral read; the result is only iterated.
+    A profile with no custom endpoints legitimately yields the empty set. A failed read is served as
+    ``FailedConfigRead`` rather than raised, so it is tested for explicitly: falling back to the
+    cached names keeps this home's denials instead of reopening the leak on a transient I/O error.
+    """
+    from hermes_cli.config import get_config_path, read_raw_config_readonly
+    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_constants import get_hermes_home, hermes_home_key
+
+    home = get_hermes_home()
+    key = hermes_home_key(home)
+    path = get_config_path()
+    stamp = _config_stamp(path)
+    cached = _HOME_DECLARED_KEY_ENV_CACHE.get(key)
+    if cached is not None and cached[0] == stamp and stamp:
+        return cached[1]
+    cfg = read_raw_config_readonly()
+    if isinstance(cfg, FailedConfigRead):
+        logger.warning("Profile config unreadable; keeping the provider key_env names already "
+                       "denied for this home: %s", cfg.read_error)
+        return cached[1] if cached is not None else frozenset()
+    names = frozenset(_declared_key_env_names({section: cfg.get(section)
+                                                for section in _KEY_ENV_CONFIG_SECTIONS}))
+    if cached is not None:
+        # Never narrow what this home already denied: a config that became less readable must not
+        # reopen the leak it had already closed.
+        names |= cached[1]
+    _HOME_DECLARED_KEY_ENV_CACHE[key] = (stamp, names)
+    return names
+
+
 def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
@@ -198,6 +290,16 @@ def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None
     ``_registered`` so the registry is read once per env, not once per key."""
     upper = name.upper()
     if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        return True
+    # Custom endpoints keep their key under a name Hermes mints itself, one per endpoint, so no
+    # registry can list it (#147329). Provider tier, not ``_is_hermes_internal_secret``: an
+    # inheriting child still drives the endpoint. Both edges are checked, so operator vars that
+    # merely resemble the shape (HERMES_CUSTOM_BANNER, MY_CUSTOM_API_KEY) still pass.
+    if upper.startswith(_CUSTOM_ENDPOINT_KEY_PREFIX) and upper.endswith(_CUSTOM_ENDPOINT_KEY_SUFFIX):
+        return True
+    # Names the profile itself declared as credential holders (providers/model/fallback/legacy
+    # custom_providers ``key_env``) are provider credentials too, whoever chose the name (#147329).
+    if upper in _home_declared_key_env():
         return True
     return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
 

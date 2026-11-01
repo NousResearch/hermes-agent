@@ -127,3 +127,18 @@ def clear_current_thread_interrupt() -> None:
     this call re-sets the bit and is still observed by the executor's poll loop. Call
     directly on the executing thread."""
     set_interrupt(False)
+
+
+def clear_interrupt_if_reason(thread_id: int | None, reason: str) -> None:
+    """Clear *thread_id* only when the interrupt still belongs to *reason*.
+
+    A scoped owner must not erase a later user /stop that landed while its own
+    cancellation was unwinding.
+    """
+    if thread_id is None:
+        return
+    with _lock:
+        if _interrupt_reasons.get(thread_id) == reason:
+            _interrupted_threads.discard(thread_id)
+            _interrupt_reasons.pop(thread_id, None)
+            _yield_threads.discard(thread_id)

@@ -339,6 +339,13 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         timed = choice == "timeout"
     # Any tapped scope is a one-operation grant; nothing is persisted.
     if not timed and choice in {"once", "session", "always"}:
+        # A nested execute_code RPC can have been waiting here when its cell
+        # timed out. Its CellAuthority interrupts the RPC thread on retirement;
+        # check again after the human response so a late click cannot authorize
+        # a write whose calling cell has already been reported as lost.
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return blocked.format(why="approval was withdrawn before the user answered (the execute_code cell settled).")
         return None
     return timed_out if timed else denied
 

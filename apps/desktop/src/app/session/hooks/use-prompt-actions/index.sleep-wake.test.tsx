@@ -94,6 +94,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop', omit_messages: true })
     expect(calls[2]?.params).toEqual({
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       session_id: RECOVERED_SESSION_ID,
       text: 'message after wake'
     })
@@ -148,6 +149,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(call => call.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[2]?.params).toEqual({
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       session_id: RECOVERED_SESSION_ID,
       text: 'remote follow-up after reap'
     })
@@ -369,6 +371,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       queued: true,
       session_id: 'rt-background-stale',
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       text: 'queued background message after wake'
     })
     expect(calls[1]?.params).toEqual({
@@ -380,6 +383,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       queued: true,
       session_id: RECOVERED_SESSION_ID,
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       text: 'queued background message after wake'
     })
     expect(handle!.activeSessionIdRef.current).toBe(RUNTIME_SESSION_ID)
@@ -568,6 +572,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({
       session_id: RECOVERED_SESSION_ID,
       submission_id: expect.any(String),
+      submitted_at: expect.any(Number),
       text: 'message during starved loop'
     })
   })
@@ -691,6 +696,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       'prompt.submit',
       {
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         session_id: RECOVERED_SESSION_ID,
         text: 'follow-up while the profile route is rebinding'
       },
@@ -733,6 +739,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
       'prompt.submit',
       {
         submission_id: expect.any(String),
+        submitted_at: expect.any(Number),
         session_id: RECOVERED_SESSION_ID,
         text: 'stay in the routed profile session'
       },
@@ -767,7 +774,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(resumeStoredSession).not.toHaveBeenCalled()
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { submission_id: expect.any(String), session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      { submission_id: expect.any(String), submitted_at: expect.any(Number), session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
       1_800_000
     )
   })
@@ -824,7 +831,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(await handle!.submitText('retry after recovery')).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { submission_id: expect.any(String), session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      { submission_id: expect.any(String), submitted_at: expect.any(Number), session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
       1_800_000
     )
   })

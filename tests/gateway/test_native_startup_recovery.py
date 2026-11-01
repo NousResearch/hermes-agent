@@ -6,13 +6,12 @@ import hashlib
 import hmac
 import json
 from pathlib import Path
-import socket
 import sqlite3
 import threading
 
 import aiohttp
 
-from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
+from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, listen_port
 from tests.waiting import async_wait_until
 
 
@@ -25,9 +24,7 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
     peer.requests = []
     peer.blocked, peer.release = threading.Event(), threading.Event()
     threading.Thread(target=peer.serve_forever, daemon=True).start()
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
+    port = listen_port()
     base = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': base},
            'gateway': {'multiplex_profiles': False},
@@ -50,9 +47,27 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
             async with client.post(f'http://127.0.0.1:{port}/webhooks/fixture', data=body, headers=headers) as response:
                 assert response.status == 202, await response.text()
         assert rows() == {'safe': 'queued'}
+    def boot_log():
+        logs = [*(home / 'logs').glob('*.log'), home / 'restart.log']
+        return '\n'.join(p.read_text(errors='replace')[-6000:] for p in logs if p.exists())
+    async def listening():
+        # READY follows startup's adapter connect, so this boot's webhook answers now or never. A
+        # listener that lost its port leaves the row queued for a reason no leg here means to test:
+        # the fail-closed legs would pass vacuously and the recovery leg would time out mutely.
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as client:
+                async with client.get(f'http://127.0.0.1:{port}/health') as response:
+                    ok = response.status == 200 and (await response.json()).get('platform') == 'webhook'
+        except (aiohttp.ClientError, TimeoutError, ValueError):
+            ok = False
+        assert ok, f'this boot did not serve its webhook on 127.0.0.1:{port}\n{boot_log()}'
     async def settled():
-        await async_wait_until(lambda: rows()['safe'] == 'terminal', timeout=25, interval=.05,
-                               what='the recovered admission to settle')
+        await listening()
+        try:
+            await async_wait_until(lambda: rows()['safe'] == 'terminal', timeout=25, interval=.05,
+                                   what='the recovered admission to settle')
+        except AssertionError as exc:
+            raise AssertionError(f'{exc}; rows={rows()}\n{boot_log()}') from None
     evidence = []
     try:
         with daemon(root, home, env, barrier=True, fixture='api_recovery_daemon.py') as (proc, desc):
@@ -75,6 +90,7 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
             extra['secret'], extra['routes'] = secret, routes
             config.write_text(json.dumps(cfg))
             with daemon(root, home, env, barrier=False) as (proc, desc):
+                asyncio.run(listening())
                 assert rows() == {'safe': 'queued'} and not peer.requests
                 evidence.append({'pid': proc.pid, 'epoch': desc['authority_epoch'], 'rows': rows()})
         extra['routes'] = {'fixture': {'prompt': '{text}', 'deliver': 'log'}}
@@ -82,7 +98,7 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
         for _ in range(2):
             with daemon(root, home, env, barrier=False) as (proc, desc):
                 asyncio.run(settled())
-                assert peer.requests, '\n'.join(p.read_text() for p in (home / 'logs').glob('*.log')) + (home / 'restart.log').read_text()
+                assert peer.requests, boot_log()
                 evidence.append({'pid': proc.pid, 'epoch': desc['authority_epoch'], 'rows': rows()})
         assert len(peer.requests) == 1, peer.requests
         assert 'SAFE_QUEUE' in json.dumps(peer.requests)

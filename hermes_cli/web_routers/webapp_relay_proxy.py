@@ -47,15 +47,17 @@ _HOP_BY_HOP = frozenset({"connection", "keep-alive", "proxy-authenticate", "prox
 _DROP_REQUEST = _HOP_BY_HOP | frozenset({
     "host", "cookie", "authorization", "origin", "referer", "x-hermes-session-token", "forwarded",
     "x-real-ip", "x-hermes-gateway-ticket", "x-hermes-window-ticket", *relay.RELAY_HEADERS})
-#: Response headers that cross back from the gateway: what describes the body and its caching.
-#: Anything else would let the gateway act on this hub's origin (cookies, CORS, HSTS, service
-#: workers, site-data clearing, refreshes, its own content policy).
+#: Response headers that cross back from the gateway: what describes the body. Anything else would
+#: let the gateway act on this hub's origin (cookies, CORS, HSTS, service workers, site-data
+#: clearing, refreshes, its own content policy, or caching that outlives the grant).
 _KEEP_RESPONSE = frozenset({
     "content-type", "content-length", "content-encoding", "content-language", "content-disposition",
-    "content-range", "accept-ranges", "cache-control", "etag", "last-modified", "expires", "vary", "retry-after"})
+    "content-range", "accept-ranges", "vary", "retry-after"})
 #: Whatever the gateway sends is its content, not this hub's page: a document opened from it runs in
-#: an opaque origin with no scripts, and nothing is sniffed into one.
-_RESPONSE_POLICY = {"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"}
+#: an opaque origin with no scripts, nothing is sniffed into one, and the browser keeps no copy for
+#: after a revoke or for another account signed in here later.
+_RESPONSE_POLICY = {"Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "no-store"}
 _METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 #: The most a relayed frame may carry: what the gateway's own socket accepts (file.attach data URLs).
 _MAX_FRAME = 384 * 1024 * 1024

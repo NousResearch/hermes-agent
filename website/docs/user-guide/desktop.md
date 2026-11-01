@@ -208,8 +208,8 @@ reach that machine. The relaying gateway keeps only its own key
 A grant lasts until it is revoked. The gateway being reached does not check it again with your
 sign-in provider: anyone who controls the relaying gateway's machine and its key can use the grant.
 Pair only gateways you trust as much as the one being reached. What a relayed gateway sends back
-never runs as the relaying gateway's page. It is served under a sandboxing content policy, and it
-cannot redirect outside that gateway.
+never runs as the relaying gateway's page. It is served under a sandboxing content policy, the
+browser keeps no copy of it, and it cannot redirect outside that gateway.
 
 To end a grant, use either of these:
 

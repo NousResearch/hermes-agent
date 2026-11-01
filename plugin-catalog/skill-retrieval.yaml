@@ -1,26 +1,33 @@
 name: skill-retrieval
 repo: https://github.com/moonlight-lupin/agent-skills
-sha: 79801c69e797f5f8efd619f8f451ca89d18c7240
+sha: 8a7d4249ffa3a467468a92b1f18706b5ef264419
 subdir: plugins/skill-retrieval
 description: >-
   BM25-based skill retrieval for large skill libraries. An llm_request middleware rewrites
   the outgoing request's <available_skills> block to names only (the same bytes every turn,
-  so prompt caching is unaffected), and a pre_llm_call hook appends the top-K matching
-  skill descriptions to the current user message. Uses public plugin surfaces only
+  so prompt caching is unaffected), and a pre_llm_call hook appends skill descriptions to
+  the current user message: BM25 retrieves SKILL_RETRIEVAL_TOP_K candidates (default 6) and
+  injects the first SKILL_RETRIEVAL_INJECT_K (default = TOP_K), so a pool wider than the
+  injected set lets the optional rerank filter, not just reorder; CJK text is tokenized as
+  bigrams and the SKILL.md body joins the corpus. Uses public plugin surfaces only
   (register_middleware, register_hook); reads SKILL.md frontmatter from the profile's skill
   roots and imports a few agent.prompt_builder / agent.skill_utils helpers read-only.
   pyyaml is the only dependency. Disclosure — optional Jev rerank, off by default: with
   SKILL_RETRIEVAL_RERANK=jev and TYPESAFE_API_KEY set (read from the environment only), each
-  turn POSTs the user message (injection patterns stripped, capped at 2000 chars) and up to
-  12 shortlisted skill descriptions (400 chars each) to api.typesafe.ai (3 s timeout, no
-  retries, BM25 order kept on error), and appends a local JSONL log (timestamp, session id,
-  200-char query excerpt, both orders) under $HERMES_HOME/data/jev-trial/, rotated past 5 MB.
-  With the rerank off it makes no network calls and writes no files.
+  turn POSTs the user message (injection patterns stripped, capped at 2000 chars) and the
+  shortlisted skill descriptions to api.typesafe.ai (3 s timeout, no retries, BM25 order
+  kept on error); SKILL_RETRIEVAL_RERANK_PROVIDER=openrouter instead sends the same payload
+  to openrouter.ai/api/v1/systemone, keyed by OPENROUTER_API_KEY (each provider reads only
+  its own key; both from the environment only). On any rerank failure the first INJECT_K
+  entries of the BM25 order stand — injection never blocks on the rerank. A local JSONL
+  log (timestamp, session id, 200-char query excerpt, both orders) goes under
+  $HERMES_HOME/data/jev-trial/, rotated past 5 MB. With the rerank off it makes no network
+  calls and writes no files.
 maintainer: moonlight-lupin
 tier: community
 category: tools
 requires_hermes: ">=0.21.1"
-version: "0.6.0"
+version: "0.8.0"
 capabilities:
   provides_tools: []
   provides_hooks:

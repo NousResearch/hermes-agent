@@ -13,6 +13,7 @@ import {
   normalizeLocale,
   resolveInitialLocale
 } from './languages'
+import { publishAppLocale } from './app-locale'
 import { $appLocaleVersion, normalizeLocaleId, resolveTranslations } from './registry'
 import { $requestedLocale, setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
@@ -123,6 +124,9 @@ export function I18nProvider({
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
     applyDocumentLocale(locale, isRtlLocale(locale))
+    // Publish for consumers outside the React tree (plugins via
+    // `host.i18n.subscribeLocale`). No-op when the locale did not change.
+    publishAppLocale(locale)
   }, [locale, registryVersion])
 
   // A saved `display.language` the app could not render at read time (`pl`

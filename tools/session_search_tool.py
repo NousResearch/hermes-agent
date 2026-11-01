@@ -357,7 +357,8 @@ def _fill_thin_and_results(db, query: str, raw_results: list, limit: int, role_f
 
     The storage layer relaxes to OR only on a zero-row miss, so one incidental full-term match
     hides the session that holds the answer under a paraphrase. AND rows keep the lead; explicit
-    OR/NOT queries and single terms are left as written (``_or_relaxed_query`` returns None)."""
+    OR/NOT queries and single terms are left as written (``_or_relaxed_query`` returns None).
+    The fill always ranks by relevance: a time-ordered 300-row OR scan holds only recent weak matches."""
     if len({_resolve_lineage(db, r["session_id"]) for r in raw_results if r.get("session_id")}) >= limit:
         return raw_results  # discovery dedupes by lineage, so count lineages, not raw continuation ids
     relaxed = type(db)._or_relaxed_query(query) if hasattr(type(db), "_or_relaxed_query") else None
@@ -365,7 +366,7 @@ def _fill_thin_and_results(db, query: str, raw_results: list, limit: int, role_f
         return raw_results
     extra, err = _loud(lambda: db.search_messages(
         query=relaxed, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=None,
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "OR fill failed: %s", "Search failed")
     if err or not extra:
         return raw_results

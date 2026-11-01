@@ -88,7 +88,7 @@ def redact_registered_vault_values(text: str) -> str:
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
-    "code", "signature", "x-amz-signature",
+    "code", "signature", "x-amz-signature", "x-amz-security-token",
     "x-goog-signature", "sig",  # GCS V4 signed URLs, Azure SAS tokens
 })
 

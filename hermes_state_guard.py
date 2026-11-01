@@ -68,6 +68,19 @@ _PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.
 _PYTEST_ANCESTOR: Optional[bool] = None
 
 
+def _argv_looks_like_pytest(cmdline: Any) -> bool:
+    """True when *cmdline* (an argv list) is a pytest invocation."""
+    for arg in cmdline:
+        try:
+            # Split on both separators on every host so the answer is platform-independent.
+            name = str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if name in _PYTEST_LAUNCHER_NAMES:
+            return True
+    return False
+
+
 def _process_looks_like_pytest(proc: Any) -> bool:
     """True when *proc*'s command line is a pytest invocation. Unreadable cmdline
     => not pytest: guessing the other way would refuse production opens."""
@@ -75,15 +88,7 @@ def _process_looks_like_pytest(proc: Any) -> bool:
         cmdline = proc.cmdline() or []
     except Exception:
         return False
-    for arg in cmdline:
-        try:
-            # Split on both separators on every host so the answer is platform-independent.
-            name = str(arg).strip('"').strip("'").replace("\\", "/").rsplit("/", 1)[-1].lower()
-        except Exception:
-            continue
-        if name in _PYTEST_LAUNCHER_NAMES:
-            return True
-    return False
+    return _argv_looks_like_pytest(cmdline)
 
 
 def _has_pytest_ancestor() -> bool:
@@ -95,6 +100,11 @@ def _has_pytest_ancestor() -> bool:
     loses at the same moment it loses the ``HERMES_HOME`` redirect: that child aims at the production DB
     *and* disarms the guard in one step (#82770). Ancestry is the one test-context signal that survives an
     env rebuild, so it backs the env check up.
+
+    The walk stops at the first ``AccessDenied``: everything above a process the current
+    user cannot read is another user's or a protected system process, so no pytest hides
+    there — and on Windows each denied ``cmdline()`` costs psutil a full process snapshot
+    (``NtQuerySystemInformation``), which turned the walk into a ~30 s startup stall (#137948).
     """
     global _PYTEST_ANCESTOR
     if _PYTEST_ANCESTOR is not None:
@@ -102,8 +112,19 @@ def _has_pytest_ancestor() -> bool:
     found = False
     if psutil is not None:
         try:
-            found = any(_process_looks_like_pytest(p) for p in psutil.Process().parents())
-        except Exception:
+            for proc in psutil.Process().parents():
+                try:
+                    cmdline = proc.cmdline() or []
+                except psutil.AccessDenied:
+                    # No pytest of ours can live above an unreadable ancestor, and reading on
+                    # would pay the expensive denied-lookup path again for every process.
+                    break
+                except (psutil.Error, OSError):
+                    continue
+                if _argv_looks_like_pytest(cmdline):
+                    found = True
+                    break
+        except (psutil.Error, OSError):
             found = False
     _PYTEST_ANCESTOR = found
     return found

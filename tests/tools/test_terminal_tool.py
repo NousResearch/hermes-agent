@@ -67,6 +67,56 @@ def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
         "sudo true", None)
 
 
+def test_headless_sudo_never_runs_availability_probe(monkeypatch):
+    """The availability round trip is paid only on the "would prompt" path too (#138514)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    terminal_tool.set_sudo_password_callback(None)
+
+    def _fail_available():
+        raise AssertionError("headless sudo must not probe for the sudo binary")
+
+    assert terminal_tool_sudo._transform_sudo_command(
+        "sudo true", sudo_available_check=_fail_available
+    ) == ("sudo true", None)
+
+
+def test_absent_sudo_binary_skips_prompt_and_rewrite(monkeypatch):
+    """#138514: no prompt and no `-S` rewrite when the backend has no sudo binary at all —
+    the command runs unchanged and fails immediately with "sudo: command not found"."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("sudo password prompt must not run when the backend has no sudo")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    command = "(sudo -n true && echo ok) || echo no"
+    assert terminal_tool_sudo._transform_sudo_command(
+        command, sudo_nopasswd_check=lambda: False, sudo_available_check=lambda: False
+    ) == (command, None)
+
+
+def test_present_sudo_binary_still_prompts(monkeypatch):
+    """An available sudo binary keeps today's prompt path — the check only skips unwinnable
+    prompts, it never replaces the password flow (#138514)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(
+        terminal_tool_sudo, "_prompt_for_sudo_password", lambda **_kwargs: "pw123"
+    )
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo true",
+        sudo_nopasswd_check=lambda: False,
+        sudo_available_check=lambda: True,
+    )
+
+    assert transformed == "sudo -S -p '' true"
+    assert sudo_stdin == "pw123\n"
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

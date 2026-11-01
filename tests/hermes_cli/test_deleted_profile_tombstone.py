@@ -8,6 +8,7 @@ lock the tombstone + no-mkdir contract without depending on Desktop.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -224,7 +225,9 @@ class TestDeletedProfileTombstone:
         # naming the stray dir, and leave every byte in place (never rmtree a non-tombstoned dir).
         (shell / "skills" / "my-skill").mkdir(parents=True)
         (shell / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
-        with pytest.raises(FileExistsError, match=str(shell)):
+        # match= is a regex; a Windows path ("C:\Users\...") is not a valid
+        # one ("incomplete escape \U"), so escape it.
+        with pytest.raises(FileExistsError, match=re.escape(str(shell))):
             create_profile("ghost", no_alias=True, no_skills=True)
         assert (shell / "skills" / "my-skill" / "SKILL.md").exists()
         assert "ghost" not in _named_homes(profile_env)

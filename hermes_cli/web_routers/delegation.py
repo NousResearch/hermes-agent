@@ -183,8 +183,34 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
         row["service_tier"] = tier
     if isinstance(entry.get("fallback_providers"), list):
         row["fallback_providers"] = entry["fallback_providers"]
+    turns = entry.get("max_iterations")
+    if isinstance(turns, str):
+        turns = turns.strip() or None
+    if turns is not None:
+        if isinstance(turns, str) and turns.isdigit():
+            turns = int(turns)
+        if isinstance(turns, bool) or not isinstance(turns, int) or turns < 1:
+            raise _bad_request(f"{label}: max_iterations must be a whole number of 1 or more "
+                               f"(got {entry.get('max_iterations')!r}).")
+        row["max_iterations"] = turns
+    seconds = entry.get("child_timeout_seconds")
+    if isinstance(seconds, str):
+        seconds = seconds.strip() or None
+    if seconds is not None:
+        if isinstance(seconds, str):
+            try:
+                seconds = float(seconds)
+            except ValueError:
+                seconds = None
+            else:
+                seconds = int(seconds) if seconds.is_integer() else seconds
+        if seconds is None or isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
+            raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
+                               f"(got {entry.get('child_timeout_seconds')!r}).")
+        row["child_timeout_seconds"] = seconds
     # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
-    validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers"}
+    validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers",
+                 "max_iterations", "child_timeout_seconds"}
     for field in sorted(ROUTE_KEYS - validated):
         if entry.get(field) not in (None, "", [], {}):
             row[field] = entry[field]

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.anthropic_endpoints import _is_third_party_anthropic_endpoint
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
@@ -874,6 +875,15 @@ def _stamp_limit_reset(result: dict[str, Any], agent: Any, api_error: Exception,
         result["final_response"] = f"{result['final_response']}\n\n{line}"
 
 
+def _bills_claude_subscription(agent: Any, base_url: Any) -> bool:
+    """The failed request went out on Anthropic's native OAuth wire (Bearer + Claude Code identity to
+    an anthropic.com host), the one route billed to a Pro/Max subscription. ``_is_anthropic_oauth``
+    alone also holds for the ``anthropic`` provider behind a third-party base_url, where the client
+    sends the token as x-api-key or plain Bearer (``_auth_style`` checks the URL first), so apply the
+    same third-party test. Pass ``base_url`` raw: ``str(None)`` reads as a third-party host."""
+    return bool(agent._is_anthropic_oauth) and not _is_third_party_anthropic_endpoint(base_url)
+
+
 def _print_nonretryable_auth_guidance(
     agent: Any, classified: Any, *, status_code: Optional[int], provider: Any, base_url: Any, model: Any,
 ) -> None:
@@ -884,7 +894,8 @@ def _print_nonretryable_auth_guidance(
 
     if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(
         agent, capability="model access", provider=provider, base_url=str(base_url),
-        model=model, unverified=classified.billing_unverified,
+        model=model, unverified=classified.billing_unverified, oauth=_bills_claude_subscription(agent, base_url),
+        console_credit_wall=classified.console_credit_wall,
     ):
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
@@ -1124,6 +1135,7 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
             usage_window=_usage_window_refusal(agent, classified, api_messages),
+            oauth=_bills_claude_subscription(agent, base_url),
         )
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
@@ -1193,7 +1205,8 @@ def max_retries_exhausted_result(
             agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
-            unverified=classified.billing_unverified,
+            unverified=classified.billing_unverified, oauth=_bills_claude_subscription(agent, base_url),
+            console_credit_wall=classified.console_credit_wall,
         )
         # A plan limit (usage-window 402) carries its own refusal line: no portal fetch, no second copy.
         if not (classified.error_context or {}).get("usage_window"):
@@ -1251,7 +1264,8 @@ def max_retries_exhausted_result(
             _final_response += f"\n\n{_billing_guidance}"
         # Structured recovery descriptor so every surface renders the same link + label.
         _billing_block = _billing_block_dict(
-            provider, base_url, model, _billing_guidance, unverified=_billing_unverified
+            provider, base_url, model, _billing_guidance, unverified=_billing_unverified,
+            oauth=_bills_claude_subscription(agent, base_url),
         )
     else:
         # Every surface reads final_response (the 💡 lines above are CLI-only), so the chat

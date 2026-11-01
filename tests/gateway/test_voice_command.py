@@ -1267,6 +1267,38 @@ class TestVoiceReception:
         assert len(completed) == 1
         assert completed[0][0] == 42
 
+    def test_automap_sole_allowlist_when_no_members(self):
+        """Last resort: single-allowlist user is inferred even with an empty member
+        list (the post-rejoin case where SPEAKING + VoiceState never arrive)."""
+        receiver = self._make_receiver(allowed_ids={"42"}, members=[])
+        receiver.start()
+        self._fill_buffer(receiver, 100)
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        assert completed[0][0] == 42
+        assert receiver._ssrc_to_user[100] == 42
+
+    def test_automap_sole_allowlist_when_channel_is_none(self):
+        """Last resort must still fire when the channel object is None (early-rejoin),
+        which the pre-fix early `return 0` inside the try would have skipped."""
+        receiver = self._make_receiver(allowed_ids={"42"}, members=[])
+        receiver.start()
+        receiver._vc.channel = None
+        self._fill_buffer(receiver, 100)
+        completed = receiver.check_silence()
+        assert len(completed) == 1
+        assert completed[0][0] == 42
+
+    def test_no_automap_multi_allowlist_no_members(self):
+        """Guard: with >1 allowed user and no member inference, the SSRC is NOT
+        attributed (would misattribute speech)."""
+        receiver = self._make_receiver(allowed_ids={"42", "43"}, members=[])
+        receiver.start()
+        self._fill_buffer(receiver, 100)
+        completed = receiver.check_silence()
+        assert completed == []
+        assert 100 not in receiver._ssrc_to_user
+
     # -- Stale buffer cleanup --
 
     def test_stale_unknown_buffer_discarded(self):

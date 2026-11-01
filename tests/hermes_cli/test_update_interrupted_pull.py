@@ -77,8 +77,18 @@ def checkout(tmp_path, monkeypatch):
     _git(origin, "update-index", "--chmod=+x", "tool.sh")
     _git(origin, "commit", "-qm", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    # Windows git defaults core.autocrlf=true: a file this test rewrites with newline="" (LF) then
+    # reads as locally modified, and the fast-forward refuses with "local changes ... would be
+    # overwritten". Pin the checkout's line-ending/mode handling so the cell proves the recovery
+    # logic on every platform.
+    _git(tmp_path, "-c", "core.autocrlf=false", "-c", "core.filemode=false", "clone", "-q",
+         str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
+    # `-c` on the clone only covers that command; persist the settings, since the later
+    # `git status` / `git merge` re-read the repo and global config (Windows defaults autocrlf=true).
+    _git(root, "config", "core.autocrlf", "false")
+    _git(root, "config", "core.filemode", "false")
+    _git(root, "reset", "-q", "--hard")
     monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", root)
     return root, _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
 
@@ -172,8 +182,26 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     staged = store / f"git-{version}-win32-x64" / "cmd" / "git.exe"
     staged.parent.mkdir(parents=True)
     calls = tmp_path / "staged-git-calls"
-    staged.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\nexec "{real_git}" "$@"\n', encoding="utf-8")
-    staged.chmod(0o755)
+    if sys.platform == "win32":
+        # CreateProcess refuses a script without an image header (WinError 193/216), so a POSIX stub
+        # cannot prove this cell on Windows. Keep every assertion: the restore's git still has to be
+        # the store's path, which now runs through the real git with its arguments recorded here.
+        staged.write_bytes(b"")
+        from hermes_cli import update_custody
+
+        real_run_git = update_custody.run_git
+
+        def run_via_store_git(git_cmd, args, **kwargs):
+            if git_cmd and os.path.normcase(os.path.abspath(str(git_cmd[0]))) == os.path.normcase(str(staged)):
+                with calls.open("a", encoding="utf-8") as handle:
+                    handle.write(" ".join(str(part) for part in args) + "\n")
+                git_cmd = [real_git, *[str(part) for part in git_cmd[1:]]]
+            return real_run_git(git_cmd, args, **kwargs)
+
+        monkeypatch.setattr(update_custody, "run_git", run_via_store_git)
+    else:
+        staged.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\nexec "{real_git}" "$@"\n', encoding="utf-8")
+        staged.chmod(0o755)
     with monkeypatch.context() as windows:
         windows.setattr(pm.paths, "store_root", lambda: store)
         windows.setattr(pm, "current_target", lambda: "win32-x64")
@@ -288,7 +316,12 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
         (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
     _git(origin, "commit", "-qam", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    # Windows git defaults core.autocrlf=true: a file this test rewrites with newline="" (LF) then
+    # reads as locally modified, and the fast-forward refuses with "local changes ... would be
+    # overwritten". Pin the checkout's line-ending/mode handling so the cell proves the recovery
+    # logic on every platform.
+    _git(tmp_path, "-c", "core.autocrlf=false", "-c", "core.filemode=false", "clone", "-q",
+         str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
     for i, name in enumerate(names[:150]):  # git got halfway
@@ -588,17 +621,14 @@ def test_an_empty_head_answer_keeps_the_marker(tmp_path, monkeypatch, capsys):
     marker for the next launch instead of reading as "the update finished"."""
     root, pre, target = _broken_release(tmp_path, 5)
     marker = _rollback_marker(root, pre, target)
-    stub = tmp_path / "silent-git"
-    stub.write_text("", encoding="utf-8")
-    monkeypatch.setattr(er, "_git_executable", lambda recorded="": str(stub))
-    real_run = subprocess.run
 
-    def silent(argv, *args, **kwargs):  # every git call "succeeds" with no output
-        if argv and argv[0] == str(stub):
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        return real_run(argv, *args, **kwargs)
+    # Every git call "succeeds" with no output. Patch the restore's own runner rather than a stub
+    # file: Windows refuses to execute a script without an image header (WinError 193), and this cell
+    # is about git's *answer*, not about the binary behind it.
+    def silent_git(*_args, **_kwargs):
+        return subprocess.CompletedProcess([], 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", silent)
+    monkeypatch.setattr(er, "_custody_git", lambda root, recorded="": silent_git)
     assert er.restore_interrupted_pull(root) is False
     assert marker.exists(), "an empty `rev-parse HEAD` deleted the marker over a torn tree"
     assert "Could not read HEAD" in capsys.readouterr().err

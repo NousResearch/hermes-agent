@@ -8,7 +8,12 @@ import { test, vi } from 'vitest'
 import WebSocket from 'ws'
 
 import { waitForDashboardPort } from './backend-ready'
-import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
+import {
+  createSourcePythonBackend,
+  installationLauncherCandidates,
+  resolveSourceInstallationBackend,
+  type SourceBackend
+} from './source-backend'
 
 const SERVE_ARGS = ['serve', '--host', '127.0.0.1', '--port', '0']
 
@@ -230,6 +235,24 @@ test('Windows console selection uses only the selected interpreter directory', (
     assert.equal(backend?.env.PYTHONHOME, '')
     assert.equal(createSourcePythonBackend(root, selected, [], { isWindows: false })?.command, selected)
     assert.equal(createSourcePythonBackend(root, null, []), null)
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
+})
+
+test('Windows installation launcher retries a command sibling after an executable block', (): void => {
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-launcher-fallback-'))
+  const executable: string = path.join(temp, 'hermes.exe')
+  const command: string = path.join(temp, 'hermes.cmd')
+
+  try {
+    fs.writeFileSync(executable, '')
+    fs.writeFileSync(command, '')
+    assert.deepEqual(installationLauncherCandidates(executable, true), [executable, command])
+    assert.deepEqual(installationLauncherCandidates(executable, false), [executable])
+    assert.deepEqual(installationLauncherCandidates(command, true), [command])
+    fs.unlinkSync(command)
+    assert.deepEqual(installationLauncherCandidates(executable, true), [executable])
   } finally {
     fs.rmSync(temp, { recursive: true, force: true })
   }

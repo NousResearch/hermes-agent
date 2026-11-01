@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path
 
 logger = logging.getLogger(__name__)
 
@@ -511,9 +511,13 @@ def _anthropic_fast_mode_entry(model: str) -> Optional[PricingEntry]:
         _normalize_anthropic_model_name(name))
 
 
-def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
+def _openrouter_pricing_entry(route: BillingRoute, *, cache_only: bool = False) -> Optional[PricingEntry]:
+    # OpenRouter's catalog is a flat model-id namespace and a reseller's price: authoritative only
+    # when OpenRouter is the billing vendor, never for another route that shares a model id.
+    if route.provider != "openrouter":
+        return None
     return _pricing_entry_from_metadata(
-        fetch_model_metadata(), route.model,
+        fetch_model_metadata(allow_network=not cache_only), route.model,
         source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
         pricing_version="openrouter-models-api",
     )
@@ -572,20 +576,125 @@ def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+def _vendor_catalog_ids() -> frozenset:
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV
+
+    return frozenset(PROVIDER_TO_MODELS_DEV.get(p, p) for p in _MODELS_DEV_DIRECT_HOSTS)
+
+
+def _route_on_provider_default_endpoint(route: BillingRoute) -> bool:
+    """True when the route bills through its provider's own default endpoint: no base URL, or
+    HTTPS:443 to the registry default's host AND path. A proxy, loopback, or a sibling product on
+    the same host (opencode-zen pointed at ``/zen/go/v1``) has no proof it bills at that rate card."""
+    if not route.base_url:
+        return True
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        pconfig = PROVIDER_REGISTRY.get(route.provider)
+    except Exception:
+        return False
+    default = getattr(pconfig, "inference_base_url", "") or ""
+    if not default:
+        return False
+    scheme, host, port = base_url_origin(route.base_url)
+    return (
+        (scheme, port) == ("https", 443)
+        and host == base_url_hostname(default)
+        and base_url_path(route.base_url) == base_url_path(default)
+    )
+
+
+def _models_dev_scoped_pricing_entry(route: BillingRoute, *, cache_only: bool = False) -> Optional[PricingEntry]:
+    """models.dev row scoped to the route's own provider (relays such as opencode-go carry their
+    own). A provider whose models.dev catalog IS a first-party vendor's (xai-oauth -> xai,
+    openai-codex -> openai) is skipped: the vendor's list price applies only through the direct
+    gate above. The row applies only on the provider's default endpoint
+    (``_route_on_provider_default_endpoint``). Always cache-only (``cache_only`` is accepted for
+    the builder signature)."""
+    from agent.models_dev import PROVIDER_TO_MODELS_DEV, lookup_models_dev_pricing
+
+    mdev_id = PROVIDER_TO_MODELS_DEV.get(route.provider or "")
+    if not mdev_id or not route.model or mdev_id in _vendor_catalog_ids():
+        return None
+    if not _route_on_provider_default_endpoint(route):
+        return None
+    cost = lookup_models_dev_pricing(route.provider, route.model, allow_network=False)
+    if not cost:
+        return None
+    return PricingEntry(
+        input_cost_per_million=_to_decimal(cost.get("input")),
+        output_cost_per_million=_to_decimal(cost.get("output")),
+        cache_read_cost_per_million=_to_decimal(cost.get("cache_read")),
+        cache_write_cost_per_million=_to_decimal(cost.get("cache_write")),
+        tier_threshold_tokens=int(cost["tier_threshold_tokens"]) if "tier_threshold_tokens" in cost else None,
+        input_cost_per_million_above=_to_decimal(cost.get("input_above")),
+        output_cost_per_million_above=_to_decimal(cost.get("output_above")),
+        cache_read_cost_per_million_above=_to_decimal(cost.get("cache_read_above")),
+        cache_write_cost_per_million_above=_to_decimal(cost.get("cache_write_above")),
+        source="provider_models_api", source_url="https://models.dev/api.json",
+        pricing_version="models-dev-api", fetched_at=_UTC_NOW(),
+    )
+
+
+_VALID_PRICING_SOURCES = ("models_dev", "openrouter")
+_DEFAULT_PRICING_SOURCE = "models_dev"
+_PRICING_SOURCE_BUILDERS = {
+    "models_dev": _models_dev_scoped_pricing_entry,
+    "openrouter": _openrouter_pricing_entry,
+}
+
+
+def _pricing_source_order() -> tuple[str, ...]:
+    """``pricing.external_source`` first, then the remaining sources; each appears once."""
+    primary = _DEFAULT_PRICING_SOURCE
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        pricing = (load_config_readonly() or {}).get("pricing")
+        candidate = pricing.get("external_source") if isinstance(pricing, dict) else None
+        if isinstance(candidate, str) and candidate.strip().lower() in _VALID_PRICING_SOURCES:
+            primary = candidate.strip().lower()
+    except Exception:
+        pass
+    return (primary, *(source for source in _VALID_PRICING_SOURCES if source != primary))
+
+
+def _external_pricing_entry(
+    route: BillingRoute, *, cache_only: bool = False, skip: tuple[str, ...] = (),
+) -> Optional[PricingEntry]:
+    """Configured external catalog, then the others, each tried at most once; every source is
+    provider-scoped, so an inapplicable one returns None."""
+    for source in _pricing_source_order():
+        if source in skip:
+            continue
+        try:
+            entry = _PRICING_SOURCE_BUILDERS[source](route, cache_only=cache_only)
+        except Exception:
+            entry = None
+        if entry is not None:
+            return entry
+    return None
+
+
 def get_pricing_entry(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    api_key: Optional[str] = None, *, cache_only: bool = False,
 ) -> Optional[PricingEntry]:
+    """Precedence: bundled snapshot -> provider ``/models`` -> direct first-party models.dev
+    (``_MODELS_DEV_DIRECT_HOSTS``) -> ``pricing.external_source`` -> the other external source.
+    ``cache_only`` makes no network request (display predicates such as ``has_known_pricing``)."""
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
     if route.provider == "openrouter":
-        return _openrouter_pricing_entry(route)
+        return _openrouter_pricing_entry(route, cache_only=cache_only) or _external_pricing_entry(
+            route, cache_only=cache_only, skip=("openrouter",))
 
     bundled_entry = _lookup_official_docs_pricing(route)
     if bundled_entry:
         return bundled_entry
-    if route.base_url:
+    if route.base_url and not cache_only:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
@@ -593,7 +702,7 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _models_dev_pricing_entry(route)
+    return _models_dev_pricing_entry(route) or _external_pricing_entry(route, cache_only=cache_only)
 
 
 # Usage-field candidate paths per API shape: (input/prompt total, output, cache
@@ -755,7 +864,9 @@ def has_known_pricing(
     api_key: Optional[str] = None,
 ) -> bool:
     """True if pricing data exists for this model+route (direct lookup, no dummy usage)."""
-    return get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key) is not None
+    return get_pricing_entry(
+        model_name, provider=provider, base_url=base_url, api_key=api_key, cache_only=True,
+    ) is not None
 
 
 def format_duration_compact(seconds: float) -> str:

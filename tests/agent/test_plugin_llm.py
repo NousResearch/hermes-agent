@@ -26,6 +26,7 @@ from agent.plugin_llm import (
     _coerce_allowlist,
     _parse_structured_text,
     _strip_code_fences,
+    _extract_finish_reason,
     _TrustPolicy,
     make_plugin_llm_for_test,
 )
@@ -34,13 +35,15 @@ from agent.plugin_llm import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_response(text: str, *, prompt: int = 4, completion: int = 6) -> SimpleNamespace:
+def _fake_response(
+    text: str, *, prompt: int = 4, completion: int = 6, finish_reason: str | None = "stop"
+) -> SimpleNamespace:
     """Build an OpenAI-shaped response with the given text + token usage."""
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
                 message=SimpleNamespace(content=text, role="assistant"),
-                finish_reason="stop",
+                finish_reason=finish_reason,
             )
         ],
         usage=SimpleNamespace(
@@ -317,6 +320,28 @@ class TestPluginLlmFacade:
             "confidence": 0.99,
         }
         assert result.content_type == "json"
+
+    @pytest.mark.parametrize("finish_reason", ["stop", "length", "content_filter", "other", None])
+    def test_result_preserves_provider_finish_reason(self, finish_reason):
+        def fake_caller(**_kwargs):
+            return "openai", "gpt-4o", _fake_response('{"ok": true}', finish_reason=finish_reason)
+
+        llm = make_plugin_llm_for_test(
+            plugin_id="my-plugin", policy=_TrustPolicy(plugin_id="my-plugin"), sync_caller=fake_caller,
+        )
+        result = llm.complete_structured(
+            instructions="Extract", input=[PluginLlmTextInput(text="data")], json_mode=True,
+        )
+        assert result.finish_reason == finish_reason
+        assert result.audit["finish_reason"] == finish_reason
+
+    @pytest.mark.parametrize("response", [
+        {},
+        SimpleNamespace(choices=[]),
+        {"choices": [{"finish_reason": 7}]},
+    ])
+    def test_finish_reason_extraction_is_fail_closed(self, response):
+        assert _extract_finish_reason(response) is None
 
     def test_complete_structured_with_image_passes_image_url_part(self):
         captured: dict = {}

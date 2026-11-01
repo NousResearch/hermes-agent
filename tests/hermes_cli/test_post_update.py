@@ -271,3 +271,102 @@ def test_scope_cli_rejects_unrelated_flags_without_running_steps(monkeypatch):
             post_update.main(flags)
         assert exc.value.code == 2
         assert ran == []
+
+
+# ── declared post-update commands (post_update.commands) ─────────────
+
+
+def _declare(monkeypatch, commands):
+    """Point load_config_readonly at a config carrying the declared block."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"post_update": {"commands": commands}},
+    )
+
+
+def test_declared_commands_absent_is_a_soft_skip(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is True
+    assert result["skipped"] == "no-declared-commands"
+
+
+def test_declared_commands_run_in_order_and_report(monkeypatch, tmp_path):
+    marker = tmp_path / "order.txt"
+    _declare(monkeypatch, [
+        {"command": f"/bin/sh -c 'echo one >> {marker}'", "run_with": "system"},
+        {"command": f"/bin/sh -c 'echo two >> {marker}'", "run_with": "system"},
+    ])
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is True
+    assert len(result["ran"]) == 2
+    assert marker.read_text().splitlines() == ["one", "two"]
+
+
+def test_declared_command_failure_is_reported_not_raised(monkeypatch):
+    # A non-zero exit must surface as a failed step (the runner is
+    # failure-isolated), never as an exception that aborts the boot.
+    _declare(monkeypatch, [{"command": "/bin/sh -c 'exit 3'", "run_with": "system"}])
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is False
+    assert "rc=3" in result["error"]
+
+
+def test_declared_command_timeout_is_reported(monkeypatch):
+    _declare(monkeypatch, [{"command": "/bin/sh -c 'sleep 5'", "run_with": "system", "timeout": 1}])
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is False
+    assert "timed out" in result["error"]
+
+
+def test_declared_command_gets_the_active_profile_home(monkeypatch, tmp_path):
+    # A command that re-asserts profile configs must see the profile it is
+    # restoring, not the launch profile's ambient value.
+    out = tmp_path / "home.txt"
+    _declare(monkeypatch, [{"command": f"/bin/sh -c 'echo $HERMES_HOME > {out}'", "run_with": "system"}])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-home"))
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is True
+    assert out.read_text().strip() == str(tmp_path / "profile-home")
+
+
+def test_declared_commands_accept_a_bare_string(monkeypatch, tmp_path):
+    out = tmp_path / "bare.txt"
+    _declare(monkeypatch, [f"/bin/sh -c 'echo bare > {out}'"])
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is True
+    assert out.read_text().strip() == "bare"
+
+
+def test_declared_commands_malformed_entries_are_reported(monkeypatch):
+    _declare(monkeypatch, [{"command": ""}, "   ", {"no_command": 1}])
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is False
+    assert result["error"]
+
+
+def test_declared_commands_is_registered_in_home_steps():
+    names = {name for name, _ in HOME_STEPS}
+    assert "run_declared_commands" in names
+    # The boot contract: it must run AFTER config migration (so the config
+    # schema is current) and BEFORE launchers are published.
+    order = [name for name, _ in HOME_STEPS]
+    assert order.index("migrate_config") < order.index("run_declared_commands")
+    assert order.index("run_declared_commands") < order.index("expose_cli")
+
+
+def test_declared_command_expands_tilde(monkeypatch, tmp_path):
+    # shlex.split does not expand ~, and a shell-less exec passes the literal
+    # path to the OS — so a leading ~ must be expanded or the command fails
+    # with "No such file or directory".
+    out = tmp_path / "tilde.txt"
+    script = tmp_path / "run.sh"
+    script.write_text(f'#!/bin/sh\necho tilde-ok > {out}\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _declare(monkeypatch, [f"~/run.sh", ])
+    # The declared command is written with ~; HOME points at tmp_path, so the
+    # expansion must resolve to the script we just wrote.
+    result = post_update.step_run_declared_commands()
+    assert result["ok"] is True, result
+    assert out.read_text().strip() == "tilde-ok"

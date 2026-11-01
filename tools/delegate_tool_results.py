@@ -399,6 +399,12 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     try:
         current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
         parent_agent.session_estimated_cost_usd = current + children_cost_total
+        # Children billed by the provider carry their spend in the actual column; keep the rollup
+        # in whichever column already holds the parent's money so nothing is double-counted.
+        parent_actual = getattr(parent_agent, "session_actual_cost_usd", 0.0)
+        if isinstance(parent_actual, (int, float)) and not isinstance(parent_actual, bool) and parent_actual > 0.0:
+            parent_agent.session_actual_cost_usd = parent_actual + children_cost_total
+            parent_agent.session_estimated_cost_usd = current
         if getattr(parent_agent, "session_cost_source", "none") in {None, "", "none"}:
             parent_agent.session_cost_source = "subagent"
         if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:

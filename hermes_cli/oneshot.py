@@ -29,7 +29,8 @@ _ALL_TOOLSETS = {"all", "*"}
 # ``interrupted`` / ``turn_exit_reason`` say WHY ``completed`` is false, so a pipeline can tell
 # an iteration-budget stop from a Ctrl-C without parsing stderr (#111770).
 _USAGE_KEYS = (
-    "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
+    "estimated_cost_usd", "actual_cost_usd", "cost_status", "cost_source", "input_tokens",
+    "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed", "partial", "interrupted", "turn_exit_reason",
 )

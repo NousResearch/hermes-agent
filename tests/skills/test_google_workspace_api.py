@@ -136,6 +136,100 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert params["calendarId"] == "primary"
 
 
+@pytest.mark.parametrize(
+    ("reminders", "expected_reminders"),
+    [
+        (15, {"useDefault": False, "overrides": [{"method": "popup", "minutes": 15}]}),
+        (0, None),
+        (-5, None),
+    ],
+)
+def test_api_calendar_create_threads_popup_reminders_to_gws(
+    api_module, reminders, expected_reminders
+):
+    captured = {}
+
+    def capture_run(parts, **kwargs):
+        captured["parts"] = parts
+        captured["body"] = kwargs["body"]
+        return {"id": "event-1", "summary": "Standup"}
+
+    args = api_module.argparse.Namespace(
+        summary="Standup",
+        start="2026-08-23T09:00:00Z",
+        end="2026-08-23T09:30:00Z",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+        reminders=reminders,
+    )
+
+    with patch.object(api_module, "_run_gws", side_effect=capture_run):
+        api_module.calendar_create(args)
+
+    assert captured["parts"] == ["calendar", "events", "insert"]
+    if expected_reminders is None:
+        assert "reminders" not in captured["body"]
+    else:
+        assert captured["body"]["reminders"] == expected_reminders
+
+
+def test_api_calendar_create_threads_popup_reminders_to_python_client(api_module):
+    insert = MagicMock()
+    insert.execute.return_value = {"id": "event-1", "summary": "Standup"}
+    service = MagicMock()
+    service.events.return_value.insert.return_value = insert
+    args = api_module.argparse.Namespace(
+        summary="Standup",
+        start="2026-08-23T09:00:00Z",
+        end="2026-08-23T09:30:00Z",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+        reminders=15,
+    )
+
+    with patch.object(api_module, "_gws_binary", return_value=None), patch.object(
+        api_module, "build_service", return_value=service
+    ):
+        api_module.calendar_create(args)
+
+    body = service.events.return_value.insert.call_args.kwargs["body"]
+    assert body["reminders"] == {
+        "useDefault": False,
+        "overrides": [{"method": "popup", "minutes": 15}],
+    }
+
+
+@pytest.mark.parametrize(("flag", "expected"), [([], 0), (["--reminders", "15"], 15)])
+def test_api_calendar_create_parser_accepts_reminder_minutes(api_module, flag, expected):
+    captured = {}
+
+    def capture_create(args):
+        captured["reminders"] = args.reminders
+
+    argv = [
+        "google_api.py",
+        "calendar",
+        "create",
+        "--summary",
+        "Standup",
+        "--start",
+        "2026-08-23T09:00:00Z",
+        "--end",
+        "2026-08-23T09:30:00Z",
+        *flag,
+    ]
+    with patch.object(sys, "argv", argv), patch.object(
+        api_module, "calendar_create", side_effect=capture_create
+    ):
+        api_module.main()
+
+    assert captured["reminders"] == expected
+
+
 
 
 

@@ -137,6 +137,18 @@ def test_no_nudge_after_handoff_tool(clear_kanban_env, tool_name, who):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+def test_review_nudge_uses_review_terminal_actions(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review")
+    clear_kanban_env.setenv("HERMES_KANBAN_SOURCE_STATUS", "review")
+
+    nudge = build_kanban_stop_nudge(messages=[], attempts=0)
+
+    assert nudge is not None
+    assert "approve the reviewed work" in nudge
+    assert "kanban_request_changes" in nudge
+    assert "kanban_request_review" not in nudge
+
+
 def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     """Widening the set must not swallow the case the guard exists for."""
     clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")

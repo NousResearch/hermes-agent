@@ -14,6 +14,7 @@ scrubbing, interpreter/cwd), tools/code_execution_rpc.py (RPC servers).
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import secrets
 import shlex
@@ -498,7 +499,7 @@ def _env_temp_dir(env: Any) -> str:
             temp_dir = get_temp_dir()
         except Exception as exc:
             logger.debug("Could not resolve execute_code env temp dir: %s", exc)
-    for candidate in (temp_dir, tempfile.gettempdir()):
+    for candidate in (temp_dir, _termux_safe_tempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
     return tempfile.gettempdir()

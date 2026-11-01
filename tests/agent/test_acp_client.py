@@ -13,6 +13,21 @@ import pytest
 
 from agent.acp_client import ACPClient
 
+
+@pytest.mark.platforms("posix")
+def test_home_fallback_uses_terminal_temp_dir(tmp_path, monkeypatch):
+    import pwd
+    import tempfile
+
+    from agent.acp_client import _resolve_home_dir
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("TERMINAL_TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr(os.path, "expanduser", lambda _: "~")
+    monkeypatch.setattr(pwd, "getpwuid", lambda _: (_ for _ in ()).throw(KeyError()))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/fallback")
+    assert _resolve_home_dir() == str(tmp_path)
+
 _REPO = Path(__file__).resolve().parents[2]
 
 _CATALOG_SERVER = """import json

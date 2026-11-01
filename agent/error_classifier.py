@@ -116,7 +116,31 @@ _BILLING_PATTERNS = (
     # limit" free text is NOT matched: substring rules can't negate the
     # "non-terminal billing limit" wording, and the structured code covers it.
     "hard billing limit",
+    # Google's account ceiling on a 429 ("Your project has exceeded its monthly spending cap.");
+    # kept this specific so "spending capacity" throttle wording never lands here. The structured
+    # twin is ``google.rpc.ErrorInfo.reason == QUOTA_EXHAUSTED`` (``_google_rpc_reason``).
+    "exceeded its monthly spending cap",
 )
+
+# Google reuses HTTP 429 + ``status: RESOURCE_EXHAUSTED`` for an account billing ceiling (replays
+# identically forever) AND for a per-minute throttle (retry is right); only the
+# ``google.rpc.ErrorInfo.reason`` detail separates them (omp#13092). The prose is no help on
+# the native route: "RESOURCE_EXHAUSTED" in the message is itself a rate-limit phrase.
+_GOOGLE_BILLING_REASONS = frozenset({"QUOTA_EXHAUSTED", "INSUFFICIENT_G1_CREDITS_BALANCE"})
+# The same ceiling often arrives with EMPTY ``details`` (no ErrorInfo to read), where the native
+# message "Gemini HTTP 429 (RESOURCE_EXHAUSTED): ...spending cap..." still reads as a throttle.
+# A word-bounded "spend(ing) cap" names an account limit; "spend capacity" stays a throttle.
+_SPEND_CAP_RE = re.compile(r"\bspend(?:ing)?\s+cap\b")
+_GOOGLE_THROTTLE_REASONS = frozenset({"RATE_LIMIT_EXCEEDED"})
+_GOOGLE_ERROR_INFO_TYPE = "/google.rpc.ErrorInfo"
+_GOOGLE_RETRY_INFO_TYPE = "/google.rpc.RetryInfo"
+_GOOGLE_QUOTA_FAILURE_TYPE = "/google.rpc.QuotaFailure"
+# A ``QuotaFailure`` violation on a daily window, or on a quota whose value is 0 (the key has no
+# entitlement to the model at all, e.g. a free-tier key on a Pro model), replays until tomorrow or
+# forever, however short its ``RetryInfo`` says the wait is (omp#17127). AI Studio sends no
+# ``ErrorInfo`` on these, so this is the only structured signal.
+_GOOGLE_DAILY_QUOTA_RE = re.compile(r"per_?day|daily")
+_GOOGLE_ZERO_QUOTA_RE = re.compile(r"\s*0+(?:\.0+)?\s*")
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
 # for a content-filter rejection (#82154). Verdict stays ``billing`` but is
@@ -1108,6 +1132,21 @@ def _status_429(c: _Ctx) -> Verdict:
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    # Google's ``google.rpc.ErrorInfo.reason`` is equally decisive, in both directions: the
+    # billing reasons must not burn the retry budget as a throttle, and a per-minute throttle
+    # (whose "Quota exceeded ... per_minute" prose reads as a quota wall) must not bench the key.
+    google_reason = _google_rpc_reason(c.body)
+    violations = _google_quota_violations(c.body)
+    if (google_reason in _GOOGLE_BILLING_REASONS or any(map(_google_violation_is_terminal, violations))
+            or (not google_reason and _SPEND_CAP_RE.search(c.msg))):
+        return _V_BILLING
+    if google_reason in _GOOGLE_THROTTLE_REASONS or violations:
+        reset = _google_retry_delay_seconds(c.body)
+        if reset is None:
+            reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
+        if reset:
+            return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context={"reset_at": time.time() + reset})
+        return _V_RATE_LIMIT
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):
@@ -1331,6 +1370,55 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
     if response_headers and hasattr(response_headers, "get"):
         return any(response_headers.get(h) not in (None, "") for h in _RESET_HEADERS)
     return False
+
+
+def _google_rpc_details(body: Any, type_suffix: str) -> Iterator[dict]:
+    """``error.details[]`` entries of one ``@type`` from a Google ``RESOURCE_EXHAUSTED`` body. The
+    OpenAI SDK hands over the already-unwrapped ``error`` object on OpenAI-compatible routes."""
+    err = _error_obj(body) or (body if isinstance(body, dict) else {})
+    if str(err.get("status") or "").strip().upper() != "RESOURCE_EXHAUSTED":
+        return
+    details = err.get("details")
+    for detail in details if isinstance(details, list) else []:
+        if isinstance(detail, dict) and str(detail.get("@type") or "").endswith(type_suffix):
+            yield detail
+
+
+def _google_rpc_reason(body: Any) -> str:
+    """Upper-cased ``google.rpc.ErrorInfo.reason`` of a Google 429, ``""`` when the body has none."""
+    for detail in _google_rpc_details(body, _GOOGLE_ERROR_INFO_TYPE):
+        if isinstance(detail.get("reason"), str) and detail["reason"].strip():
+            return detail["reason"].strip().upper()
+    return ""
+
+
+def _google_quota_violations(body: Any) -> list[dict]:
+    """Every ``google.rpc.QuotaFailure`` violation of a Google 429."""
+    violations: list[dict] = []
+    for detail in _google_rpc_details(body, _GOOGLE_QUOTA_FAILURE_TYPE):
+        found = detail.get("violations")
+        violations += [v for v in found if isinstance(v, dict)] if isinstance(found, list) else []
+    return violations
+
+
+def _google_violation_is_terminal(violation: dict) -> bool:
+    """A daily-window or zero-entitlement quota: no short retry will clear it."""
+    value = violation.get("quotaValue")
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool) and _GOOGLE_ZERO_QUOTA_RE.fullmatch(str(value)):
+        return True
+    scope = f"{violation.get('quotaId') or ''} {violation.get('quotaMetric') or ''}".lower()
+    return bool(_GOOGLE_DAILY_QUOTA_RE.search(scope))
+
+
+def _google_retry_delay_seconds(body: Any) -> Optional[float]:
+    """``google.rpc.RetryInfo.retryDelay`` (protobuf Duration JSON, ``"27s"``) as seconds, else None."""
+    for detail in _google_rpc_details(body, _GOOGLE_RETRY_INFO_TYPE):
+        raw = str(detail.get("retryDelay") or "").strip().rstrip("s")
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            continue
+    return None
 
 
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:

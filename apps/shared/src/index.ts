@@ -117,6 +117,7 @@ export {
   usageLevel,
   usageTag
 } from './plan-usage'
+export { officePreviewKind, type OfficePreviewKind, officePreviewKindFromPath } from './preview-kind'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

@@ -16,6 +16,20 @@ from tools import mcp_tool_sampling as _sampling
 logger = logging.getLogger("tools.mcp_tool")
 
 
+def _is_shutdown_scheduling_error(exc: BaseException) -> bool:
+    """True when the transport could not even be *scheduled* because the interpreter / thread pool is
+    being torn down — not evidence about MCP server health.
+
+    Delegates to ``tools.interpreter_shutdown`` so both CPython message variants (``cannot schedule new
+    futures after shutdown`` and ``... after interpreter shutdown``) plus ``sys.is_finalizing()`` are
+    recognized here exactly as at the other covered sites (cron delivery, tool submission, conversation
+    retry — the bug class behind #55924/#58720).
+    """
+    from tools.interpreter_shutdown import interpreter_shutting_down
+
+    return interpreter_shutting_down(exc)
+
+
 @dataclass
 class _RetryBudget:
     """Per-run() retry counters (``_reconnect_retries`` stays on the task: handlers/tests read it)."""
@@ -443,6 +457,15 @@ class MCPServerRunMixin:
         """Transport raised: classify, then run the initial-connect or reconnect ladder. False = exit."""
         # Unwrap anyio TaskGroup wrappers: the group's str() hides the root cause.
         root = _errors._unwrap_exception_group(exc)
+        if _is_shutdown_scheduling_error(root):
+            # The transport could not even be scheduled: the interpreter (or the pool backing the
+            # reconnect) is being torn down. That is an EXIT signal, never a health signal — charging the
+            # ladder here parked every managed server with a ``degraded → parked`` WARNING during one
+            # gateway restart (7 servers × 5 futile retries each), which then reads as a real outage in
+            # the error log. Mirrors the ``_shutdown_event`` branch below: log DEBUG and stop the loop.
+            logger.debug("MCP server '%s' disconnected during shutdown: %s: %s",
+                         self.name, type(root).__name__, root)
+            return False
         failure_class = _errors._classify_mcp_failure(root)
         if self._is_recycled_stdio():
             logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed, marking unavailable "

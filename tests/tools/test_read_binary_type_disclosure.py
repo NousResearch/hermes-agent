@@ -77,3 +77,19 @@ class TestReadFileBinaryDisclosure:
         p.write_bytes(b"\x00\x01\x02" * 500)
         result = json.loads(read_file_tool(str(p)))
         assert "unknown binary" in result.get("error", "")
+
+    def test_video_refusal_guides_local_frame_extraction(self, tmp_path, monkeypatch):
+        # A suffix-less link to a clip still gets the video next step, with the real path quoted.
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        clip = tmp_path / "my clip.MOV"
+        clip.write_bytes(b"\x00\x00\x00\x18ftypqt  " + _noise(256))
+        try:
+            (tmp_path / "latest").symlink_to(clip)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        error = json.loads(read_file_tool(str(tmp_path / "latest")))["error"]
+        assert "frames" in error and "vision_analyze" in error
+        assert f"ffmpeg -v error -i '{clip}'" in error
+        archive = tmp_path / "bundle.zip"
+        archive.write_bytes(b"PK\x03\x04" + _noise(64))
+        assert "ffmpeg" not in json.loads(read_file_tool(str(archive)))["error"]

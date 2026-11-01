@@ -29,6 +29,7 @@ import { applyConnectionRequest, clearConnectionOperation } from './connectionOp
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
+import type { SessionTabView } from './sessionTabsStore.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
 import { captureDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
@@ -39,6 +40,23 @@ import { describeCredentialWarning } from './userMessages.js'
 export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+
+const tabCreationDirectory = (keepCurrent: boolean) =>
+  (keepCurrent ? getUiState().info?.cwd : undefined) || STARTUP_WORKSPACE_CWD
+
+const createdTabView = (
+  result: SessionCreateResponse,
+  storedId: string,
+  info: null | SessionInfo,
+  cwd: string,
+  title: string
+): SessionTabView => ({
+  id: result.session_id,
+  storedId,
+  cwd: info?.cwd || cwd || process.env.HERMES_CWD || '',
+  title: title || info?.title || '',
+  running: false
+})
 
 const statusFromLiveSession = (status?: string, running = false) => {
   if (status === 'waiting') {
@@ -139,6 +157,8 @@ export interface UseSessionLifecycleOptions {
   composerActions: ComposerActions
   gw: GatewayClient
   onFreshSessionStarted?: (sessionId: string) => void
+  onBeforeSessionChange?: () => void
+  onSessionActivated?: (view: SessionTabView) => void
   panel: (title: string, sections: PanelSection[]) => void
   rpc: GatewayRpc
   scrollRef: RefObject<null | ScrollBoxHandle>
@@ -157,6 +177,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     composerActions,
     gw,
     onFreshSessionStarted,
+    onBeforeSessionChange,
+    onSessionActivated,
     panel,
     rpc,
     scrollRef,
@@ -175,7 +197,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeSession = useCallback(
     async (targetSid?: null | string, deferMessages = false) => {
       const closed =
-        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+        targetSid && !gw.isCanonical
+          ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
+          : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -253,7 +277,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeForExit = useCallback(async () => {
     const open = [...canonicalSubscriptions.current.entries()]
 
-    await Promise.all(open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown')))
+    await Promise.all(
+      open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown'))
+    )
   }, [detachCanonical])
 
   // The Ink session switcher's `^d` close of a live row. On the legacy transport it is main's
@@ -353,7 +379,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         previousSubscription &&
         (previousSid !== result.session_id || previousSubscription !== result.subscription_id)
       ) {
-        detachCanonical(previousSid, previousSubscription, closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined)
+        detachCanonical(
+          previousSid,
+          previousSubscription,
+          closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined
+        )
       }
     },
     [detachCanonical, gw.isCanonical]
@@ -365,7 +395,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, usage: ZERO })
+    patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, sessionTitle: '', usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -430,7 +460,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         // HERMES_TUI_CWD is the dashboard-picked workspace: an explicit cwd on
         // session.create on both transports, so /new stays in that workspace.
-        const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
+        const newCwd = tabCreationDirectory(keepCurrent)
+        const workspaceCwd = newCwd ? { cwd: newCwd } : {}
 
         const r = await rpc<SessionCreateResponse>(
           'session.create',
@@ -457,6 +488,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
         const requestedTitle = title?.trim() ?? ''
 
+        onBeforeSessionChange?.()
         resetSession()
         setSessionStartedAt(Date.now())
 
@@ -469,6 +501,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           storedSid,
           usage: usageFrom(info)
         })
+
+        onSessionActivated?.(createdTabView(r, storedSid, info, newCwd, requestedTitle))
 
         if (info) {
           setHistoryItems([introMsg(info)])
@@ -523,6 +557,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       finishAttachment,
       gw,
       onFreshSessionStarted,
+      onBeforeSessionChange,
+      onSessionActivated,
       panel,
       resetSession,
       rpc,
@@ -568,7 +604,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           )
         : gw.request<SessionActivateResponse>('session.activate', { session_id: id })
 
-      request
+      return request
         .then(raw => {
           const r = asRpcResult<SessionActivateResponse>(raw)
 
@@ -591,6 +627,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
+          onBeforeSessionChange?.()
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
           const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
@@ -604,6 +641,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             status: statusFromLiveSession(r.status, running),
             storedSid,
             usage: usageFrom(info)
+          })
+          onSessionActivated?.({
+            id: r.session_id,
+            storedId: storedSid,
+            requestedId: id,
+            cwd: info?.cwd || process.env.HERMES_CWD || '',
+            title: info?.title || '',
+            running
           })
           // resetSession dropped the previous session's controls; the snapshot's
           // still-pending approval/clarify prompts are the only way they come back.
@@ -640,6 +685,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       gw,
       resetSession,
       scrollRef,
+      onBeforeSessionChange,
+      onSessionActivated,
       setHistoryItems,
       setSessionStartedAt,
       sys
@@ -708,6 +755,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               // A successful resume authorizes the requested source → canonical
               // successor mapping; ordinary focus changes never migrate input.
               migratePendingInputs(destination, r.session_id, info?.stored_session_id)
+              onBeforeSessionChange?.()
               resetSession()
               setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
@@ -723,6 +771,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
                 status: statusFromLiveSession(r.status ?? undefined, running),
                 storedSid,
                 usage: usageFrom(info)
+              })
+              onSessionActivated?.({
+                id: r.session_id,
+                storedId: storedSid,
+                requestedId: id,
+                cwd: info?.cwd || process.env.HERMES_CWD || '',
+                title: info?.title || '',
+                running
               })
               gw.hydrateSharedPrompts?.(r)
               hydrateLiveSessionInflight(r.inflight)
@@ -764,6 +820,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       gw,
       panel,
       resetSession,
+      onBeforeSessionChange,
+      onSessionActivated,
       rpc,
       scrollRef,
       setHistoryItems,

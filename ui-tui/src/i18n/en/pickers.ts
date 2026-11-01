@@ -107,6 +107,12 @@ export const pickersEn = {
     },
     session: {
       title: 'Sessions',
+      directory: (cwd: string) => `Directory: ${cwd}`,
+      noPreview: 'No conversation preview',
+      tabs: {
+        newChat: 'New chat',
+        unsentDraft: 'This tab has an unsent draft. Send or clear it before closing the tab.'
+      },
       loading: 'loading sessions…',
       modelUnknown: 'model?',
       currentOrDefault: 'current/default',

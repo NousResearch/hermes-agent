@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
+import { SLASH_COMMANDS } from '../app/slash/registry.js'
 import { getUiState, sessionCwd } from '../app/uiStore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -10,6 +11,10 @@ import type { CompletionResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps } from '../sdk/registry.js'
+
+// Gateway rows use bare names (sometimes with a trailing completion space);
+// local rows carry a slash. Compare their command names, not insertion text.
+const slashCompletionKey = (text: string) => text.replace(/^\//, '').trimEnd()
 
 /** Client-side widget apps live in the TUI's registry, not the gateway — so
  *  `/` completions merge their title/metadata here. Registry-driven: a new
@@ -23,10 +28,42 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
   }
 
   const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
-    .filter(app => !items.some(item => item.text === `/${app.id}`))
+    .filter(app => !items.some(item => slashCompletionKey(item.text) === app.id))
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
 
   return [...items, ...local]
+}
+
+/** Local handlers are not part of the gateway's `complete.slash` registry.
+ *  Use the dispatch registry itself so new TUI commands and their aliases are
+ *  discoverable without duplicating command names in the suggestion menu. */
+export function mergeTuiCommandItems(input: string, items: CompletionItem[]): CompletionItem[] {
+  // Arguments, inline skill references and paths keep their existing completer.
+  if (!input.startsWith('/') || /\s/.test(input)) {
+    return items
+  }
+
+  const candidates = new Map(items.map(item => [slashCompletionKey(item.text), item]))
+
+  for (const command of SLASH_COMMANDS) {
+    for (const name of [command.name, ...(command.aliases ?? [])]) {
+      const text = `/${name}`
+      const existing = candidates.get(name)
+
+      // The local handler owns this name (notably /new), including its help.
+      candidates.set(name, {
+        text: existing?.text ?? text,
+        display: text,
+        meta: command.help ?? existing?.meta ?? '',
+        kind: 'command'
+      })
+    }
+  }
+
+  return rankSlashItems(mergeWidgetAppItems(input, [...candidates.values()]), input, item => ({
+    id: item.text,
+    description: item.meta
+  }))
 }
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
@@ -117,6 +154,13 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
+    // Client-only controls should be visible even before the gateway replies.
+    const local = request.method === 'complete.slash' && !request.skillsOnly ? mergeTuiCommandItems(input, []) : []
+
+    setCompletions(local)
+    setCompIdx(0)
+    setCompReplace(request.replaceFrom)
+
     const timer = setTimeout(() => {
       if (ref.current !== input) {
         return
@@ -138,7 +182,9 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           const r = asRpcResult<CompletionResponse>(raw)
 
           const fetched =
-            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
+            request.method === 'complete.slash' && !request.skillsOnly
+              ? mergeTuiCommandItems(input, r?.items ?? [])
+              : (r?.items ?? [])
 
           // Mid-message offers SKILLS only. A built-in like `/model` or `/new`
           // acts on the app, so it's meaningless as a reference inside prose —
@@ -164,13 +210,17 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             return
           }
 
-          setCompletions([
-            {
-              text: '',
-              display: t('libText.completion.unavailable'),
-              meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
-            }
-          ])
+          setCompletions(
+            local.length
+              ? local
+              : [
+                  {
+                    text: '',
+                    display: t('libText.completion.unavailable'),
+                    meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
+                  }
+                ]
+          )
           setCompIdx(0)
           setCompReplace(request.replaceFrom)
         })

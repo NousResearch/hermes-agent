@@ -196,7 +196,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['new'],
     help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {

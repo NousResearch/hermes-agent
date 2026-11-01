@@ -40,6 +40,7 @@ import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
+import { SessionTabsBar } from './sessionTabsBar.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -597,6 +598,13 @@ export const AppLayout = memo(function AppLayout({
   return (
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position={NATIVE_MODE ? undefined : 'relative'}>
+        <SessionTabsBar
+          columns={composer.cols}
+          currentId={ui.sid}
+          cwd={ui.info?.cwd || process.env.HERMES_CWD || process.env.HERMES_TUI_CWD}
+          onAction={actions.sessionTabAction}
+          t={ui.theme}
+        />
         <Box flexDirection="row" flexGrow={1}>
           {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
           {overlay.agents ? (

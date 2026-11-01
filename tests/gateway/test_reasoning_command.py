@@ -91,6 +91,25 @@ class TestReasoningCommand:
 
 
     @pytest.mark.asyncio
+    async def test_handle_reasoning_command_survives_model_string_shorthand(self, tmp_path, monkeypatch):
+        """``model: <id>`` (accepted by gateway/run.py, cron, hermes_cli/main.py) must not crash
+        the no-args status path: _load_gateway_config(...).get("model", {}) returns a str, and
+        the route-building .get() calls right after used to raise AttributeError outside the
+        fail-open contextlib.suppress()."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("model: anthropic/claude-opus-5\n", encoding="utf-8")
+
+        runner = _make_runner()
+        runner.config_path = config_path
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
+
+        assert result is not None
+        assert "Reasoning" in result
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("effort", ["max", "ultra"])
     async def test_handle_reasoning_command_accepts_extended_efforts(
         self, tmp_path, monkeypatch, effort

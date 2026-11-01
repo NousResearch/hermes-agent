@@ -1064,6 +1064,9 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
+        # Per-frame zlib on the loop buys nothing for a local client (build_listener_server); a peer
+        # behind a tunnel (SSH-isolated backend, public gate) keeps it.
+        ws_per_message_deflate=ssh_isolated or not _is_loopback or bool(app.state.auth_required),
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
         # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
         # uvicorn's default (None) waits on lingering ASGI tasks forever, so a

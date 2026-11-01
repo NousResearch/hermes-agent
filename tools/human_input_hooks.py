@@ -4,7 +4,7 @@
 dangerous-command approval) and ``on_human_input_resolved`` fires exactly once when the wait ends,
 with the same ``request_id`` and an ``outcome``. Observers only: return values are ignored and a
 failing plugin never affects the prompt. Payloads never carry what the human typed (password,
-answers), and ``prompt`` is force-redacted so credentials in a command never reach a plugin.
+answers), and ``prompt`` is force-redacted (with hidden characters shown) so credentials in a command never reach a plugin.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ class HumanInputRequest:
 
 def _redacted(text: str) -> str:
     try:
-        from agent.redact import redact_sensitive_text
-        return redact_sensitive_text(str(text or ""), force=True)
+        from agent.redact import redact_approval_display
+        return redact_approval_display(text, force=True)
     except Exception:
         logger.debug("human-input hook prompt redaction failed", exc_info=True)
         return ""  # never fall back to the raw text

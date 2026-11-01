@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+import unicodedata
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -103,43 +104,59 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
-# served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
-# value first, like the standalone bridge in hermes_cli/main.py), cached per home so the hot path
-# stays a dict lookup. Still not a live ``os.environ`` read, so a shell ``export`` cannot flip it.
-_REDACT_ENABLED_BY_HOME: dict = {}
-_REDACT_ENABLED_LOCK = threading.Lock()
+# served under a HERMES_HOME override follows its own ``security.redact_secrets`` (its ``.env`` value
+# first, like the standalone bridge in hermes_cli/main.py). The formatter never reads config or files
+# for it (it runs under the logging handler's lock, per record): the values are recorded when that
+# profile's .env / config is loaded (``note_env_policy`` / ``note_config_policy``) or when log routing
+# is set up for it (``resolve_profile_policy``). Until then the profile redacts (the secure default).
+_ENV_POLICY_BY_HOME: dict = {}     # home key -> raw HERMES_REDACT_SECRETS from its .env, or None
+_CONFIG_POLICY_BY_HOME: dict = {}  # home key -> raw security.redact_secrets from its config, or None
+
+
+def note_env_policy(home_key: str, raw) -> None:
+    _ENV_POLICY_BY_HOME[home_key] = None if raw is None else str(raw)
+
+
+def note_config_policy(home_key: str, raw) -> None:
+    _CONFIG_POLICY_BY_HOME[home_key] = None if raw is None else str(raw)
+
+
+def resolve_profile_policy(home) -> None:
+    """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        key = hermes_home_key()
+        from hermes_cli.config import load_config_readonly, load_env
+        note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
+        note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- unreadable now: stays unknown, which redacts
+        logging.getLogger(__name__).debug("redaction policy for %s not read: %s", home, exc)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _redact_enabled() -> bool:
-    """Effective redaction switch for the active profile (launch snapshot when no override)."""
+    """Effective redaction switch for the active profile (launch snapshot when no override). Reads
+    only in-memory state: the live secret scope and the recorded per-profile policy."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _REDACT_ENABLED
     home_key = hermes_home_key()
-    cached = _REDACT_ENABLED_BY_HOME.get(home_key)
-    if cached is not None:
-        return cached
-    enabled = True
-    try:
-        from agent.secret_scope import current_secret_scope
-        scope = current_secret_scope()
-        raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
-        if raw is None and scope is None:
-            # No live scope (the log listener thread formats routed records): read the profile's own .env, as
-            # its scope would, or a first call there would cache a config-only answer for the whole process.
-            from hermes_cli.config import load_env
-            raw = load_env().get("HERMES_REDACT_SECRETS")
-        if raw is None:
-            from hermes_cli.config import load_config_readonly
-            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
-            raw = None if cfg_val is None else str(cfg_val)
-        if raw is not None:
-            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
-    except Exception:
-        enabled = True  # unreadable policy: keep the secure default
-    with _REDACT_ENABLED_LOCK:
-        _REDACT_ENABLED_BY_HOME[home_key] = enabled
-    return enabled
+    from agent.secret_scope import current_secret_scope
+    scope = current_secret_scope()
+    raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+    if raw is None and scope is None:
+        # No live scope (the log listener thread formats routed records): the profile's own .env, as
+        # its scope would have it. Not recorded yet: redact, since .env may opt the profile back in.
+        if home_key not in _ENV_POLICY_BY_HOME:
+            return True
+        raw = _ENV_POLICY_BY_HOME[home_key]
+    if raw is None:
+        raw = _CONFIG_POLICY_BY_HOME.get(home_key)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
@@ -663,6 +680,62 @@ def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
     if not value:
         return empty
     return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
+
+
+# Approval-prompt display integrity: the copy a human approves must show everything that will run.
+# Code points that render as nothing or as a line break become visible escapes: every control,
+# format, private-use, unassigned and surrogate code point (category C*, except tab/newline), line
+# and paragraph separators (Zl/Zp), and blank-rendering marks/letters in other categories (variation
+# selectors incl. U+E0100-E01EF, CGJ, Khmer/Mongolian selectors, Hangul fillers, Braille blank).
+# Ordinary non-ASCII text is untouched. Padding that pushes the tail off screen or past a preview
+# cut (space runs, whitespace-only lines) collapses to a marker; real indentation is kept.
+_APPROVAL_NON_ASCII_RE = re.compile(r"[^\x20-\x7e\t\n]+")
+_APPROVAL_BLANK_GLYPHS = frozenset(
+    "\u034f\u115f\u1160\u17b4\u17b5\u180b\u180c\u180d\u180f\u2800\u3164\uffa0"
+    + "".join(map(chr, range(0xFE00, 0xFE10))) + "".join(map(chr, range(0xE0100, 0xE01F0))))
+_APPROVAL_SPACE = r"[ \t\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]"
+# Mid-line runs (after visible text) of 21+, or line-leading runs past any sane indentation.
+_APPROVAL_PAD_RE = re.compile(rf"(?<=\S){_APPROVAL_SPACE}{{21,}}|(?m:^){_APPROVAL_SPACE}{{65,}}")
+# 3+ consecutive blank or whitespace-only lines; the match ends at a newline so the next line keeps its indent.
+_APPROVAL_BLANK_RE = re.compile(rf"\n(?:{_APPROVAL_SPACE}*\n){{3,}}")
+_APPROVAL_SAME_CHAR_RUN_RE = re.compile(r"(.)\1*", re.DOTALL)
+# Prose mode (questions shown to a human, never executed) surfaces only what can hide or reorder
+# text: controls, bidi embeddings/overrides/isolates, line/paragraph separators and padding. ZWJ,
+# ZWNJ and variation selectors stay, because emoji and scripts such as Persian need them.
+_PROSE_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
+def _escape_approval_run(run: str, prose: bool = False) -> str:
+    """Escape the invisible code points of a non-ASCII run; 4+ repeats of one show once with their count."""
+    def one(m: re.Match) -> str:
+        ch, n = m.group(1), len(m.group())
+        cat = unicodedata.category(ch)
+        if prose:
+            hidden = cat == "Cc" or cat in ("Zl", "Zp") or ch in _PROSE_BIDI_CONTROLS
+        else:
+            hidden = ch in _APPROVAL_BLANK_GLYPHS or cat[0] == "C" or cat in ("Zl", "Zp")
+        if not hidden:
+            return m.group()
+        esc = ch.encode("unicode_escape").decode("ascii")
+        return f"⟨{esc} ×{n}⟩" if n >= 4 else esc * n
+    return _APPROVAL_SAME_CHAR_RUN_RE.sub(one, run)
+
+
+def sanitize_command_for_display(text: str | None, *, prose: bool = False) -> str:
+    """Make hidden content in an approval-prompt string visible; clean text comes back unchanged.
+
+    Display-only: the executed command, smart assessment and allowlist keys never see this copy.
+    ``prose=True`` is the lighter pass for question text (see ``_PROSE_BIDI_CONTROLS``)."""
+    if not text:
+        return ""
+    out = _APPROVAL_NON_ASCII_RE.sub(lambda m: _escape_approval_run(m.group(), prose), text)
+    out = _APPROVAL_BLANK_RE.sub(lambda m: f"\n⟨+{m.group().count(chr(10)) - 1} blank lines⟩\n", out)
+    return _APPROVAL_PAD_RE.sub(lambda m: f" ⟨+{len(m.group())} whitespace chars⟩ ", out)
+
+
+def redact_approval_display(text: str | None, *, force: bool = False, prose: bool = False) -> str:
+    """Secret redaction plus :func:`sanitize_command_for_display`, for every approval surface."""
+    return sanitize_command_for_display(redact_sensitive_text(str(text or ""), force=force), prose=prose)
 
 
 def _mask_token(token: str) -> str:

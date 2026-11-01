@@ -23,6 +23,18 @@ const approvalLabels = (): Record<ApprovalChoice, string> => {
 
 const CMD_PREVIEW_LINES = 10
 
+/**
+ * The page of wrapped command lines on screen. A command longer than one page
+ * is paged with `v` (wrapping back to the top), so every line of what will run
+ * can be read in the panel before a choice is made.
+ */
+export function commandPage(total: number, page: number, size = CMD_PREVIEW_LINES) {
+  const pages = Math.max(1, Math.ceil(total / size))
+  const start = (page % pages) * size
+
+  return { end: Math.min(total, start + size), pages, start }
+}
+
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
@@ -45,7 +57,8 @@ type ApprovalKey = {
   upArrow?: boolean
 }
 
-type ApprovalAction = { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move'; delta: -1 | 1 } | { kind: 'noop' }
+type ApprovalAction =
+  { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move'; delta: -1 | 1 } | { kind: 'noop' } | { kind: 'page' }
 
 /**
  * Pure key-dispatch for the approval prompt — exported so the regression
@@ -57,6 +70,7 @@ type ApprovalAction = { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move
  * with the global Ctrl+C handler that already calls cancelOverlayFromCtrlC
  * for approvals).  Numbers 1..opts.length pick the labelled choice.  Enter
  * confirms the current selection.  ↑/↓ moves the selection within bounds.
+ * `v` pages a long command (a no-op when it fits on one page).
  */
 export function approvalAction(
   ch: string,
@@ -78,6 +92,10 @@ export function approvalAction(
     return { kind: 'choose', choice: opts[sel]! }
   }
 
+  if (ch === 'v' || ch === 'V') {
+    return { kind: 'page' }
+  }
+
   if (key.upArrow && sel > 0) {
     return { kind: 'move', delta: -1 }
   }
@@ -92,7 +110,10 @@ export function approvalAction(
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const T = useT()
   const [sel, setSel] = useState(0)
+  const [page, setPage] = useState(0)
   const opts = approvalOptions(req)
+
+  useEffect(() => setPage(0), [req])
 
   useInput((ch, key) => {
     const action = approvalAction(ch, key, sel, opts)
@@ -101,6 +122,8 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       onChoice(action.choice)
     } else if (action.kind === 'move') {
       setSel(s => s + action.delta)
+    } else if (action.kind === 'page') {
+      setPage(p => p + 1)
     }
   })
 
@@ -113,8 +136,9 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
     .split('\n')
     .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
 
-  const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
-  const overflow = rawLines.length - shown.length
+  const { end, pages, start } = commandPage(rawLines.length, page)
+  const shown = rawLines.slice(start, end)
+  const pager = end < rawLines.length ? T.prompt.approval.pageMore : T.prompt.approval.pageEnd
 
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
@@ -129,7 +153,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
           </Text>
         ))}
 
-        {overflow > 0 ? <Text color={t.color.muted}>{T.prompt.approval.moreLines(overflow)}</Text> : null}
+        {pages > 1 ? <Text color={t.color.warn}>{pager(start + 1, end, rawLines.length)}</Text> : null}
       </Box>
 
       <Text />

@@ -6,6 +6,7 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
@@ -2175,6 +2176,7 @@ export const ruOverrides = {
   },
 
   cron: {
+    control: ruCronControl,
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,

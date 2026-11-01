@@ -140,8 +140,13 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
     from agent.error_classifier import FailoverReason
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
+    if isinstance(exc, LocalRuntimeUnavailableError):
+        # The chosen model is configured; its local server is down. Not a credential verdict, so
+        # the client must not offer "Update API key" or sign-in: the sentence names the fix.
+        return f"⚠️ {exc}", exc.error_code, exc.retryable
     if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
         # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
         # the shared refusal copy names /new, never a resend.
@@ -720,7 +725,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         self._close_native_stream_boundary("Approval")
         # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
+        desc = _redact_approval_command(approval_data.get("description")) or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):

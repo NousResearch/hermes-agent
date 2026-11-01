@@ -47,7 +47,7 @@ def _recover_unreachable_compute_host_turn(sid: str, session: dict, inflight_at_
     The probe runs outside ``history_lock``: compute-host calls never run under it.
     """
     try:
-        pending = _get_compute_host_supervisor().has_pending_turn(sid)
+        pending = _compute_host_supervisor_for_session(sid, session).has_pending_turn(sid)
     except Exception as exc:  # health: allow BLE001 -- an unreadable supervisor is not proof the turn ended; fail closed
         logger.warning("session.interrupt: compute-host pending-turn probe failed for %s: %s", sid, exc)
         pending = True

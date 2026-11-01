@@ -557,6 +557,21 @@ def _close_leaked_session_dbs():
 
 
 @pytest.fixture(autouse=True)
+def _unset_yolo_for_device_tests(request, monkeypatch):
+    """`hermes --yolo` exports HERMES_YOLO_MODE=1, which skips the approval gate
+    the device-capability tests exercise. Unset it for those tests only."""
+    nodeid = request.node.nodeid
+    if "device" in nodeid or "turn_context" in nodeid:
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        # The flag is frozen at import time, so the env change alone is not enough.
+        try:
+            from tools import approval as _approval
+        except Exception:
+            return
+        monkeypatch.setattr(_approval, "_YOLO_MODE_FROZEN", False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import contextlib
+
 from .method_ctx import bind_module
 
 def _env_model_seed() -> str:
@@ -390,6 +393,42 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     return (built_in + mcp_valid) or False
 
 
+def _device_toolsets(session_id: str | None) -> list[str]:
+    """``mobile_device`` when a client on *session_id* advertised a device capability, else ``[]``.
+
+    The toolset IS the surface gate (``tools/AGENTS.md``): tools are fixed for the life of a
+    conversation (prompt caching), so the fold-in is decided at a turn boundary — when the session's
+    agent is built, and again at the start of each turn for a device that advertised late
+    (``agent/turn_context.py::_refresh_device_tools_between_turns``; never mid-turn). A desktop
+    window, the TUI and the CLI advertise nothing and never see ``device_request``.
+    """
+    from toolsets import DEVICE_SURFACE_TOOLSET
+
+    if not session_id or DEVICE_SURFACE_TOOLSET in set(_load_disabled_toolsets() or []):
+        return []
+    try:
+        from tui_gateway import server as gateway_server
+    except Exception:
+        return []
+    # Published onto the server by ``bind_module`` at import (the split-module seam): read it there,
+    # not from ``session_transports``, whose own globals are not the bound ones.
+    capabilities_of = getattr(gateway_server, "_session_device_capabilities", None)
+    return [DEVICE_SURFACE_TOOLSET] if capabilities_of is not None and capabilities_of(session_id) else []
+
+
+def _with_device_toolset(enabled: list[str] | None, session_id: str | None) -> list[str] | None:
+    """*enabled* plus ``mobile_device`` when a client on *session_id* advertised a capability.
+
+    Applied at the one call site that builds a session's agent, so the configured-toolset resolver
+    keeps its signature (and its stubs) and a caller that lists tools never gains the device surface.
+    ``None`` means "every toolset", which already includes it.
+    """
+    device = _device_toolsets(session_id)
+    if not device or enabled is None:
+        return enabled
+    return sorted(set(enabled) | set(device))
+
+
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
@@ -665,7 +704,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
+        enabled_toolsets=onboarding_toolsets(_with_device_toolset(_load_enabled_toolsets(platform), sid),
                                              session_db if session_db is not None else _get_db(), session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
@@ -686,6 +725,12 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    # A phone can attach (and advertise) AFTER this build — a desktop session the user picks up on
+    # their phone, a page reload that reconnects late. The turn boundary re-asks this probe and folds
+    # ``mobile_device`` in for the NEXT turn (``agent/turn_context.py``
+    # ``_refresh_device_tools_between_turns``); the toolset never changes mid-turn, so ``tools=`` stays
+    # a stable cached prefix within a turn (#11911).
+    agent._device_toolsets_probe = lambda: _device_toolsets(sid)  # type: ignore[attr-defined]
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice

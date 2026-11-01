@@ -574,6 +574,50 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 
 
+def _refresh_device_tools_between_turns(agent: Any) -> None:
+    """Fold ``mobile_device`` in for THIS turn when a device advertised after the agent was built.
+
+    A phone can attach to a session that already exists (pick the chat up on the handheld, a reload
+    that reconnects after the desktop window closed). The toolset is decided at agent build time
+    because ``tools=`` is a cached request prefix, so the late client used to be invisible until the
+    app restarted. Here — at the turn boundary, before ``tools=`` is assembled for the first API call,
+    never mid-turn — the capability is re-read once and the one toolset is appended when it appeared.
+
+    The prompt-cache contract is the same one the late-MCP refresh keeps: existing tools keep their
+    slot and their bytes (``preserve_prefix``), the new tool appends at the tail, and the event is
+    recorded as a toolset_change cache break instead of passing as a silent fork. Nothing to do when
+    the toolset is already there, the session pinned every toolset (``None`` already includes it) or
+    no client on the session has a device.
+    """
+    probe = getattr(agent, "_device_toolsets_probe", None)
+    if not callable(probe):
+        return
+    enabled = getattr(agent, "enabled_toolsets", None)
+    if enabled is None:
+        return  # "every toolset" already includes the device surface
+    try:
+        late = [str(name) for name in (probe() or [])]
+    except Exception:
+        logger.debug("device toolset probe failed; keeping this session's tools", exc_info=True)
+        return
+    if not late or set(late) <= set(enabled):
+        return
+    widened = sorted(set(enabled) | set(late))
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        refresh_agent_mcp_tools(agent, enabled_override=widened, quiet_mode=True, preserve_prefix=True)
+    except Exception:
+        logger.warning("late device toolset kept out of session %s: %s", agent.session_id or "none",
+                       "tool refresh failed", exc_info=True)
+        return
+    agent.enabled_toolsets = widened
+    with suppress(Exception):
+        from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
+        record_cache_break(agent, "toolset_change")
+    logger.info("device advertised after build for session %s: %s folded in at this turn boundary",
+                agent.session_id or "none", ", ".join(late))
+
+
 def _bind_turn_identity(
     agent: Any, task_id: Optional[str], stream_callback, persist_user_message: Any,
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
@@ -1136,6 +1180,7 @@ def build_turn_context(
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
+    _refresh_device_tools_between_turns(agent)
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)

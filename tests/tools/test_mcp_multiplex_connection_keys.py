@@ -549,3 +549,34 @@ def test_filter_reconcile_preserves_native_over_utility_collision(two_profiles):
     assert third.description == "Native read-resource tool"
     assert third is not second
     assert reg.reapply_tool_filters({"x": cfg}) == 0
+
+
+def test_live_filter_change_only_mutates_the_adopting_profile(two_profiles):
+    """The same live transport may expose different native tools to its profiles."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+    from tools.registry import registry
+
+    route = {"url": "https://mcp.example/x",
+             "headers": {"Authorization": "Bearer shared"}}
+    a_config = {**route, "tools": {"include": ["t"]}}
+    b_config = {**route, "tools": {"include": ["t2"]}}
+    a = two_profiles("a")
+    server = _server("x", a_config)
+    server._tools.append(SimpleNamespace(
+        name="t2", description="second", inputSchema={"type": "object", "properties": {}},
+        annotations=None,
+    ))
+    disc._adopt_server("x", server)
+    server._registered_tool_names = reg._register_server_tools("x", server, a_config)
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": b_config}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t2"]
+    assert registry.snapshot_registration("mcp__x__t", scope=b) is None
+    assert reg.reapply_tool_filters({"x": {**route, "tools": {"include": []}}}) == 1
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+
+    two_profiles("a")
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert registry.snapshot_registration("mcp__x__t2", scope=a) is None

@@ -18,7 +18,15 @@ _profile_scoped = _registry.profile_scoped
 # ── shared helpers
 
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
-    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back."""
+    """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
+    Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
+    any key is locked (never the bulk save's silent omission of the locked part)."""
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():
+        sets = {f"display.{field}": v for field, v in display_fields.items()}
+        sets.update({f"display.sections.{name}": v for name, v in (sections or {}).items()})
+        _write_config_changes(sets, tuple(f"display.sections.{name}" for name in drop_sections))
+        return
     cfg = _load_cfg_raw()
     display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
     cur = display.get("sections") if isinstance(display.get("sections"), dict) else {}
@@ -81,7 +89,11 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        # A bare pick resolves against the live provider at turn start; guard on that same provider
+        # here, or a provider-keyed price check passes now and drops the queued pick later.
+        agent = session.get("agent")
+        guard_provider = pending_provider or (getattr(agent, "provider", "") or "").strip()
+        pending_warning = _pending_switch_selection_warning(pending_model, guard_provider, agent)
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.
@@ -92,10 +104,16 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
 
 
 def _cfgset_guarded(fn):
-    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``."""
+    """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``. A config backend's
+    refusal (locked key, refused value) passes through to ``config.set``'s 4002 answer, like the
+    unguarded setters'."""
+    from hermes_cli.config_backend import ConfigWriteError
+
     def setter(rid, params, key, value, session):
         try:
             return fn(rid, params, key, value, session)
+        except ConfigWriteError:
+            raise
         except Exception as e:
             return _err(rid, 5001, str(e))
     return setter
@@ -113,7 +131,13 @@ def _set_model(rid, params, key, value, session):
         from hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
-        if session.get("running"):
+        # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
+        # the child process — the direct path below would build a SECOND agent in
+        # the server, switch that copy, and leave the child (which handles every
+        # turn) on the old model: checkmark shows the pick, requests keep the old
+        # model. The stash crosses the boundary in the turn frame and the child's
+        # turn thread applies it (_apply_pending_model_switch).
+        if session.get("running") or session.get("_compute_host_active"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
@@ -158,7 +182,7 @@ def _set_model(rid, params, key, value, session):
 
 
 _FAST_WORDS = {"fast": "fast", "on": "fast", "normal": "normal", "off": "normal",
-               "auto": "auto", "cold": "cold"}
+               "auto": "auto", "cold": "cold", "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _set_fast(rid, params, key, value, session):
@@ -170,13 +194,14 @@ def _set_fast(rid, params, key, value, session):
         current_tier = session["create_service_tier_override"] or None  # pre-build pin beats global
     else:
         current_tier = _load_service_tier()
+    from agent.fast_mode import STATIC_TIERS, service_tier_word
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
-    nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
+        return _kv(rid, key, service_tier_word(current_tier))
+    nv = _FAST_WORDS.get(raw, ("normal" if current_tier in STATIC_TIERS else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
-    if nv == "fast":
+    if nv in ("fast", "ultrafast"):
         from hermes_cli.models import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
@@ -186,9 +211,16 @@ def _set_fast(rid, params, key, value, session):
         if not target_model:
             return _err(rid, 4002, "fast mode is not available without a selected model")
         overrides = resolve_fast_mode_overrides(target_model, provider=getattr(agent, "provider", None),
-                                                base_url=getattr(agent, "base_url", None))
+                                                base_url=getattr(agent, "base_url", None),
+                                                tier="ultrafast" if nv == "ultrafast" else None)
+        if overrides is not None and nv == "ultrafast":
+            from agent.codex_service_tiers import ultrafast_offered
+            if not ultrafast_offered(target_model, provider=getattr(agent, "provider", None),
+                                     base_url=getattr(agent, "base_url", None),
+                                     access_token=getattr(agent, "api_key", None)):
+                overrides = None
         if overrides is None:
-            return _err(rid, 4002, "fast mode is not available for this model")
+            return _err(rid, 4002, f"{nv} mode is not available for this model")
     if session is not None:
         # Session-scoped like `reasoning` (global = `--global` / Settings → Model): writing config.yaml
         # here flipped fast mode for every surface. The create override survives rebuilds; "" pins normal.
@@ -238,14 +270,15 @@ def _set_focus(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
     if action == "status" or target is None:
         return _kv(rid, key, "on" if cur_focus else "off", tool_progress=_load_tool_progress_mode())
+    updates = {}
     if target:
         saved = (cur_focus and d_f.get("focus_saved_tool_progress")) or _load_tool_progress_mode()
-        _write_config_key("display.focus_saved_tool_progress", normalize_tool_progress_mode(saved))
+        updates["display.focus_saved_tool_progress"] = normalize_tool_progress_mode(saved)
         effective = FOCUS_TOOL_PROGRESS_MODE
     else:
         effective = normalize_tool_progress_mode(d_f.get("focus_saved_tool_progress") or "all")
-    _write_config_key("display.tool_progress", effective)
-    _write_config_key("display.focus_view", bool(target))
+    updates.update({"display.tool_progress": effective, "display.focus_view": bool(target)})
+    _write_config_keys(updates)  # one write: a refused key leaves focus fully as it was
     if session:
         session["focus_view"] = bool(target)
         session["tool_progress_mode"] = effective
@@ -264,7 +297,6 @@ def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
     scope = _word(params.get("scope") or "session")
-    from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
         from tools.approval_context import _normalize_approval_mode
@@ -274,9 +306,15 @@ def _set_yolo(rid, params, key, value, session):
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        skey = session["session_key"]
-        enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
-        (enable_session_yolo if enable else disable_session_yolo)(skey)
+        from tools.approval_yolo import toggle_session_yolo
+        # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
+
+        def persist(on):
+            with _session_db(session) as db:
+                if db is not None:
+                    db.set_session_yolo(row_id, on)
+        enable = toggle_session_yolo(session["session_key"], _BOOL_WORDS.get(raw), persist=persist)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))
@@ -340,8 +378,8 @@ def _word_setters() -> dict:
             sections={section: w for section in _DETAIL_SECTION_NAMES}, details_mode=w)),
         # thinking_mode also keeps details_mode aligned (compat bridge).
         "thinking_mode": (_word, {"collapsed", "truncated", "full"}, "unknown thinking_mode: {value}", lambda w: (
-            _write_config_key("display.thinking_mode", w),
-            _write_config_key("display.details_mode", "expanded" if w == "full" else "collapsed"))),
+            _write_config_keys({"display.thinking_mode": w,
+                                "display.details_mode": "expanded" if w == "full" else "collapsed"}))),
         # 'light'/'dark' pin beats background auto-detection (xterm.js hosts misreport OSC 11).
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),
@@ -388,6 +426,9 @@ def _toggle_setters() -> dict:
         "battery": (_word, "display.battery",
                     {"on": True, "true": True, "yes": True, "off": False, "false": False, "no": False},
                     lambda: not bool(_display_cfg().get("battery", False)), on_off),
+        # Ink's /timestamps: the classic CLI's display.timestamps (the shared owner's setter too).
+        "timestamps": (_word, "display.timestamps", _BOOL_WORDS,
+                       lambda: not bool(_display_cfg().get("timestamps", False)), on_off),
         "statusbar": (_word, "display.tui_statusbar", {"on": "top", **{m: m for m in _STATUSBAR_MODES}},
                       lambda: "top" if _coerce_statusbar(_display_cfg().get("tui_statusbar", "top")) == "off" else "off",
                       lambda v: v),
@@ -423,6 +464,10 @@ def _set_cwd(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_prompt(rid, params, key, value, session):
+    from hermes_cli.config_backend import supports_file_tooling
+    if not supports_file_tooling():  # one explicit key: refused when locked, never silently dropped
+        _write_config_changes({}, ("custom_prompt",)) if value == "clear" else _write_config_changes({"custom_prompt": value})
+        return _kv(rid, key, "" if value == "clear" else value)
     cfg = _load_cfg_raw()  # write-back round-trip
     if value == "clear":
         cfg.pop("custom_prompt", None)
@@ -466,7 +511,7 @@ _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
-    "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
@@ -493,7 +538,11 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    return handler(rid, params, key, value, session)
+    from hermes_cli.config_backend import ConfigWriteError
+    try:
+        return handler(rid, params, key, value, session)
+    except ConfigWriteError as exc:  # a locked key or a value the config backend refused: nothing saved
+        return _err(rid, 4002, str(exc))
 
 
 def register(server) -> None:

@@ -35,7 +35,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
-_BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
+_BARE_MODULE_SCOPE: dict[str, str] = {}  # bare module name -> owning scope_key
 
 # Per-plugin deadline on import + register(): ``plugins.load_timeout_seconds`` (default 10s, 0 disables,
 # clamped to the max). A plugin that never returns is skipped with a named reason and loading moves on
@@ -44,9 +44,15 @@ _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
 _LOAD_TIMEOUT_SECS = 10.0
 _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
-_ABANDONED_LOADERS: List[threading.Thread] = []
+_LOADER_THREAD_PREFIX = "plugin-load:"  # names each deadline-bounded load worker; the re-arm guard matches it
+_ABANDONED_LOADERS: list[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
-_IN_PLUGIN_LOAD = threading.local()  # ``.active`` on a loader worker thread
+# Guards creating a manager's plugin host, so concurrent first callers share one host process.
+_PLUGIN_HOST_CREATE_LOCK = threading.Lock()
+# PluginContexts of the outermost deadline-bounded load; set only inside its worker.
+_IN_PLUGIN_LOAD: contextvars.ContextVar[Optional[list[PluginContext]]] = contextvars.ContextVar(
+    "hermes_plugin_load_scope", default=None,
+)
 
 
 class PluginLoadTimeout(Exception):
@@ -55,7 +61,7 @@ class PluginLoadTimeout(Exception):
 
 def in_plugin_load_worker() -> bool:
     """True on a deadline worker thread; re-entrant discovery from there must not block on its own parent."""
-    return bool(getattr(_IN_PLUGIN_LOAD, "active", False))
+    return _IN_PLUGIN_LOAD.get() is not None
 
 
 def _resolve_plugin_load_timeout() -> float:
@@ -97,7 +103,7 @@ def _reserve_abandoned_loader_slot() -> None:
     )
 
 
-def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[], Any]) -> Any:
+def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[], Any]) -> Any:
     """Run ``fn`` (a plugin's import + ``register()``) under the per-plugin deadline.
 
     The worker inherits the caller's context (the Hermes-home override is a ContextVar). On timeout the
@@ -105,27 +111,40 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     and :class:`PluginLoadTimeout` is raised on the calling thread so the usual failure path records the
     reason and disposes whatever was registered before the hang.
     """
+    # Re-entrant load on our own deadline worker: run inline; the outer deadline covers it.
+    outer_scope = _IN_PLUGIN_LOAD.get()
+    if outer_scope is not None:
+        outer_scope.append(ctx)
+        try:
+            return fn()
+        finally:
+            outer_scope.remove(ctx)
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()
     _reserve_abandoned_loader_slot()
-    outcome: List[Any] = []
-    failure: List[BaseException] = []
+    outcome: list[Any] = []
+    failure: list[BaseException] = []
+
+    scope = [ctx]
 
     def _worker() -> None:
-        _IN_PLUGIN_LOAD.active = True
+        token = _IN_PLUGIN_LOAD.set(scope)
         try:
             outcome.append(fn())
         except BaseException as exc:  # re-raised on the loading thread, KeyboardInterrupt included
             failure.append(exc)
+        finally:
+            _IN_PLUGIN_LOAD.reset(token)
 
     worker = threading.Thread(
-        target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
+        target=contextvars.copy_context().run, args=(_worker,), name=f"{_LOADER_THREAD_PREFIX}{plugin_key}", daemon=True,
     )
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
-        ctx._abandon_load()
+        for loaded_ctx in scope:
+            loaded_ctx._abandon_load()
         with _ABANDONED_LOADERS_LOCK:
             _ABANDONED_LOADERS.append(worker)
         raise PluginLoadTimeout(f"load timed out after {timeout:g}s (import + register() never returned)")
@@ -135,10 +154,20 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
 
 
 def _evict_modules(module_name: str) -> None:
-    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
+    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
+
+    ``sys.modules`` is process-global, so any concurrent import — another profile's plugin
+    load, a lazy import on a worker thread — mutates it while this runs. The ``list()`` is
+    load-bearing, not a style choice: it is one atomic C-level copy, where iterating the live
+    mapping raises ``RuntimeError: dictionary changed size during iteration`` and
+    ``PluginLoaderMixin._load_plugin_scoped`` degrades that to a warning that loses the whole
+    plugin. ``pop`` (not ``del``) keeps the snapshot-to-delete window tolerant of a key another
+    evictor already removed.
+    """
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    for name in list(sys.modules):  # snapshot first — never iterate the live mapping
+        if name == module_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):
@@ -168,22 +197,90 @@ def _load_error_text(exc: BaseException) -> str:
     return str(exc)
 
 
-def _dist_installed(req: str) -> Optional[bool]:
-    """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
-    dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+def _dist_name(req: str) -> str:
+    return re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+
+
+def _dist_installed(req: str, path: Optional[list[str]] = None) -> Optional[bool]:
+    """Best-effort probe: a distribution the requirement accepts is installed (on ``path`` when given,
+    else this process's ``sys.path``); ``None`` when unprobeable. The version counts: a running
+    process holding ``x 1.2`` cannot serve a plugin that now requires ``x>=1.3``."""
+    dist = _dist_name(req)
     if not dist:
         return None
     try:
-        importlib.metadata.version(dist)
-        return True
-    except importlib.metadata.PackageNotFoundError:
-        return False
+        found = next(iter(importlib.metadata.distributions(name=dist, path=path) if path
+                          else importlib.metadata.distributions(name=dist)), None)
     except Exception:
         return None
+    if found is None:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        return Requirement(req).specifier.contains(found.version, prereleases=True)
+    except (ImportError, ValueError):  # no packaging, or an unparseable requirement/version: presence decides
+        return True
+
+
+def missing_python_dependencies(manifest: Any) -> list[str]:
+    """The plugin's effective Python requirements (:func:`_declared_requirements`) this process
+    cannot import.
+
+    A requirement whose environment marker excludes this interpreter is never missing: PM does not
+    install it here, so reporting it would ask for a restart or repair that can never help."""
+    return [req for req in _declared_requirements(manifest)
+            if _applies_here(req) and _dist_installed(req) is False]
+
+
+def _declared_requirements(manifest: Any) -> tuple[str, ...]:
+    """What PM installs into Hermes's environment for this plugin: its declaration read the way
+    admission reads it (``pm.plugin_declarations.read_python_declaration`` — an authored
+    ``pyproject.toml`` first, then ``python_dependencies`` / ``pip_dependencies``; nothing for a
+    ``python_runtime: external`` sidecar). A plugin with no directory (an entry point) has only its
+    manifest list."""
+    path = getattr(manifest, "path", None)
+    if not path or not Path(path).is_dir():
+        return tuple(getattr(manifest, "python_dependencies", None) or ())
+    from pm.plugin_declarations import read_python_declaration
+    try:
+        return read_python_declaration(Path(path)).install_requirements
+    except (OSError, ValueError):  # a declaration PM cannot read is refused at admission, not ours to report
+        return ()
+
+
+def _applies_here(req: str) -> bool:
+    if ";" not in req:
+        return True
+    try:
+        from packaging.requirements import InvalidRequirement, Requirement
+    except ImportError:
+        return True
+    try:
+        marker = Requirement(req).marker
+        return marker is None or marker.evaluate()
+    except (InvalidRequirement, ValueError, KeyError):  # unparseable: keep reporting it
+        return True
+
+
+def installed_in_selected_environment(requirements: list[str]) -> bool:
+    """Whether every one of *requirements* is in the dependency environment PM currently selects.
+
+    Activation is a boot decision (``pm.environments.activate_dependencies``): a gateway or dashboard
+    that was running when ``hermes plugins enable`` committed a new generation keeps the old one. A
+    requirement it cannot import that the selected generation carries therefore needs a restart, not
+    a repair. False when unknown."""
+    try:
+        from pm.environments import selected_venv, site_packages
+        from pm.paths import repo_root
+
+        site = str(site_packages(selected_venv(repo_root())))
+        return bool(requirements) and all(_dist_installed(req, [site]) for req in requirements)
+    except (OSError, RuntimeError, ValueError):  # unreadable or invalid selection record
+        return False
 
 
 class PluginLoaderMixin:
-    def on_plugin_loaded(self, callback: Callable[[List[Dict[str, Any]]], Any]) -> Callable[[], None]:
+    def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one
         ``{name, key, activated_now, deferred}`` summary per NEWLY loaded plugin — every plugin at boot,
@@ -249,6 +346,29 @@ class PluginLoaderMixin:
             return
         self._register_deferred_platform_tools(manifest, loaded)
 
+    def rearm_failed_platform(self, platform_name: str) -> bool:
+        """Re-lease the deferred loader of a platform plugin whose load failed, so the next registry lookup
+        retries the import. A failed load disposes its lease (the registry forgets the platform), so without
+        this a load that raised or overran its deadline at startup stays down until a forced re-discovery
+        (#126356). True when a loader was re-armed."""
+        from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
+        from hermes_cli.plugins_manifest import requires_hermes_error
+        with self._discovery_lock, _plugin_home_scope(self.home_path):
+            failed = next((p.manifest for p in self._plugins.values()
+                           if p.error and not p.enabled and p.manifest.kind == "platform"
+                           and self._platform_name_from_manifest(p.manifest) == platform_name), None)
+            # Re-gate: a placeholder (disabled, not enabled, catalog-removed) or a requires_hermes mismatch
+            # carries the same error-set shape as a failed load but must never be imported.
+            if failed is None or requires_hermes_error(failed) or gate_manifest(
+                    failed, _get_disabled_plugins(), _get_enabled_plugins()).action not in ("defer", "load"):
+                return False
+            with _ABANDONED_LOADERS_LOCK:  # its hung import is still running: another retry only leaks a thread
+                if any(t.is_alive() and t.name == f"{_LOADER_THREAD_PREFIX}{manifest_key(failed)}" for t in _ABANDONED_LOADERS):
+                    return False
+            logger.info("Re-arming failed platform plugin load: %s", platform_name)
+            self._register_deferred_platform(failed)
+            return True
+
     @_serialized_replacement
     def _lease_deferred_platform(self, manifest: PluginManifest, lookup_key: str) -> bool:
         """Publish the deferred loader as a ledger-owned lease; False when the registry refused it."""
@@ -267,6 +387,10 @@ class PluginLoaderMixin:
 
             previous = platform_registry.snapshot_registration(platform_name, scope=scope)
             platform_registry.register_deferred(platform_name, _loader, scope=scope)
+            # Lets the gateway config pass recognise an env-only setup (sms: TWILIO_*) without
+            # importing the adapter; see gateway.platform_activation.
+            platform_registry.note_activation_env(
+                platform_name, [e.get("name") if isinstance(e, dict) else e for e in manifest.requires_env or ()])
             current = platform_registry.snapshot_registration(platform_name, scope=scope)
             if current[0] is None and current[1] is _loader:
                 self._plugin_platform_names.add(platform_name)
@@ -323,7 +447,7 @@ class PluginLoaderMixin:
             return
         before = set(self._plugin_tool_names)  # lets the failure path credit partial registrations
 
-        def _credit() -> List[str]:
+        def _credit() -> list[str]:
             """Attribute every tool registered since ``before`` to this plugin."""
             registered = [t for t in self._plugin_tool_names if t not in before]
             if registered:
@@ -374,20 +498,24 @@ class PluginLoaderMixin:
 
         Plugin admission and PM repair own dependency changes.
         """
-        deps = manifest.python_dependencies
-        if not deps:
+        missing = missing_python_dependencies(manifest)
+        if not missing:
             return
         key = manifest_key(manifest)
-        missing = [req for req in deps if _dist_installed(req) is False]
-        if missing:
+        if installed_in_selected_environment(missing):
+            logger.warning(
+                "Plugin %s's Python dependencies were installed after this process started: %s. "
+                "A running process never switches dependency environments; restart Hermes "
+                "(hermes gateway restart for the gateway) to load them.",
+                key, ", ".join(missing),
+            )
+        else:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
                 "installed: %s. For an enabled plugin, run hermes pm repair, "
                 "then restart Hermes. Discovery does not install dependencies.",
                 key, ", ".join(missing),
             )
-        else:
-            logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))
 
     def _validate_plugin_config_schema(self, manifest: PluginManifest) -> None:
         """Warn (never block) on plugins.entries.<id> settings that violate config_schema.
@@ -435,26 +563,27 @@ class PluginLoaderMixin:
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
             self._plugins[plugin_key] = loaded
             return
-        # After the compat-removal date an external plugin that still imports pre-decomposition paths is
-        # skipped with a clear reason instead of dying on ImportError mid-register (hermes_cli.plugin_compat).
-        from hermes_cli.plugin_compat import disable_reason
-        reason = disable_reason(manifest)
-        if reason:
-            loaded.error = reason
-            logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
-            self._plugins[plugin_key] = loaded
-            return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
         ctx = PluginContext(manifest, self)
+        in_host = self._runs_in_plugin_host(manifest)
 
         def _import_and_register() -> bool:
             """Import + register() — the part a plugin controls, so the part the deadline covers."""
+            # Declared language packs register before any plugin code runs, inside the same ledger slice
+            # so a failing register() unwinds them too.
+            self._register_declared_locales(manifest, ctx)
+            if in_host and not self._is_manifest_only_language_pack(manifest):
+                self._plugin_host().load(manifest, ctx, module_name=module_name,
+                                         entrypoint=manifest.source not in {"user", "project"})
+                return True
             # Reuse a deferred platform's already-imported package so its body doesn't run twice.
             # See #78050.
             module = self._predeclared_modules.pop(plugin_key, None)
             if module is None and manifest.source in {"user", "project", "bundled"}:
+                if self._is_manifest_only_language_pack(manifest):
+                    return True  # pure pack: locales/ is the whole plugin, no register() to run
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)
@@ -503,6 +632,44 @@ class PluginLoaderMixin:
             self._predeclared_tools.pop(plugin_key, None)
         self._plugins[plugin_key] = loaded
 
+    @staticmethod
+    def _is_manifest_only_language_pack(manifest: PluginManifest) -> bool:
+        """A ``provides_locales`` plugin with no ``__init__.py`` is complete without Python — like a
+        manifest-only desktop plugin, it loads from its declared files alone."""
+        return bool(manifest.provides_locales and manifest.path
+                    and not (Path(manifest.path) / "__init__.py").is_file())
+
+    def _register_declared_locales(self, manifest: PluginManifest, ctx) -> None:
+        """``provides_locales`` -> ``ctx.register_locale_dir(<plugin>/locales)``; a declared id with no file
+        is a warning (the pack promised a language it does not ship), never a load failure."""
+        if not manifest.provides_locales or not manifest.path:
+            return
+        locales_dir = Path(manifest.path) / "locales"
+        handles = ctx.register_locale_dir(locales_dir, metadata=manifest.locale_metadata)
+        registered = {handle.key.split(".", 1)[0] for handle in handles}
+        for lang_id in manifest.provides_locales:
+            if lang_id not in registered:
+                logger.warning("Plugin '%s' declares provides_locales %r but %s has no %s.yaml",
+                               manifest.name, lang_id, locales_dir, lang_id)
+
+    def _runs_in_plugin_host(self, manifest: PluginManifest) -> bool:
+        """``plugins.isolation: host`` sends every non-bundled Python plugin to the profile's host."""
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        return manifest.source != "bundled" and isolation_mode() == ISOLATION_HOST
+
+    def _plugin_host(self) -> Any:
+        """This manager's plugin host (one process per profile home), created on first use. Creation
+        is atomic, so concurrent first callers share one host (which starts its process once); a
+        failed creation stores nothing, and the next caller tries again."""
+        host = getattr(self, "_plugin_host_instance", None)
+        if host is None:
+            from hermes_cli.plugin_host import PluginHost
+            with _PLUGIN_HOST_CREATE_LOCK:
+                host = getattr(self, "_plugin_host_instance", None)
+                if host is None:
+                    host = self._plugin_host_instance = PluginHost(self)
+        return host
+
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""
         from hermes_cli.plugins import PluginContext
@@ -531,7 +698,7 @@ class PluginLoaderMixin:
             if r.plugin_key == plugin_key and r.active
         ]
 
-        def _keys(kind: str) -> List[str]:
+        def _keys(kind: str) -> list[str]:
             return [r.key for r in registrations if r.kind == kind]
 
         # Discovery-time tools predate registration_start; credit them back or `hermes plugins list`
@@ -555,7 +722,7 @@ class PluginLoaderMixin:
         try:
             from hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
-                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.skill_namespace)
+                Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.data_namespace)
             ctx = PluginContext(manifest, self)
             for diagnostic in package.diagnostics:
                 logger.warning("Agent Plugin '%s' [%s]: %s", lookup_key, diagnostic.scope, diagnostic.message)
@@ -658,7 +825,7 @@ class PluginLoaderMixin:
             raise
         return module
 
-    def _load_entrypoint_module(self, manifest: PluginManifest) -> Union[types.ModuleType, Callable[..., Any]]:
+    def _load_entrypoint_module(self, manifest: PluginManifest) -> types.ModuleType | Callable[..., Any]:
         """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,
         the referenced attribute (normally ``register``) for the ``module:function`` form."""
         for ep in _select_entry_point_group(importlib.metadata.entry_points(), ENTRY_POINTS_GROUP):

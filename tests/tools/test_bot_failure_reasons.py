@@ -7,6 +7,7 @@ real-world fixtures from live bot runs, and the auto-retryable set.
 
 import pytest
 
+from agent.secret_scope import UnscopedSecretError
 from tools import bot_failure_reasons as fr
 
 # Real error text captured from live bot turns.
@@ -19,6 +20,17 @@ FIXTURE_NO_PROVIDER = (
     "a provider, or run `hermes setup` for first-time configuration."
 )
 FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal login."
+# Target-scope spawn refusals, verbatim from a relay ledger (the named-secret spelling is built live).
+FIXTURE_TARGET_SCOPE = (
+    "Hermes could not read this profile's API key (an internal profile-scoping bug on the "
+    "multiplexed gateway, not your configuration). Run `hermes gateway restart`; if it keeps "
+    "happening, report it with `hermes debug share`."
+)
+FIXTURE_TARGET_SCOPE_DETAILED = (
+    "served_profile_child_env(inherit_credentials=True) called with no target home and no profile "
+    "secret scope bound while multiplexing is on; the child would inherit the launch profile's "
+    "credentials. Bind the profile scope (or pass target_home) at the spawn site."
+)
 
 
 
@@ -43,6 +55,9 @@ FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal log
         ("model_not_found", fr.MODEL_UNAVAILABLE),
         ("status: 401 unauthorized", fr.PROVIDER_AUTH_OR_ACCESS),
         ("upstream server error", fr.PROVIDER_SERVER_ERROR),
+        (FIXTURE_TARGET_SCOPE, fr.TARGET_SCOPE_UNRESOLVED),
+        (FIXTURE_TARGET_SCOPE_DETAILED, fr.TARGET_SCOPE_UNRESOLVED),
+        (str(UnscopedSecretError("OPENROUTER_API_KEY")), fr.TARGET_SCOPE_UNRESOLVED),
         # bare numbers WITHOUT a status-code context must not classify —
         # they feed AUTO_RETRYABLE and a misfire could auto-retry a
         # permanent local failure (review finding on #93101).

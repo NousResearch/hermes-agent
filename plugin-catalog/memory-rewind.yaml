@@ -1,6 +1,6 @@
 name: memory-rewind
 repo: https://github.com/AhmetArif0/hermes-memory-rewind
-sha: b747327e73258b4cdb5ad5e66e6d145a936c603c
+sha: 354927184de03cdc4a9e9e48ddb2865c36368b1f
 subdir: memory-rewind
 description: >-
   Automatic version history for the built-in memory (MEMORY.md, USER.md), SOUL.md and skills/
@@ -16,13 +16,14 @@ tier: community
 category: general
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/AhmetArif0/hermes-memory-rewind
-version: "1.2.0"
-image: https://raw.githubusercontent.com/AhmetArif0/hermes-memory-rewind/b747327e73258b4cdb5ad5e66e6d145a936c603c/docs/card.png
+version: "1.3.2"
+image: https://raw.githubusercontent.com/AhmetArif0/hermes-memory-rewind/e5b139b1059a47df34002e76a7bfd84bc60d9f35/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []
   provides_hooks:
   - on_session_start
+  - pre_llm_call
   - post_tool_call
   - on_session_end
   provides_middleware: []

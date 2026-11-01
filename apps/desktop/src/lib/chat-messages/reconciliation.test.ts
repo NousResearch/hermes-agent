@@ -1,6 +1,13 @@
 import { expect, it } from 'vitest'
 
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, textPart, toChatMessages } from './index'
+import {
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  preserveLocalSystemNotices,
+  textPart,
+  toChatMessages
+} from './index'
 
 const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id,
@@ -411,4 +418,106 @@ it('keeps a rowId-less preserved run trailing (#118002 behavior unchanged)', () 
   )
 
   expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', 'user-no-row', 'assistant-stream-x'])
+})
+
+// #126422: the fallback-switch notice is a client-local `system` row the
+// stored page cannot carry; the post-turn refresh rebuilds from stored rows
+// and must re-graft it instead of silently dropping it.
+it('preserveLocalSystemNotices re-grafts trailing client-local system notices', () => {
+  const notice: ChatMessage = {
+    id: 'fallback-switch-1234',
+    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    role: 'system',
+    timestamp: 1234
+  }
+
+  const refreshed = [row('s1', 'user', 'prompt'), row('s2', 'assistant', 'reply')]
+
+  const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, notice])
+
+  expect(preserved.at(-1)?.id).toBe('fallback-switch-1234')
+})
+
+it('preserveLocalSystemNotices does not duplicate a notice the page already carries', () => {
+  const notice: ChatMessage = {
+    id: 'fallback-switch-1234',
+    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    role: 'system',
+    timestamp: 1234
+  }
+
+  const refreshed = [
+    row('s1', 'user', 'prompt'),
+    row('s2', 'assistant', 'reply'),
+    { ...notice, id: 'fallback-switch-5678' }
+  ]
+
+  const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, { ...notice, id: 'other' }])
+  expect(preserved).toBe(refreshed)
+})
+
+it.each([
+  ['no failed-turn boundary row', false],
+  ['the failed-turn boundary row', true]
+])('a failed onboarding beat shows its answer and error card once when the refresh carries %s', (_label, boundary) => {
+  const callId = 'call_setup_beat_name'
+  const answer = { beat: 'name', answer: { name: 'Austin' }, next: 'theme' }
+  const errorSurface = { code: 'rate_limit', layer: 'provider', retryable: true } as const
+
+  const stored = toChatMessages([
+    { role: 'user', content: 'opening', timestamp: 1, display_kind: 'hidden' },
+    {
+      role: 'assistant',
+      content: 'Hi!',
+      timestamp: 2,
+      tool_calls: [{ id: callId, function: { name: 'setup_beat', arguments: '{"beat":"name"}' } }]
+    },
+    { role: 'tool', tool_call_id: callId, tool_name: 'setup_beat', content: JSON.stringify(answer), timestamp: 3 },
+    ...(boundary
+      ? [
+          {
+            role: 'assistant' as const,
+            content: 'This turn did not complete.',
+            timestamp: 4,
+            display_kind: 'failed_turn',
+            display_metadata: { error: 'rate limited', error_surface: errorSurface }
+          }
+        ]
+      : [])
+  ])
+
+  const local: ChatMessage[] = [
+    row('user-opening', 'user', 'opening', { hidden: true, timestamp: 1 }),
+    row('assistant-interim', 'assistant', 'Hi!', { interim: true, timestamp: 2 }),
+    {
+      id: 'assistant-stream',
+      role: 'assistant',
+      error: 'rate limited',
+      errorSurface,
+      timestamp: 3,
+      parts: [
+        {
+          type: 'tool-call',
+          toolCallId: callId,
+          toolName: 'setup_beat',
+          args: { beat: 'name' },
+          argsText: '{"beat":"name"}',
+          result: answer
+        }
+      ]
+    }
+  ]
+
+  const merged = preserveLocalAssistantErrors(stored, local)
+
+  const beatRows = merged.filter(message =>
+    message.parts.some(part => part.type === 'tool-call' && part.toolCallId === callId)
+  )
+
+  const errorCards = merged.filter(message => message.error)
+
+  expect(beatRows).toHaveLength(1)
+  expect(chatMessageText(beatRows[0])).toBe('Hi!')
+  expect(errorCards).toHaveLength(1)
+  expect(errorCards[0]).toMatchObject({ error: 'rate limited', errorSurface: { code: 'rate_limit' } })
 })

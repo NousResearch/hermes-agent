@@ -61,7 +61,7 @@ def _guarded_store_write(action, description, *args, **kwargs):
     """
     try:
         action(*args, **kwargs)
-    except BaseException as e:  # noqa: BLE001 - mirror the tick body's BaseException policy
+    except BaseException as e:
         logger.warning("Cron %s write failed: %s", description, e, exc_info=True)
 
 
@@ -90,6 +90,29 @@ def _existing_profile_homes(profile_homes: list) -> list:
             logger.warning("cron profile enumeration failed; skipping this cycle", exc_info=True)
             return []
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
+
+
+def routed_profile_fire(home=None) -> bool:
+    """True when a fire runs for a profile OTHER than the process's own.
+
+    Derived from the fire's home itself (``home``, else the task's active ``get_hermes_home()``), never from
+    a marker one entry point sets: the desktop ticker (``_profile_cron_scope``), the dashboard's
+    manual Run now (``hermes_cli.web_server_cron._cron_store_scope``) and any other caller that
+    binds a HERMES_HOME override for a sibling profile all reach ``run_one_job`` the same way, and a
+    marker set only in the ticker left the manual path with the original cross-profile leak.
+
+    The desktop backend fires every local profile from one process without setting the
+    process-global multiplex flag, so every isolation keyed on ``is_multiplex_active()`` was inert
+    for those fires: a sibling profile's ``.env`` landed in the shared ``os.environ`` with
+    ``override=True`` and a scope miss read the launch profile's credentials (#107692).
+    ``cron.scheduler._install_fire_secret_scope`` turns this into multiplex semantics for exactly
+    the span the profile's secret scope covers, and the restart-safe handoff marks the worker
+    payload with it. The launch identity is ``get_routing_process_hermes_home()`` (gateway/AGENTS.md
+    "One launch-home identity")."""
+    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
+
+    target = home if home is not None else get_hermes_home()
+    return hermes_home_key(target) != hermes_home_key(get_routing_process_hermes_home())
 
 
 @contextlib.contextmanager
@@ -133,18 +156,18 @@ class CronScheduler(ABC):
 
     def stop(self) -> None:
         """Optional eager teardown; stop_event is the primary signal."""
-        return None
+        return
 
     # Optional hooks for external providers — default-safe; keep NON-abstract.
 
     def on_jobs_changed(self) -> None:
         """After a successful store mutation; external providers reconcile. Built-in: no-op."""
-        return None
+        return
 
     def register_job(self, job: dict[str, Any]) -> None:
         """Register the external trigger for a newly persisted job (must complete before callers
         report it as scheduled). Built-in: no-op."""
-        return None
+        return
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
@@ -215,7 +238,7 @@ class CronScheduler(ABC):
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (desired state). Built-in: no-op."""
-        return None
+        return
 
 
 def provider_supports_force_fire(provider: Any) -> bool:
@@ -268,7 +291,7 @@ def _misfire_grace_minutes() -> float:
 
 
 def fire_overdue_jobs(
-    provider: "CronScheduler", *, adapters: Any = None, loop: Any = None, now: Any = None,
+    provider: CronScheduler, *, adapters: Any = None, loop: Any = None, now: Any = None,
 ) -> int:
     """Misfire backstop (gateway housekeeping loop): fire jobs whose external HTTP fire never
     arrived, else ``next_run_at`` stays parked in the past forever. No-op for the built-in (its tick
@@ -361,7 +384,7 @@ def fire_overdue_jobs(
     return fired
 
 
-def resolve_cron_scheduler() -> "CronScheduler":
+def resolve_cron_scheduler() -> CronScheduler:
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
     name = ""
@@ -391,8 +414,8 @@ def resolve_cron_scheduler() -> "CronScheduler":
 
 
 def scheduler_for_profile_mode(
-    provider: "CronScheduler", *, multiplex_profiles: bool
-) -> "CronScheduler":
+    provider: CronScheduler, *, multiplex_profiles: bool
+) -> CronScheduler:
     """External providers own one unscoped remote registry and cannot reconcile several profile
     stores: fail closed to the built-in multiplex ticker until the API carries profile identity."""
     if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):
@@ -415,6 +438,7 @@ class InProcessCronScheduler(CronScheduler):
     def start(
         self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
@@ -435,6 +459,7 @@ class InProcessCronScheduler(CronScheduler):
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
                 default_profile=default_profile, profile_gate=profile_gate,
+                profile_bot_platforms=profile_bot_platforms,
             )
             return
 
@@ -511,6 +536,7 @@ class InProcessCronScheduler(CronScheduler):
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
         can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
@@ -518,7 +544,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+            SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
@@ -539,7 +565,8 @@ class InProcessCronScheduler(CronScheduler):
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
+            owned = (profile_bot_platforms or {}).get(profile_name)
+            if not has_credential_platform(tick_adapters, owned) and adapters:
                 return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
             return tick_adapters
 
@@ -649,26 +676,3 @@ class InProcessCronScheduler(CronScheduler):
                 # burst-firing zero-length sleep cycles (#114467).
                 next_tick = now + wait_for
             stop_event.wait(max(0.0, next_tick - now))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def provider_supports_fire_cancel(provider: Any) -> bool:
-    """Return whether ``fire_claimed`` accepts a ``cancel_event`` kwarg."""
-    try:
-        parameters = inspect.signature(provider.fire_claimed).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or (
-            parameter.name == "cancel_event"
-            and parameter.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-        for parameter in parameters
-    )
-# ---- END PLUGIN-COMPAT ----

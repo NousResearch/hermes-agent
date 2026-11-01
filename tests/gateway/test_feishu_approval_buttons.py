@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ class TestFeishuExecApproval:
             )
 
         assert len(adapter._approval_state) == 1
-        approval_id = list(adapter._approval_state.keys())[0]
+        approval_id = next(iter(adapter._approval_state.keys()))
         state = adapter._approval_state[approval_id]
         assert state["session_key"] == "my-session-key"
         assert state["message_id"] == "msg_002"
@@ -204,6 +206,8 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_once(self):
         adapter = _make_adapter()
+        # No Feishu allowlist: the gateway authorization decides (here: this user is allowed).
+        adapter.set_authorization_check(lambda *_a, **_kw: True)
         adapter._approval_state[1] = {
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
@@ -325,7 +329,7 @@ class TestCardActionCallbackResponse:
         assert response.card is not None
         assert response.card.type == "raw"
         card = response.card.data
-        assert "Approved once" in card["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 
 
@@ -481,6 +485,8 @@ class TestCardActionCallbackResponse:
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._admins = set()
         adapter._allowed_group_users = set()
+        # The paired DM user passes the gateway authorization (pairing store).
+        adapter.set_authorization_check(lambda *_a, **_kw: True)
         adapter._approval_state[15] = {
             "session_key": "sess-15",
             "message_id": "msg-15",
@@ -498,7 +504,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
-        assert "Approved once" in response.card.data["header"]["title"]["content"]
+        assert t("platform.feishu.approval.resolved_once") in response.card.data["header"]["title"]["content"]
 
     def test_paired_mode_participant_can_confirm_update_prompt(self, _patch_callback_card_types):
         """Empty allowlist (DM paired mode): the prompt recipient can still confirm."""
@@ -507,6 +513,8 @@ class TestCardActionCallbackResponse:
         adapter._loop.is_closed = MagicMock(return_value=False)
         adapter._admins = set()
         adapter._allowed_group_users = set()
+        # The paired DM user passes the gateway authorization (pairing store).
+        adapter.set_authorization_check(lambda *_a, **_kw: True)
         adapter._update_prompt_state[23] = {
             "session_key": "sess-up-23",
             "message_id": "msg_up_023",
@@ -612,6 +620,7 @@ class TestResolveUpdatePrompt:
         adapter = _make_adapter()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
+        adapter.set_authorization_check(lambda *_a, **_kw: True)
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_003",

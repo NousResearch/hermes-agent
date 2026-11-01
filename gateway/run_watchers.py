@@ -94,10 +94,10 @@ class GatewaySessionWatchersMixin:
             return None
         return summary if isinstance(summary, dict) else None
 
-    def _stall_candidates(self) -> Dict[str, tuple[Any, Any]]:
+    def _stall_candidates(self) -> dict[str, tuple[Any, Any]]:
         """session_key -> (adapter, pending event) from every live adapter's pending slot (default
         + multiplex profiles, deduped by identity), then the overflow queues; first one wins."""
-        candidates: Dict[str, tuple[Any, Any]] = {}
+        candidates: dict[str, tuple[Any, Any]] = {}
         maps = (getattr(self, "adapters", {}), *getattr(self, "_profile_adapters", {}).values())
         adapters = {id(a): a for m in maps for a in list(m.values()) if a is not None}
         for adapter in adapters.values():
@@ -199,7 +199,7 @@ class GatewaySessionWatchersMixin:
             # Adapters often return SendResult(success=False) instead of raising.
             if result is not None and getattr(result, "success", True) is False:
                 raise RuntimeError(getattr(result, "error", "send returned success=False"))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session stall notify send timed out after %.0fs for %s; will retry next tick",
                 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS, session_key,

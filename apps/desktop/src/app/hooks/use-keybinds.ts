@@ -11,7 +11,6 @@ import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
-  layoutHasRootSide,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
@@ -26,11 +25,14 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { markKeybindHandled } from '@/lib/keybinds/handled-keys'
+import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
+import { recordAction, recordDislike } from '@/store/desktop-metrics'
 import {
   $findInPage,
   findNext as findNextMatch,
@@ -42,14 +44,15 @@ import { toggleSimpleMode } from '@/store/interface-mode'
 import { $capture, $comboIndex, captureStep, endCapture, setBinding } from '@/store/keybinds'
 import {
   cycleSidebarGrouping,
+  layoutHasRightSide,
   requestSessionSearchFocus,
   setFileBrowserOpen,
-  toggleFileBrowserOpen,
   togglePanesFlipped,
+  toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { openBrowserTab } from '@/store/preview'
+import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -70,11 +73,13 @@ import {
   setCurrentReasoningEffort,
   setModelPickerOpen
 } from '@/store/session'
-import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
   commitOnCtrlUp,
+  noteSwitcherKeyDown,
   onSwitcherTabDown,
   onSwitcherTabUp,
   openOrAdvanceSwitcher,
@@ -128,6 +133,12 @@ export interface KeybindRuntimeDeps {
 /** A handler returns `false` to decline the chord (see `passthrough`); any other
  *  return value (void, a navigate() promise, …) means it ran. */
 type HandlerMap = Record<string, () => unknown>
+
+const SWITCHER_MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
+
+function hasWordEraseModifier(event: KeyboardEvent): boolean {
+  return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey
+}
 
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
@@ -337,17 +348,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
     'view.cycleSidebarGrouping': cycleSidebarGrouping,
-    // ⌘J toggles the right sidebar — but a layout with no right side (e.g.
-    // terminal-on-bottom) would leave it a dead key, so it falls back to the
-    // terminal there. The single "secondary panel" toggle.
-    'view.toggleRightSidebar': () => (layoutHasRootSide('right') ? toggleFileBrowserOpen() : toggleTerminalPane()),
+    // ⌘J toggles the physical right side — whatever column lives there in the
+    // live tree (the Browser preview column, the files column). Falls back to
+    // the terminal when nothing lives on the right (terminal-on-bottom).
+    'view.toggleRightSidebar': () => (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
     'view.toggleProfileRail': toggleProfileRailVisible,
     'view.toggleSimpleMode': toggleSimpleMode,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
-    'view.showBrowser': openBrowserTab,
+    'view.showBrowser': toggleBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => toggleTerminalPane(),
     // Create first so the pane's open-effect ensure sees a non-empty set and
@@ -395,6 +406,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.toggleAll': toggleShowAllProfiles,
     'profile.create': requestProfileCreate
   }
+
+  // Plugins run built-in actions by id (`ctx.runAction`) through this same
+  // table, read at call time, so a plugin run and a keypress share one handler
+  // and rebinding the chord never changes what the plugin gets.
+  useEffect(
+    () =>
+      registerBuiltinActionRunner(actionId => {
+        const handler = handlersRef.current[actionId]
+
+        if (!handler) {
+          return false
+        }
+
+        handler()
+
+        return true
+      }),
+    []
+  )
 
   // A keyboard-driven overlay closing hands typing back to the composer: Radix
   // restores focus to the trigger (a toolbar button for the model pill), so
@@ -453,6 +483,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      noteSwitcherKeyDown(event.code)
+
       // An active IME composition owns the keyboard. Windows Chinese IMEs
       // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
       // so without this guard that keystroke ALSO matched `nav.settings` and
@@ -481,6 +513,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
         if (step.type === 'set') {
           setBinding(capturing, step.combos)
+        } else {
+          recordDislike('cancelled', 'keybind_capture')
         }
 
         endCapture()
@@ -552,6 +586,26 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           return
         }
 
+        // The close-tab chord over a focused user terminal is the shell's word
+        // erase (readline ^W). Main already claimed the default chord on
+        // every platform (window-accelerator) and routes it through the IPC
+        // rung above, so this guards the DEFAULT binding when it reaches the
+        // dispatcher anyway, plus a chord rebound onto another key with the
+        // same bare shape. Returning without preventDefault hands the key to
+        // xterm, whose data handler writes the ^W byte to the PTY. Read-only
+        // agent mirrors carry only [data-terminal], so they keep close. A
+        // browser tab's ⌃⌘W is the close chord itself, not ^W.
+        if (
+          actionId === 'view.closeTab' &&
+          event.key.toLowerCase() === 'w' &&
+          hasWordEraseModifier(event) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          isFocusWithin('[data-interactive-terminal]')
+        ) {
+          return
+        }
+
         // Built-in handlers first (they carry React context); contributed
         // actions bring their own `run` through the registry.
         const handler = handlersRef.current[actionId] ?? contributedKeybindHandler(actionId)
@@ -566,6 +620,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           continue
         }
 
+        markKeybindHandled(event)
+        recordAction(actionId, 'shortcut')
+
         return
       }
     }
@@ -578,11 +635,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         releaseApprovalKey()
       }
 
-      if (event.key === 'Tab') {
-        onSwitcherTabUp()
-      }
-
-      if (event.key === 'Control') {
+      // The cycle chord is ⌃Tab natively but Alt+] / ⌃⌘] in a browser tab:
+      // releasing its step key ends the hold, and releasing the last
+      // non-Shift modifier commits.
+      if (!SWITCHER_MODIFIER_KEYS.has(event.key)) {
+        onSwitcherTabUp(event.code)
+      } else if (event.key !== 'Shift' && !event.ctrlKey && !event.altKey && !event.metaKey) {
         commitSwitcherRef.current()
       }
     }

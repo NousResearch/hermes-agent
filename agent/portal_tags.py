@@ -82,7 +82,7 @@ def conversation_tag(session_id: str) -> str:
     return f"conversation={session_id}"
 
 
-def nous_portal_tags(session_id: str | None = None) -> List[str]:
+def nous_portal_tags(session_id: str | None = None) -> list[str]:
     """Fresh list of the canonical Nous Portal tags.
 
     The ambient conversation context (lineage ROOT id) wins over the explicit

@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -8,16 +9,15 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Loader2 } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -38,6 +38,7 @@ import {
   $showAllProfiles,
   ALL_PROFILES,
   normalizeProfileKey,
+  prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
@@ -49,20 +50,23 @@ import { runImportProfileFlow } from '@/store/profile-share'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { ConnectionGlyph } from './connection-glyph'
+import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
+import { ProfileLaunchContextMenu } from './profile-launch-menu'
+import { ProfileRowGlyph, UnservedProfileNote, useUnservedProfiles } from './unserved-profiles'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
+import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-active'
 
 /**
  * The profile picker that sits beside the gateway switcher in the statusbar
  * while the colored rail is hidden — the same choices the rail offers (this
  * gateway's profiles, every other gateway's agents in fleet mode, new / import
- * / manage) in a dropdown that reads like its neighbour. The rail keeps the
- * gestures that need squares (drag-order, hold-to-recolor); this is the
- * plain-dropdown door for people who run profiles as bots and don't want a
- * strip of them.
+ * / manage; in the Webapp also right-click open-in-new-window / set-as-default)
+ * in a dropdown that reads like its neighbour. The rail keeps the gestures that
+ * need squares (drag-order, hold-to-recolor); this is the plain-dropdown door
+ * for people who run profiles as bots and don't want a strip of them.
  */
 export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { t } = useI18n()
@@ -82,6 +86,12 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
   useFleetRoster(multipleConnections)
+  const unserved = useUnservedProfiles(profiles)
+  // The Webapp always takes this dropdown in place of the rail's squares
+  // (profile-switcher.tsx), so there it keeps the list fresh the same way and
+  // carries the rail's right-click launch menu. Native Desktop's picker is main's.
+  const browserHost = !hostHas('profileRailSquares')
+  useProfileRailRefreshOnActive(browserHost)
 
   // The `profile.create` hotkey bumps this request atom; the rail answers it
   // while mounted, so with the rail hidden this picker owns the dialog instead.
@@ -106,6 +116,9 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
     [activeConnectionId, connections, multipleConnections, order, roster]
   )
 
+  // Launch actions name the route a pick would dial, as the rail's squares do:
+  // named profiles on This device keep the legacy door (per-profile overrides).
+  const namedConnectionId = activeConnectionId === LOCAL_CONNECTION_ID ? null : activeConnectionId
   const activeKey = normalizeProfileKey(gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
 
@@ -208,10 +221,13 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             {ordered.map(profile => (
               <ProfileItem
                 color={resolveProfileColor(profile.name, colors)}
+                connectionId={profile.is_default ? activeConnectionId : namedConnectionId}
                 isDefault={profile.is_default}
                 key={profile.name}
                 label={profileLabel(profile)}
+                launchMenu={browserHost}
                 name={profile.name}
+                unserved={unserved.has(normalizeProfileKey(profile.name))}
               />
             ))}
             {/* Nothing to widen to with one profile: the ALL view only exists
@@ -226,43 +242,26 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             )}
           </DropdownMenuRadioGroup>
           {restGroups.map(group => (
-            <div data-connection-id={group.connectionId} data-slot="profile-switcher-gateway" key={group.connectionId}>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
-                <ConnectionGlyph connection={group} />
-                <span className="truncate">{group.label}</span>
-                {!group.reachable && (
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-                )}
-              </DropdownMenuLabel>
-              {[group.defaultAgent, ...group.named].map(agent => {
-                const localDefault = agent.connectionKind === 'local' && agent.isDefault
-                const label = localDefault ? p.fleet.localDevice : p.fleet.onGateway(agent.profile, group.label)
-
-                return (
-                  <DropdownMenuItem
-                    aria-label={label}
-                    className="min-w-0"
-                    key={agent.profile}
-                    onSelect={() => switchToRest(agent)}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {localDefault ? (
-                        <Codicon aria-hidden="true" name="device-desktop" size="0.875rem" />
-                      ) : (
-                        <ProfileGlyph
-                          aria-hidden="true"
-                          color={resolveProfileColor(agent.profile, colors)}
-                          isDefault={agent.isDefault}
-                          name={agent.profile}
-                        />
-                      )}
-                      <span className="truncate">{agent.profile}</span>
-                    </span>
-                  </DropdownMenuItem>
-                )
-              })}
-            </div>
+            <FleetGatewayMenuGroup
+              group={group}
+              key={group.connectionId}
+              onSelect={switchToRest}
+              slot="profile-switcher-gateway"
+              wrapRow={
+                browserHost
+                  ? (row, agent, label) => (
+                      <ProfileLaunchContextMenu
+                        connectionId={agent.connectionId}
+                        key={agent.profile}
+                        label={label}
+                        profile={agent.profile}
+                      >
+                        {row}
+                      </ProfileLaunchContextMenu>
+                    )
+                  : undefined
+              }
+            />
           ))}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
@@ -294,31 +293,43 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   )
 }
 
-function ProfileItem({
-  color,
-  isDefault,
-  label,
-  name
-}: {
+interface ProfileItemProps {
   color: null | string
+  connectionId: null | string
   isDefault: boolean
   label: string
+  /** Wrap the row in the rail's right-click launch menu (the Webapp's picker). */
+  launchMenu: boolean
   name: string
-}) {
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  /** Listed by its gateway but not served (the Webapp): shown, never picked, since the pick is refused. */
+  unserved: boolean
+}
 
-  return (
+function ProfileItem({ color, connectionId, isDefault, label, launchMenu, name, unserved }: ProfileItemProps) {
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
+
+  const row = (
     <DropdownMenuRadioItem
       className="min-w-0"
+      disabled={unserved}
       onPointerEnter={startPrewarm}
       onPointerLeave={cancelPrewarm}
       onPointerMove={notePointerMove}
       value={name}
     >
       <span className="flex min-w-0 items-center gap-1.5">
-        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
+        <ProfileRowGlyph color={color} isDefault={isDefault} name={name} unserved={unserved} />
         <span className="truncate">{label}</span>
       </span>
+      {unserved && <UnservedProfileNote />}
     </DropdownMenuRadioItem>
+  )
+
+  return launchMenu ? (
+    <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
+      {row}
+    </ProfileLaunchContextMenu>
+  ) : (
+    row
   )
 }

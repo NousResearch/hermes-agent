@@ -1,0 +1,20 @@
+name: crew
+repo: https://github.com/macd2/Crew
+sha: 998fd9d3685cd412a9294fbbb93687054d20058c
+description: "One /crew message becomes verified work on the kanban board. A coordinator owns every card until its proof command exits 0 - one writer per card, an independent verifier, a hard token budget per card, and a live local dashboard of every card, run and tool call. Disclosure — install.py creates four crew-* profiles cloned from your chat profile (including its .env provider keys and memories), deletes non-crew skills in them, updates crew in other profiles and on Linux starts a loopback dashboard service (127.0.0.1:8799, transcript excerpts; --publish serves it to one tailnet login), restarting it when an upgrade changes the plugin code; it never approves shell hooks itself, but on a terminal offers (y/N) to open each profile's Hermes so Hermes asks for hook consent, first revoking approvals whose hook script changed; on native Windows the service and the optional nightly cron are skipped and the dashboard is started by hand, and proofs run in Git for Windows's bash; a Crew tab in the Hermes dashboard and a native Crew page in Hermes Desktop build that board inside the Hermes backend, including its transcript excerpts, each live card's step count and last tool name, and its acknowledge, Unstuck, Retry, Proof and Stop actions, under /api/plugins/crew/ to anyone with dashboard access; a detached coordinator makes read-only model decisions and runs card proof commands unattended with a scrubbed env, flagged or changed proofs only after the owner answers /crew-proof; card reports and questions are sent to the originating chat via hermes send; agent-written per-role lessons are injected into later crew turns."
+maintainer: macd2
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/macd2/Crew#readme
+version: "0.10.1"
+image: https://raw.githubusercontent.com/macd2/Crew/998fd9d3685cd412a9294fbbb93687054d20058c/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/macd2/Crew/998fd9d3685cd412a9294fbbb93687054d20058c/assets/dashboard.webp
+  - https://raw.githubusercontent.com/macd2/Crew/998fd9d3685cd412a9294fbbb93687054d20058c/assets/desktop-dark.png
+platforms: [linux, windows]
+capabilities:
+  provides_tools: [crew_verdict, crew_progress, crew_proof_check, crew_lesson, crew_plan, crew_diagnose]
+  provides_hooks: [pre_tool_call, post_tool_call, pre_llm_call, post_api_request, api_request_error, on_kanban_dispatch_tick]
+  provides_middleware: []
+  requires_env: []

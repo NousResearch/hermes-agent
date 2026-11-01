@@ -43,7 +43,7 @@ def empty_jwks_server():
     """A reachable JWKS endpoint that knows no keys."""
 
     class _H(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.end_headers()

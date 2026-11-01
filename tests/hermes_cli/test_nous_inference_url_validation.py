@@ -104,7 +104,7 @@ class TestHealsPoisonedStoredValue:
     """
 
     def test_refresh_resets_rejected_url_to_default(self, monkeypatch):
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
         import hermes_cli.auth_nous as hermes_cli_auth_nous
 
         poisoned = "https://stg-inference-api.nousresearch.com/v1"
@@ -213,7 +213,7 @@ class TestEnvOverrideWins:
     def test_no_refresh_env_override_not_persisted(self, monkeypatch):
         """The env override is a runtime overlay: it must never be written
         back into the stored state (auth.json)."""
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
 
         state = self._base_state(auth, auth.DEFAULT_NOUS_INFERENCE_URL)
         self._patch_no_refresh(monkeypatch, auth, state)
@@ -230,7 +230,7 @@ class TestEnvOverrideWins:
         """A poisoned stored staging host (persisted before the allowlist)
         still heals to the default when no env override is present — the
         #50265 no-refresh-read-path heal, folded in here."""
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
 
         state = self._base_state(auth, self.STAGING)
         self._patch_no_refresh(monkeypatch, auth, state)

@@ -1,0 +1,113 @@
+{
+  "fixtureVersion": 1,
+  "name": "list-replaces-whole-list",
+  "description": "Proves rule-5: A lower list replaces the whole upper list (no element merge), including lists of mappings and DEFAULT_CONFIG lists.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "tools": {
+          "disabled": [
+            "web",
+            "browser"
+          ]
+        },
+        "fallback_providers": [
+          {
+            "provider": "openrouter",
+            "model": "a"
+          }
+        ]
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "tools": {
+          "disabled": [
+            "tts"
+          ]
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "fallback_providers": [
+          {
+            "provider": "nous"
+          }
+        ]
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "tools": {
+        "disabled": [
+          "tts"
+        ]
+      },
+      "fallback_providers": [
+        {
+          "provider": "nous"
+        }
+      ]
+    },
+    "provenance": {
+      "tools.disabled": "tenant",
+      "fallback_providers": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "tools.disabled",
+      "value": [],
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "tools": {
+        "disabled": [
+          "x",
+          "y",
+          "z"
+        ],
+        "extra": 1
+      },
+      "fallback_providers": []
+    },
+    "expect": {
+      "tools": {
+        "disabled": [
+          "tts"
+        ],
+        "extra": 1
+      },
+      "fallback_providers": [
+        {
+          "provider": "nous"
+        }
+      ]
+    }
+  }
+}

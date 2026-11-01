@@ -11,10 +11,12 @@ is not the installer's. Then:
 * ``hermes doctor`` on that healthy install reports nothing wrong with the command installation
   (#124050 is the false positive class) and ``hermes pm status`` reports the update as a success;
 * real drift is caught and healed: a user uninstalls fastapi (the ``web`` extra the dashboard
-  imports) from the selected environment. ``hermes doctor`` must say so (gated on #124214: it
-  reports nothing), and ``hermes pm repair`` must bring the dashboard's import back;
-* a dependency update that cannot resolve fails loudly, ``hermes pm status`` reports it as failed,
-  and the previous generation stays selected and working.
+  imports) from the selected environment. ``hermes doctor`` must say so, and ``hermes pm repair``
+  must bring the dashboard's import back;
+* a dependency update that cannot resolve after the tree moved is an owed follow-up (contract C3,
+  A6): ``hermes update`` exits 0 but says loudly that the dependencies are not installed yet, the
+  receipt names the ``dependencies`` follow-up, the source-update tail stays armed for the next
+  launch, and the previous generation stays selected and working.
 """
 
 from __future__ import annotations
@@ -82,11 +84,9 @@ def test_managed_env_hermes_can_check_for_updates(updated):
     exe = _venv_hermes(sb)
     assert Path(exe).is_file(), f"harness: selected generation ships no hermes console script: {exe}"
     cp = sb.run([exe, "update", "--check"], timeout=300)
-    with known_failure(r"`hermes update --check` from the managed environment: .*Not a git repository",
-                       "gated on #122627: PROJECT_ROOT resolves to the PM workspace copy"):
-        assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
-            "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
-            + "\n" + I.describe(cp))
+    assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
+        "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
+        + "\n" + I.describe(cp))
 
 
 def test_managed_env_hermes_reports_the_checkout_as_the_install(updated):
@@ -139,10 +139,8 @@ def test_doctor_reports_web_extra_drift(drifted):
     flagged = [line for line in cp.stdout.splitlines()
                if re.search(r"(?i)fastapi|dashboard|web extra|\bweb\b.*(missing|not installed)", line)
                and line.lstrip().startswith(("⚠", "✗"))]
-    with known_failure(r"hermes doctor is silent about fastapi missing from the selected environment",
-                       "gated on #124214: web-extra dependency drift is invisible to doctor"):
-        assert flagged, ("hermes doctor is silent about fastapi missing from the selected environment "
-                         f"(rc={cp.returncode})\n" + I.describe(cp))
+    assert flagged, ("hermes doctor is silent about fastapi missing from the selected environment "
+                     f"(rc={cp.returncode})\n" + I.describe(cp))
 
 
 def test_pm_repair_heals_the_drift(drifted):
@@ -153,20 +151,29 @@ def test_pm_repair_heals_the_drift(drifted):
         f"`hermes pm repair` exited 0 but the dashboard still cannot import: {imports}\n" + P.diagnostics(sb, rp))
 
 
-def test_failed_dependency_update_is_reported_as_failed(updated):
-    """A release whose uv.lock uv rejects: the update must fail loudly, the receipt must say so, and
-    the install must keep running on the generation it had."""
+def test_failed_dependency_update_is_an_owed_followup(updated):
+    """A release whose uv.lock uv rejects, synced after the tree moved: the code is committed, so
+    the update exits 0 (A6) but must say loudly that the dependencies are not installed yet, the
+    receipt must name the owed follow-up, the tail must stay armed, and the install must keep
+    running on the generation it had."""
     sb = updated["sb"]
     before = P.selected_generation(sb)
     origin, scratch = updated["origin"], updated["root"]
     lock = I.git("show", "main:uv.lock", cwd=origin) + '\n[[package]]\nname = "e2e-broken"\n'
-    I.publish_commit(origin, scratch, "release: e2e broken lockfile", {"uv.lock": lock})
+    target = I.publish_commit(origin, scratch, "release: e2e broken lockfile", {"uv.lock": lock})
     up = P.update(sb)
     receipt = json.loads(P.ok(sb.cli("pm", "status")).stdout)
-    assert up.returncode != 0, "`hermes update` exited 0 on a release whose uv.lock uv rejects\n" + P.diagnostics(sb, up)
-    assert receipt.get("outcome") not in ("ok", "success"), (
-        f"`hermes pm status` reports the failed update as a success: {receipt}\n" + P.diagnostics(sb, up))
-    assert P.selected_generation(sb) == before, "a failed update switched the selected generation"
+    assert up.returncode == 0, (
+        "`hermes update` failed although the code committed; a dependency sync after the tree moved "
+        "is an owed follow-up (A6)\n" + P.diagnostics(sb, up))
+    assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == target, "the code update did not land\n" + P.diagnostics(sb, up)
+    assert re.search(r"⚠ Update follow-up 'dependencies' did not finish: .*dependencies not installed yet",
+                     up.stdout + up.stderr), "the owed dependency sync is not reported loudly\n" + P.diagnostics(sb, up)
+    assert receipt.get("outcome") == "success" and "dependencies" in [
+        f.get("step") for f in receipt.get("followups") or []], (
+        f"the receipt does not name the owed dependency sync: {receipt}\n" + P.diagnostics(sb, up))
+    assert P.pending_marker(sb).exists(), "the owed source-update tail is not armed for the next launch"
+    assert P.selected_generation(sb) == before, "a failed dependency sync switched the selected generation"
     imports = P.managed_imports(sb, "pydantic", "openai")
     assert set(imports.values()) == {"ok"}, f"the install no longer works after a failed update: {imports}"
     cp = sb.cli("--version")

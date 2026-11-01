@@ -2,8 +2,10 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The token / OAuth transports delegate to the shared finalizer here. It
-// waits for the save dialog before `pumpStreamToFile` streams the
+// The token / OAuth transports (gateway-file-download-transport.ts) and the
+// native gateway-descriptor transport (gateway-download-transport.ts) delegate
+// to the shared finalizer here. It waits for the save dialog before
+// `pumpStreamToFile` streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large
 // download never has to be buffered whole in the native process, and a failed
@@ -330,7 +332,43 @@ export function filenameFromContentDisposition(value: unknown): string {
   }
 }
 
+export interface SaveDialogFilter {
+  name: string
+  extensions: string[]
+}
+
+const ALL_FILES: SaveDialogFilter = { name: 'All Files', extensions: ['*'] }
+
+// Build the Electron save-dialog `filters` for a resolved download name.
+//
+// Not cosmetic. Electron hands `filters` to the platform save dialog as its set
+// of file types, and on Windows the selected type is also what supplies the
+// default extension. Omit it and the dialog has exactly one type, "All Files",
+// with no default extension to append — so a name the shell chose to display
+// without its extension is then SAVED without it, and a .pptx lands as a
+// typeless "File" that Explorer cannot open (#92480). The image-save dialog
+// already carries a filter for the same reason.
+//
+// The extension is whitelisted rather than merely extracted, because the name
+// it comes from can be attacker-influenced: `filenameFromContentDisposition`
+// reads a server-supplied header. A filter is a poor injection target, but an
+// unbounded string from the network has no business reaching a native dialog,
+// and anything failing the test still saves — under "All Files", exactly as
+// it does today.
+export function saveDialogFilters(filename: unknown): SaveDialogFilter[] {
+  const name = path.basename(String(filename || '').trim())
+  const ext = path.extname(name).replace(/^\./, '').toLowerCase()
+
+  if (!/^[a-z0-9]{1,16}$/.test(ext)) {
+    return [ALL_FILES]
+  }
+
+  return [{ name: `${ext.toUpperCase()} File`, extensions: [ext] }, ALL_FILES]
+}
+
 // Preserve file URIs: only the gateway knows its native drive/UNC semantics.
+// Normalize a gateway file path that may arrive as a bare path or a file:// URL.
+
 export function gatewayFilePath(rawPath: unknown): string {
   return String(rawPath || '').trim()
 }
@@ -353,6 +391,7 @@ export interface GatewayFileSaveResult {
 
 export interface GatewaySaveDialogOptions {
   defaultPath: string
+  filters?: SaveDialogFilter[]
   title: string
 }
 
@@ -364,6 +403,46 @@ export interface GatewayFileSaveDeps {
 export interface GatewayDownloadResponse extends ReadableLike {
   statusCode?: number
   headers: { [name: string]: string | string[] | undefined }
+}
+
+/** The stream surface the body idle watchdog needs: Node's http.IncomingMessage
+ *  and Electron net's IncomingMessage are both Readable EventEmitters. */
+export interface StallWatchableBody {
+  on(event: string, listener: (...args: any[]) => void): unknown
+  once(event: string, listener: (...args: any[]) => void): unknown
+  destroy(error?: Error): unknown
+  destroyed?: boolean
+}
+
+// Bound a body that stops arriving once the consumer is reading it. The watchdog arms only
+// when a 'data'/'readable' consumer attaches, so the unread body waiting on the native save
+// dialog stays the user's time; it pauses under write backpressure and resets on every chunk.
+// Shared by every download transport (native descriptor, token/bearer, OAuth cookie).
+export function destroyStalledBody(res: StallWatchableBody, idleMs: number): void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let watching = false
+  const stop = (): void => clearTimeout(timer)
+
+  const arm = (): void => {
+    stop()
+    timer = setTimeout(() => res.destroy(new Error(`Hermes backend download stalled: no data for ${idleMs}ms`)), idleMs)
+  }
+
+  const watch = (): void => {
+    if (watching || res.destroyed) { return }
+    watching = true
+    // Added after the consumer's own listener, so this never switches a reader's mode.
+    res.on('data', arm)
+    arm()
+  }
+
+  res.on('newListener', (event: string) => {
+    if (event === 'data' || event === 'readable') { queueMicrotask(watch) }
+  })
+  res.on('pause', stop)
+  res.on('resume', () => { if (watching) { arm() } })
+  res.once('end', stop)
+  res.once('close', stop)
 }
 
 /** Keep the body unread until the user selects a destination. */
@@ -392,7 +471,11 @@ export async function finalizeGatewayDownload(
   const filename: string = filenameFromContentDisposition(disposition) || context.suggested || context.fallbackName
 
   try {
-    const result: GatewaySaveDialogResult = await deps.showSaveDialog({ defaultPath: filename, title: 'Save File' })
+    const result: GatewaySaveDialogResult = await deps.showSaveDialog({
+      defaultPath: filename,
+      filters: saveDialogFilters(filename),
+      title: 'Save File'
+    })
 
     if (result.canceled || !result.filePath) {
       abort()
@@ -461,6 +544,7 @@ export async function saveGatewayDownload(
 
   const result: GatewaySaveDialogResult = await deps.showSaveDialog({
     defaultPath: context.suggested || context.fallbackName,
+    filters: saveDialogFilters(context.suggested || context.fallbackName),
     title: 'Save File'
   })
 

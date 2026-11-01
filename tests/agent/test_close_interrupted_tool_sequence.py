@@ -49,6 +49,11 @@ def test_closing_makes_next_user_message_alternation_safe():
     assert isinstance(messages[-1]["timestamp"], float)
     follow_on = messages + [{"role": "user", "content": "they do! increase the timing"}]
     _assert_no_tool_then_user(follow_on)
+    # A caller banner is the turn's only explanation: it stays visible, unhidden.
+    bannered = _tool_tail()
+    assert close_interrupted_tool_sequence(bannered, "Response truncated.") is True
+    assert bannered[-1]["content"] == "Response truncated."
+    assert "display_kind" not in bannered[-1]
 
 
 def test_assistant_tail_is_left_untouched():
@@ -66,3 +71,13 @@ def test_user_tail_is_left_untouched():
     assert close_interrupted_tool_sequence(messages, None) is False
     assert len(messages) == 1
 
+
+
+def test_only_an_interrupted_close_carries_the_stopped_mark():
+    """The closing row is the turn's last stored row: it alone tells a reopened transcript the turn was stopped."""
+    stopped = _tool_tail()
+    assert close_interrupted_tool_sequence(stopped, None, stopped=True) is True
+    assert stopped[-1]["display_metadata"] == {"interrupted": True}
+    truncated = _tool_tail()
+    assert close_interrupted_tool_sequence(truncated, "Response truncated.") is True
+    assert "display_metadata" not in truncated[-1]

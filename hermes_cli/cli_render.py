@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
+from agent.i18n import t
 from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
@@ -461,7 +462,7 @@ def _post_stream_transform_output(response: str, result: dict | None) -> str:
     if original and response.startswith(original):
         return response[len(original):]
 
-    return f"\n[Response transformed after streaming]\n{response}"
+    return f"\n{t('cli.render.response_transformed')}\n{response}"
 
 
 def _coerce_output_history_limit(value) -> int:
@@ -919,13 +920,13 @@ def _build_compact_banner() -> str:
         tiny_line = "☤ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
-    line1 = f"{tiny_line} - AI Agent Framework"
+    line1 = t("cli.render.banner_tagline", name=tiny_line)
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
         from hermes_cli import __release_date__ as _release_date
         from hermes_cli.version_info import get_version_info
 
-        version_line = f"Hermes Agent v{get_version_info().derived_version} ({_release_date})"
+        version_line = t("cli.render.banner_version", version=get_version_info().derived_version, date=_release_date)
     else:
         version_line = format_banner_version_label()
 
@@ -957,9 +958,11 @@ def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, 
 
 
 def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
+    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews). Each source
+    line wraps on its own: a newline inside a row would break the panel's right border."""
     kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
+    wrapped = [row for part in (text.expandtabs(4).splitlines() if keep_ws else [text])
+               for row in (textwrap.wrap(part, width=max(8, width), subsequent_indent=subsequent_indent, **kw) or [""])]
     return wrapped or [""]
 
 

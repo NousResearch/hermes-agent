@@ -44,6 +44,7 @@ class ButtonAdapter(TextAdapter):
 
 def runner(adapter, *, no_loop=False):
     obj = object.__new__(TurnRunner)
+    obj._approval_owner = None
     obj._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="123",
         _status_thread_metadata={"thread_id": "456"}, session_key=SESSION,
@@ -63,6 +64,86 @@ def runner(adapter, *, no_loop=False):
 
     obj._schedule = schedule
     return obj
+
+
+@pytest.mark.parametrize("outcome", ["failed", "declined", "sent", "ambiguous", "retired"])
+def test_owner_registers_only_after_answerable_delivery(monkeypatch, outcome):
+    events = []
+    results = {
+        "failed": SendResult(success=False, error="offline"),
+        "declined": SendResult(success=False, raw_response={"code": "egress_declined"}),
+        "sent": SendResult(success=True, message_id="789"),
+        "ambiguous": TimeoutError(),
+        "retired": SendResult(success=True, message_id="789"),
+    }
+    adapter = TextAdapter(results[outcome])
+    obj = runner(adapter)
+
+    class Authority:
+        def check_approval_generation(self, session_id, generation):
+            assert (session_id, generation) == ("owned-session", 7)
+            events.append("checked")
+            if outcome == "retired":
+                raise RuntimeError("retired generation")
+
+        def register_approval(self, session_id, generation, session_key, data, **kwargs):
+            assert (session_id, generation, session_key) == ("owned-session", 7, SESSION)
+            assert len(adapter.sends) == 1
+            assert data["request_id"]
+            events.append("registered")
+
+    obj._approval_owner = (Authority(), "owned-session", 7)
+    monkeypatch.setattr("gateway.local_viewer_events.prompt_timeout_s", lambda *a: 30)
+
+    def answer(*a, **kwargs):
+        assert events == ["checked", "registered"]
+        assert approval.resolve_gateway_approval(SESSION, "deny") == 1
+        return "set"
+
+    monkeypatch.setattr(wait, "_poll_event", answer)
+    result = wait._await_gateway_decision(SESSION, obj._approval_notify_sync, dict(DATA))
+    if outcome in {"sent", "ambiguous"}:
+        assert result["resolved"] is True and result["choice"] == "deny"
+        assert events == ["checked", "registered"]
+    else:
+        assert result.get("notify_failed") is True
+        assert events == ["checked"]
+    assert len(adapter.sends) == (0 if outcome == "retired" else 1)
+    assert SESSION not in approval._gateway_queues
+
+
+@pytest.mark.parametrize("lane", ["text", "buttons"])
+@pytest.mark.parametrize("failure_site", ["adapter", "scheduler"])
+def test_pre_future_failures_do_not_log_private_payloads(monkeypatch, caplog, lane, failure_site):
+    marker = "PRIVATE_PRE_FUTURE_PAYLOAD"
+
+    class SyncTextAdapter(TextAdapter):
+        def send(self, *args, **kwargs):
+            raise RuntimeError(marker)
+
+    class SyncButtonAdapter(TextAdapter):
+        def send_exec_approval(self, **kwargs):
+            raise RuntimeError(marker)
+
+    adapter_type = (SyncButtonAdapter if lane == "buttons" else SyncTextAdapter)
+    if failure_site == "scheduler":
+        adapter_type = ButtonAdapter if lane == "buttons" else TextAdapter
+    adapter = adapter_type(SendResult(success=False))
+    obj = runner(adapter)
+    if failure_site == "scheduler":
+        def schedule(coro, label):
+            coro.close()
+            raise RuntimeError(marker)
+        obj._schedule = schedule
+    polled = []
+    monkeypatch.setattr(wait, "_poll_event", lambda *a, **kw: polled.append(True) or "timeout")
+    with caplog.at_level("DEBUG"):
+        result = wait._await_gateway_decision(SESSION, obj._approval_notify_sync, dict(DATA))
+    assert result.get("notify_failed") is True
+    assert not polled
+    assert SESSION not in approval._gateway_queues
+    assert marker not in caplog.text
+    assert marker not in repr([record.__dict__ for record in caplog.records])
 
 
 @pytest.fixture(autouse=True)

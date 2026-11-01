@@ -23,7 +23,8 @@
     "audit:fix:web": "npm audit fix --workspace web",
     "audit:fix:tui": "npm audit fix --workspace ui-tui",
     "check": "npm run --ws check",
-    "fix": "npm run --ws fix"
+    "fix": "npm run --ws fix",
+    "prepare": "node -e \"const {existsSync}=require('fs');const {spawnSync}=require('child_process');if(existsSync('.git'))spawnSync('lefthook',['install'],{stdio:'inherit',shell:true})\""
   },
   "repository": {
     "type": "git",
@@ -36,47 +37,54 @@
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
   "devDependencies": {
     "@eslint/js": "9.39.5",
-    "eslint-plugin-perfectionist": "5.10.0",
+    "eslint": "10.12.0",
+    "eslint-plugin-perfectionist": "5.12.1",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-unused-imports": "4.4.1",
-    "globals": "17.7.0",
-    "typescript-eslint": "8.64.0"
+    "globals": "17.13.0",
+    "lefthook": "2.2.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
   },
   "overrides": {
     "@electron/osx-sign": {
       "isbinaryfile": "5.0.7"
     },
     "lodash": "4.18.1",
-    "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",
-    "brace-expansion": "5.0.9",
-    "mermaid": "11.16.1",
-    "dompurify": "3.4.13",
-    "ip-address": "10.3.1",
-    "nanoid@^3": "3.3.18",
-    "nanoid@^6": "6.0.0",
-    "js-yaml@^4": "4.3.1",
-    "undici@^6": "6.28.0",
-    "undici@^7": "7.29.0",
-    "postcss": "8.5.23",
-    "tar": "7.5.22"
+    "brace-expansion": "5.0.12",
+    "mermaid": "11.17.2",
+    "dompurify": "3.4.17",
+    "katex": "0.19.0",
+    "ip-address": "10.7.4",
+    "nanoid@^3": "3.3.20",
+    "nanoid@^6": "6.0.2",
+    "js-yaml@^4": "4.3.2",
+    "undici@^6": "6.29.0",
+    "undici@^7": "7.30.0",
+    "postcss": "8.5.29",
+    "postcss-selector-parser": "7.1.6",
+    "tar": "7.5.22",
+    "source-map-js": "1.2.2",
+    "yaml": "2.9.1",
+    "vitest": "4.1.12",
+    "@vitest/mocker": "4.1.12"
   },
   "engines": {
-    "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
+    "node": ">=26",
     "npm": "<11.10.0 || >=11.17.0"
   },
   "allowScripts": {
     "unicode-animations": false,
-    "esbuild@0.28.1": true,
+    "esbuild@0.28.2": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
-    "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
-    "get-windows@9.3.0": true
+    "get-windows@9.3.0": true,
+    "lefthook@2.2.1": true
   },
   "dependencies": {
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "semver": "7.7.4"
   }
 }

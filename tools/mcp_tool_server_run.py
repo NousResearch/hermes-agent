@@ -8,7 +8,13 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import (
+    _DEFAULT_IDLE_TIMEOUT_SECONDS,
+    _core,
+    _get_lifecycle_seconds,
+    _jittered,
+    _resolve_tool_timeout,
+)
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -261,7 +267,9 @@ class MCPServerRunMixin:
         self._config = config
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
-        self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
+        self._idle_timeout_seconds = _get_lifecycle_seconds(
+            config, "idle_timeout_seconds", _DEFAULT_IDLE_TIMEOUT_SECONDS
+        )
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
         # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
         _core._ensure_mcp_sdk()

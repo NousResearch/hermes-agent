@@ -2,9 +2,9 @@ import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ReasoningEffort } fro
 
 import { normalize } from '@/lib/text'
 
-/** Compact labels for chrome where space is tight (pill, picker rows). Menus
- *  and settings use the translated `shell.modelOptions` strings instead. */
-const SHORT_LABELS: Record<string, string> = {
+/** Full chip labels for picker rows; menus and settings use the translated
+ *  `shell.modelOptions` strings instead. */
+const FULL_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
   low: 'Low',
@@ -38,17 +38,23 @@ export function reasoningEffortClamp(
   return { effort: picked, wire: sent }
 }
 
-/** Compact label; a clamped pick shows both ends ("Ultra→Max") so the pill
- *  never presents a Hermes step as a wire level the route does not have. */
-export function reasoningEffortLabel(effort: string, wire?: string): string {
+/** Label for the given level using `labels`; a clamped pick shows both ends
+ *  ("Ultra→Max") so a chip never presents a Hermes step as a wire level the
+ *  route does not send. */
+function formatWith(labels: Record<string, string>, effort: string, wire?: string): string {
   const key = normalize(effort)
   const clamp = reasoningEffortClamp(effort, wire)
 
   if (clamp) {
-    return `${SHORT_LABELS[clamp.effort]}→${SHORT_LABELS[clamp.wire]}`
+    return `${labels[clamp.effort]}→${labels[clamp.wire]}`
   }
 
-  return key ? (SHORT_LABELS[key] ?? effort) : ''
+  return key ? (labels[key] ?? effort) : ''
+}
+
+/** Full chip label. */
+export function reasoningEffortLabel(effort: string, wire?: string): string {
+  return formatWith(FULL_LABELS, effort, wire)
 }
 
 /** Thinking is on unless a level explicitly says otherwise; an empty value

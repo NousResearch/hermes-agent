@@ -847,8 +847,7 @@ DEFAULT_CONFIG = {
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
-        # Gateway notices when a terminal(background=true) process finishes: "concise" (one line; failures
-        # add an output tail) | "all" (updates + final raw) | "result" (final raw) | "error" (raw if exit != 0) | "off".
+        # terminal(background=true) finish notices: "concise" (1 line, +tail on failure) | "all" (updates + final raw) | "result" | "error" (raw if exit != 0) | "off".
         "background_process_notifications": "concise",
         "background_process_busy_result_mode": "queue",  # finished mid-turn: queue = next turn, steer = next tool result
         "streaming": False,

@@ -80,6 +80,7 @@ class TestBridgeEnvironment:
             ("Custom Bot\\n", None, "Custom Bot\\n"),
             ("", None, ""),
             ("Config Bot\\n", "Env Bot\\n", "Env Bot\\n"),
+            ("Config Bot\\n", "", ""),
         ],
     )
     def test_reply_prefix_reaches_bridge_with_existing_precedence(

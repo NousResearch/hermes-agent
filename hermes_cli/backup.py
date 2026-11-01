@@ -491,6 +491,21 @@ def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
         raise
 
 
+def _has_sqlite_header(path: Path) -> Optional[bool]:
+    """Three-state SQLite magic probe for the ``*.db`` archive routing.
+
+    True when *path* opens with the SQLite magic; False when a readable header differs
+    (a ``.db`` suffix alone is not proof of a database — fixtures, downloads and truncated
+    copies carry it too); None when unreadable (permissions, live connection), so the
+    caller keeps its fail-loud WAL-safe snapshot path.
+    """
+    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+    head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
+    if head is None:
+        return None
+    return head == _SQLITE_HEADER
+
+
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 
@@ -519,7 +534,13 @@ def _write_zip_entries(
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
         try:
-            if abs_path.suffix == ".db":
+            # A readable non-SQLite header downgrades the entry to a plain file; an
+            # unreadable header (None) keeps the WAL-safe snapshot so a genuinely broken
+            # database still fails loudly.
+            is_db = (
+                abs_path.suffix == ".db" and _has_sqlite_header(abs_path) is not False
+            )
+            if is_db:
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
                 if size is None:
                     on_db_failure(rel_path)

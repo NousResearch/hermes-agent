@@ -41,11 +41,13 @@ def _stub_rpc(return_value):
     """Return an async mock for SignalAdapter._rpc that captures call params."""
     captured = []
 
-    async def mock_rpc(method, params, rpc_id=None):
+    async def mock_rpc(method, params, rpc_id=None, **_kwargs):
         captured.append({"method": method, "params": dict(params)})
         return return_value
 
     return mock_rpc, captured
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +70,32 @@ class TestSignalConfigLoading:
         assert sc.extra["account"] == "+15551234567"
 
 
+    @pytest.mark.parametrize(
+        ("yaml_value", "expected"),
+        [("true", True), ('"false"', False)],
+    )
+    def test_config_yaml_bridges_read_receipts(
+        self, monkeypatch, tmp_path, yaml_value, expected
+    ):
+        """The documented top-level setting reaches the adapter as a bool."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            f"signal:\n  send_read_receipts: {yaml_value}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SIGNAL_HTTP_URL", raising=False)
+        monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
+
+        from gateway.config import load_gateway_config
+        from plugins.platforms.signal.adapter import SignalAdapter
+
+        config = load_gateway_config()
+        signal_config = config.platforms[Platform.SIGNAL]
+
+        assert SignalAdapter(signal_config).send_read_receipts is expected
+
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
 # ---------------------------------------------------------------------------
@@ -78,6 +106,19 @@ class TestSignalAdapterInit:
         assert adapter.http_url == "http://localhost:8080"
         assert adapter.account == "+15551234567"
         assert "group123" in adapter.group_allow_from
+
+    def test_read_receipts_are_opt_in(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.send_read_receipts is False
+
+    def test_read_receipts_can_be_enabled_in_config(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=True)
+        assert adapter.send_read_receipts is True
+
+    def test_quoted_false_does_not_enable_read_receipts(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts="false")
+        assert adapter.send_read_receipts is False
+
 
 
 class TestSignalConnectCleanup:
@@ -1288,7 +1329,6 @@ class TestSignalSyncMessageHandling:
     In both cases, the bot's own outbound replies bounce back as
     sync-sents and must be suppressed via the recently-sent timestamp ring.
     """
-
 
     @pytest.mark.asyncio
     async def test_note_to_self_echo_of_own_reply_is_suppressed(self, monkeypatch):

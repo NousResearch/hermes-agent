@@ -19,6 +19,7 @@ import re
 import time
 import uuid
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -116,16 +117,41 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
         return None
 
 
-def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
+_DECIDING = ContextVar("pending_decisions", default=frozenset())
+
+
+def decide_pending(subsystem, pending_id, apply=None):
+    """Serialize read/apply/remove with CLI decisions, including across processes.
+
+    Recursive decisions refuse instead of deadlocking or withdrawing an in-flight write.
+    The persistent lock inode must not be unlinked after use.
+    """
+    from hermes_cli.active_sessions import _FileLock
+    path = _pending_path(subsystem, pending_id)
+    key = str(path)
+    if key in _DECIDING.get():
+        return {"success": False, "error": "Pending decision already in progress."}
+    token = _DECIDING.set(_DECIDING.get() | {key})
     try:
-        path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        with _FileLock(path.with_suffix(".lock")):
+            record = get_pending(subsystem, pending_id)
+            if record is None or not path.exists():
+                return {"success": False, "error": "Pending write no longer exists."}
+            result = apply(record) if apply else {"success": True}
+            if result.get("success"):
+                path.unlink()
+            return result
+    finally:
+        _DECIDING.reset(token)
+
+
+def discard_pending(subsystem: str, pending_id: str) -> bool:
+    """Reject under the same cross-process lock as approvals."""
+    try:
+        return bool(decide_pending(subsystem, pending_id).get("success"))
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
-    return False
+        return False
 
 
 def pending_count(subsystem: str) -> int:

@@ -181,9 +181,13 @@ hermes kanban boards show             # who's active right now?
 # Rename the display name (the slug is immutable — it's the directory name).
 hermes kanban boards rename atm10-server "ATM10 (Prod)"
 
-# Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/.
-# Recoverable by moving the dir back.
+# Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/
+# and leaves an archived tombstone at the original slug.
 hermes kanban boards rm atm10-server
+
+# Restore from the newest matching archive (preferred over hand-renaming dirs).
+# Refuses if boards/<slug>/ already holds a live board. Optional: --from under boards/_archived/.
+hermes kanban boards restore atm10-server
 
 # Hard delete — `rm -rf` the board dir. No recovery.
 hermes kanban boards rm atm10-server --delete

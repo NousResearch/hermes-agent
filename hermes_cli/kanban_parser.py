@@ -114,6 +114,11 @@ _BOARD_SPECS = [
              help="Hard-delete the board directory instead of archiving it. "
                   "Default is to move it to boards/_archived/ so it's recoverable."),
     ], aliases=["remove", "delete"], help="Archive (default) or delete a board"),
+    _cmd("restore", [
+        _arg("slug", help="Slug of the archived board to restore"),
+        _arg("--from", dest="from_path", default=None,
+             help="Explicit path under boards/_archived/ (default: newest match)"),
+    ], aliases=["unarchive"], help="Restore a board previously archived by `boards rm`"),
     _cmd("switch", [_SLUG], aliases=["use"], help="Set the active board for subsequent CLI calls"),
     _cmd("show", aliases=["current"], help="Print the currently-active board slug"),
     _cmd("rename", [_SLUG, _arg("name", help="New display name")],

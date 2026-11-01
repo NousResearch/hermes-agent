@@ -15,8 +15,10 @@ Covers the pieces added when boards became a first-class concept:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -430,3 +432,210 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+def _task_snapshot(slug: str) -> list[tuple[str, str]]:
+    with kbc.connect_closing(board=slug) as conn:
+        tasks = kb.list_tasks(conn, include_archived=True)
+    return sorted((t.title, t.status) for t in tasks)
+
+
+def _archived_titles(path: Path) -> list[str]:
+    conn = sqlite3.connect(path / "kanban.db")
+    try:
+        return sorted(row[0] for row in conn.execute("SELECT title FROM tasks"))
+    finally:
+        conn.close()
+
+
+class TestBoardRestore:
+    """``boards restore`` undoes ``remove_board(archive=True)`` without clobbering."""
+
+    def test_restore_puts_tasks_and_metadata_back(self, fresh_home):
+        kb.create_board("proj", name="Proj Name", description="keep me")
+        with kbc.connect_closing(board="proj") as conn:
+            kb.create_task(conn, title="running-one", assignee="dev")
+            kb.create_task(conn, title="blocked-one", assignee="dev", initial_status="blocked")
+            kb.create_task(conn, title="triage-one", assignee="dev", triage=True)
+        before = _task_snapshot("proj")
+        kb.remove_board("proj", archive=True)
+        assert kb.read_board_metadata("proj")["archived"] is True
+        assert not (kb.board_dir("proj") / "kanban.db").exists()
+
+        res = kb.restore_board("proj")
+        assert res["action"] == "restored"
+        assert res["slug"] == "proj"
+        assert Path(res["new_path"]) == kb.board_dir("proj")
+        assert not Path(res["from_path"]).exists()
+        assert _task_snapshot("proj") == before
+        meta = kb.read_board_metadata("proj")
+        assert meta["archived"] is False
+        assert meta["name"] == "Proj Name"
+        assert meta["description"] == "keep me"
+        assert not kb.has_archived_board("proj")
+        assert not (kb.boards_root() / ".proj.restore-tombstone").exists()
+
+    def test_restore_refuses_live_board_and_keeps_both_copies(self, fresh_home):
+        kb.create_board("proj", name="Original")
+        with kbc.connect_closing(board="proj") as conn:
+            kb.create_task(conn, title="archived-task", assignee="dev")
+            kb.create_task(conn, title="blocked-task", assignee="dev", initial_status="blocked")
+        kb.remove_board("proj", archive=True)
+        archived = kb.list_archived_board_dirs("proj")
+        assert len(archived) == 1
+        kb.create_board("proj", name="Fresh live")
+        with kbc.connect_closing(board="proj") as conn:
+            kb.create_task(conn, title="do-not-delete", assignee="dev")
+
+        with pytest.raises(ValueError, match="already exists"):
+            kb.restore_board("proj")
+
+        snap = _task_snapshot("proj")
+        assert [title for title, _status in snap] == ["do-not-delete"]
+        assert archived[0].exists()
+        assert _archived_titles(archived[0]) == ["archived-task", "blocked-task"]
+        assert (kb.board_dir("proj") / "kanban.db").exists()
+
+    def test_restore_refuses_non_tombstone_extras(self, fresh_home):
+        kb.create_board("junk")
+        with kbc.connect_closing(board="junk") as conn:
+            kb.create_task(conn, title="safe-in-archive", assignee="dev")
+        kb.remove_board("junk", archive=True)
+        live = kb.board_dir("junk")
+        (live / "notes.txt").write_text("keep me", encoding="utf-8")
+        with pytest.raises(ValueError, match="already exists"):
+            kb.restore_board("junk")
+        assert (live / "notes.txt").read_text(encoding="utf-8") == "keep me"
+        assert (live / "board.json").exists()
+        assert _archived_titles(kb.list_archived_board_dirs("junk")[0]) == ["safe-in-archive"]
+
+    def test_restore_replaces_empty_shell(self, fresh_home):
+        kb.create_board("shell", name="Shell")
+        with kbc.connect_closing(board="shell") as conn:
+            kb.create_task(conn, title="inside", assignee="dev")
+        kb.remove_board("shell", archive=True)
+        live = kb.board_dir("shell")
+        (live / "board.json").unlink()
+        assert live.is_dir() and not any(live.iterdir())
+        kb.restore_board("shell")
+        assert _archived_titles(live) == ["inside"]
+        assert kb.read_board_metadata("shell")["name"] == "Shell"
+
+    def test_from_rejects_external_and_other_slug(self, fresh_home, tmp_path):
+        kb.create_board("proj")
+        with kbc.connect_closing(board="proj") as conn:
+            kb.create_task(conn, title="stay-archived", assignee="dev")
+        kb.remove_board("proj", archive=True)
+        archived = kb.list_archived_board_dirs("proj")[0]
+
+        outside = tmp_path / "not-an-archive"
+        outside.mkdir()
+        (outside / "kanban.db").touch()
+        with pytest.raises(ValueError, match="under"):
+            kb.restore_board("proj", archive_path=outside)
+        assert archived.exists()
+        assert (kb.board_dir("proj") / "board.json").exists()
+        assert not (kb.board_dir("proj") / "kanban.db").exists()
+
+        kb.create_board("other")
+        kb.remove_board("other", archive=True)
+        other = kb.list_archived_board_dirs("other")[0]
+        with pytest.raises(ValueError, match="does not match"):
+            kb.restore_board("proj", archive_path=other)
+        assert other.exists() and archived.exists()
+
+        res = kb.restore_board("proj", archive_path=archived)
+        assert Path(res["from_path"]) == archived
+        assert _archived_titles(kb.board_dir("proj")) == ["stay-archived"]
+        assert other.exists()
+
+    def test_slug_prefix_does_not_steal_another_board(self, fresh_home):
+        kb.create_board("foo-bar", name="Bar")
+        with kbc.connect_closing(board="foo-bar") as conn:
+            kb.create_task(conn, title="bar-task", assignee="dev")
+        kb.remove_board("foo-bar", archive=True)
+        with pytest.raises(ValueError, match="no archived board"):
+            kb.restore_board("foo")
+        assert kb.has_archived_board("foo-bar")
+        assert not kb.has_archived_board("foo")
+        assert _archived_titles(kb.list_archived_board_dirs("foo-bar")[0]) == ["bar-task"]
+
+    def test_default_cannot_be_restored(self, fresh_home):
+        with pytest.raises(ValueError, match="default"):
+            kb.restore_board("default")
+
+    def test_newest_archive_wins_and_older_is_kept(self, fresh_home):
+        kb.create_board("multi", name="First")
+        with kbc.connect_closing(board="multi") as conn:
+            kb.create_task(conn, title="old-task", assignee="dev")
+        kb.remove_board("multi", archive=True)
+        older = kb.list_archived_board_dirs("multi")[0]
+        kb.create_board("multi", name="Second")
+        with kbc.connect_closing(board="multi") as conn:
+            kb.create_task(conn, title="new-task", assignee="dev")
+        kb.remove_board("multi", archive=True)
+
+        res = kb.restore_board("multi")
+        assert kb.read_board_metadata("multi")["name"] == "Second"
+        assert _archived_titles(kb.board_dir("multi")) == ["new-task"]
+        assert older.exists()
+        assert _archived_titles(older) == ["old-task"]
+        assert Path(res["from_path"]) != older
+
+    def test_post_check_collision_is_valueerror_and_keeps_archive(self, fresh_home, monkeypatch):
+        kb.create_board("race")
+        with kbc.connect_closing(board="race") as conn:
+            kb.create_task(conn, title="keep", assignee="dev")
+        kb.remove_board("race", archive=True)
+        archived = kb.list_archived_board_dirs("race")[0]
+        real_rename = Path.rename
+
+        def racing_rename(self, target):
+            target = Path(target)
+            if self.parent.name == "_archived" and target.name == "race":
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "kanban.db").write_bytes(b"live-db")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", racing_rename)
+        with pytest.raises(ValueError, match="already exists"):
+            kb.restore_board("race")
+        assert archived.exists()
+        assert _archived_titles(archived) == ["keep"]
+        assert (kb.board_dir("race") / "kanban.db").read_bytes() == b"live-db"
+
+    def test_cli_restore_round_trip(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "proj", "--name", "Proj"], env_extra=env).returncode == 0
+        created = _cli(
+            ["--board", "proj", "create", "Keep me", "--assignee", "dev"],
+            env_extra=env,
+        )
+        assert created.returncode == 0, created.stderr
+        removed = _cli(["boards", "rm", "proj"], env_extra=env)
+        assert removed.returncode == 0, removed.stderr
+        assert "boards restore proj" in removed.stdout
+        restored = _cli(["boards", "restore", "proj"], env_extra=env)
+        assert restored.returncode == 0, restored.stderr
+        listed = _cli(["--board", "proj", "list", "--json"], env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert [task["title"] for task in json.loads(listed.stdout)] == ["Keep me"]
+
+        rejected = _cli(
+            ["boards", "restore", "proj", "--from", str(tmp_path / "outside")],
+            env_extra=env,
+        )
+        assert rejected.returncode == 1
+        assert "under" in rejected.stderr
+
+    def test_parser_accepts_restore_and_unarchive(self):
+        from hermes_cli.kanban_parser import build_parser
+
+        parent = argparse.ArgumentParser()
+        parser = build_parser(parent.add_subparsers(dest="top"))
+        restored = parser.parse_args(["boards", "restore", "proj", "--from", "rel"])
+        assert restored.boards_action == "restore"
+        assert restored.from_path == "rel"
+        alias = parser.parse_args(["boards", "unarchive", "proj"])
+        assert alias.boards_action == "unarchive"
+        assert alias.from_path is None

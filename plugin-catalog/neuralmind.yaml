@@ -1,0 +1,24 @@
+name: neuralmind
+title: NeuralMind
+repo: https://github.com/dfrostar/neuralmind
+sha: e66f5010e3a2f5fcf9e18663e353a6cbf87a966d
+subdir: neuralmind/hermes_plugin
+version: "4.23.3"
+description: "Code memory on every Hermes turn, with no tool call. Before the model runs, the plugin looks the user's message up in a local NeuralMind index of the project and appends the matching files and symbols (with line numbers), the code linked to them in NeuralMind's synapse graph, and decisions recorded in commit trailers. A session's first turn also gets a recap of the previous session in that project. The plugin is a stdlib-only shim around the separately installed NeuralMind CLI: install NeuralMind 4.9 or later yourself (`pipx install neuralmind`, `uv tool install neuralmind` or `pip install neuralmind`) and run `neuralmind build` in the project; in any other directory it does nothing. Not a memory provider: it registers no `memory.provider` and runs beside whichever one is configured. Disclosure — runs `neuralmind _hook <action>` as a child process once per turn (twice on a session's first), once for each file a write_file or patch call wrote, and once for each read_file of a file inside the project; each call is stopped after NEURALMIND_HERMES_TIMEOUT seconds (default 8) and the turn goes ahead without its context. A session's first turn can leave a detached NeuralMind process running after the hook returns, which writes the project's graph cache or, on a large synapse store, runs the decay tick and memory export, then exits. NeuralMind runs read-only git queries in the project (rev-parse, ls-files, log, diff --name-only). Reads the project, and reads and writes its .neuralmind/ directory, including each session's prompts (secret-redacted and truncated) and the paths of the files it edited, for the recap. On a session's first turn it copies .neuralmind/SYNAPSE_MEMORY.md into Claude Code's memory directory for the project (~/.claude/projects/<project>/memory/) when that directory already exists. The added context is part of the user message, so it is sent to the model provider with that turn and stays in the session history. The plugin makes no network requests and NeuralMind sends no telemetry; NeuralMind downloads its embedding model once when it has no cached copy, normally during `neuralmind build` (ChromaDB's all-MiniLM-L6-v2 ONNX archive from chroma-onnx-models.s3.amazonaws.com, SHA-256-checked, cached in ~/.cache/neuralmind/). Subagent and cron turns are skipped. MIT."
+maintainer: dfrostar
+tier: community
+category: memory
+requires_hermes: ">=0.21.5"
+docs_url: https://docs.neuralmind.uk/use-cases/hermes-agent
+readme: true
+platforms: []
+known_issues:
+  - "Needs NeuralMind installed separately (`pipx install neuralmind` or `uv tool install neuralmind`) and the project built with `neuralmind build`. Without both, the plugin loads and adds nothing."
+  - "Installed from the catalog, the plugin runs the `neuralmind` command on Hermes's PATH. If that PATH doesn't include it (a gateway run as a service, Hermes Desktop) or finds an older NeuralMind, run `neuralmind install-hermes-plugin` once: on a plugin Hermes installed, it only records the interpreter in the plugin's config.json and leaves the code alone."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

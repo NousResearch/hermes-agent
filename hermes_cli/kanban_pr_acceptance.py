@@ -44,6 +44,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        if denied and denied[1] == "403" and _rules_plan_unavailable(endpoint, exc.stdout):
+            raise _RulesPlanUnavailable from None
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
@@ -59,6 +61,28 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _RulesPlanUnavailable(RuntimeError):
+    """GitHub explicitly reports that branch rules are unavailable on this plan."""
+
+
+def _rules_plan_unavailable(endpoint: str, output: str | None) -> bool:
+    # A 403 alone can hide permission or rate-limit failures. Only this exact
+    # product-boundary response on the branch-rules endpoint permits continuing
+    # with independently discovered classic branch protection.
+    if not re.fullmatch(r"repos/[^/]+/[^/]+/rules/branches/[^/]+", endpoint.split("?")[0]):
+        return False
+    try:
+        body = json.loads(output or "")
+    except ValueError:
+        return False
+    # gh --paginate --slurp wraps even a single error response in a page list.
+    if isinstance(body, list) and len(body) == 1:
+        body = body[0]
+    return isinstance(body, dict) and body.get("message") == (
+        "Upgrade to GitHub Pro or make this repository public to enable this feature."
+    )
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -133,8 +157,13 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        receipt["rules_availability"] = "available"
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _RulesPlanUnavailable:
+            receipt["rules_availability"] = "unavailable_plan"
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -142,7 +171,11 @@ def collect_acceptance(contract: str, published_pr: str | None,
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            receipt["detail"] = "No repository-required checks are configured; PR acceptance remains fail-closed."
+            receipt["recovery"] = (
+                "An operator must establish a supported required-check policy before retrying completion. "
+                "Successful optional checks alone cannot satisfy this PR contract; do not downgrade it to local-only."
+            )
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
                      paginate=True, profile_home=profile_home)

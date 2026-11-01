@@ -1,8 +1,14 @@
 """Release a closed conversation's entries from the per-message token-estimate memo.
 
-``agent.model_metadata._MSG_TOKENS_CACHE`` pins every string it fingerprints (the pin keeps the ``id()``
-key sound), so a long-lived process kept each closed session's message bodies resident until 4096 newer
-messages pushed them out.
+``agent.model_metadata._MSG_TOKENS_CACHE`` keys hold every string they fingerprint, so a long-lived process
+kept each closed session's message bodies resident until 4096 newer messages pushed them out. Two release
+paths cover it:
+
+* by owner: every entry records the agent whose turn inserted it (``current_token_memo_owner``), so
+  ``close()`` drops the request-time strings no history holds (the ephemeral system-prompt concat, prefill
+  rows, prompt-caching and skill-split slices, MoA advisor folds);
+* by value: ``forget_message_token_memo`` drops entries holding the long strings of given messages, for
+  entries inserted outside a turn and for the bodies compression replaced.
 """
 
 from __future__ import annotations
@@ -10,9 +16,19 @@ from __future__ import annotations
 from typing import Any
 
 
-def _long_string_ids(messages: Any) -> set[int]:
-    ids: set[int] = set()
-    stack = [messages]
+def current_token_memo_owner() -> int | None:
+    """The owner new memo entries record: the agent whose turn runs in this context (``AIAgent.run_conversation``
+    binds it via ``bind_subagent_parent``), if any. An id reused by a later agent only widens what that agent's
+    close() evicts, never what an estimate returns."""
+    from agent.subagent_lifecycle import get_active_subagent_parent
+
+    agent = get_active_subagent_parent()
+    return None if agent is None else id(agent)
+
+
+def _long_strings(value: Any) -> set[str]:
+    found: set[str] = set()
+    stack = [value]
     while stack:
         value = stack.pop()
         if type(value) is dict:
@@ -20,25 +36,40 @@ def _long_string_ids(messages: Any) -> set[int]:
         elif type(value) is list or type(value) is tuple:
             stack.extend(value)
         elif type(value) is str and len(value) > 64:  # short values ("assistant", tool names) are shared
-            ids.add(id(value))
-    return ids
+            found.add(value)
+    return found
 
 
-def forget_message_token_memo(messages: Any, *, keep: Any = None) -> int:
-    """Evict memo entries pinning any long string value of ``messages`` that ``keep`` does not also hold;
-    return how many.
+def _key_holds(key: tuple, owned: set[str]) -> bool:
+    """True when fingerprint ``key`` (nested tuples, string leaves) holds a string in ``owned``."""
+    stack = [key]
+    while stack:
+        value = stack.pop()
+        if type(value) is tuple:
+            stack.extend(value)
+        elif type(value) is str and value in owned:
+            return True
+    return False
+
+
+def forget_message_token_memo(messages: Any, *, keep: Any = None, owner: Any = None) -> int:
+    """Evict memo entries holding any long string of ``messages`` that ``keep`` does not also hold, plus
+    every entry ``owner``'s turns inserted; return how many.
 
     Eviction never changes an estimate: a later lookup recomputes the same value.
     """
     from agent.model_metadata import _MSG_TOKENS_CACHE
 
-    owned = _long_string_ids(messages)
+    owned = _long_strings(messages)
     if owned and keep is not None:
-        owned -= _long_string_ids(keep)
-    if not owned:
+        owned -= _long_strings(keep)
+    owner_id = None if owner is None else id(owner)
+    if not owned and owner_id is None:
         return 0
-    stale = [key for key, (pins, _text, _images) in list(_MSG_TOKENS_CACHE.items())
-             if any(id(pin) in owned for pin in pins)]
+    # Fingerprint keys are nested tuples whose string leaves are the message's own values.
+    stale = [key for key, (_text, _images, entry_owner) in list(_MSG_TOKENS_CACHE.items())
+             if (owner_id is not None and entry_owner == owner_id)
+             or (owned and _key_holds(key, owned))]
     for key in stale:
         _MSG_TOKENS_CACHE.pop(key, None)
     return len(stale)

@@ -37,6 +37,14 @@ _ANTHROPIC_BASE = "https://gateway.example.com/proxy/anthropic"
 # Known dual-surface (MiniMax) host: the only family still auto-rewritten to /v1
 # after the host-anchored policy of #83782 / #83642.
 _DUAL_SURFACE_BASE = "https://api.minimax.io/anthropic"
+# The OpenAI-wire surface of the same family, as an explicit base_url or a
+# credential-pool entry would spell it (#128830).
+_DUAL_SURFACE_V1_BASE = "https://api.minimaxi.com/v1"
+_DUAL_SURFACE_V1_RESTORED = "https://api.minimaxi.com/anthropic"
+
+
+class _PlainOpenAIClient:
+    """Stand-in with no wrapper opt-out declaration (a MagicMock attr is always truthy)."""
 
 
 def _client_base_url(client) -> str:
@@ -140,3 +148,84 @@ def test_explicit_base_unknown_host_keeps_anthropic_path():
     assert client is not None
     assert not isinstance(client, AnthropicAuxiliaryClient)
     assert _client_base_url(client).rstrip("/").endswith("/proxy/anthropic")
+
+
+def test_api_key_dual_surface_v1_restored_for_anthropic_messages():
+    """A dual-surface host's OpenAI ``/v1`` base must never reach the Anthropic
+    SDK: it appends its own ``/v1/messages``, so ``/v1/v1/messages`` 404s
+    (#128830). The ``minimax-cn`` profile declares ``api_mode=anthropic_messages``,
+    so an explicit ``/v1`` base_url (or one stored in the credential pool) is
+    wrapped as Messages traffic exactly there."""
+    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=fake_anthropic,
+    ) as mock_build:
+        client, model = resolve_provider_client(
+            "minimax-cn",
+            model="MiniMax-M2.7",
+            explicit_base_url=_DUAL_SURFACE_V1_BASE,
+            explicit_api_key="k",
+        )
+
+    assert isinstance(client, AnthropicAuxiliaryClient), (
+        "minimax-cn declares anthropic_messages, so the wrap must happen even "
+        f"without a task-level api_mode, got {type(client).__name__}"
+    )
+    mock_build.assert_called_once_with("k", _DUAL_SURFACE_V1_RESTORED)
+    assert client.base_url == _DUAL_SURFACE_V1_RESTORED
+
+
+def test_maybe_wrap_anthropic_restores_dual_surface_bare_host():
+    """A bare dual-surface root has no Messages surface at ``/`` either — the
+    SDK would request ``/v1/messages`` on the OpenAI host root."""
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=fake_anthropic,
+    ) as mock_build:
+        wrapped = _maybe_wrap_anthropic(
+            _PlainOpenAIClient(), "MiniMax-M2.7", "k", "https://api.minimax.io",
+            "anthropic_messages",
+        )
+
+    assert isinstance(wrapped, AnthropicAuxiliaryClient)
+    mock_build.assert_called_once_with("k", "https://api.minimax.io/anthropic")
+    assert wrapped.base_url == "https://api.minimax.io/anthropic"
+
+
+def test_maybe_wrap_anthropic_keeps_foreign_gateway_v1():
+    """An unknown gateway's ``/v1`` stays verbatim — only the known dual-surface
+    families have a Messages surface to restore; rewriting anything else would
+    break proxies that really do serve Messages under /v1."""
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=fake_anthropic,
+    ) as mock_build:
+        wrapped = _maybe_wrap_anthropic(
+            _PlainOpenAIClient(), "my-model", "k", "https://gateway.example.com/v1",
+            "anthropic_messages",
+        )
+
+    assert isinstance(wrapped, AnthropicAuxiliaryClient)
+    mock_build.assert_called_once_with("k", "https://gateway.example.com/v1")
+    assert wrapped.base_url == "https://gateway.example.com/v1"
+
+
+def test_maybe_wrap_anthropic_auto_v1_stays_openai_wire():
+    """Without an explicit api_mode, a ``/v1`` base does not speak Messages by
+    URL heuristic, so no wrap happens and the OpenAI wire keeps using ``/v1``
+    (the MiniMax OpenAI-compatible surface) — the restore must not change that."""
+    from agent.auxiliary_client import _maybe_wrap_anthropic
+
+    plain = _PlainOpenAIClient()
+    wrapped = _maybe_wrap_anthropic(plain, "my-model", "k", _DUAL_SURFACE_V1_BASE, None)
+
+    assert wrapped is plain

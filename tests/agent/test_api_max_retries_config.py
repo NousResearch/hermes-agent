@@ -4,7 +4,10 @@ Closes #11616 — make the hardcoded ``max_retries = 3`` in the agent's API
 retry loop user-configurable so fallback-provider setups can fail over
 faster on flaky primaries instead of burning ~3x180s on the same stall.
 """
+from copy import deepcopy
 from unittest.mock import patch
+
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 from run_agent import AIAgent
 
@@ -12,7 +15,7 @@ from run_agent import AIAgent
 def _make_agent(api_max_retries=None):
     """Build an AIAgent with a mocked config.load_config that returns a
     config tree containing the given agent.api_max_retries (or default)."""
-    cfg = {"agent": {}}
+    cfg = deepcopy(DEFAULT_CONFIG)
     if api_max_retries is not None:
         cfg["agent"]["api_max_retries"] = api_max_retries
 
@@ -42,3 +45,10 @@ def test_api_max_retries_honors_config_override():
 
 
 
+def test_api_max_retries_default_covers_provider_overload_schedule():
+    """The default retry budget must reach the long provider overload backoff tier."""
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
+
+    agent = _make_agent()
+
+    assert agent._api_max_retries >= zai_coding_overload_retry_ceiling()

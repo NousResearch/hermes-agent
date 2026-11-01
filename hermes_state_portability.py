@@ -270,6 +270,109 @@ class SessionPortabilityMixin:
                                        "request_hi": request_hi, "job_id": job_id, "limit": limit, "offset": offset})
         return [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
 
+    def cron_job_usage_analytics(self, job_id: str, *, since: float) -> dict[str, Any]:
+        """Usage of root executions started in the period, including their work.
+
+        Reuse run-history identity for legacy IDs and unified-runtime admissions.
+        Continuations and delegates contribute usage, not extra executions. Named
+        model-usage tasks are auxiliary work; the unnamed main-loop rows already
+        appear in the session counters and must not be added a second time.
+        """
+        self.flush_token_counts()
+        prefix, prefix_hi = prefix_range(f"cron_{job_id}_")
+        request_lo, request_hi = cron_request_range(job_id)
+        rows = self._read_rows(
+            f"""WITH RECURSIVE roots(id) AS (
+                    SELECT id FROM sessions
+                    WHERE source='cron' AND id IN ({_CRON_RUN_IDS_SQL}) AND started_at >= :since
+                ), lineage(root_id, id) AS (
+                    SELECT id, id FROM roots
+                    UNION
+                    SELECT l.root_id, c.id FROM lineage l
+                    JOIN sessions p ON p.id=l.id
+                    JOIN sessions c ON c.parent_session_id=l.id
+                    WHERE json_extract(CASE WHEN json_valid(c.model_config) THEN c.model_config ELSE '{{}}' END,
+                                       '$._branched_from') IS NULL
+                      AND json_extract(CASE WHEN json_valid(c.model_config) THEN c.model_config ELSE '{{}}' END,
+                                       '$._reset_from') IS NULL
+                      AND (c.source='subagent'
+                           OR json_extract(CASE WHEN json_valid(c.model_config) THEN c.model_config ELSE '{{}}' END,
+                                           '$._delegate_from') IS NOT NULL
+                           OR (p.end_reason='compression' AND c.source!='tool'))
+                ), aux AS (
+                    SELECT session_id,
+                           SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                               + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)) AS tokens,
+                           SUM(CASE WHEN actual_cost_usd > 0 THEN actual_cost_usd
+                                    ELSE COALESCE(estimated_cost_usd, 0) END) AS cost,
+                           MAX(actual_cost_usd > 0) AS has_actual,
+                           MAX(actual_cost_usd <= 0 AND (estimated_cost_usd > 0
+                               OR cost_status IN ('estimated', 'free', 'subscription_covered'))) AS has_estimated
+                    FROM session_model_usage
+                    WHERE task != '' AND session_id IN (SELECT id FROM lineage)
+                    GROUP BY session_id
+                )
+                SELECT l.root_id, s.id, s.parent_session_id, s.ended_at, s.end_reason,
+                       s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_write_tokens,
+                       s.actual_cost_usd, s.estimated_cost_usd,
+                       (s.source='subagent' OR json_extract(
+                           CASE WHEN json_valid(s.model_config) THEN s.model_config ELSE '{{}}' END,
+                           '$._delegate_from') IS NOT NULL) AS is_delegate,
+                       COALESCE(a.tokens, 0) AS aux_tokens, COALESCE(a.cost, 0) AS aux_cost,
+                       COALESCE(a.has_actual, 0) AS aux_actual, COALESCE(a.has_estimated, 0) AS aux_estimated
+                FROM lineage l JOIN sessions s ON s.id=l.id
+                LEFT JOIN aux a ON a.session_id=s.id""",
+            {"prefix": prefix, "prefix_hi": prefix_hi, "request_lo": request_lo,
+             "request_hi": request_hi, "job_id": job_id, "since": float(since)},
+        )
+        runs: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            run = runs.setdefault(row["root_id"], {"sessions": {}, "tokens": 0, "cost": 0.0,
+                                                  "actual": False, "estimated": False})
+            run["sessions"][row["id"]] = row
+            run["tokens"] += sum(int(row[key] or 0) for key in
+                                 ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "aux_tokens"))
+            actual, estimated = row["actual_cost_usd"], row["estimated_cost_usd"]
+            run["cost"] += float(actual if actual is not None else estimated or 0) + float(row["aux_cost"])
+            run["actual"] |= actual is not None or bool(row["aux_actual"])
+            run["estimated"] |= (actual is None and estimated is not None) or bool(row["aux_estimated"])
+
+        total_tokens = actual_runs = estimated_runs = incomplete_runs = 0
+        total_cost = 0.0
+        for root_id, run in runs.items():
+            total_tokens += run["tokens"]
+            total_cost += run["cost"]
+            actual_runs += int(run["actual"] and not run["estimated"])
+            estimated_runs += int(run["estimated"])
+            # Follow only the main execution's compression chain. A delegate's
+            # lifecycle neither completes nor fails its parent's cron execution.
+            sessions = run["sessions"]
+            children: dict[str, list] = {}
+            for row in sessions.values():
+                if not row["is_delegate"]:
+                    children.setdefault(row["parent_session_id"], []).append(row)
+            tip, seen = sessions[root_id], {root_id}
+            while tip["end_reason"] == "compression":
+                successors = children.get(tip["id"], [])
+                if len(successors) != 1 or successors[0]["id"] in seen:
+                    break
+                tip = successors[0]
+                seen.add(tip["id"])
+            incomplete_runs += int(tip["ended_at"] is not None and tip["end_reason"] != "cron_complete")
+        usage_runs = len(runs)
+        priced_runs = actual_runs + estimated_runs
+        return {
+            "usage_runs": usage_runs,
+            "total_tokens": total_tokens,
+            "avg_tokens_per_run": total_tokens / usage_runs if usage_runs else None,
+            "total_cost_usd": total_cost,
+            "avg_cost_usd_per_run": total_cost / priced_runs if priced_runs else None,
+            "actual_cost_runs": actual_runs,
+            "estimated_cost_runs": estimated_runs,
+            "unknown_cost_runs": usage_runs - priced_runs,
+            "incomplete_runs": incomplete_runs,
+        }
+
     def cron_run_identity(self, session_id: str) -> Optional[dict[str, Any]]:
         """``{"cron_job_id", "cron_execution_id"}`` of a cron run session, else None: a legacy id
         names its job (no execution), a unified-runtime run is one probe of its scheduler admission

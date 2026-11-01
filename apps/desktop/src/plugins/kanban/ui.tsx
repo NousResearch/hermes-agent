@@ -114,22 +114,46 @@ function useTicking(start?: null | number): null | string {
   return `${value}${ELAPSED_SUFFIX[unit]}`
 }
 
-export type ArcState = 'queued' | 'running' | 'stale'
+export type ArcState = 'booting' | 'queued' | 'running' | 'stale'
+
+/** The run's boot window: a just-claimed worker needs ~2 min to boot its agent,
+ *  so its FIRST heartbeat lands late by design — that gap is healthy. */
+const FIRST_HEARTBEAT_GRACE_SECONDS = 120
 
 /**
  * The card's machine-activity state. The board looked dead between "I made a
  * card" and "it's suddenly running" — this narrates the in-between. Only the
  * working states animate the border arc (see kanban.css): running = brisk
- * sweep, no-heartbeat = amber crawl. `queued` (triage / assigned-ready /
- * review) renders as the footer's named-agent chip — motion means work.
+ * sweep, booting = quiet neutral pulse (the worker is up, its agent is not
+ * talking yet), no-heartbeat = amber crawl. `queued` (triage /
+ * assigned-ready / review) renders as the footer's named-agent chip — motion
+ * means work.
+ *
+ * Liveness is judged PER RUN: a heartbeat older than the current run's start
+ * belongs to the previous run (task-level column inherited until the backend
+ * resets it at claim) and must not read as this run's heartbeat — that stale
+ * beat is exactly how a healthy retry showed "no heartbeat" for its whole
+ * boot window.
  */
 export function arcState(task: KanbanTask, fallbackAssignee: string): ArcState | null {
   if (task.status === 'running') {
+    const now = Date.now() / 1000
+    const runStart = task.current_run_started_at ?? task.started_at ?? null
+    const hb = task.last_heartbeat_at
+    // A beat from BEFORE the current run's start is the previous run's.
+    const hbForThisRun = hb !== null && hb !== undefined && (runStart === null || hb >= runStart)
+    const inBootWindow = runStart !== null && now - runStart < FIRST_HEARTBEAT_GRACE_SECONDS
+
+    if (!hbForThisRun) {
+      // No beat for this run (yet / ever): inside the boot window the worker
+      // is simply starting up — say so; past it the dispatcher will reclaim
+      // it, but be honest instead of sweeping green forever.
+      return inBootWindow ? 'booting' : 'stale'
+    }
+
     // No heartbeat for 2+ min = the worker may have died; the dispatcher will
     // reclaim it, but be honest instead of sweeping green forever.
-    const stale = task.last_heartbeat_at ? Date.now() / 1000 - task.last_heartbeat_at > 120 : false
-
-    return stale ? 'stale' : 'running'
+    return now - (hb as number) > FIRST_HEARTBEAT_GRACE_SECONDS ? 'stale' : 'running'
   }
 
   const queued =

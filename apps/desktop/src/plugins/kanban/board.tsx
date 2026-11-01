@@ -201,6 +201,11 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       )}
+      {arc === 'booting' && (
+        <Tip label={k.arcBooting}>
+          <span className="shrink-0 cursor-help font-medium text-(--ui-text-tertiary)">{k.booting}</span>
+        </Tip>
+      )}
       {arc === 'stale' && (
         <Tip label={k.arcStale}>
           <span className="shrink-0 cursor-help font-medium text-amber-500">{k.noHeartbeat}</span>
@@ -304,8 +309,15 @@ function Card({
               Queued attachment is the footer's named-agent chip — a moving
               border on an idle card would lie. Hidden during drag/selection
               so those states stay legible. */}
-          {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
-            <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
+          {(arc === 'running' || arc === 'booting' || arc === 'stale') && !dragging && !selected && (
+            <span
+              aria-hidden
+              className={cn(
+                'kanban-arc',
+                arc === 'booting' && 'kanban-arc--booting',
+                arc === 'stale' && 'kanban-arc--stale'
+              )}
+            />
           )}
           <KanbanCardBadges card={task} tenants={tenants} />
           <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">

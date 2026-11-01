@@ -529,6 +529,8 @@ _STYLE_TEMPLATES = {
     "completion-menu.completion.current": "bg:{menu_current_bg} {title}",
     "completion-menu.meta.completion": "bg:{menu_meta_bg} {dim}",
     "completion-menu.meta.completion.current": "bg:{menu_meta_current_bg} {label}",
+    # Menu scrollbar: prompt_toolkit's built-in gray track/thumb ignore the skin otherwise.
+    "scrollbar.background": "bg:{menu_meta_bg}", "scrollbar.button": "bg:{dim}",
     "clarify-border": "{input_rule}", "clarify-title": "{title} bold", "clarify-question": "{text} bold",
     "clarify-choice": "{dim}", "clarify-selected": "{title} bold", "clarify-active-other": "{title} italic",
     "clarify-countdown": "{input_rule}",

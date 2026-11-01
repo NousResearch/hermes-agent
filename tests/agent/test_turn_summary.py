@@ -27,8 +27,9 @@ from agent.turn_summary import (
         (0.0, "0.0s"),
         (12.44, "12.4s"),
         (59.9, "59.9s"),
-        (60.0, "1m00s"),
-        (125.0, "2m05s"),
+        (60.0, "1m 0s"),
+        (125.0, "2m 5s"),
+        (3720.0, "1h 2m"),
         (-3.0, "0.0s"),
     ],
 )
@@ -50,16 +51,16 @@ def test_format_elapsed(seconds, expected):
 def test_pluralization_singular_and_plural():
     one = TurnTally(verbs={"read": {"files": 1}})
     many = TurnTally(verbs={"read": {"files": 3}})
-    assert format_turn_summary(1.0, one) == "⋯ 1.0s · read 1 file"
-    assert format_turn_summary(1.0, many) == "⋯ 1.0s · read 3 files"
+    assert format_turn_summary(1.0, one) == "⋯ Worked for 1.0s · read 1 file"
+    assert format_turn_summary(1.0, many) == "⋯ Worked for 1.0s · read 3 files"
 
 
 def test_pluralization_irregular_nouns():
     """The singulariser handles -ies / -ses without producing 'memorie'."""
     mem = TurnTally(verbs={"updated": {"memories": 1}})
-    assert format_turn_summary(1.0, mem) == "⋯ 1.0s · updated 1 memory"
+    assert format_turn_summary(1.0, mem) == "⋯ Worked for 1.0s · updated 1 memory"
     times = TurnTally(verbs={"searched the web": {"times": 1}})
-    assert format_turn_summary(1.0, times) == "⋯ 1.0s · searched the web 1 time"
+    assert format_turn_summary(1.0, times) == "⋯ Worked for 1.0s · searched the web 1 time"
 
 
 

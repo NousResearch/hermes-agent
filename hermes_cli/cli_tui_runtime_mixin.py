@@ -157,6 +157,7 @@ class CLITuiRuntimeMixin:
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
         self._turn_summary_begin()
+        self._transcript_begin_turn()
         self._app.invalidate()
         try:
             self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
@@ -186,6 +187,7 @@ class CLITuiRuntimeMixin:
         self._spinner_text = self._last_scrollback_tool = ""
         self._tool_start_time = 0.0
         self._pending_tool_info.clear()
+        self._running_tools = []
         self.__dict__.pop("_running_tool_labels", None)
         self._pet_react_turn_end()
         self._turn_summary_emit()
@@ -277,6 +279,8 @@ class CLITuiRuntimeMixin:
             _term_lines = shutil.get_terminal_size().lines
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
+                from hermes_cli.cli_render import _pin_chrome
+                _pin_chrome()  # the chrome starts on the bottom rows (CPR-less mouse mapping)
 
         from hermes_cli.gateway_client import GatewayClientError
         try:
@@ -409,6 +413,7 @@ class CLITuiRuntimeMixin:
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
         from cli import CLI_CONFIG, EditingMode, _STEADY_CURSOR, _select_classic_cli_pt_output
+        from hermes_cli.cli_mouse import mouse_filter
         _cpr_disabled_output = _select_classic_cli_pt_output(sys.stdout)
 
         # Kitty placeholders encode the image id in exact foreground RGB, so the whole app
@@ -431,7 +436,9 @@ class CLITuiRuntimeMixin:
             key_bindings=kb,
             style=style,
             full_screen=False,
-            mouse_support=False,
+            # display.cli_mouse: clickable live-work footer (cli_dock_footer); off keeps the
+            # terminal's own wheel scrolling and text selection. A filter, so /mouse flips it live.
+            mouse_support=mouse_filter(self),
             # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.
             refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
             # Erase the bottom chrome on exit instead of freezing a copy into scrollback.

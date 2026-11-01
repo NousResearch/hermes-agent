@@ -2818,7 +2818,7 @@ def clear_runtime_main() -> None:
     _publish_runtime_main_mirrors(("", "", "", "", "", ""))
 
 
-def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str | Callable[[], str]], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
         from hermes_cli.auth import AuthError
@@ -2847,14 +2847,12 @@ def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str], Optional[st
     custom_base = custom_base.strip().rstrip("/")
     if base_url_host_matches(custom_base, "openrouter.ai"):
         return None, None, None  # requested='custom' falls back to OpenRouter when unconfigured.
-    # Local servers (Ollama, vLLM, ...) ignore auth but the SDK needs a non-empty key.
-    # Use a placeholder key — the OpenAI SDK requires a non-empty string but local servers ignore the
-    # Authorization header. Same fix as cli.py _ensure_runtime_credentials() (PR #2556).
-    if not isinstance(custom_key, str) or not custom_key.strip():
-        custom_key = "no-key-required"
+    # Preserve callable key_cmd/Entra credentials: the OpenAI SDK invokes them per request.
+    # A no-auth placeholder is only appropriate when no credential was resolved.
+    custom_key = _normalize_api_key(custom_key) or "no-key-required"
     if not isinstance(custom_mode, str) or not custom_mode.strip():
         custom_mode = None
-    return custom_base, custom_key.strip(), custom_mode
+    return custom_base, custom_key, custom_mode
 
 
 def _current_custom_base_url() -> str:

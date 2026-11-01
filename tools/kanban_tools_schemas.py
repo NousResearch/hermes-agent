@@ -236,8 +236,9 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "the whole diff; the reviewer has the board and the PR."
         )),
         "reviewer": _prop("string", (
-                "Optional reviewer profile. When provided, the task is "
-                "reassigned to that profile before review dispatch."
+                "Reviewer profile; required unless the card already has a saved "
+                "reviewer. Must exist and carry the sdlc-review skill, and must not "
+                "be the implementer. The task is reassigned to it first."
         )),
         "metadata": {
             "type": "object",
@@ -472,14 +473,27 @@ KANBAN_CREATE_SCHEMA = _schema(
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "Skill names to force-load into the dispatched "
-                "worker. The kanban lifecycle is already injected "
-                "automatically; use this to pin a task to a specialist "
-                "context — e.g. ['translation'] for a translation "
-                "task, ['github-code-review'] for a reviewer task. "
-                "The names must match skills installed on the "
-                "assignee's profile."
-            ),
+                "Skill names to force-load into the dispatched worker. The kanban "
+                "lifecycle is already injected automatically; use this to pin a "
+                "task to a specialist context — e.g. ['translation'] for a "
+                "translation task, ['github-code-review'] for a reviewer task. The "
+                "names must match skills installed on the assignee's profile."
+        ),
+        },
+        "reviewer": _prop("string", (
+                "Optional profile that must approve this card (implies "
+                "review_policy 'required'). It must exist and carry the sdlc-review "
+                "skill, or the create is refused."
+        )),
+        "review_policy": {
+            "type": "string",
+            "enum": ["optional", "required", "disabled"],
+            "description": (
+                "optional (default): no gate. required: `reviewer` must approve, "
+                "and the implementer hands off with kanban_request_review. "
+                "disabled: no native review; the implementer finishes with "
+                "kanban_complete. `reviewer` with optional or disabled is refused."
+        ),
         },
         "goal_mode": _prop("boolean", (
                 "Run the dispatched worker in a goal loop. When true, "
@@ -537,15 +551,190 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
 KANBAN_LINK_SCHEMA = _schema(
     "kanban_link",
     (
-        "Add a parent→child dependency edge after both tasks already "
-        "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected. A running child "
-        "is rejected unless the active owning worker is linking its own "
-        "card for a dependency handoff."
+        "Add a parent→child dependency edge after both tasks already exist. "
+        "The child won't promote to 'ready' until all parents are 'done'. "
+        "Cycles and self-links are rejected. A running child is rejected "
+        "unless the active owning worker is linking its own card for a "
+        "dependency handoff."
     ),
     {
         "parent_id": {"type": "string", "description": "Parent task id."},
         "child_id":  {"type": "string", "description": "Child task id."},
     },
     ["parent_id", "child_id"],
+)
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Drop a parent→child dependency edge (counterpart to kanban_link). "
+        "Removing a child's last open parent re-evaluates it at once, so it "
+        "may become 'ready'."
+    ),
+    {
+        "parent_id": {"type": "string", "description": "Parent task id (the dependency being dropped)."},
+        "child_id":  {"type": "string", "description": "Child task id (the dependent being released)."},
+    },
+    ["parent_id", "child_id"],
+)
+
+KANBAN_GRAPH_SCHEMA = _schema(
+    "kanban_graph",
+    (
+        "Read-only view of one task's direct parents and children (id, "
+        "title, status). It never changes anything. Use kanban_show for the "
+        "full record."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+    },
+    [],
+)
+
+KANBAN_PROMOTE_SCHEMA = _schema(
+    "kanban_promote",
+    (
+        "Move a task out of 'triage' into the normal flow. It becomes "
+        "'ready' if every parent is terminal, otherwise 'todo' (the "
+        "response names the unmet parents). It sets no other status. "
+        "Orchestrator-only — dispatcher-spawned task workers never see this "
+        "tool."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Optional audit note recorded on the promotion event, e.g. "
+            "'triage clarified by operator'."
+        )),
+    },
+    [],
+)
+
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive a task. Refused for 'ready', 'running' and 'review' (work "
+        "in flight) and whenever a worker may still be live: block it first "
+        "with kanban_block, then archive. 'archived' is a no-op; archiving "
+        "is not deletion. `reason` is required and kept for audit. The "
+        "response lists dependents whose status changed. Orchestrator-only "
+        "— dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+                "Required. Why the task is being archived, in one or two sentences "
+                "(e.g. 'superseded by t_ab12cd34'). Must be non-empty after "
+                "trimming."
+        )),
+    },
+    ["task_id", "reason"],
+)
+
+KANBAN_DECOMPOSE_SCHEMA = _schema(
+    "kanban_decompose",
+    (
+        "Apply a decomposition of a 'triage' task into child tasks. You "
+        "supply the whole graph in `children`; no LLM call is made. The "
+        "graph is validated first and applied atomically: any invalid entry "
+        "(missing title, bad parent index, cycle, unknown assignee) writes "
+        "nothing. Only a 'triage' task can be decomposed, and only once. "
+        "The root then waits for all children. Orchestrator-only — "
+        "dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "children": {
+            "type": "array",
+            "minItems": 1,
+            "description": (
+                "Ordered child specs. ``parents`` entries are 0-based "
+                "indexes into THIS array, expressing dependencies between "
+                "the new siblings (a child with parents waits for them). "
+                "The graph must be acyclic."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": _prop("string", "Short task title (required)."),
+                    "body": _prop("string", (
+                        "Opening post: full spec, acceptance criteria, "
+                        "links. The assigned worker reads this as part of "
+                        "its context."
+                    )),
+                    "assignee": _prop("string", (
+                        "Profile that should execute this child. Must be "
+                        "an installed profile; when omitted it falls back "
+                        "to the configured default assignee so a child is "
+                        "never left unassigned."
+                    )),
+                    "parents": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "0-based indexes into this same children "
+                            "array that must complete first. Omit for "
+                            "parallel work."
+                        ),
+                    },
+                    "workspace_kind": {
+                        "type": "string",
+                        "enum": ["scratch", "dir", "worktree"],
+                        "description": (
+                            "Workspace flavor for this child; inherits "
+                            "the root's when omitted."
+                        ),
+                    },
+                    "workspace_path": _prop("string", (
+                        "Absolute workspace path override for this child."
+                    )),
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    ["children"],
+)
+
+KANBAN_REASSIGN_SCHEMA = _schema(
+    "kanban_reassign",
+    (
+        "Move a task to a different profile (same as `hermes kanban "
+        "reassign`). Refused while the task is running under a claim, "
+        "unless `reclaim` is true, which releases the claim first — use "
+        "that when the current profile is broken. `assignee` must be an "
+        "installed profile (see kanban_discover); an unknown name is "
+        "refused with nothing changed. Orchestrator-only — "
+        "dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "assignee": _prop("string", (
+            "Destination profile name. Must be an installed profile "
+            "(see kanban_discover for the roster)."
+        )),
+        "reclaim": _prop("boolean", (
+            "Release the active claim before reassigning, so a card whose "
+            "current profile is broken can still move. Default false: a "
+            "claimed running card is refused instead."
+        )),
+        "reason": _prop("string", (
+            "Optional audit note recorded on the reclaim when `reclaim` "
+            "is true."
+        )),
+    },
+    ["task_id", "assignee"],
+)
+
+KANBAN_DISCOVER_SCHEMA = _schema(
+    "kanban_discover",
+    (
+        "Read-only roster of installed profiles (`default` plus each named "
+        "profile) with display name, description and role when a "
+        "profile.yaml provides them. Use it to choose a valid `assignee` "
+        "for kanban_create, kanban_decompose or kanban_reassign. `board` "
+        "does not apply."
+    ),
+    {},
+    [],
 )

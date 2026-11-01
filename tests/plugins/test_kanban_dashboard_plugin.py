@@ -101,6 +101,8 @@ def test_create_task_appears_on_board(client):
     assert task["status"] == "ready"  # no parents -> immediately ready
     assert task["priority"] == 3
     assert task["tenant"] == "acme"
+    # Omission remains compatible with the domain layer's default policy.
+    assert task["review_policy"] == "optional"
     task_id = task["id"]
 
     # Board now lists it under 'ready'.
@@ -112,6 +114,25 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_create_task_review_policy_is_nullable_enum_in_openapi(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    document = response.json()
+    create_task_operation = document["paths"]["/api/plugins/kanban/tasks"]["post"]
+    request_schema = create_task_operation["requestBody"]["content"]["application/json"]["schema"]
+    if "$ref" in request_schema:
+        schema_name = request_schema["$ref"].rsplit("/", 1)[-1]
+        request_schema = document["components"]["schemas"][schema_name]
+
+    policy_schema = request_schema["properties"]["review_policy"]
+    branches = policy_schema.get("anyOf", [policy_schema])
+    enum_schema = next(branch for branch in branches if "enum" in branch)
+    assert enum_schema["enum"] == ["optional", "required", "disabled"]
+    assert any(branch.get("type") == "null" for branch in branches)
+    assert "review_policy" not in request_schema.get("required", [])
+
 
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
@@ -307,7 +328,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
         assert kb.request_review(
             conn,
             child_id,
-            summary="ready",
+            reviewer="reviewer", summary="ready",
             expected_run_id=implementation.current_run_id,
         )
         active_review = kb.claim_review_task(conn, child_id)
@@ -410,7 +431,7 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
         assert kb.request_review(
             conn,
             task_id,
-            summary="ready",
+            reviewer="reviewer", summary="ready",
             expected_run_id=implementation.current_run_id,
         )
         review = kb.claim_review_task(conn, task_id)
@@ -719,6 +740,12 @@ def test_dashboard_confirm_dispatches_expected_patch_body(client):
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+    # ``ready`` is protected work in flight: park the cards first (the dashboard
+    # archives whatever is NOT in flight).
+    for tid in (a["id"], b["id"]):
+        assert client.patch(
+            f"/api/plugins/kanban/tasks/{tid}", json={"status": "blocked"}
+        ).status_code == 200
     r = client.post("/api/plugins/kanban/tasks/bulk",
                     json={"ids": [a["id"], b["id"]], "archive": True})
     assert r.status_code == 200
@@ -728,6 +755,65 @@ def test_bulk_archive(client):
     ids = {t["id"] for col in board["columns"] for t in col["tasks"]}
     assert a["id"] not in ids
     assert b["id"] not in ids
+
+
+def test_dashboard_archive_stays_unprompted_and_payload_free(client):
+    """The dashboard never asks for or supplies a reason: its archive still
+    works unchanged and writes the historical payload-less ``archived`` event —
+    only the agent tool's ``kanban_archive`` carries provenance."""
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "dup"}).json()["task"]
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "blocked"}
+    ).status_code == 200
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "archived"})
+
+    assert r.status_code == 200, r.text
+    with kbc.connect() as conn:
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (task["id"],)).fetchall()
+    assert [row[0] for row in rows] == [None], "the dashboard must not invent a reason"
+
+
+def test_archive_refuses_protected_statuses_with_the_shared_reason(client):
+    """The dashboard shares the DB lifecycle's archive policy: a direct archive
+    of ``ready``/``running``/``review`` is a 409 quoting the block/stop-first
+    instruction, and the card is left exactly as it was."""
+    for status in ("ready", "running", "review"):
+        task = client.post(
+            "/api/plugins/kanban/tasks", json={"title": f"flight {status}"}).json()["task"]
+        with kbc.connect() as conn:
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task["id"]))
+            conn.commit()
+
+        r = client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "archived"})
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert status in detail and "block" in detail and "Nothing changed" in detail
+        with kbc.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()
+            assert row[0] == status, "a refusal must not mutate"
+
+
+def test_bulk_archive_refuses_protected_statuses_with_the_shared_reason(client):
+    """Bulk goes through the same writer, so it cannot bypass the policy either."""
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "in flight"}).json()["task"]
+
+    r = client.post("/api/plugins/kanban/tasks/bulk",
+                    json={"ids": [task["id"]], "archive": True})
+
+    assert r.status_code == 200
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "block" in result["error"] and "Nothing changed" in result["error"]
+    with kbc.connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()
+        assert row[0] == "ready"
+
 
 def test_bulk_reassign(client):
     a = client.post("/api/plugins/kanban/tasks",

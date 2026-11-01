@@ -2147,6 +2147,10 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # Authoritative phase stamp for this spawn: only the review lane earns
+        # "review", so a same-profile implementer cannot claim the phase by
+        # carrying the reviewer's profile name.
+        claimed.run_phase = "review"
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2751,6 +2755,26 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
+def review_gate_env(task: Task) -> dict:
+    """Startup context for a review-gated card; ``{}`` when the card is ungated.
+
+    ``HERMES_KANBAN_RUN_PHASE`` carries the dispatcher's own claim decision
+    (only the review lane earns ``review``), never a profile string the child
+    could have influenced. Both values are conveniences for tool visibility —
+    ``complete_task`` re-derives the same verdict from lifecycle/run state, so
+    a spoofed or absent env var changes nothing about what the backend accepts.
+    """
+    if (getattr(task, "review_policy", None) or "") == "disabled":
+        # Tool visibility only: kb.request_review refuses a disabled card from the row.
+        return {"HERMES_KANBAN_REVIEW_POLICY": "disabled"}
+    if not task.required_reviewer:
+        return {}
+    return {
+        "HERMES_KANBAN_REQUIRED_REVIEWER": task.required_reviewer,
+        "HERMES_KANBAN_RUN_PHASE": getattr(task, "run_phase", None) or "implementation",
+    }
+
+
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -2810,6 +2834,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Review gate, in the child's startup context and only when the card is
+    # actually gated (an ungated card keeps its historical, clean env).
+    env.update(review_gate_env(task))
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

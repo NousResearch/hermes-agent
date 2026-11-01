@@ -55,6 +55,26 @@ def _make_mock_parent(depth=0):
 
 
 
+    def test_batch_scaffold_prefix_is_byte_stable(self):
+        """#103481 / goose#12062: per-child ``context`` must TRAIL the shared scaffold so a delegate_task
+        batch shares one byte-identical system-prompt prefix (workspace block, project context files,
+        completion instructions, role block) — prefix-caching providers bill it once, not N times."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as ws:
+            with open(os.path.join(ws, "AGENTS.md"), "w", encoding="utf-8") as fh:
+                fh.write("Shared repo conventions: run the tests.\n")
+            p1 = _build_child_system_prompt("task alpha", "context one", workspace_path=ws, role="orchestrator")
+            p2 = _build_child_system_prompt("task beta", "context two", workspace_path=ws, role="orchestrator")
+        i1, i2 = p1.index("CONTEXT:"), p2.index("CONTEXT:")
+        self.assertEqual(p1[:i1], p2[:i2])  # byte-identical scaffold before the first variant byte
+        shared = p1[:i1]
+        for block in ("WORKSPACE PATH:", "Shared repo conventions", "Keep your final summary tight", "Orchestrator Role"):
+            self.assertIn(block, shared)
+        self.assertTrue(p1.rstrip().endswith("context one"))
+        self.assertTrue(p2.rstrip().endswith("context two"))
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

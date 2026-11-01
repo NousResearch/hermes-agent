@@ -1,0 +1,36 @@
+name: bale-platform
+label: Bale
+kind: platform
+version: 1.0.0
+description: >
+  Bale messenger gateway adapter for Hermes Agent. Reuses the mature Telegram
+  transport against Bale's Telegram-compatible Bot API while keeping tokens,
+  authorization policy, sessions, and cron delivery under Bale-specific names.
+author: Hossein Mirhadi
+requires_env:
+  - name: BALE_BOT_TOKEN
+    description: "Bale bot token from BotFather"
+    prompt: "Bale bot token"
+    url: "https://ble.ir/BotFather"
+    password: true
+optional_env:
+  - name: BALE_ALLOWED_USERS
+    description: "Comma-separated Bale user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: BALE_ALLOW_ALL_USERS
+    description: "Allow any Bale user to trigger the bot (development only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: BALE_HOME_CHANNEL
+    description: "Default Bale chat ID for cron and notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: BALE_API_BASE_URL
+    description: "Custom Bale-compatible Bot API base URL"
+    prompt: "API base URL (optional)"
+    password: false
+  - name: BALE_PROXY
+    description: "HTTP, HTTPS, or SOCKS proxy used only for Bale API requests"
+    prompt: "Bale proxy URL (optional)"
+    password: true

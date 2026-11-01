@@ -88,12 +88,12 @@ let
       timeout = mkOption {
         type = types.nullOr types.int;
         default = null;
-        description = "Tool call timeout in seconds (default: 120).";
+        description = "Tool call timeout in seconds (default: 300).";
       };
       connect_timeout = mkOption {
         type = types.nullOr types.int;
         default = null;
-        description = "Initial connection timeout in seconds (default: 60).";
+        description = "Connection timeout in seconds (default: 60): the initial connect and MCP initialize handshake, each reconnect, and the HTTP client's connect, write, and pool waits for HTTP and SSE servers (reads use 300 seconds).";
       };
 
       # Tool filtering

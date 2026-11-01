@@ -152,8 +152,8 @@ instance itself is not touched — you can add it again any time."*
 :::info The remote backend is a running `hermes serve` process
 Nothing here works unless the backend is actually up and reachable on the
 other machine. The desktop app attaches to it; it does not start it for you
-(except for SSH connections, where the app starts the dashboard over the
-tunnel on demand). See
+(except for SSH connections, where the app opens the tunnel and starts the
+dashboard when Desktop launches, since every gateway stays connected). See
 [Connecting to a remote backend](./desktop.md#connecting-to-a-remote-backend)
 for backend-side setup — auth providers, binding to a non-loopback address,
 and Tailscale guidance.
@@ -183,8 +183,11 @@ The union roster is what multi-gateway surfaces (and the built-in
   bare name.
 - Every registered gateway, SSH included, connects when Desktop starts and
   stays connected: its default profile holds one open connection for the life
-  of the window and is redialed if it drops. An unreachable gateway reports
-  per-row instead of breaking the roster, and Desktop keeps retrying it.
+  of the window and is redialed every 30 seconds while it is down. An
+  unreachable gateway reports per-row instead of breaking the roster. With a
+  remote primary, **This device** is kept connected too when Hermes is
+  installed here, so its local gateway starts with Desktop. Terminals and
+  running work on a gateway keep going when you pick another one.
 - Opening an agent dials **its own gateway** — chats, sessions, and memory
   live on the machine that owns the profile, exactly as if you were using
   that instance directly.

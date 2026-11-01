@@ -45,8 +45,8 @@ async function dial(connectionId: string): Promise<void> {
     return
   }
 
-  // Background priority: a gateway that is down or needs sign-in fails fast and
-  // stays throttled; the next tick (or a focus/online nudge) tries again.
+  // A gateway that is down or needs sign-in fails this dial; the next tick
+  // (every REDIAL_INTERVAL_MS) tries again.
   await openGatewayForAgent(connectionId, HOME_PROFILE)
 }
 

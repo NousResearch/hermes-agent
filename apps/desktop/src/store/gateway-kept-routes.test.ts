@@ -29,6 +29,7 @@ const {
   disposeSecondariesForConnection,
   openGatewayForAgent,
   pruneSecondaryGateways,
+  retainGatewayForRelay,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -78,6 +79,20 @@ it('a kept gateway survives idle pruning, yet an edit to it redials onto the new
   expect(opened).toHaveBeenCalledTimes(2)
   off()
   release()
+})
+
+it('a relay lease still defers an edit on a kept gateway until it is released; the keep pin never does', async () => {
+  const releaseKeep = keepRoute('homelab', 'default')
+
+  await openGatewayForAgent('homelab', 'default')
+  const releaseRelay = retainGatewayForRelay('homelab', 'default')
+  endpoint = 'wss://homelab.invalid/api/ws?token=new'
+  disposeSecondariesForConnection('homelab', { redial: true })
+  expect(gatewayMocks.connect).not.toHaveBeenCalledWith(endpoint)
+
+  releaseRelay()
+  await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenLastCalledWith(endpoint))
+  releaseKeep()
 })
 
 it('an unkept route is still pruned when idle and announces nothing', async () => {

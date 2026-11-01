@@ -374,19 +374,27 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
-def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
-    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
-    value, or ``""`` when absent."""
+def _cut(text: str, limit: int, task_id: str) -> str:
+    """``text`` whole up to ``limit`` characters. A longer one is cut and marked, as ``_safe_review_reason``
+    marks its cut, and names the command that shows the whole text."""
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1].rstrip()}… (`/kanban show {task_id}`)"
+
+
+def _clip(ev: Any, key: str, msg_key: str, limit: int, task_id: str) -> str:
+    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the payload value cut by
+    ``_cut``, or ``""`` when absent."""
     value = _payload(ev, key)
-    return t(msg_key, value=str(value)[:limit]) if value else ""
+    return t(msg_key, value=_cut(str(value), limit, task_id)) if value else ""
 
 
 _NL = "\n{}"
 
 
-def _first_line(text: str, limit: int) -> str:
+def _first_line(text: str, limit: int, task_id: str) -> str:
     lines = text.strip().splitlines()
-    return lines[0][:limit] if lines else text[:limit]
+    return _cut(lines[0] if lines else text, limit, task_id)
 
 
 def _fmt_completed(ev, n) -> tuple:
@@ -394,9 +402,9 @@ def _fmt_completed(ev, n) -> tuple:
     wake_handoff = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
+        wake_handoff = _first_line(str(payload_summary), 200, n.task_id)
     elif n.task and n.task.result:
-        wake_handoff = _first_line(n.task.result, 160)
+        wake_handoff = _first_line(n.task.result, 160, n.task_id)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
@@ -409,8 +417,8 @@ def _fmt_review_requested(ev, n) -> tuple:
     summary = _payload(ev, "summary")
     if summary:
         summary = str(summary)
-        handoff = f"\n{summary[:200]}"
-        wake_handoff = _first_line(summary, 200)
+        handoff = f"\n{_cut(summary, 200, n.task_id)}"
+        wake_handoff = _first_line(summary, 200, n.task_id)
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
@@ -443,8 +451,8 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     msg = t(
         "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
-        recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
-        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
+        recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200, n.task_id),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160, n.task_id),
     )
     return msg, None, None
 
@@ -455,7 +463,7 @@ def _fmt_gave_up(ev, n) -> tuple:
     failures = _payload(ev, "failures")
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
-    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160, n.task_id)
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
@@ -472,7 +480,8 @@ def _fmt_timed_out(ev, n) -> tuple:
 _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (
-        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        t("gateway.kanban.ping.blocked", head=n.head,
+          reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160, n.task_id)),
         None, None,
     ),
     "gave_up": _fmt_gave_up,

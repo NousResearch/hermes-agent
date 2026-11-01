@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -639,6 +640,8 @@ class _StubEvent:
 
 class _StubNotif:
     head = "H123"
+    task_id = "t_0a1b2c3d"
+    title = "T"
 
 
 def _fmt_block_loop(payload):
@@ -674,6 +677,33 @@ def test_block_loop_owner_input_keeps_decision_wording():
     assert "needs a human decision" in msg
     assert "for orchestration attention" not in msg
     assert "Which API key should this use?" in msg
+
+
+# ---------------------------------------------------------------------------
+# A ping cuts a long summary, reason or error at its cap. The cut is marked,
+# as _safe_review_reason marks its own, and names the command that shows the
+# whole text.
+# ---------------------------------------------------------------------------
+
+
+def _ping(kind, payload):
+    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+
+    return _EVENT_FORMATTERS[kind](_StubEvent(payload), _StubNotif())
+
+
+@pytest.mark.parametrize("kind,key", [
+    ("completed", "summary"), ("review_requested", "summary"), ("blocked", "reason"),
+    ("block_loop_detected", "reason"), ("gave_up", "error"),
+])
+def test_a_cut_ping_text_is_marked_and_names_the_show_command(kind, key):
+    long = "x" * 5000
+    msg = _ping(kind, {key: long})[0]
+    assert long not in msg
+    assert "x… (`/kanban show t_0a1b2c3d`)" in msg
+    # A text within its cap arrives as is.
+    short = _ping(kind, {key: "fits"})[0]
+    assert "fits" in short and "…" not in short
 
 
 # ---------------------------------------------------------------------------

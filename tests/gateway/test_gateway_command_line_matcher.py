@@ -65,6 +65,42 @@ def test_rejects_non_gateway_run(cmd):
     assert matches(cmd) is False
 
 
+# A gateway-dedicated entrypoint name in ARGUMENT position is data, not identity
+# (#140089): matching any argv token made ``hermes update --gateway`` drain for
+# "in-flight turns" of an unrelated ``claude --resume hermes-gateway`` session and
+# then terminate it as a "paused gateway".
+ARGUMENT_POSITION_REJECT = [
+    "/usr/bin/claude --resume hermes-gateway",
+    "/usr/bin/claude --resume hermes-gateway.exe",
+    "/usr/bin/claude --resume other-name hermes-gateway",
+    "tmux new -s hermes-gateway",
+    "journalctl -f -u hermes-gateway",
+    # argv[1] only counts directly behind an interpreter/``env`` wrapper, so an
+    # editor opening the entrypoint file stays unmatched too.
+    "vim gateway/run.py",
+    "less /opt/hermes/desktop-gateway.py",
+    "/usr/bin/vim desktop-gateway.py",
+]
+
+
+@pytest.mark.parametrize("cmd", ARGUMENT_POSITION_REJECT)
+def test_rejects_entrypoint_names_in_argument_position(cmd):
+    assert matches(cmd) is False
+
+
+# The interpreter/``env``-wrapped program position must still count as identity.
+INTERPRETER_WRAPPED_ENTRYPOINT_ACCEPT = [
+    "python3 /opt/hermes/hermes-gateway --profile a",
+    "env hermes-gateway",
+    r'"C:\Program Files\Py\pythonw.exe" "C:\Program Files\Hermes\hermes-gateway.exe"',
+]
+
+
+@pytest.mark.parametrize("cmd", INTERPRETER_WRAPPED_ENTRYPOINT_ACCEPT)
+def test_accepts_entrypoints_behind_an_interpreter_wrapper(cmd):
+    assert matches(cmd) is True
+
+
 # ``python -c <src> <old_pid> <gateway argv…>`` — the detached restart watcher
 # (hermes_cli.gateway._spawn_gateway_restart_watcher). Its trailing argv is the command it will
 # spawn LATER, so reading identity off it made the updater's post-relaunch liveness poll vouch for

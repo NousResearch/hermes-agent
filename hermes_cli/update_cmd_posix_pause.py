@@ -225,6 +225,7 @@ def _respawning_service(pid: int) -> str | None:
 def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
     """``(bare gateways, notices)``: this install's ``gateway run`` processes outside any unit."""
     from gateway.status import get_process_start_time
+    from hermes_platform.host import facts
     from hermes_cli.gateway import _capture_gateway_argv, _get_service_pids, find_gateway_pids
     from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
     from hermes_cli.update_fleet_scope import gateway_pid_home
@@ -233,6 +234,16 @@ def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
     bare, notices = [], []
     for pid in pids:
         pid = int(pid)
+        if facts.os_family() == "linux":
+            from hermes_cli.update_cmd import _systemd_service_membership_for_pid
+            membership = _systemd_service_membership_for_pid(pid)
+            if membership is not False:
+                why = "systemd service ownership" if membership else "unknown systemd ownership"
+                notices.append(
+                    f"  ⚠ gateway PID {pid} keeps running during the update ({why}); "
+                    "restart it through its supervisor or owner after the update"
+                )
+                continue
         marker = _supervisor_markers(pid)
         argv, home = _capture_gateway_argv(pid), gateway_pid_home(pid)
         if marker or not argv or not home:

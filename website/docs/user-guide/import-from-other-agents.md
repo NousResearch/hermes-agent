@@ -1,18 +1,18 @@
 ---
 sidebar_position: 9
 title: "Import from Other Agents"
-description: "One-command import of an OpenClaw (~/.openclaw), Claude Code (~/.claude), OpenAI Codex CLI (~/.codex) or Cursor (~/.cursor) setup into Hermes — instructions, rules, allowlists, MCP servers, skills, and memories."
+description: "One-command import of an OpenClaw (~/.openclaw), Claude Code (~/.claude), OpenAI Codex CLI (~/.codex), Cursor (~/.cursor) or Grok Bot setup into Hermes — instructions, rules, allowlists, MCP servers, skills, memories and Grok Bot routines."
 ---
 
 # Import from Other Agents
 
-`hermes import-agent` imports your existing **OpenClaw**, **Claude Code**, **OpenAI Codex CLI** or **Cursor** setup into Hermes with one command. You always see a per-item plan before anything is written, and `--dry-run` never touches disk.
+`hermes import-agent` imports your existing **OpenClaw**, **Claude Code**, **OpenAI Codex CLI**, **Cursor** or **Grok Bot** setup into Hermes with one command. You always see a per-item plan before anything is written, and `--dry-run` never touches disk.
 
 The command comes from the official **`agent-importers` plugin** from the [plugin catalog](./features/plugins.md), maintained by Nous Research in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers).
 
 ## The easy way: `hermes setup`
 
-On a fresh install, `hermes setup` checks for `~/.openclaw` (or legacy `~/.clawdbot` / `~/.moltbot`), `~/.claude`, `~/.codex` and `~/.cursor` before anything else. When it finds one it asks **"Import your setup from Claude Code?"** (naming what it found); with several found you then pick which from a checklist, all checked. Say yes and setup installs the `agent-importers` plugin from the catalog, unless you already have it, and runs the import below for each pick, preview and confirmation included. For OpenClaw it passes `--migrate-secrets`, as Hermes' old built-in OpenClaw step did, so your API keys and bot tokens come over and the provider and messaging sections that follow are already filled in. If you then pick Quick Setup and the import brought a model along with its key, setup asks whether to keep that model (the default) or switch to Nous Portal. Say no, or have none of these folders, and nothing is installed. Already set up? Use the commands below.
+On a fresh install, `hermes setup` checks for `~/.openclaw` (or legacy `~/.clawdbot` / `~/.moltbot`), `~/.claude`, `~/.codex`, `~/.cursor` and the Grok Bot desktop app (or a `grok-bot-export*` file in `~/Downloads`) before anything else. When it finds one it asks **"Import your setup from Claude Code?"** (naming what it found); with several found you then pick which from a checklist, all checked. Say yes and setup installs the `agent-importers` plugin from the catalog, unless you already have it, and runs the import below for each pick, preview and confirmation included. For OpenClaw it passes `--migrate-secrets`, as Hermes' old built-in OpenClaw step did, so your API keys and bot tokens come over and the provider and messaging sections that follow are already filled in. If you then pick Quick Setup and the import brought a model along with its key, setup asks whether to keep that model (the default) or switch to Nous Portal. Say no, or have none of these folders, and nothing is installed. Already set up? Run `hermes migrate` for the same offer, `hermes migrate <agent>` (`openclaw`, `claude-code`, `codex`, `cursor`, `grok-bot`) to import from one agent, installing the plugin when it is missing, or use the commands below.
 
 ## By hand
 
@@ -71,6 +71,21 @@ Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`
 | `skills/**/<name>/` (dirs with `SKILL.md`, category folders allowed) | `~/.hermes/skills/cursor-imports/<name>/` |
 
 `.mdc` frontmatter (`description`, `globs`, `alwaysApply`) is routing metadata for Cursor's rule engine and is stripped; only the rule body is imported. A skill is the folder holding `SKILL.md`, so `skills/shipping/land-it/` imports as `cursor-imports/land-it/`; two skills with the same name in different folders are reported as a conflict.
+
+### Grok Bot
+
+Grok Bot keeps your Bots, routines and skills in its cloud account and has no export button, so each Bot exports itself. Run `hermes migrate grok-bot` (or `hermes import-agent grok-bot`): with no export yet it prints a message to paste into a Bot's chat. The Bot writes `grok-bot-export.json` (or replies with one JSON block) without changing anything; download it and run `hermes import-agent grok-bot --source <file>`. Files saved as `~/Downloads/grok-bot-export*` are found without `--source`. Repeat per Bot, into the profile that should own its work (`hermes -p <profile> ...`).
+
+| Grok Bot | Hermes |
+|---|---|
+| Routine on a schedule | [Cron job](./features/cron.md) `<Bot>: <routine>` with the same schedule, time zone and skills, created **paused** |
+| Routine on an event (Slack, GitHub, email, webhook, ...) | Its instruction and trigger saved to `grok-bot-import/<bot>-event-routines.md` to rebuild |
+| Skills | `skills/grok-bot-imports/<name>/` |
+| What the Bot remembers / facts about you | `memories/MEMORY.md` / `memories/USER.md` |
+| The Bot's role | `SOUL.md` while it still holds Hermes' default, else memory entries |
+| Apps with a remote MCP URL | `mcp_servers` in `config.yaml` |
+
+Routines arrive paused so they don't run twice while the Grok copy is still on: turn it off in Grok Bot, then `hermes cron resume <id>` (the import prints each id), or pass `--activate-routines`. Point a job's output somewhere with `hermes cron edit <id> --deliver telegram`. An export carrying credential-looking keys is refused, and token-shaped text is redacted.
 
 ## What is never imported
 

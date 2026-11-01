@@ -148,3 +148,35 @@ def test_setup_menu_shows_what_was_found_with_the_question(homes, monkeypatch):
     assert ("Found on this computer: OpenClaw (~/.openclaw), Claude Code (~/.claude), Codex CLI (~/.codex)."
             in " ".join(description.split()))
     assert calls == [] and not (hermes_home / "plugins").exists()
+
+
+def test_grok_bot_export_in_downloads_is_offered_like_the_other_agents(homes):
+    """Grok Bot keeps its setup in the cloud: an export the Bot wrote, saved to Downloads, is enough
+    for setup to offer the import."""
+    user_home, hermes_home, calls, _answers = homes
+    (user_home / "Downloads").mkdir()
+    (user_home / "Downloads" / "grok-bot-export.json").write_text("{}", encoding="utf-8")
+
+    assert step.offer_agent_import(hermes_home) == "Grok Bot"
+    assert calls[-1] == ("import", ["--profile", "default", "import-agent", "grok-bot", "--from-setup"],
+                         str(hermes_home))
+
+
+def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flags(homes):
+    """`hermes migrate grok-bot ...` through the real parser: the plugin is installed from the catalog
+    when missing, and the import runs as its own command (no --from-setup) with the user's flags."""
+    import argparse
+
+    from hermes_cli.subcommands.migrate import build_migrate_parser
+    user_home, hermes_home, calls, _answers = homes
+    parser = argparse.ArgumentParser()
+    build_migrate_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["migrate", "grok-bot", "--source", "~/export.json", "--activate-routines",
+                              "--bot", "Scout", "-y"])
+
+    assert args.func(args) == 0
+    assert calls == [
+        ("install", "agent-importers", True, True),
+        ("import", ["--profile", "default", "import-agent", "grok-bot", "--yes", "--activate-routines",
+                    "--source", str(user_home / "export.json"), "--bot", "Scout"], str(hermes_home)),
+    ]

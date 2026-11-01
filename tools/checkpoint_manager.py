@@ -763,6 +763,56 @@ def _dir_size_bytes(path: Path) -> int:
 # CheckpointManager
 # ---------------------------------------------------------------------------
 
+def _oversize_worktree_paths(
+    store: Path, working_dir: str, index_file: Path, max_file_size_mb: int,
+) -> List[str]:
+    """Return tracked and untracked, non-ignored worktree paths exceeding the cap."""
+    cap = max_file_size_mb * 1024 * 1024
+    if cap <= 0:
+        return []
+    ok, output, _ = _run_git(
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        store, working_dir, index_file=index_file,
+    )
+    if not ok:
+        return []
+    root = _normalize_path(working_dir)
+    paths = dict.fromkeys(path for path in output.split("\x00") if path)
+    oversize = []
+    for rel in paths:
+        try:
+            if (root / rel).stat().st_size > cap:
+                oversize.append(rel)
+        except OSError:
+            continue
+    return oversize
+
+
+def _stage_checkpoint_files(
+    store: Path, working_dir: str, index_file: Path, max_file_size_mb: int,
+) -> Tuple[bool, str, str]:
+    """Stage snapshot files without writing oversized blobs to the shared store."""
+    oversize = _oversize_worktree_paths(store, working_dir, index_file, max_file_size_mb)
+    if not oversize:
+        return _run_git(["add", "-A"], store, working_dir,
+                        timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+    spec_file = index_file.with_name(index_file.name + ".exclude-pathspec")
+    specs = [".", *(f":(exclude,literal){rel}" for rel in oversize)]
+    spec_file.write_bytes(b"\x00".join(os.fsencode(spec) for spec in specs) + b"\x00")
+    try:
+        result = _run_git(
+            ["add", "-A", f"--pathspec-from-file={spec_file}", "--pathspec-file-nul"],
+            store, working_dir, timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            allowed_returncodes={128, 129},
+        )
+    finally:
+        spec_file.unlink(missing_ok=True)
+    if not result[0] and "pathspec-from-file" in result[2]:
+        return _run_git(["add", "-A"], store, working_dir,
+                        timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+    return result
+
+
 class CheckpointManager:
     """Manages automatic filesystem checkpoints.
 
@@ -1461,13 +1511,9 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stage with per-project index.  Include a per-stage file-size filter
-        # via ``core.bigFileThreshold`` is not what we want — instead, we
-        # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+        # Exclude oversize worktree paths before git add writes their blobs.
+        ok, _, err = _stage_checkpoint_files(
+            store, working_dir, index_file, self.max_file_size_mb,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
@@ -1615,7 +1661,7 @@ class CheckpointManager:
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
             _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+                ["rm", "--cached", "-f", "--quiet", "--"] + chunk,
                 store, working_dir, index_file=index_file,
                 allowed_returncodes={128},
             )

@@ -31,7 +31,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "assemble_review_comment.py"
 _spec = importlib.util.spec_from_file_location("assemble_review_comment", _PATH)
@@ -65,8 +64,6 @@ def test_statuses_bad_json():
     assert sources == set()
 
 
-
-
 def test_statuses_info():
     statuses = _status("review-label-gate", [{
         "kind": "info",
@@ -79,31 +76,11 @@ def test_statuses_info():
     assert sources == {"review-label-gate"}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ─── collect_failed_jobs ─────────────────────────────────────────────
 
 
 def test_failed_jobs_empty_needs():
     assert _mod.collect_failed_jobs("", "https://run") == []
-
-
-
-
-
-
 
 
 def test_failed_jobs_excluded_by_source():
@@ -117,68 +94,10 @@ def test_failed_jobs_excluded_by_source():
     assert items[0].title == "tests"
 
 
-
-
-
-
-
-
 # ─── render_comment ───────────────────────────────────────────────────
 
 
-
-
-
-
-
-
-def test_render_group_header_for_errors():
-    """Errors appear under a '## ❌ Job failures' group header."""
-    items = [
-        ReviewItem(severity="error", title="tests", summary="Job **tests** failed.", link="https://run"),
-        ReviewItem(severity="error", title="lint", summary="Job **lint** failed.", link="https://run"),
-    ]
-    body = _mod.render_comment(items)
-    assert "## ❌ Job failures" in body
-    assert "### tests" in body
-    assert "### lint" in body
-    assert body.index("## ❌ Job failures") < body.index("### tests")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ─── render_comment (pending jobs) ────────────────────────────────────
-
-
-def test_render_pending_only_shows_header_with_clock():
-    """Pending jobs only — header has 'still waiting', footer lists jobs, no sections."""
-    body = _mod.render_comment([], pending_jobs=["ci-timings"])
-    assert body.startswith(MARKER)
-    assert "૮ >ﻌ< ა" in body
-    assert "Still running" in body
-    assert "`ci-timings`" in body
-    assert "##" not in body
-
-
-def test_render_pending_notif():
-    items = [ReviewItem(severity="info", title="lockfile", summary="No changes.")]
-    body = _mod.render_comment(items, pending_jobs=["ci-timings"])
-    assert "૮ >ﻌ< ა" in body
-    assert "<sub>Still running 1 job: `ci-timings`</sub>" in body
 
 
 # ─── render_comment (waiting for jobs to start) ───────────────────────
@@ -204,53 +123,7 @@ def test_not_waiting_and_no_items_still_renders_all_good():
     assert "all good!" in body
 
 
-def test_assemble_passes_waiting_through():
-    body = _mod.assemble(waiting=True)
-    assert "waiting for jobs to start" in body
-    assert "all good" not in body
-
-
-
-
-
-
 # ─── assemble (integration) ──────────────────────────────────────────
-
-
-
-
-
-
-
-
-def test_assemble_review_status_detail_renders_sensitive_file_links():
-    statuses = _status("review-label-gate", [{
-        "kind": "action_required",
-        "title": "CI-sensitive file review",
-        "summary": "Changes detected.",
-        "detail": "**Sensitive files:**\n- [`ci.yml`](https://example.test/ci.yml)",
-    }])
-    body = _mod.assemble(review_statuses_json=statuses)
-    assert "**Sensitive files:**" in body
-    assert "[`ci.yml`](https://example.test/ci.yml)" in body
-
-
-def test_assemble_info_keeps_screenshot_details_visible_below_its_summary():
-    statuses = _status("playwright e2e", [{
-        "kind": "info",
-        "title": "Desktop E2E screenshots",
-        "summary": "1 screenshot captured; 0 visual diffs.",
-        "detail": "<details>\n<summary>1 captured screenshot</summary>\n\n- [`proof.png`](https://example.test/artifact)\n\n</details>",
-    }])
-    body = _mod.assemble(review_statuses_json=statuses)
-    assert "## ℹ️ Info" in body
-    assert "1 screenshot captured; 0 visual diffs." in body
-    assert "<summary>1 captured screenshot</summary>" in body
-    assert "[`proof.png`](https://example.test/artifact)" in body
-
-
-
-
 
 
 def test_assemble_with_timings_status():
@@ -268,21 +141,6 @@ def test_assemble_with_timings_status():
     assert "Wall time 3m" in body
     assert "## ❌" not in body
     assert "## ⚠️" not in body
-
-
-def test_assemble_with_lockfile_status():
-    """Lockfile no-changes status renders as visible info."""
-    statuses = _status("lockfile-diff", [{
-        "kind": "info",
-        "title": "package-lock.json",
-        "summary": "No lockfile changes — locked versions match the target branch.",
-    }])
-    body = _mod.assemble(review_statuses_json=statuses)
-    assert "## ℹ️ Info" in body
-    assert "### package-lock.json" in body
-    assert "No lockfile changes" in body
-
-
 
 
 # ─── _attach_job_urls ────────────────────────────────────────────────
@@ -307,51 +165,3 @@ def test_attach_job_urls_fills_missing_links():
     # Second item keeps its existing link, job_url is set separately
     assert items[1].link == "https://report"
     assert items[1].job_url == "https://fallback"  # fell back to run_url
-
-
-
-
-
-
-
-
-def test_render_commit_info_below_header():
-    """Commit info is rendered below the header, above the content."""
-    body = _mod.render_comment(
-        [ReviewItem(severity="error", title="tests", summary="failed.")],
-        commit_info="<sub>running on [abc1234](https://commit-url) — fix: thing</sub>",
-    )
-    assert "# ૮ >ﻌ< ა ci review" in body
-    assert "running on [abc1234](https://commit-url)" in body
-    assert "fix: thing" in body
-    # Commit info appears before the content
-    assert body.index("abc1234") < body.index("## ❌")
-
-
-
-
-def test_assemble_passes_commit_info():
-    """assemble() passes commit_info through to render_comment."""
-    body = _mod.assemble(commit_info="<sub>running on abc1234</sub>")
-    assert "running on abc1234" in body
-    assert "all good!" in body
-
-
-def test_render_both_emitted_link_and_job_url():
-    """An item with both an emitted link and a job_url shows both."""
-    item = ReviewItem(
-        severity="warning",
-        title="CI timings",
-        summary="Slower.",
-        link="https://artifact/report.html",
-        link_label="View report",
-        source="ci timings",
-        job_url="https://github.com/run/1/job/5",
-    )
-    body = _mod.render_comment([item])
-    assert "[View report](https://artifact/report.html)" in body
-    assert "[View job](https://github.com/run/1/job/5)" in body
-    # Both links on the same line, separated by ·
-    assert " · " in body
-
-

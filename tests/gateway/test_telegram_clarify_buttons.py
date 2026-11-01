@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import unauthorized_action_notice
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -205,7 +207,7 @@ class TestTelegramClarifyCallback:
         assert entry is not None
         assert not entry.event.is_set()
         query.answer.assert_called_once()
-        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         # State preserved
         assert adapter._clarify_state["cidC"] == "sk-auth"
 

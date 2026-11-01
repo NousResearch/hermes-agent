@@ -1,11 +1,26 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, renderHook } from '@testing-library/react'
 import { createRef } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
+
+beforeEach(() => {
+  rememberDesktopCommandsCatalog({
+    commands: {
+      '/goal': { argument_mode: 'mixed', desktop: null },
+      '/personality': { argument_mode: 'options', desktop: null }
+    }
+  })
+})
+
+afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
+})
 
 /** A live contentEditable seeded with `text`, caret parked at the end. */
 function mountEditor(text: string) {
@@ -32,7 +47,7 @@ const item = (command: string, group = 'Skills'): Unstable_TriggerItem => ({
   metadata: { command, display: command, meta: '', group, action: '', rawText: command }
 })
 
-function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[]) {
+function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[], slashOff = false) {
   const editorRef = createRef<HTMLDivElement>() as { current: HTMLDivElement | null }
   editorRef.current = editor
 
@@ -53,12 +68,27 @@ function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[]) {
       editorRef,
       requestMainFocus: vi.fn(),
       setComposerText,
-      slash: { adapter, loading: false }
+      slash: { adapter: slashOff ? null : adapter, loading: false }
     })
   )
 
   return { draftRef, hook, setComposerText }
 }
+
+describe('useComposerTrigger — the onboarding chat before setup ends', () => {
+  it('opens no slash menu, and still opens the @ menu', () => {
+    const { hook } = mountTrigger(mountEditor('/hel'), [item('/help')], true)
+
+    act(() => hook.result.current.refreshTrigger())
+    expect(hook.result.current.trigger).toBeNull()
+    expect(hook.result.current.triggerItems).toHaveLength(0)
+
+    const at = mountTrigger(mountEditor('look at @Desktop/'), [], true)
+
+    act(() => at.hook.result.current.refreshTrigger())
+    expect(at.hook.result.current.trigger).toMatchObject({ kind: '@' })
+  })
+})
 
 describe('useComposerTrigger — slash anywhere in the prompt', () => {
   it('opens the completion list for a slash typed mid-message', () => {

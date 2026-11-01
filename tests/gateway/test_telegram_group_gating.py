@@ -3,9 +3,27 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
-from gateway.platforms.base import MessageType
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.platforms.event import MessageType
+from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_telegram_env():
+    """The YAML→env bridge tests below write TELEGRAM_* into os.environ; an explicit env value now
+    beats ``config.extra`` for the owning profile, so a leaked bridge value would silently override the
+    ``extra`` the later adapter tests construct with."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith("TELEGRAM_")}
+    yield
+    for k in [k for k in os.environ if k.startswith("TELEGRAM_")]:
+        if k not in saved:
+            del os.environ[k]
+    os.environ.update(saved)
 
 
 def _make_adapter(
@@ -22,6 +40,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    bots_require_mention=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +84,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if bots_require_mention is not None:
+        extra["bots_require_mention"] = bots_require_mention
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -223,7 +244,8 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
 
 
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
-    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
+    from gateway.platforms.base import Platform, SessionSource
+    from gateway.platforms.event import MessageEvent, MessageType
 
     adapter = _make_adapter(
         require_mention=True,
@@ -882,3 +904,184 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def _bot_sender_message(
+    text="hello", *, chat_id=-100, sender_id=555, reply_to_bot=False, entities=None
+):
+    """Group message authored by another bot (is_bot=True, id != this bot's 999)."""
+    msg = _group_message(
+        text,
+        chat_id=chat_id,
+        from_user_id=sender_id,
+        reply_to_bot=reply_to_bot,
+        entities=entities,
+    )
+    msg.from_user.is_bot = True
+    return msg
+
+
+def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
+    """With require_mention alone the quote-reply-to-bot branch returns True unconditionally, so
+    two bots admitting each other's messages answer each other forever. The flag closes exactly
+    that path; a bot message that does @mention this bot still goes through."""
+    loop_adapter = _make_adapter(require_mention=True)
+    assert (
+        loop_adapter._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is True
+    )
+
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    assert (
+        gated._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is False
+    )
+
+    text = "@hermes_bot ping"
+    assert (
+        gated._should_process_message(
+            _bot_sender_message(text, entities=[_mention_entity(text)])
+        )
+        is True
+    )
+
+
+def test_human_reply_unaffected_by_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+
+    assert (
+        gated._should_process_message(_group_message("replying", reply_to_bot=True))
+        is True
+    )
+
+
+def test_sibling_bot_wake_word_message_is_observed_not_dropped():
+    """#115119: the bot-to-bot loop breaker drops a sibling bot's message that carries no explicit
+    @mention, so a wake-word (``mention_patterns``) match from that bot is never dispatched. It must
+    still land in observed group context instead of vanishing from both paths."""
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            bots_require_mention=True,
+            mention_patterns=["hermes"],
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        msg = _bot_sender_message("hermes, can you take this one?")
+        assert adapter._should_process_message(msg) is False, "loop breaker must still block dispatch"
+        update = SimpleNamespace(update_id=2001, message=msg, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _session_id, message, _skip_db = store.messages[0]
+        assert message["observed"] is True
+        assert message["content"].endswith("hermes, can you take this one?")
+
+    asyncio.run(_run())
+
+
+def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
+    """An explicit @mention from another bot still dispatches, so it must NOT be observed as well;
+    the refused quote-reply is observed; a human wake word is unaffected by the bot gate."""
+    adapter = _make_adapter(
+        require_mention=True,
+        bots_require_mention=True,
+        mention_patterns=["hermes"],
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    text = "@hermes_bot ping"
+    msg = _bot_sender_message(text, entities=[_mention_entity(text)])
+
+    assert adapter._should_process_message(msg) is True
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    # A sibling bot's quote-reply is refused by the same loop breaker, so it is observed too ...
+    quoted = _bot_sender_message("auto-reply", reply_to_bot=True)
+    assert adapter._should_process_message(quoted) is False
+    assert adapter._should_observe_unmentioned_group_message(quoted) is True
+    # ... while a human wake-word match still dispatches and is not double-recorded.
+    human = _group_message("hermes, hello")
+    assert adapter._should_process_message(human) is True
+    assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def _replying_to(message, *, user_id=None, message_id=10, sender_chat=None):
+    message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None,
+        sender_chat=SimpleNamespace(id=sender_chat, type="channel") if sender_chat else None)
+    return message
+
+
+def _with_media(message, kind):
+    setattr(message, kind, SimpleNamespace(file_id="f"))
+    return message
+
+
+@pytest.mark.parametrize("message, expected", [
+    (_group_message("@hermes_bot when is rent due?", entities=[_mention_entity("@hermes_bot when is rent due?")]), True),
+    (_group_message("sure, saturday", reply_to_bot=True), True),
+    (_group_message("hermes, add milk to the list"), True),
+    (_group_message("", caption="/status"), True),
+    (_group_message(" /status"), True),
+    (_dm_message("hello"), True),
+    (_replying_to(_group_message("yes, saturday"), user_id=222), False),
+    (_group_message("@alice are we buying the fridge?", entities=[_mention_entity("@alice are we buying the fridge?", "@alice")]), False),
+    (_group_message("the fridge arrives on saturday"), False),
+    (_group_message("are we buying the fridge on saturday?"), None),
+    (_group_message("what did @alice say?", entities=[_mention_entity("what did @alice say?", "@alice")]), None),
+    (_replying_to(_group_message("anyone up for dinner?", thread_id=5), user_id=222, message_id=5), None),
+    (_replying_to(_group_message("agreed?")), None),
+    (_replying_to(_group_message("agreed")), None),
+    (_replying_to(_group_message("when does it start?"), user_id=777000, sender_chat=-1009), None),
+    (_replying_to(_group_message("agreed"), user_id=1087968824, sender_chat=-100), None),
+    (_with_media(_group_message(None), "voice"), None),
+    (_with_media(_group_message(None), "audio"), None),
+    (_with_media(_group_message(None, caption="the fridge arrives on saturday"), "voice"), False),
+    (_with_media(_group_message(None), "photo"), False),
+], ids=[
+    "mention", "reply-to-bot", "wake-word", "caption-command", "indented-command", "dm",
+    "reply-to-other-member", "opens-with-other-mention", "chatter",
+    "question", "mentions-other-mid-question", "forum-topic-root", "reply-to-unknown-author",
+    "reply-to-unknown-author-statement", "reply-to-channel-autoforward", "reply-to-anonymous-admin",
+    "voice-note", "audio-file", "captioned-voice-chatter", "photo-without-caption",
+])
+def test_reply_expected_follows_who_the_group_message_addresses(message, expected):
+    adapter = _make_adapter(require_mention=False, mention_patterns=["hermes"])
+
+    assert adapter._build_message_event(message, MessageType.TEXT).reply_expected is expected
+
+
+@pytest.mark.asyncio
+async def test_photo_batch_addressed_to_the_bot_keeps_the_silence_notice():
+    adapter = _make_adapter(require_mention=False)
+    pending = {}
+    for caption in ("just a photo", "/status"):
+        event = adapter._build_message_event(_group_message("", caption=caption), MessageType.PHOTO)
+        adapter._merge_into_pending(pending, "album", event)
+    assert pending["album"].reply_expected is True
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="album", stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, reply_expected=False,
+        source=pending["album"].source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id=None, run_generation=1,
+    )
+    result = {"final_response": "[SILENT]", "failed": False}
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+    turn_ctx.reply_expected = pending["album"].reply_expected
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]

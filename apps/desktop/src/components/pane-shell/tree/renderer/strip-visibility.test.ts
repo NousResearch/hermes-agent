@@ -11,8 +11,8 @@ const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
 
 describe('auto (no stored choice)', () => {
-  it('gives a lone workspace no strip and a stack of two a strip', () => {
-    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
+  it('gives a lone workspace its strip so the tab and + stay on screen', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
     expect(resolveTabStripVisible({ shown: [workspace(), sideChrome()] })).toBe(true)
   })
 
@@ -36,7 +36,7 @@ describe('the stored choice', () => {
 // force-visible rule, so hiding a zone that held only a closeable tile left a
 // surface with no tab, no ✕ and no menu — the "how do I get it back" reports.
 describe('no dead zone', () => {
-  it('keeps the strip for a closeable tile even when the zone says never', () => {
+  it('keeps the strip for a lone closeable tile even when the zone says never', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [tile()] })).toBe(true)
   })
 
@@ -44,11 +44,39 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
   })
 
+  it('keeps the strip for a lone workspace even when the zone says never', () => {
+    // Workspace cannot leave the tree, but Close still empties it to a draft
+    // and + still opens a tab. Chromeless is a dead zone for those handles.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(true)
+  })
+
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, and a stack is reachable by tab cycling —
-    // the invariant protects handles, it does not veto hiding as such.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
+    // A stack is reachable by tab cycling, and hide-only chrome (sessions /
+    // Bots) keeps its panes + ⌘⌥T — the invariant protects handles, it does
+    // not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome(), sideChrome()] })).toBe(false)
+  })
+})
+
+// The regression the rung above caused on its way to holding that invariant.
+// The stranding check ran over the whole stack, so ONE closeable tile anywhere
+// in a zone pinned the strip on at any tab count — and main is where tabs
+// accumulate. Hide tabs (menu row AND ⌘⌥T) silently did nothing there, which
+// reads as "hide tabs is broken", not as a stranding bug.
+describe('hiding a stack that has other handles', () => {
+  it('honors never once a closeable tile has a neighbor to cycle to', () => {
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace(), tile()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [tile(), tile()] })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace(), tile(), tile()] })).toBe(false)
+  })
+
+  it('leaves those same stacks alone on auto', () => {
+    // The stranding rung is resolved before `mode`, so a stack it no longer
+    // claims must still reach the auto rule and keep its strip.
+    expect(resolveTabStripVisible({ shown: [workspace(), tile()] })).toBe(true)
+    expect(resolveTabStripVisible({ shown: [tile(), tile()] })).toBe(true)
   })
 })
 
@@ -59,6 +87,17 @@ describe('a full-page view', () => {
   it('suppresses the strip regardless of what the zone holds or says', () => {
     expect(resolveTabStripVisible({ headerVeto: true, mode: 'always', shown: [tile()] })).toBe(false)
     expect(resolveTabStripVisible({ headerVeto: true, shown: [workspace(), tile()] })).toBe(false)
+  })
+})
+
+// Every launch and client update lands on a lone workspace. Chromeless, that
+// layout had no session switcher, no Close and no "+" (#89350).
+describe('a lone workspace', () => {
+  it('keeps its strip whatever the zone says', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(true)
+    // Standing side chrome never joins the tabbed workflow.
+    expect(resolveTabStripVisible({ shown: [sideChrome()] })).toBe(false)
   })
 })
 
@@ -90,7 +129,8 @@ describe('tabStripVisibleForZone', () => {
   afterEach(() => setTabStripDefault('auto'))
 
   it('reads placement, uncloseable and collapse off the contributions', () => {
-    expect(visible(['workspace'])).toBe(false)
+    expect(visible(['workspace'])).toBe(true)
+    expect(visible(['workspace'], 'never')).toBe(true)
     expect(visible(['tile:a'], 'never')).toBe(true)
     expect(visible(['terminal'], 'never')).toBe(true)
   })
@@ -100,14 +140,15 @@ describe('tabStripVisibleForZone', () => {
     expect(visible(['workspace'])).toBe(true)
 
     setTabStripDefault('never')
+    expect(visible(['workspace'])).toBe(true)
     expect(visible(['workspace', 'terminal'])).toBe(false)
   })
 
   it("lets a zone's own choice beat the app default", () => {
     setTabStripDefault('never')
-    expect(visible(['workspace'], 'always')).toBe(true)
+    expect(visible(['workspace', 'terminal'], 'always')).toBe(true)
 
     setTabStripDefault('always')
-    expect(visible(['workspace'], 'never')).toBe(false)
+    expect(visible(['workspace', 'terminal'], 'never')).toBe(false)
   })
 })

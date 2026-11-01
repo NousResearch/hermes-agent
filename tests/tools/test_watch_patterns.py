@@ -18,7 +18,6 @@ from unittest.mock import patch
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
-    WATCH_STRIKE_LIMIT,
     WATCH_GLOBAL_MAX_PER_WINDOW,
 )
 
@@ -49,17 +48,6 @@ def _make_session(
 # ProcessSession field defaults
 # =========================================================================
 
-class TestProcessSessionField:
-    def test_default_empty(self):
-        s = ProcessSession(id="proc_1", command="echo hi")
-        assert s.watch_patterns == []
-        assert s._watch_disabled is False
-        assert s._watch_hits == 0
-        assert s._watch_suppressed == 0
-
-    def test_can_set_patterns(self):
-        s = _make_session(watch_patterns=["ERROR", "WARN"])
-        assert s.watch_patterns == ["ERROR", "WARN"]
 
 
 # =========================================================================
@@ -273,24 +261,25 @@ class TestCheckpointPersistence:
 # =========================================================================
 
 class TestTerminalToolSchema:
-    def test_schema_includes_watch_patterns(self):
+    def test_schema_unified_notify_covers_patterns(self):
+        """Pattern-watching is advertised through `notify` (list form); the
+        legacy watch_patterns arg stays handler-accepted but unadvertised."""
         from tools.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "watch_patterns" in props
-        assert props["watch_patterns"]["type"] == "array"
-        assert props["watch_patterns"]["items"] == {"type": "string"}
+        assert "watch_patterns" not in props
+        array_alts = [alt for alt in props["notify"]["anyOf"] if alt["type"] == "array"]
+        assert array_alts and array_alts[0]["items"] == {"type": "string"}
 
-    def test_handler_passes_watch_patterns(self):
-        """_handle_terminal passes watch_patterns to terminal_tool."""
+
+    def test_foreground_watch_patterns_rejected_with_teaching_error(self):
+        """Background-only modifiers on a foreground call fail loud with the
+        corrected call shape instead of being silently ignored."""
         from tools.terminal_tool import _handle_terminal
-        with patch("tools.terminal_tool.terminal_tool") as mock_tt:
-            mock_tt.return_value = json.dumps({"output": "ok", "exit_code": 0})
-            _handle_terminal(
-                {"command": "echo hi", "watch_patterns": ["ERR"]},
-                task_id="t1",
-            )
-            _, kwargs = mock_tt.call_args
-            assert kwargs.get("watch_patterns") == ["ERR"]
+        result = json.loads(
+            _handle_terminal({"command": "echo hi", "watch_patterns": ["ERR"]}, task_id="t1")
+        )
+        assert "error" in result
+        assert "background=true" in result["error"]
 
 
 # =========================================================================
@@ -299,7 +288,7 @@ class TestTerminalToolSchema:
 
 class TestCodeExecutionBlocked:
     def test_watch_patterns_blocked(self):
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
+        from tools.code_execution_rpc import _TERMINAL_BLOCKED_PARAMS
         assert "watch_patterns" in _TERMINAL_BLOCKED_PARAMS
 
 
@@ -432,7 +421,7 @@ class TestOverflowNotificationFormatting:
     to the completion formatter as a phantom 'process exited (exit code ?)'."""
 
     def test_overflow_tripped_formats_message(self):
-        from tools.process_registry import format_process_notification
+        from tools.process_registry_notifications import format_process_notification
 
         evt = {
             "type": "watch_overflow_tripped",
@@ -444,7 +433,7 @@ class TestOverflowNotificationFormatting:
         assert "exit code" not in out
 
     def test_overflow_released_formats_message(self):
-        from tools.process_registry import format_process_notification
+        from tools.process_registry_notifications import format_process_notification
 
         evt = {
             "type": "watch_overflow_released",

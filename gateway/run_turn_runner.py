@@ -19,6 +19,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.auxiliary_unavailable import ProviderNotConfiguredError
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
@@ -139,6 +140,7 @@ def _settle_api_runtime_lock(agent, result, captured):
 def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str, bool]:
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
     from agent.error_classifier import FailoverReason
+    from hermes_cli.anon_auth import ANON_CHALLENGE_REQUIRED
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_state_runtime import RuntimeStoreError
@@ -167,13 +169,18 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
         # resolved without credentials ...") is the diagnosis; /login is not.
         return f"⚠️ {exc}", auth_permanent, False
     seen: set[int] = set()
-    host = auth = False
+    host = auth = check = False
     link: BaseException | None = exc
     while link is not None and id(link) not in seen:
         seen.add(id(link))
         host = host or isinstance(link, OSError)
         auth = auth or isinstance(link, AuthError)
+        check = check or getattr(link, "code", None) == ANON_CHALLENGE_REQUIRED
         link = link.__cause__ or link.__context__
+    if check:
+        # The free tier's browser check is pending, and only the Desktop app can finish it: the gateway
+        # opens nothing, and a messaging user has no browser tab to finish it in. Retryable once it clears.
+        return t("gateway.errors.free_tier_check_pending"), FailoverReason.auth.value, True
     if host and not auth:
         # A host-side failure (a CA bundle deleted under a long-lived process, an unreadable file)
         # with no credential verdict: /login cannot fix it, the gateway log can (#140344).
@@ -181,6 +188,22 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
         # since a deleted bundle or unreadable store fails the same way until the host is fixed.
         return t("gateway.errors.generic_failed"), "host_error", False
     return t("gateway.errors.no_credentials"), auth_permanent, False
+
+
+def _free_tier_check_failure(runtime_kwargs: dict, platform: Platform, stream_consumer=None) -> Optional[dict]:
+    """The failed turn for an agent that could not be built because "auto" stood a keyless runtime in for
+    the free tier's pending browser check and no fallback entry could serve. None when the route that
+    failed is not that stand-in (a channel override or ``/model`` replaced it): its own error stands."""
+    from agent.turn_failure_copy import stamp_failure
+    from gateway.run_turn_prepare import free_tier_check_behind
+    check = free_tier_check_behind(runtime_kwargs)
+    if check is None:
+        return None
+    if stream_consumer is not None:
+        stream_consumer.finish()  # nothing will stream: release the consumer task now, not on its timeout
+    text, reason, retryable = _resolution_failure_reply(check, platform)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": str(check)}, reason, retryable)
 
 
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
@@ -1325,9 +1348,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
-        agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
-        )
+        try:
+            agent, reused_cached_agent = self._resolve_turn_agent(
+                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            )
+        except ProviderNotConfiguredError:
+            if (failed := _free_tier_check_failure(runtime_kwargs, ctx.source.platform, stream_consumer)) is None:
+                raise
+            return failed
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice

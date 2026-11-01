@@ -10,7 +10,8 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
-import { setSessions } from '@/store/session'
+import { $pinnedSessionIds } from '@/store/layout'
+import { $messagingSessions, setSessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
 import type { ClientSessionState } from '../../../types'
@@ -96,6 +97,8 @@ async function mountHarness(): Promise<Handle> {
 describe('removeSession × archived view store', () => {
   beforeEach(() => {
     setSessions([])
+    $messagingSessions.set([])
+    $pinnedSessionIds.set([])
     $archivedSessions.set([])
     vi.mocked(deleteSession).mockReset()
   })
@@ -103,6 +106,8 @@ describe('removeSession × archived view store', () => {
   afterEach(() => {
     cleanup()
     setSessions([])
+    $messagingSessions.set([])
+    $pinnedSessionIds.set([])
     $archivedSessions.set([])
   })
 
@@ -138,5 +143,68 @@ describe('removeSession × archived view store', () => {
     await act(() => handle.removeSession('arch-1'))
 
     expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
+  })
+
+  it('keeps a registry row route binding on deleteSession', async () => {
+    $archivedSessions.set([
+      archivedSession({
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'sage'
+      })
+    ])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession('arch-1'))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', {
+      connectionId: 'same-id',
+      profile: 'sage',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'arch-1'
+    })
+  })
+
+  it('deletes only the clicked owner when archived ids collide', async () => {
+    const ownerA = archivedSession({ _desktop_route_binding: 'binding-a', connection_id: 'gateway-a' })
+    const ownerB = archivedSession({ _desktop_route_binding: 'binding-b', connection_id: 'gateway-b' })
+
+    $archivedSessions.set([ownerA, ownerB])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession(ownerB))
+
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'arch-1'
+    })
+    expect($archivedSessions.get()).toEqual([ownerA])
+  })
+
+  it('preserves id-only local state when the same id survives in messaging', async () => {
+    const archived = archivedSession({ _desktop_route_binding: 'binding-b', connection_id: 'gateway-b' })
+
+    const messaging = archivedSession({
+      _desktop_route_binding: 'binding-a',
+      archived: false,
+      connection_id: 'gateway-a',
+      source: 'telegram'
+    })
+
+    $archivedSessions.set([archived])
+    $messagingSessions.set([messaging])
+    $pinnedSessionIds.set(['arch-1'])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    const handle = await mountHarness()
+
+    await act(() => handle.removeSession(archived))
+
+    expect($pinnedSessionIds.get()).toEqual(['arch-1'])
+    expect($messagingSessions.get()).toEqual([messaging])
   })
 })

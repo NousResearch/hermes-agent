@@ -66,22 +66,36 @@ function rowsOf(data: unknown): unknown[] {
   return Array.isArray(data.sessions) ? data.sessions : []
 }
 
-function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
-  for (const row of rows) {
-    if (row && typeof row === 'object') {
-      const session = row as Record<string, unknown>
-      session.connection_id = connectionId
+function tagRowsWithConnection(
+  rows: unknown[],
+  connectionId: string | null,
+  bindRowsToRoute?: (rows: unknown[]) => unknown[]
+): unknown[] {
+  if (connectionId) {
+    for (const row of rows) {
+      if (row && typeof row === 'object') {
+        const session = row as Record<string, unknown>
+        session.connection_id = connectionId
+      }
     }
   }
+
+  return bindRowsToRoute ? bindRowsToRoute(rows) : rows
 }
 
-/** Preserve the registry source that served a session REST response.
+/** Preserve the immutable source that served a session REST response.
  *
  * A registry-pinned request is dispatched directly to that remote host, so its
  * own session rows naturally omit Desktop's synthetic `connection_id`. Without
  * restoring that provenance, a `profile: "default"` row later resumes through
- * the legacy local primary instead of the active registry gateway. */
-export function tagRegistrySessionResponse(path: string, data: unknown, connectionId: string): unknown {
+ * the legacy local primary instead of the active registry gateway. Legacy
+ * routes pass no registry id but still receive an opaque descriptor binding. */
+export function tagSessionResponseOwnership(
+  path: string,
+  data: unknown,
+  connectionId: string | null,
+  bindRowsToRoute?: (rows: unknown[]) => unknown[]
+): unknown {
   if (!data || typeof data !== 'object') {
     return data
   }
@@ -89,7 +103,8 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
   const pathname = path.split('?', 1)[0].replace(/\/+$/, '')
 
   if (pathname === '/api/sessions' || pathname === '/api/profiles/sessions') {
-    tagRowsWithConnection(rowsOf(data), connectionId)
+    const response = data as Record<string, unknown>
+    response.sessions = tagRowsWithConnection(rowsOf(data), connectionId, bindRowsToRoute)
 
     return data
   }
@@ -98,7 +113,12 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
     const response = data as Record<string, unknown>
 
     for (const key of ['recents', 'cron', 'messaging']) {
-      tagRowsWithConnection(rowsOf(response[key]), connectionId)
+      const slice = response[key]
+
+      if (slice && typeof slice === 'object') {
+        const record = slice as Record<string, unknown>
+        record.sessions = tagRowsWithConnection(rowsOf(slice), connectionId, bindRowsToRoute)
+      }
     }
 
     return data
@@ -106,7 +126,12 @@ export function tagRegistrySessionResponse(path: string, data: unknown, connecti
 
   if (/^\/api\/sessions\/[^/]+$/.test(pathname)) {
     const session = data as Record<string, unknown>
-    session.connection_id = connectionId
+
+    if (connectionId) {
+      session.connection_id = connectionId
+    }
+
+    return bindRowsToRoute ? (bindRowsToRoute([session])[0] ?? data) : data
   }
 
   return data
@@ -142,7 +167,12 @@ function profileSessionId(row: unknown): string | null {
   const profile =
     row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' ? row.profile : ''
 
-  return `${profile}\0${id}`
+  const connection =
+    row && typeof row === 'object' && 'connection_id' in row && typeof row.connection_id === 'string'
+      ? row.connection_id
+      : ''
+
+  return `${connection}\0${profile}\0${id}`
 }
 
 export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
@@ -347,7 +377,30 @@ export function hasPinnedRegistrySessionSource(
   return source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)
 }
 
-/** include the local registry source when the primary aggregate is remote */
+/** Resolved descriptor that authorises a pinned aggregate for this owner. */
+export function pinnedRegistrySessionDescriptor(
+  connectionId: string | null | undefined,
+  request: { connectionOwnerProfile?: null | string; profile?: null | string },
+  sources: readonly RegistrySessionSource[]
+): unknown | null {
+  const source = sources.find(candidate => candidate.connectionId === String(connectionId ?? '').trim())
+
+  if (!source) {
+    return null
+  }
+
+  if (source.kind !== 'ssh' && source.kind !== 'local') {
+    return source.backends[0]?.descriptor ?? null
+  }
+
+  const selectedProfile = String(request.connectionOwnerProfile ?? request.profile ?? '').trim() || 'default'
+
+  return (
+    source.backends.find(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)?.descriptor ?? null
+  )
+}
+
+/** include the local registry source when the primary is remote */
 export function shouldIncludeLocalRegistrySessionSource(
   connectionId: string | null | undefined,
   baseCoversLocal = true
@@ -483,7 +536,8 @@ export async function fetchRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
   getJson: GetJsonForDescriptor,
-  reportedTotals?: Map<string, number>
+  reportedTotals?: Map<string, number>,
+  bindRowsToRoute?: (rows: unknown[], descriptor: unknown) => unknown[]
 ): Promise<unknown[]> {
   const rows: unknown[] = []
 
@@ -518,7 +572,9 @@ export async function fetchRegistrySessionRows(
     }
   }
 
-  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string) => {
+  const tag = (sourceRows: unknown[], connectionId: string, profileLabel: null | string, descriptor: unknown) => {
+    const tagged: unknown[] = []
+
     for (const row of sourceRows) {
       if (!row || typeof row !== 'object') {
         continue
@@ -534,8 +590,10 @@ export async function fetchRegistrySessionRows(
 
       session.is_default_profile = false
       session.connection_id = connectionId
-      rows.push(session)
+      tagged.push(session)
     }
+
+    rows.push(...(bindRowsToRoute ? bindRowsToRoute(tagged, descriptor) : tagged))
   }
 
   await Promise.all(
@@ -551,7 +609,7 @@ export async function fetchRegistrySessionRows(
 
             if (read) {
               recordTotals(read.first, source.connectionId, profileLabel || 'default')
-              tag(read.rows, source.connectionId, profileLabel || 'default')
+              tag(read.rows, source.connectionId, profileLabel || 'default', descriptor)
             }
           })
         )
@@ -578,7 +636,7 @@ export async function fetchRegistrySessionRows(
 
       if (read) {
         recordTotals(read.first, source.connectionId, aggregate ? null : 'default')
-        tag(read.rows, source.connectionId, null)
+        tag(read.rows, source.connectionId, null, shared.descriptor)
       }
     })
   )
@@ -587,7 +645,7 @@ export async function fetchRegistrySessionRows(
 }
 
 /** Splice registry-gateway rows into an already-merged unified list: dedupe by
- *  profile + session id (a v1 remote-override splice may already carry a row), keep the
+ *  owner + profile + session id (a v1 remote-override splice may already carry a row), keep the
  *  recency sort, and extend the per-profile totals so truncation flags stay
  *  honest. Mutates and returns `merged`/`profileTotals` the way the v1 splice
  *  does. */
@@ -756,10 +814,11 @@ export async function mergeRegistrySessionRows(
   getJson: GetJsonForDescriptor,
   merged: unknown[],
   profileTotals: Record<string, number>,
-  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {}
+  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {},
+  bindRowsToRoute?: (rows: unknown[], descriptor: unknown) => unknown[]
 ): Promise<number> {
   const reportedTotals = new Map<string, number>()
-  const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals)
+  const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals, bindRowsToRoute)
   const before = merged.length
   spliceRegistrySessionRows(merged, registryRows, profileTotals)
 

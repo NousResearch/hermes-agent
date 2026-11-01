@@ -23,7 +23,7 @@
 
 import { atom } from 'nanostores'
 
-import { setSessionPinnedRemote } from '@/hermes'
+import { type ProfileScope, setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -31,7 +31,9 @@ import {
   $cronSessions,
   $messagingSessions,
   $sessions,
-  sessionMatchesStoredId,
+  durableIdFromPinId,
+  sessionMatchesPinId,
+  sessionOwnerPinId,
   sessionPinId,
   setCronSessions,
   setMessagingSessions,
@@ -39,6 +41,8 @@ import {
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
+
+import { sessionMutationScopeFromRow } from './session-request-router'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -95,8 +99,10 @@ function publishUnconfirmed(): void {
   $unconfirmedPinWrites.set(new Set(unconfirmed.keys()))
 }
 
-function profileFor(pinId: string): null | string | undefined {
-  return loadedRowFor(pinId)?.profile
+function ownerFor(pinId: string): ProfileScope {
+  const row = loadedRowFor(pinId)
+
+  return sessionMutationScopeFromRow(row) ?? row?.profile
 }
 
 function loadedSessionRows(): SessionInfo[] {
@@ -110,7 +116,7 @@ function loadedSessionRows(): SessionInfo[] {
  * profile and the next page re-adopts the pin.
  */
 function loadedRowFor(pinId: string): SessionInfo | undefined {
-  const rows = loadedSessionRows().filter(row => sessionMatchesStoredId(row, pinId))
+  const rows = loadedSessionRows().filter(row => sessionMatchesPinId(row, pinId))
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 
   return rows.find(row => normalizeProfileKey(row.profile) === gateway) ?? rows[0]
@@ -131,7 +137,7 @@ function rowsByPinId(rows: readonly SessionInfo[]): Map<string, SessionInfo> {
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 
   for (const row of rows) {
-    const pinId = sessionPinId(row)
+    const pinId = sessionOwnerPinId(row)
     const existing = byId.get(pinId)
 
     if (!existing) {
@@ -172,7 +178,7 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
       if (
         typeof row.pinned !== 'boolean' ||
         row.pinned === pinned ||
-        !sessionMatchesStoredId(row, pinId) ||
+        !sessionMatchesPinId(row, pinId) ||
         (owner != null && normalizeProfileKey(row.profile) !== owner)
       ) {
         return row
@@ -193,11 +199,11 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
 }
 
 /** PATCH the flag, guarding reads against pages that predate the write. */
-function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
+function writePin(id: string, pinned: boolean, owner?: ProfileScope): Promise<void> {
   unconfirmed.set(id, { at: Date.now(), value: pinned })
-  applyRowPinned(id, pinned, profile)
+  applyRowPinned(id, pinned, owner && typeof owner === 'object' ? owner.profile : owner)
 
-  return setSessionPinnedRemote(id, pinned, profile).then(
+  return setSessionPinnedRemote(durableIdFromPinId(id), pinned, owner).then(
     () => {
       // Deliberately NOT cleared here: a list request issued before this PATCH
       // can still land after the ack carrying the pre-write value. The guard
@@ -238,15 +244,24 @@ function pullRemotePins(): void {
 
     // Pins are keyed on the durable lineage root so they survive compression
     // tip rotation; the row may surface under either identity.
-    const pinId = sessionPinId(row)
-    const heldLocally = local.has(pinId) || local.has(row.id)
+    const pinId = sessionOwnerPinId(row)
+    const durablePinId = sessionPinId(row)
+
+    const heldLocally = local.has(pinId) || local.has(durablePinId) || local.has(row.id)
 
     // A write of ours this page may predate. Confirmed (page agrees) → release
     // the guard, the server has caught up. Contradicted but still inside the
     // cooldown → the page was almost certainly issued before our PATCH, so our
     // write is newer: skip the row. Contradicted past the cooldown → no page
     // ever confirmed us, so stop fencing and let the server win.
-    const guardKey = unconfirmed.has(pinId) ? pinId : unconfirmed.has(row.id) ? row.id : null
+    const guardKey = unconfirmed.has(pinId)
+      ? pinId
+      : unconfirmed.has(durablePinId)
+        ? durablePinId
+        : unconfirmed.has(row.id)
+          ? row.id
+          : null
+
     const guard = guardKey ? unconfirmed.get(guardKey) : undefined
 
     if (guard && guardKey) {
@@ -269,7 +284,7 @@ function pullRemotePins(): void {
 
     // Local intent still waiting on its PATCH (row unresolved when the push
     // pass ran) is also newer than the page — never revert it.
-    if (pending.has(pinId) || pending.has(row.id)) {
+    if (pending.has(pinId) || pending.has(durablePinId) || pending.has(row.id)) {
       continue
     }
 
@@ -283,7 +298,7 @@ function pullRemotePins(): void {
       // reconcile runs, or it re-PATCHes pinned=false the server already has.
       mirrored.delete(pinId)
       mirrored.delete(row.id)
-      unpinSession(local.has(pinId) ? pinId : row.id)
+      unpinSession(local.has(pinId) ? pinId : local.has(durablePinId) ? durablePinId : row.id)
     }
   }
 }
@@ -337,7 +352,7 @@ function reconcileInner(): void {
       // Removal owns the durable write; a separate unpin would race its
       // revision snapshot. Archive clears the pin in the same PATCH.
       if (!isSessionRemovalPending(id)) {
-        void writePin(id, false, profileFor(id)).catch(() => {})
+        void writePin(id, false, ownerFor(id)).catch(() => {})
       }
     }
   }
@@ -360,7 +375,7 @@ function reconcileInner(): void {
 
     pending.delete(id)
     mirrored.add(id)
-    void writePin(id, true, row.profile).catch(() => {
+    void writePin(id, true, sessionMutationScopeFromRow(row) ?? row.profile).catch(() => {
       // Let a later reconcile retry the mirror.
       mirrored.delete(id)
       pending.add(id)

@@ -46,7 +46,7 @@ import { $activeConnectionId } from './connections'
 import { $fleetRoster } from './fleet-roster'
 import { $profiles, normalizeProfileKey } from './profile'
 import { $cronSessions, $messagingSessions, $sessions, sessionMatchesStoredId, sessionPinId } from './session'
-import { $sessionDotStateById } from './session-dot-state'
+import { $sessionDotStateById, sessionDotStateForRow } from './session-dot-state'
 import { $sessionStates, runtimeSessionOwner } from './session-states'
 import { $unreadFinishedMarkers } from './session-unread'
 
@@ -156,7 +156,7 @@ export const $profileDotStateByScope = computed(
         continue
       }
 
-      const dot = dots[row.id]
+      const dot = sessionDotStateForRow(dots, row)
 
       if (dot === 'needs-input' || dot === 'working' || dot === 'unread') {
         claimRow(rowScopeOf(row), dot)

@@ -56,7 +56,9 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
   options: {
+    archiveSession?: ReturnType<typeof vi.fn>
     branchLoadedSession?: ReturnType<typeof vi.fn>
+    removeSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
@@ -64,11 +66,11 @@ function renderTile(
 ) {
   renderHook(() =>
     useSessionTileDelegate({
-      archiveSession: vi.fn(async () => undefined),
+      archiveSession: (options.archiveSession ?? vi.fn(async () => undefined)) as never,
       branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
-      removeSession: vi.fn(async () => undefined),
+      removeSession: (options.removeSession ?? vi.fn(async () => undefined)) as never,
       requestGateway: requestGateway as never,
       runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
       sessionStateByRuntimeIdRef: (options.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
@@ -87,6 +89,38 @@ describe('useSessionTileDelegate resumeTile', () => {
   afterEach(() => {
     clearSingleFlightSessionResumeState()
     setSessions([])
+    $sessionTiles.set([])
+  })
+
+  it.each([
+    ['archive', 'archiveSession'],
+    ['delete', 'deleteSession']
+  ] as const)('passes the clicked tile owner row to %s when stored ids collide', async (_, delegateAction) => {
+    const ownerA = row({ connection_id: 'source-a', id: 'shared', profile: 'worker' })
+    const ownerB = row({ connection_id: 'source-b', id: 'shared', profile: 'backend-worker' })
+    const archiveSession = vi.fn(async () => undefined)
+    const removeSession = vi.fn(async () => undefined)
+
+    setSessions([ownerA, ownerB])
+    $sessionTiles.set([
+      {
+        ownerRoute: {
+          connectionId: 'source-b',
+          profile: 'desktop-worker',
+          targetProfile: 'backend-worker'
+        },
+        storedSessionId: 'shared'
+      }
+    ] as never)
+
+    renderTile(vi.fn(), { archiveSession, removeSession })
+    await sessionTileDelegate()![delegateAction]('shared')
+
+    const expected = delegateAction === 'archiveSession' ? archiveSession : removeSession
+    const untouched = delegateAction === 'archiveSession' ? removeSession : archiveSession
+
+    expect(expected).toHaveBeenCalledWith(ownerB)
+    expect(untouched).not.toHaveBeenCalled()
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {

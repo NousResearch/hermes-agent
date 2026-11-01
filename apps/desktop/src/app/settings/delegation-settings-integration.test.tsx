@@ -21,12 +21,26 @@ vi.mock('@/hermes', async () => ({
   getProfiles: async () => ({ profiles: [] })
 }))
 vi.mock('@/store/connections', () => ({ $activeConnectionId: atom<string | null>('connection-A') }))
-vi.mock('@/store/settings-scope', () => ({
-  $settingsRequestProfile: atom<string | undefined>('B'),
-  $settingsScopeEditsNonDefault: atom(false),
-  $settingsScopeOverride: atom<null | string>('B'),
-  $settingsScopeProfile: atom('B')
-}))
+vi.mock('@/store/settings-scope', async () => {
+  const { atom, computed } = await import('nanostores')
+  const { $activeConnectionId } = await import('@/store/connections')
+
+  const requestProfile = atom<string | undefined>('B')
+
+  return {
+    // The merged Settings form pins drafts, requests and cache rows to this
+    // owner. Derive it from the same two selections the test drives, matching
+    // the real store's foreground-owner shape.
+    $settingsOwner: computed([requestProfile, $activeConnectionId], (profile, connectionId) => ({
+      connectionId: connectionId ?? undefined,
+      profile: profile ?? 'default'
+    })),
+    $settingsRequestProfile: requestProfile,
+    $settingsScopeEditsNonDefault: atom(false),
+    $settingsScopeOverride: atom<null | string>('B'),
+    $settingsScopeProfile: atom('B')
+  }
+})
 vi.mock('./profile-scope', () => ({ SettingsProfileScope: () => null }))
 vi.mock('../hooks/use-on-profile-switch', () => ({ useOnProfileSwitch: () => {} }))
 vi.mock('@/store/projects', () => ({

@@ -3,13 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $agentPlugins,
+  $agentPluginsErrorOwner,
+  $agentPluginsOwner,
   $agentPluginsProfile,
   type AgentPluginRow,
   inspectAgentPlugin,
   installAgentPlugin,
   isDesktopRelevantPlugin,
+  loadAgentPlugins,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  toggleAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -18,6 +22,8 @@ const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
 afterEach(() => {
   vi.useRealTimers()
   $agentPluginsProfile.set(undefined)
+  $agentPluginsOwner.set(undefined)
+  $agentPluginsErrorOwner.set(undefined)
 })
 
 describe('installAgentPlugin', () => {
@@ -221,6 +227,35 @@ describe('normalizeAgentPluginRow', () => {
 
     expect(previous.servers).toHaveLength(1)
     expect(next.servers).toEqual([])
+  })
+})
+
+describe('loadAgentPlugins owner settlements', () => {
+  it('attributes an error to its exact owner and clears it on a later successful owner load', async () => {
+    await loadAgentPlugins(vi.fn(async () => Promise.reject(new Error('gateway B failed'))) as never, null, 'gateway-b')
+    expect($agentPluginsErrorOwner.get()).toBe('gateway-b')
+
+    await loadAgentPlugins(vi.fn(async () => ({ plugins: [] })) as never, null, 'gateway-a')
+    expect($agentPluginsOwner.get()).toBe('gateway-a')
+    expect($agentPluginsErrorOwner.get()).toBeUndefined()
+  })
+
+  it('does not let a same-profile toggle repaint a replacement gateway owner', async () => {
+    $agentPlugins.set([row({ key: 'advanced-delegation', status: 'disabled', source: 'user' })])
+    $agentPluginsProfile.set('default')
+    $agentPluginsOwner.set('gateway-b')
+
+    const request = vi.fn(async () => ({
+      ok: true,
+      plugin: row({ key: 'advanced-delegation', status: 'enabled', source: 'user' })
+    }))
+
+    expect(await toggleAgentPlugin(request as never, 'advanced-delegation', true, 'failed', 'default', 'gateway-a')).toBe(
+      true
+    )
+    expect($agentPlugins.get()[0].status).toBe('disabled')
+    expect($agentPluginsOwner.get()).toBe('gateway-b')
+    expect(request).toHaveBeenCalledTimes(1)
   })
 })
 

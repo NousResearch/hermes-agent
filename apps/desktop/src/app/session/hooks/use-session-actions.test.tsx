@@ -101,10 +101,14 @@ import {
   dropSessionState,
   knownOwnerForSession,
   publishSessionState,
+  recordSessionEventScope,
   requestForOwnedSession,
   sessionTileOwnerRoute
 } from '@/store/session-states'
-import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import {
+  $sessionSeenCounts,
+  $unreadFinishedMarkers
+} from '@/store/session-unread'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
@@ -501,6 +505,129 @@ describe('connection-qualified session deletion', () => {
       session_id: 'runtime-shared'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it.each([
+    ['delete', (actions: HarnessHandle) => actions.removeSession('shared-session')],
+    ['archive', (actions: HarnessHandle) => actions.archiveSession('shared-session')]
+  ] as const)('routes a bare current-session %s to its runtime owner when stored ids collide', async (_, mutate) => {
+    const ownerA = storedSession({
+      _lineage_root_id: 'root-a',
+      connection_id: 'source-a',
+      id: 'shared-session',
+      profile: 'worker'
+    })
+
+    const ownerB = storedSession({
+      _lineage_root_id: 'root-b',
+      connection_id: 'source-b',
+      id: 'shared-session',
+      profile: 'worker'
+    })
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([ownerA, ownerB])
+    $sessionSeenCounts.set({ worker: { 'root-a': 2, 'root-b': 3 } })
+    $unreadFinishedMarkers.set({ worker: ['root-a', 'root-b'] })
+    recordSessionEventScope({ connectionId: 'source-b', profile: 'worker', session_id: 'runtime-shared' })
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-shared"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await mutate(actions!)
+    })
+
+    const expectedOwner = { connectionId: 'source-b', profile: 'worker' }
+
+    if (_ === 'delete') {
+      expect(deleteSession).toHaveBeenCalledWith('shared-session', expectedOwner)
+      expect(setSessionArchived).not.toHaveBeenCalled()
+    } else {
+      expect(setSessionArchived).toHaveBeenCalledWith('shared-session', true, expectedOwner)
+      expect(deleteSession).not.toHaveBeenCalled()
+    }
+
+    expect($sessions.get()).toEqual([ownerA])
+    expect($sessionSeenCounts.get().worker?.['root-a']).toBe(2)
+    expect($sessionSeenCounts.get().worker?.['root-b']).toBeUndefined()
+    expect($unreadFinishedMarkers.get().worker).toContain('root-a')
+    expect($unreadFinishedMarkers.get().worker).not.toContain('root-b')
+    clearAllSessionStates()
+  })
+
+  it('fails a bare duplicate-id delete closed when the current runtime has no proven owner', async () => {
+    const rows = [
+      storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' }),
+      storedSession({ connection_id: 'source-b', id: 'shared-session', profile: 'worker' })
+    ]
+
+    let actions: HarnessHandle | null = null
+
+    setSessions(rows)
+    render(
+      <Harness
+        activeSessionId="runtime-unknown"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions!.removeSession('shared-session')
+    })
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual(rows)
+  })
+
+  it.each([
+    ['delete', (actions: HarnessHandle) => actions.removeSession('shared-session')],
+    ['archive', (actions: HarnessHandle) => actions.archiveSession('shared-session')]
+  ] as const)('fails a bare duplicate-id %s closed across distinct legacy route bindings', async (_, mutate) => {
+    const rows = [
+      storedSession({ _desktop_route_binding: 'binding-a', id: 'shared-session', profile: 'worker' }),
+      storedSession({ _desktop_route_binding: 'binding-b', id: 'shared-session', profile: 'worker' })
+    ]
+
+    let actions: HarnessHandle | null = null
+
+    setSessions(rows)
+    render(
+      <Harness
+        activeSessionId="runtime-unknown"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={vi.fn().mockResolvedValue({})}
+        selectedStoredSessionId="shared-session"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await mutate(actions!)
+    })
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect(setSessionArchived).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual(rows)
   })
 
   it('tears down the selected session from synchronous refs when render state is stale', async () => {
@@ -6746,19 +6873,18 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     return handle!
   }
 
-  it('DELETEs a stamped messaging session against its owning profile', async () => {
+  it('DELETEs a stamped messaging session while its bound row remains available for unpin', async () => {
     mockDeleteSession.mockResolvedValue({ ok: true })
-    setMessagingSessions([
-      storedSession({ id: 'tg-winefox-1', profile: 'winefox', source: 'telegram', title: 'TG chat' })
-    ])
-
+    setMessagingSessions([storedSession({ _desktop_route_binding: 'binding-a', connection_id: 'source-a', id: 'tg-winefox-1', profile: 'winefox', source: 'telegram', title: 'TG chat' })])
+    $pinnedSessionIds.set(['tg-winefox-1'])
+    let rowAtUnpin: SessionInfo | undefined; const unlisten = $pinnedSessionIds.listen(ids => { if (!ids.includes('tg-winefox-1')) {rowAtUnpin = $messagingSessions.get().find(session => session.id === 'tg-winefox-1')} })
     const handle = await readyActions()
     await act(async () => {
       await handle.removeSession('tg-winefox-1')
     })
-
-    expect(mockDeleteSession).toHaveBeenCalledWith('tg-winefox-1', 'winefox')
-    expect($messagingSessions.get()).toEqual([])
+    unlisten()
+    expect(mockDeleteSession).toHaveBeenCalledWith('tg-winefox-1', { connectionId: 'source-a', profile: 'winefox', sessionRouteBinding: 'binding-a', sessionRouteId: 'tg-winefox-1' })
+    expect(rowAtUnpin).toMatchObject({ _desktop_route_binding: 'binding-a', connection_id: 'source-a' })
     expect($sessions.get()).toEqual([])
   })
 
@@ -6821,17 +6947,18 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($sessionMutationsInFlight.get().has('tg-roll')).toBe(false)
   })
 
-  it('archives a messaging row against its owning profile', async () => {
+  it('archives a messaging row while its bound row remains available for unpin', async () => {
     mockSetSessionArchived.mockResolvedValue({ ok: true })
-    setMessagingSessions([storedSession({ id: 'tg-arch', profile: 'winefox', source: 'telegram' })])
-
+    setMessagingSessions([storedSession({ _desktop_route_binding: 'binding-a', connection_id: 'source-a', id: 'tg-arch', profile: 'winefox', source: 'telegram' })])
+    $pinnedSessionIds.set(['tg-arch'])
+    let rowAtUnpin: SessionInfo | undefined; const unlisten = $pinnedSessionIds.listen(ids => { if (!ids.includes('tg-arch')) {rowAtUnpin = $messagingSessions.get().find(session => session.id === 'tg-arch')} })
     const handle = await readyActions()
     await act(async () => {
       await handle.archiveSession('tg-arch')
     })
-
-    expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox')
-    expect($messagingSessions.get()).toEqual([])
+    unlisten()
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, { connectionId: 'source-a', profile: 'winefox', sessionRouteBinding: 'binding-a', sessionRouteId: 'tg-arch' })
+    expect(rowAtUnpin).toMatchObject({ _desktop_route_binding: 'binding-a', connection_id: 'source-a' })
   })
 
   it('restores a failed archive to the messaging slice', async () => {

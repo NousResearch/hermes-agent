@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
-const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+const patch = vi.fn<(id: string, pinned: boolean, profile?: ProfileScope) => Promise<{ ok: boolean }>>(() =>
   Promise.resolve({ ok: true })
 )
 
@@ -10,12 +11,19 @@ vi.mock('@/hermes', () => ({
   // The layout store reaches the profile store, which sets the request profile
   // at import time; this suite only cares about the pin call.
   setApiRequestProfile: () => {},
-  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
+  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: ProfileScope) => patch(id, pinned, profile)
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
+import {
+  $cronSessions,
+  $messagingSessions,
+  $sessions,
+  applySessionTitle,
+  sessionOwnerPinId,
+  touchSessionActivity
+} from '@/store/session'
 
 import { $unconfirmedPinWrites, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
@@ -57,6 +65,79 @@ describe('watchSessionPins', () => {
     await flush()
 
     expect(patch).toHaveBeenCalledWith('a', true, 'work')
+  })
+
+  it('keeps a registry row route binding on the pin PATCH', async () => {
+    $sessions.set([
+      row('bound', {
+        _desktop_route_binding: 'binding-a',
+        _lineage_root_id: 'root',
+        connection_id: 'same-id',
+        profile: 'work'
+      })
+    ])
+    $pinnedSessionIds.set(['root'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('root', true, {
+      connectionId: 'same-id',
+      profile: 'work',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'bound'
+    })
+  })
+
+  it('pins same-id rows through the clicked gateway owner independently', async () => {
+    const ownerA = row('same', {
+      _desktop_route_binding: 'binding-a',
+      connection_id: 'gateway-a',
+      pinned: false,
+      profile: 'default'
+    })
+
+    const ownerB = row('same', {
+      _desktop_route_binding: 'binding-b',
+      connection_id: 'gateway-b',
+      pinned: false,
+      profile: 'default'
+    })
+
+    $sessions.set([ownerA, ownerB])
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerB)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', true, {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'same'
+    })
+    expect($sessions.get().map(session => session.pinned)).toEqual([false, true])
+
+    patch.mockClear()
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerB), sessionOwnerPinId(ownerA)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', true, {
+      connectionId: 'gateway-a',
+      profile: 'default',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'same'
+    })
+
+    patch.mockClear()
+    $pinnedSessionIds.set([sessionOwnerPinId(ownerA)])
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith('same', false, {
+      connectionId: 'gateway-b',
+      profile: 'default',
+      sessionRouteBinding: 'binding-b',
+      sessionRouteId: 'same'
+    })
   })
 
   it('mirrors an unpin as pinned=false', async () => {

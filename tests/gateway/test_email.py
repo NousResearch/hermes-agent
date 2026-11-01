@@ -1321,7 +1321,7 @@ class TestSenderAuthentication(unittest.TestCase):
             msg["Authentication-Results"] = ar
         return msg
 
-    def _verify(self, from_addr, auth_results=None, authserv_id="mx.ourserver.com"):
+    def _verify(self, from_addr, auth_results=None, authserv_id="mx.ourserver.com", own_domain=""):
         """Rows stamp the pinned receiver's id, so a verdict is judged on its content, not on a pin mismatch."""
         from plugins.platforms.email.adapter import (
             _verify_sender_authentication,
@@ -1329,7 +1329,7 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         msg = self._msg(from_addr, auth_results)
         addr = _extract_email_address(from_addr)
-        return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
+        return _verify_sender_authentication(msg, addr, authserv_id=authserv_id, own_domain=own_domain)
 
     def test_auth_results_verdicts(self):
         ok, reason = self._verify(
@@ -1403,6 +1403,50 @@ class TestSenderAuthentication(unittest.TestCase):
             ["mx.ourserver.com; spf=pass smtp.mailfrom=bounce@evil.com"],
         )
         self.assertFalse(ok, reason)
+
+    def test_same_domain_auth_pass_authenticates(self):
+        """#140747: a same-domain user submitting over authenticated SMTP to the agent's own
+        MTA gets only auth=pass — DKIM is signed, not verified, in that single pass and
+        SPF/DMARC do not apply to a submission. The pinned MTA vouches for the submission."""
+        rows = (
+            ("tom@example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@example.com"),
+            # Rspamd-style comment carries no clause head
+            ("tom@example.com", "mail.example.com; auth=pass (password) smtp.mailfrom=tom@example.com"),
+            # subdomain-aligned From/envelope vouch like the relaxed DMARC alignment elsewhere
+            ("tom@mail.example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@mail.example.com"),
+            ("tom@example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@mail.example.com"),
+        )
+        for from_addr, ar in rows:
+            ok, reason = self._verify(from_addr, [ar], authserv_id="mail.example.com", own_domain="example.com")
+            self.assertTrue(ok, (ar, reason))
+        # auth=pass counts only as a clause head, never from a quoted value or a comment.
+        for ar in ('mail.example.com; spf=fail smtp.mailfrom="auth=pass smtp.mailfrom=tom@example.com"@evil.test',
+                   "mail.example.com; spf=fail (auth=pass) smtp.mailfrom=tom@example.com"):
+            ok, reason = self._verify("tom@example.com", [ar], authserv_id="mail.example.com", own_domain="example.com")
+            self.assertFalse(ok, ar)
+
+    def test_auth_pass_stays_fail_closed_outside_the_own_domain(self):
+        """auth=pass never replaces DKIM/DMARC alignment for anything but the agent's own
+        domain, and only a single unambiguous verdict with an aligned envelope counts."""
+        rows = (
+            # cross-domain From: the strict dmarc/spf/dkim path still applies
+            ("tom@other.test", "mail.example.com; auth=pass smtp.mailfrom=tom@other.test", "example.com"),
+            # envelope does not align with From
+            ("tom@example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@evil.test", "example.com"),
+            # no envelope property to align → nothing vouches the MAIL FROM
+            ("tom@example.com", "mail.example.com; auth=pass", "example.com"),
+            # one SMTP transaction has one auth verdict: a second clause means the signal is untrusted
+            ("tom@example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@example.com; "
+                                "auth=fail smtp.mailfrom=tom@example.com", "example.com"),
+            # auth=fail is not a pass
+            ("tom@example.com", "mail.example.com; auth=fail smtp.mailfrom=tom@example.com", "example.com"),
+            # no own domain known (unparseable agent address): fail closed
+            ("tom@example.com", "mail.example.com; auth=pass smtp.mailfrom=tom@example.com", ""),
+        )
+        for from_addr, ar, own_domain in rows:
+            with self.subTest(ar=ar):
+                ok, _ = self._verify(from_addr, [ar], authserv_id="mail.example.com", own_domain=own_domain)
+                self.assertFalse(ok)
 
 
     def test_only_topmost_exact_authserv_id_is_trusted(self):

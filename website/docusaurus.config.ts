@@ -44,6 +44,18 @@ const config: Config = {
   plugins: [
     // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
     './plugins/plugin-catalog-pages',
+    // "Ask AI" in the navbar, answered from these docs by each reader's own AI
+    // (Codex, Claude Code, LM Studio, Ollama…). Runs next to Algolia DocSearch.
+    [
+      '@leuria/docusaurus',
+      {
+        suggestions: [
+          'How do I install Hermes?',
+          'How do I connect Hermes to Telegram?',
+          'How do I use MCP servers with Hermes?',
+        ],
+      },
+    ],
     [
       '@docusaurus/plugin-client-redirects',
       {

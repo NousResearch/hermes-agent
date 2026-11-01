@@ -619,19 +619,70 @@ def _shlex_tokens(line: str) -> list[str]:
 
 def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterator[list[str]]:
     """Yield non-empty runs of *tokens* between control-operator tokens; with *keep_controls* each
-    control token is also yielded as its own segment so the line can be rebuilt in order."""
+    control token is also yielded as its own segment so the line can be rebuilt in order.
+
+    ``<(``/``>(`` process substitutions execute their interior but do not end the outer command: the
+    interior is yielded as segment(s) of its own (it runs, so it is scanned) while the tokens after
+    the closing ``)`` stay operands of the outer run — ``diff <(echo a) /dev/null`` must not present
+    ``/dev/null`` as the next command's executable (#145145). Nesting and arithmetic expansions are
+    balanced by counting ``(``/``)`` characters. Rebuild mode (``keep_controls=True``) keeps the
+    original token-level behavior so the line text is preserved exactly."""
+    out: list[list[str]] = []
     segment: list[str] = []
+    stack: list[list[str]] = []  # interior token runs of open process substitutions, innermost last
+    depths: list[int] = []  # unmatched "(" count per open substitution
+    held_redir = False  # a bare "<"/">" seen: its segment flush is deferred one token (may open a substitution)
+
+    def _flush() -> None:
+        nonlocal segment
+        if stack:
+            if stack[-1]:
+                out.append(stack[-1])
+                stack[-1] = []
+        elif segment:
+            out.append(segment)
+            segment = []
+
     for token in tokens:
-        if token and set(token) <= _CONTROL_CHARS:
-            if segment:
-                yield segment
-                segment = []
-            if keep_controls:
-                yield [token]
+        is_control = bool(token) and set(token) <= _CONTROL_CHARS
+        if not keep_controls and token == "(" and held_redir:
+            stack.append([])  # the held "<"/">" opened a substitution, not a redirect
+            depths.append(1)
+            held_redir = False
             continue
-        segment.append(token)
-    if segment:
-        yield segment
+        if not keep_controls and token in ("<", ">"):
+            held_redir = True  # bare "<"/">": redirect or the start of "<("/">(" — decide next token
+            continue
+        held_redir = False
+        if stack and is_control and token.startswith(")"):
+            closes = len(token)
+            while closes > 0 and stack:
+                depths[-1] -= closes
+                if depths[-1] <= 0:
+                    closes = -depths[-1]  # leftover closers apply to the next enclosing group
+                    if stack[-1]:
+                        out.append(stack[-1])
+                    stack.pop()
+                    depths.pop()
+                else:
+                    closes = 0
+            continue
+        if stack and is_control and token.startswith("("):
+            depths[-1] += len(token)  # nested substitution or arithmetic expansion
+            continue
+        if is_control:
+            _flush()
+            if keep_controls:
+                out.append([token])
+            continue
+        (stack[-1] if stack else segment).append(token)
+    _flush()
+    while stack:  # unterminated substitution: its interior still executes — scan it
+        if stack[-1]:
+            out.append(stack[-1])
+        stack.pop()
+        depths.pop()
+    yield from out
 
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:

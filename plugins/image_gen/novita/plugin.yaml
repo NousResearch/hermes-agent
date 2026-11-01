@@ -1,0 +1,7 @@
+name: novita
+version: 1.0.0
+description: "NovitaAI image generation backend (Z-Image Turbo, Qwen-Image) via the async task-submit/task-result API."
+author: NousResearch
+kind: backend
+requires_env:
+  - NOVITA_API_KEY

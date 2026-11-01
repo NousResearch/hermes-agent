@@ -12,6 +12,11 @@ from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
 
+# Providers that have already had an impossible cache counter reported once;
+# the clamp below is per-call, the log line is per-provider-per-process so a
+# chatty provider cannot flood the gateway log.
+_CACHE_OVERFLOW_WARNED: set = set()
+
 _ZERO = Decimal(0)
 _ONE_MILLION = Decimal(1000000)
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
@@ -649,6 +654,33 @@ def normalize_usage(
     input_tokens = prompt_total if shape is _ANTHROPIC_USAGE_SHAPE else max(
         0, prompt_total - cache_read_tokens - cache_write_tokens
     )
+    # Cache reads are a SUBSET of the prompt by contract (OpenAI's prompt_tokens
+    # includes cached tokens, and Codex's input_tokens does too), so a cache read
+    # larger than the prompt is impossible. Some providers report something else:
+    # ollama-cloud emits a monotonically growing, 128-quantized CUMULATIVE
+    # counter in prompt_tokens_details.cached_tokens (observed at ~147x the
+    # prompt), which drove input_tokens to 0 and pushed a cache read larger than
+    # the whole context into cost math and cache analytics. Clamp the cache read
+    # to the prompt; cache_writes are left alone, matching the existing
+    # inconsistent-counter behaviour.
+    # NOTE: a guard, not a correction — a cumulative counter cannot be
+    # de-cumulated without per-call state, so treat the clamped figure as an
+    # upper bound. Anthropic is exempt: it reports uncached input in
+    # input_tokens, so a cache read larger than it is legitimate there.
+    if shape is not _ANTHROPIC_USAGE_SHAPE and cache_read_tokens > prompt_total:
+        reported_read = cache_read_tokens
+        cache_read_tokens = max(prompt_total, 0)
+        input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
+        if provider_name not in _CACHE_OVERFLOW_WARNED:
+            _CACHE_OVERFLOW_WARNED.add(provider_name)
+            logger.warning(
+                "cache_usage_overflow provider=%s prompt_total=%s cache_read=%s "
+                "cache_write=%s — reported cache read exceeds the prompt; clamped "
+                "to the prompt total (further occurrences suppressed for this "
+                "provider)",
+                provider_name or "<unknown>", prompt_total, reported_read,
+                cache_write_tokens,
+            )
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.

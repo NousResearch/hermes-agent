@@ -1,14 +1,14 @@
 name: writing-guard
 repo: https://github.com/MadeByBrain/hermes-extensions
-sha: 37b338dffd2767239e0adfe5740b6f50b77d9dcd
+sha: c18ef190635e386a627ba921c816dceeb28c2de8
 subdir: plugins/writing-guard
 description: "Style check for every Hermes answer in German and English: finds em and en dashes outside code, links and quotes (optionally replaces them by rule: ranges and list bullets become hyphens, dashes between words a comma), reports stock AI phrases (German and English) and mixed or switched forms of address (du/Sie) in German. Reports by default with one line appended to the answer; rule based, no model calls. Disclosure: no network calls and no model calls. A transform_llm_output hook reads the final answer of each turn; in report mode it appends one report line when there is a finding, in fix mode it also replaces dashes, with footer: false it never changes the answer; the returned text is what Hermes stores and shows. Stores per chat session id only the last form of address (du or sie) and a timestamp in HERMES_HOME/plugin-data/writing-guard/sessions.json (30 days, at most 2000 sessions); the last report with matched phrases stays in process memory only. Reads only its own plugin settings. Off on cron, subagent, kanban, batch and webhook by default. Registers the tool writing_guard_check (checks a draft, returns JSON), the slash command /writing-guard (settings, last report, check a text) and a skill that adds one line to the skills index of every session while the plugin is enabled."
 maintainer: MadeByBrain
 tier: community
 category: tools
 docs_url: https://github.com/MadeByBrain/hermes-extensions/tree/main/plugins/writing-guard#readme
-version: "1.0.0"
-image: https://raw.githubusercontent.com/MadeByBrain/hermes-extensions/37b338dffd2767239e0adfe5740b6f50b77d9dcd/plugins/writing-guard/docs/banner.png
+version: "1.0.1"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-extensions/c18ef190635e386a627ba921c816dceeb28c2de8/plugins/writing-guard/docs/banner.png
 requires_hermes: ">=0.22.2"
 platforms: []
 capabilities:

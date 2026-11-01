@@ -35,9 +35,25 @@ def _parse_wake_gate(script_output: str) -> bool:
     return not isinstance(gate, dict) or gate.get("wakeAgent", True) is not False
 
 
+def _data_fence(body: str) -> str:
+    """A fence run that cannot be closed from inside ``body``.
+
+    One backtick longer than the longest run in ``body`` (minimum 3) — CommonMark
+    closes a fence only at one at least as long. See #135721.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    return "`" * max(3, longest + 1)
+
+
 def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> str:
-    """Prefix ``prompt`` with a fenced ``## heading`` data block."""
-    return f"## {heading}\n{intro}\n\n```\n{body}\n```\n\n{prompt}"
+    """Prefix ``prompt`` with a fenced ``## heading`` data block.
+
+    The fence outgrows any backtick run inside ``body``, so injected output that
+    itself carries a fenced code block cannot end the data block early.
+    See #135721.
+    """
+    fence = _data_fence(body)
+    return f"## {heading}\n{intro}\n\n{fence}\n{body}\n{fence}\n\n{prompt}"
 
 
 def _job_skill_names(job: dict) -> list[str]:

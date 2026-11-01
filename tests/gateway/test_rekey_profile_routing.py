@@ -51,6 +51,22 @@ def test_rekeys_old_namespace_and_origin_profile(tmp_path):
     assert store._entries["agent:keepme:feishu:dm:chatB"].origin.profile == "keepme"
 
 
+def test_renaming_profile_named_main_moves_its_own_namespace_not_the_default(tmp_path):
+    from gateway.session import _session_key_namespace
+    store = _make_store(tmp_path)
+    default_key = f"{_session_key_namespace(None)}:feishu:dm:chatA"
+    main_key = f"{_session_key_namespace('main')}:feishu:dm:chatB"
+    with store._lock:
+        store._entries[default_key] = _entry(default_key, "chatA", None)
+        store._entries[main_key] = _entry(main_key, "chatB", "main")
+
+    assert store.rekey_profile_routing("main", "work") == 1
+
+    assert default_key in store._entries
+    assert main_key not in store._entries
+    assert f"{_session_key_namespace('work')}:feishu:dm:chatB" in store._entries
+
+
 def test_does_not_overwrite_existing_new_namespace_key(tmp_path):
     store = _make_store(tmp_path)
     with store._lock:

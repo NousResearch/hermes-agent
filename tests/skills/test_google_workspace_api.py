@@ -146,6 +146,97 @@ def test_api_calendar_list_uses_events_list(api_module):
 
 
 
+def _update_args(api_module, **overrides):
+    defaults = dict(
+        event_id="evt123",
+        summary="",
+        start="",
+        end="",
+        location="",
+        description="",
+        calendar="primary",
+    )
+    defaults.update(overrides)
+    return api_module.argparse.Namespace(func=api_module.calendar_update, **defaults)
+
+
+def test_api_calendar_update_uses_events_patch(api_module):
+    """calendar_update (gws path) calls events patch with params + sparse body."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    args = _update_args(
+        api_module, start="2026-03-01T11:00:00Z", summary="Standup (moved)",
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_update(args)
+
+    cmd = captured["cmd"]
+    assert cmd[0] == "/usr/bin/gws"
+    assert "calendar" in cmd
+    assert "events" in cmd
+    assert "patch" in cmd
+    params = json.loads(cmd[cmd.index("--params") + 1])
+    assert params == {"calendarId": "primary", "eventId": "evt123"}
+    body = json.loads(cmd[cmd.index("--json") + 1])
+    # Sparse patch: exactly the passed fields, nothing else.
+    assert body == {
+        "summary": "Standup (moved)",
+        "start": {"dateTime": "2026-03-01T11:00:00Z"},
+    }
+
+
+def test_api_calendar_update_python_path_patches_only_passed_fields(api_module, capsys):
+    """calendar_update (SDK path) calls events().patch with sparse body."""
+    api_module._gws_binary = lambda: None
+
+    service = MagicMock()
+    service.events.return_value.patch.return_value.execute.return_value = {
+        "id": "evt123",
+        "summary": "Standup",
+        "htmlLink": "https://calendar.example/evt123",
+    }
+
+    args = _update_args(
+        api_module,
+        calendar="team@example.com",
+        end="2026-03-01T12:00:00Z",
+        location="Room 2",
+    )
+
+    with patch.object(api_module, "build_service", return_value=service) as builder:
+        api_module.calendar_update(args)
+
+    builder.assert_called_once_with("calendar", "v3")
+    service.events.return_value.patch.assert_called_once_with(
+        calendarId="team@example.com",
+        eventId="evt123",
+        body={"end": {"dateTime": "2026-03-01T12:00:00Z"}, "location": "Room 2"},
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "updated"
+    assert output["id"] == "evt123"
+    assert output["htmlLink"] == "https://calendar.example/evt123"
+
+
+def test_api_calendar_update_no_fields_errors_without_api_call(api_module, capsys):
+    """calendar_update with no fields prints an error JSON and never hits the API."""
+    args = _update_args(api_module)
+
+    with patch.object(api_module.subprocess, "run") as run_mock:
+        with patch.object(api_module, "build_service") as builder:
+            api_module.calendar_update(args)
+
+    run_mock.assert_not_called()
+    builder.assert_not_called()
+    output = json.loads(capsys.readouterr().out)
+    assert "error" in output
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")

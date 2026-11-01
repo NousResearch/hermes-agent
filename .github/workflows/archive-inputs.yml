@@ -6,7 +6,7 @@ on:
     paths:
       - 'pm/lock.json'
       - 'pm/artifact-mirror.json'
-      - 'scripts/termux/runtime_libs.json'
+      - 'pm/termux_runtime_libs.json'
       - 'scripts/ci/archive_inputs.py'
       - '.github/workflows/archive-inputs.yml'
   workflow_call:

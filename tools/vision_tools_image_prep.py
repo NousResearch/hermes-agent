@@ -252,9 +252,13 @@ def _validate_raster_image_decodable(
     image_path: Path,
     max_frames: int = _VISION_MAX_VALIDATED_FRAME_COUNT,
     max_pixels: int = _VISION_MAX_VALIDATED_AGGREGATE_PIXELS) -> Optional[str]:
-    """Return an error unless Pillow can fully decode every frame. Header sniffing and ``Image.open``
-    only inspect containers: a timed-out download can look like a valid PNG with a truncated pixel
-    stream. Without Pillow the image passes unvalidated rather than rejecting everything."""
+    """Return an error unless Pillow can fully decode every frame that is present. Header sniffing
+    and ``Image.open`` only inspect containers: a timed-out download can look like a valid PNG with
+    a truncated pixel stream. A frame the container CLAIMS but the file doesn't carry ends
+    validation instead of rejecting the image: an MPF header can claim follow-on frames that were
+    never written (phone photos round-tripped through Picasa-era tools), and Pillow raises while
+    seeking them even though every present frame is fully decodable (#124509). Without Pillow the
+    image passes unvalidated rather than rejecting everything."""
     try:
         from PIL import Image as _PILImage, ImageSequence as _PILImageSequence
     except ImportError:
@@ -263,8 +267,21 @@ def _validate_raster_image_decodable(
         with _PILImage.open(image_path) as image:
             image.verify()
         with _PILImage.open(image_path) as image:
+            frames = _PILImageSequence.Iterator(image)
             validated_pixels = 0
-            for frame_number, frame in enumerate(_PILImageSequence.Iterator(image), start=1):
+            frame_number = 0
+            while True:
+                try:
+                    frame = next(frames)
+                except StopIteration:
+                    break
+                except Exception as exc:
+                    # Seeking frame 0 is a no-op, so this is always a later frame.
+                    logger.warning(
+                        "Frame %d of %s is unreadable (%s); validated the first frame only",
+                        frame_number + 1, image_path, exc)
+                    break
+                frame_number += 1
                 if frame_number > max_frames:
                     return (
                         "Image validation rejected animation: "
@@ -277,7 +294,10 @@ def _validate_raster_image_decodable(
                         f"pixel count would reach {next_validated_pixels} at frame "
                         f"{frame_number}, exceeding the maximum "
                         f"{max_pixels}.")
-                frame.load()
+                try:
+                    frame.load()
+                except Exception as exc:
+                    return f"Image could not be fully decoded: {exc}"
                 validated_pixels = next_validated_pixels
     except Exception as exc:
         return f"Image could not be fully decoded: {exc}"

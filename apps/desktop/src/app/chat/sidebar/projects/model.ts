@@ -24,12 +24,16 @@ export const PROJECT_SESSION_PAGE = 50
 
 // Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
 // per `showMore()`. `more` is the next step's size (0 once everything shows).
-export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+export function useRevealedRows<T>(
+  rows: T[],
+  first: number
+): { more: number; reset: () => void; shown: T[]; showMore: () => void } {
   const [count, setCount] = useState(first)
   const shown = rows.length > count ? rows.slice(0, count) : rows
 
   return {
     more: Math.min(PROJECT_SESSION_PAGE, rows.length - shown.length),
+    reset: () => setCount(first),
     shown,
     showMore: () => setCount(current => current + PROJECT_SESSION_PAGE)
   }

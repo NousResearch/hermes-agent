@@ -141,11 +141,16 @@ export interface TerminalEntry {
   connectionId?: string
   /** Gateway profile the SSH tunnel is keyed by (with `connectionId`). */
   profile?: string
+  /** `connectionId` left the registry. Ids are reusable label slugs, so a
+   *  gateway added later under the same name is another machine: this tab
+   *  never reconnects, even after relaunch. */
+  gatewayRemoved?: boolean
 }
 
 interface PersistedTerminalEntry {
   auto: boolean
   connectionId?: string
+  gatewayRemoved?: boolean
   cwd: string
   id: string
   restoreCwd?: string
@@ -194,6 +199,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   return {
     auto: typeof record.auto === 'boolean' ? record.auto : true,
     ...persistedGateway(record),
+    ...(record.gatewayRemoved === true ? { gatewayRemoved: true } : {}),
     cwd,
     id,
     ...(restoreCwd ? { restoreCwd } : {}),
@@ -244,6 +250,7 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
     .map(term => ({
       auto: term.auto,
       ...(term.connectionId ? { connectionId: term.connectionId } : {}),
+      ...(term.gatewayRemoved ? { gatewayRemoved: true } : {}),
       cwd: term.cwd,
       id: term.id,
       ...(term.profile ? { profile: term.profile } : {}),
@@ -308,6 +315,18 @@ export function adoptTerminalGateway(id: string, gateway: TerminalGateway): void
       term.id === id && term.kind === 'user' && !term.connectionId ? { ...term, ...gateway } : term
     )
   )
+}
+
+/** Mark tabs whose gateway is no longer registered. Sticky: see `gatewayRemoved`. */
+export function forgetRemovedTerminalGateways(registered: ReadonlySet<string>): void {
+  const list = $terminals.get()
+
+  const gone = (term: TerminalEntry) =>
+    term.kind === 'user' && Boolean(term.connectionId) && !term.gatewayRemoved && !registered.has(term.connectionId!)
+
+  if (list.some(gone)) {
+    $terminals.set(list.map(term => (gone(term) ? { ...term, gatewayRemoved: true } : term)))
+  }
 }
 
 /** True once user tabs run on more than one host: only then do This device
@@ -422,6 +441,7 @@ function followSessionCwd(cwd: string) {
   const linked = (term: TerminalEntry | undefined) =>
     term?.kind === 'user' &&
     terminalCwd(term) === target &&
+    !term.gatewayRemoved &&
     (!host || !term.connectionId || term.connectionId === host)
 
   const list = $terminals.get()

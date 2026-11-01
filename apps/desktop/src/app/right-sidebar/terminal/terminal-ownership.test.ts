@@ -128,3 +128,48 @@ describe('a terminal tab owns the gateway it was opened on', () => {
     expect(stores.$activeTerminalId.get()).toBe(local)
   })
 })
+
+describe('a removed gateway stays removed for its tabs', () => {
+  it('deleting NAS and adding another machine named NAS never reconnects the old tab, across relaunch', async () => {
+    let stores = await loadStores()
+    stores.$connectionsRegistry.set(registryWith({ host: 'old-nas.example', id: 'nas' }))
+    const id = stores.createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
+
+    stores.$connectionsRegistry.set(registryWith())
+    stores.$connectionsRegistry.set(registryWith({ host: 'different-prod.example', id: 'nas' }))
+    const tab = () => stores.$terminals.get().find(term => term.id === id)!
+    expect(stores.terminalHost(tab(), stores.$connectionsRegistry.get())).toBe('removed')
+
+    stores = await loadStores() // relaunch
+    stores.$connectionsRegistry.set(registryWith({ host: 'different-prod.example', id: 'nas' }))
+    expect(stores.terminalHost(tab(), stores.$connectionsRegistry.get())).toBe('removed')
+
+    const start = vi.fn().mockResolvedValue(session('nas'))
+    const { controller, write } = controllerFor(stores, id, start)
+    controller.start()
+    await waitFor(() => expect(write).toHaveBeenCalled())
+    controller.release()
+
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('editing NAS in place keeps its tabs reconnecting to it, across relaunch', async () => {
+    let stores = await loadStores()
+    stores.$connectionsRegistry.set(registryWith({ host: 'old-nas.example', id: 'nas' }))
+    const id = stores.createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
+    stores.$connectionsRegistry.set(registryWith({ host: 'new-nas.example', id: 'nas' }))
+
+    stores = await loadStores() // relaunch
+    stores.$connectionsRegistry.set(registryWith({ host: 'new-nas.example', id: 'nas' }))
+    const tab = stores.$terminals.get().find(term => term.id === id)!
+    expect(stores.terminalHost(tab, stores.$connectionsRegistry.get())).toMatchObject({ connection: { id: 'nas' } })
+
+    const start = vi.fn().mockResolvedValue(session('nas'))
+    const { controller } = controllerFor(stores, id, start)
+    controller.start()
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+    controller.release()
+
+    expect(start.mock.calls[0]![0]).toMatchObject({ connectionId: 'nas', profile: 'default' })
+  })
+})

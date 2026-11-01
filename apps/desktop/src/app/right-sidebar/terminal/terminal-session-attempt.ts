@@ -146,6 +146,12 @@ export function createSessionAttemptController(
     // and records it BEFORE the start, so a failed start retries on it too.
     const tab = $terminals.get().find(entry => entry.id === id)
 
+    if (tab?.gatewayRemoved) {
+      showUnavailable('missing')
+
+      return
+    }
+
     const gateway = terminalGatewayOf(tab) ?? defaultTerminalGateway()
 
     if (gateway) {

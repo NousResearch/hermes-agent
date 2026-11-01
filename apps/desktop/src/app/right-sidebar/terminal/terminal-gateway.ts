@@ -5,7 +5,7 @@ import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/gl
 import { $activeConnectionId, $connectionsRegistry } from '@/store/connections'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-import { bindTerminalDefaultGateway, type TerminalEntry } from './terminals'
+import { bindTerminalDefaultGateway, forgetRemovedTerminalGateways, type TerminalEntry } from './terminals'
 
 /** The gateway a terminal tab was opened on. Only This device and SSH gateways
  *  carry a shell; the SSH tunnel is keyed by (connection, profile). */
@@ -51,6 +51,15 @@ export const runsOverSsh = (gateway: TerminalGateway | undefined): boolean =>
 // cwd only on the session's host.
 bindTerminalDefaultGateway($defaultTerminalGateway)
 
+// A gateway that leaves the registry is gone for its tabs for good: ids are
+// reusable label slugs, so a later gateway with the same name is another
+// machine. An edit keeps the id registered and its tabs keep reconnecting.
+$connectionsRegistry.subscribe(registry => {
+  if (registry) {
+    forgetRemovedTerminalGateways(new Set(registry.connections.map(connection => connection.id)))
+  }
+})
+
 export const terminalGatewayOf = (term: TerminalEntry | undefined): TerminalGateway | undefined =>
   term?.connectionId ? { connectionId: term.connectionId, ...(term.profile ? { profile: term.profile } : {}) } : undefined
 
@@ -69,7 +78,15 @@ export const $localGateway = computed(
 export type TerminalHost = { connection: Pick<DesktopRegistryConnection, 'id' | 'kind' | 'label'> } | 'removed' | null
 
 export function terminalHost(term: TerminalEntry, registry: DesktopConnectionsRegistry | null): TerminalHost {
-  if (term.kind !== 'user' || !term.connectionId || !registry) {
+  if (term.kind !== 'user' || !term.connectionId) {
+    return null
+  }
+
+  if (term.gatewayRemoved) {
+    return 'removed'
+  }
+
+  if (!registry) {
     return null
   }
 

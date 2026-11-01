@@ -4,6 +4,7 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -166,3 +167,107 @@ class TestHandleBtwCommand:
         mock_adapter.send.assert_called_once()
         sent_text = mock_adapter.send.call_args[0][1]
         assert "it was foo.py" in sent_text
+
+
+# ---------------------------------------------------------------------------
+# _reply_metadata Feishu topic anchor
+# ---------------------------------------------------------------------------
+
+def _make_topic_event(platform=Platform.FEISHU, thread_id: Optional[str]="omt_topic",
+                      chat_type="group", message_id="om_trigger"):
+    """Build a topic-bound MessageEvent with an explicit trigger message id."""
+    source = SessionSource(
+        platform=platform,
+        user_id="ou_user",
+        chat_id="oc_chat",
+        user_name="testuser",
+        chat_type=chat_type,
+        thread_id=thread_id,
+    )
+    return MessageEvent(text="/btw q?", source=source, message_id=message_id)
+
+
+class TestReplyMetadataFeishuTopicAnchor:
+    """Feishu topic metadata must carry a reply anchor: without one, the adapter falls
+    through to message.create with receive_id_type="thread_id", which the Feishu
+    create API rejects (99992402) and the outbound reply is lost."""
+
+    def test_feishu_topic_metadata_carries_reply_anchor(self):
+        runner = _make_runner()
+        metadata = runner._reply_metadata(_make_topic_event())
+        assert metadata is not None
+        assert metadata.get("thread_id") == "omt_topic"
+        assert metadata.get("reply_to_message_id") == "om_trigger"
+
+    def test_feishu_non_topic_event_returns_none(self):
+        runner = _make_runner()
+        assert runner._reply_metadata(_make_topic_event(thread_id=None)) is None
+
+    def test_telegram_topic_metadata_not_anchored(self):
+        runner = _make_runner()
+        metadata = runner._reply_metadata(
+            _make_topic_event(platform=Platform.TELEGRAM, thread_id="42", chat_type="group"))
+        assert metadata is not None
+        assert metadata.get("thread_id") == "42"
+        assert "reply_to_message_id" not in metadata
+
+
+# ---------------------------------------------------------------------------
+# /btw answer delivery failure surfacing
+# ---------------------------------------------------------------------------
+
+class TestBtwDeliveryFailureLogged:
+    """/btw must log a delivery failure instead of dropping the SendResult."""
+
+    @pytest.mark.asyncio
+    async def test_send_failure_is_logged(self, caplog):
+        runner = _make_runner()
+        store = AsyncMock()
+        store.get_or_create_session.return_value = MagicMock(session_id="s1")
+        store.load_transcript.return_value = [
+            {"role": "user", "content": "fix foo.py"},
+            {"role": "assistant", "content": "done"},
+        ]
+        store._store = runner.session_store
+        runner._async_session_store = store
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "k"})
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = MagicMock(success=False, error="99992402 boom")
+        runner._delivery_adapter_for = MagicMock(return_value=mock_adapter)
+
+        with patch("agent.side_question.answer_side_question", return_value="the answer"):
+            await runner._handle_btw_command(_make_topic_event())
+            for task in list(runner._background_tasks):
+                await task
+
+        assert any("delivery failed" in rec.message for rec in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_feishu_topic_answer_sent_with_anchor_metadata(self):
+        runner = _make_runner()
+        store = AsyncMock()
+        store.get_or_create_session.return_value = MagicMock(session_id="s1")
+        store.load_transcript.return_value = [
+            {"role": "user", "content": "fix foo.py"},
+            {"role": "assistant", "content": "done"},
+        ]
+        store._store = runner.session_store
+        runner._async_session_store = store
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "k"})
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter.send.return_value = MagicMock(success=True)
+        runner._delivery_adapter_for = MagicMock(return_value=mock_adapter)
+
+        with patch("agent.side_question.answer_side_question", return_value="the answer"):
+            await runner._handle_btw_command(_make_topic_event())
+            for task in list(runner._background_tasks):
+                await task
+
+        mock_adapter.send.assert_called_once()
+        sent_metadata = mock_adapter.send.call_args[1].get("metadata") or {}
+        assert sent_metadata.get("thread_id") == "omt_topic"
+        assert sent_metadata.get("reply_to_message_id") == "om_trigger"

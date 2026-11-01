@@ -420,6 +420,12 @@ export const arChrome = {
       viewAllLogs: 'عرض كل السجلات',
       messagingPlatforms: 'منصات المراسلة'
     },
+    approvalMode: {
+      sessionYolo: 'YOLO',
+      sessionYoloAriaLabel: mode => `وضع الموافقة: ${mode} · YOLO مفعّل لهذه المحادثة`,
+      sessionYoloRow: 'YOLO لهذه المحادثة',
+      sessionYoloDescription: 'تجاوز طلبات الموافقة في هذه المحادثة فقط'
+    },
     statusbar: {
       unknown: 'غير معروف',
       restart: 'إعادة تشغيل',

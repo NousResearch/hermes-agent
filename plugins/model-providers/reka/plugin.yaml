@@ -1,0 +1,5 @@
+name: reka-provider
+kind: model-provider
+version: 1.0.0
+description: Reka
+author: Reka

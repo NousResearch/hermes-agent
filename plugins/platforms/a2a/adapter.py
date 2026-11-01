@@ -39,6 +39,13 @@ _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
+_CALLER_UA_MAX = 80  # log-only cap for User-Agent and claimed-identity header values
+_CALLER_IDENTITY_HEADERS = ("X-A2A-Identity", "A2A-Identity")  # caller-asserted; recorded, never authorized on
+
+
+def _log_field(value: Optional[str], limit: int = _CALLER_UA_MAX) -> str:
+    """One-line, length-capped header value for logs/audit (newlines and control chars collapse)."""
+    return " ".join(str(value or "").split())[:limit]
 
 _ok = protocol.jsonrpc_result
 _err = protocol.jsonrpc_error
@@ -190,6 +197,22 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         ip = self.client_address[0] if self.client_address else ""
         return ip.removeprefix("::ffff:") if ip.startswith("::ffff:") and "." in ip else ip
 
+    def _caller_facts(self, facts: dict) -> dict:
+        """Provenance for one inbound request: credential class, credential fingerprint, client
+        software, socket, and any caller-asserted identity header.
+
+        Observation only — authenticate(), is_trusted_peer() and the rate limiter never read this.
+        """
+        claimed = next((v for v in (self.headers.get(name) for name in _CALLER_IDENTITY_HEADERS) if v), "")
+        port = self.client_address[1] if self.client_address else ""
+        return {
+            "auth": facts["auth"],
+            "fp": facts["fingerprint"],
+            "ua": _log_field(self.headers.get("User-Agent")),
+            "src": f"{self._client_ip()}:{port}" if port else self._client_ip(),
+            "claimed": _log_field(claimed),
+        }
+
     def _request_public_url(self) -> str:
         """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).
 
@@ -229,11 +252,13 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
-        if identity is None:
+        facts = adapter._security_context.classify(self.headers.get("Authorization"), self._client_ip())
+        if facts is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
         if adapter._security_context.localhost_only() and (refusal := security.browser_post_refusal(self.headers)):
             return self._error(403, None, protocol.ERR_UNAUTHORIZED, refusal)
+        identity = facts["identity"]
+        caller = self._caller_facts(facts)
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
@@ -265,9 +290,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         if handler_name == "_rpc_message_send":
-            self._json(200, adapter._rpc_message_send(req_id, params, identity, agent=agent, v1_response=is_v1))
+            self._json(200, adapter._rpc_message_send(req_id, params, identity, agent=agent, v1_response=is_v1, caller=caller))
         elif handler_name == "_rpc_message_stream":
-            adapter._rpc_message_stream(self, req_id, params, identity, agent=agent)
+            adapter._rpc_message_stream(self, req_id, params, identity, agent=agent, caller=caller)
         elif handler_name == "_rpc_tasks_subscribe":
             adapter._rpc_tasks_subscribe(self, req_id, params, agent=agent)
         else:  # plain JSON task / push-config queries
@@ -558,7 +583,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
-    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
+    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None, caller: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
@@ -593,7 +618,13 @@ class A2AAdapter(BasePlatformAdapter):
         if not text:
             return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
         framed = security.wrap_inbound(peer, text)
-        security.audit("inbound", peer, task_id, text)
+        security.audit("inbound", peer, task_id, text, caller=caller)
+        # One line per admitted task: when peer identity degrades to ip:<addr> (shared token),
+        # this is what still tells operators WHICH agent called.
+        observed = caller or {}
+        logger.info("A2A inbound %s: peer=%s auth=%s fp=%s ua=%s src=%s claimed=%s",
+                    task_id, peer, observed.get("auth") or "-", observed.get("fp") or "-",
+                    observed.get("ua") or "-", observed.get("src") or "-", observed.get("claimed") or "-")
         if not retry:
             protocol.persist_message(context_id, "user", text, task_id, input_id=input_id or "")
             protocol.metrics.inbound_total += 1
@@ -698,8 +729,9 @@ class A2AAdapter(BasePlatformAdapter):
         return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
-    def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        task, pending = self._prepare_task(params, peer, agent=agent)
+    def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False,
+                          caller: Optional[dict] = None) -> dict:
+        task, pending = self._prepare_task(params, peer, agent=agent, caller=caller)
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
@@ -732,13 +764,14 @@ class A2AAdapter(BasePlatformAdapter):
             self._sse_write(handler, protocol.sse_data(ev, req_id))
         self._sse_write(handler, protocol.sse_done())
 
-    def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None) -> None:
+    def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None,
+                            caller: Optional[dict] = None) -> None:
         """message/stream as an SSE response of JSON-RPC-wrapped StreamResponse events (§9.4)."""
         protocol.metrics.streams_started += 1
         self._sse_headers(handler)
         pending = None
         try:
-            terminal, pending = self._prepare_task(params, peer, agent=agent)
+            terminal, pending = self._prepare_task(params, peer, agent=agent, caller=caller)
             if terminal is not None:
                 return self._emit_terminal(handler, terminal["id"], terminal["contextId"], terminal["status"]["state"],
                                            protocol.extract_text(terminal.get("status", {}).get("message", {}) or {}), req_id=req_id)

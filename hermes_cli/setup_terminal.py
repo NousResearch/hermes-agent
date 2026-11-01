@@ -232,9 +232,12 @@ def _setup_backend_ssh(config: dict) -> None:
     if host and _setup.prompt_yes_no("  Test SSH connection?", True):
         _setup.print_info("  Testing connection...")
         import subprocess
-        ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", *(["-i", ssh_key] if ssh_key else []),
-                   *(["-p", port] if port and port != "22" else []), f"{user}@{host}" if user else host, "echo ok"]
-        result = subprocess.run(ssh_cmd, timeout=10, **_RUN_KW, check=False)
+        from tools.environments.remote_common import ssh_connect_timeout
+        target = [*(["-i", ssh_key] if ssh_key else []), *(["-p", port] if port and port != "22" else []),
+                  f"{user}@{host}" if user else host]
+        connect_opts, connect_secs = ssh_connect_timeout(target)
+        ssh_cmd = ["ssh", "-o", "BatchMode=yes", *connect_opts, *target, "echo ok"]
+        result = subprocess.run(ssh_cmd, timeout=connect_secs + 15, **_RUN_KW, check=False)
         if result.returncode == 0:
             _setup.print_success("  SSH connection successful!")
         else:

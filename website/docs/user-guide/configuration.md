@@ -521,6 +521,8 @@ TERMINAL_SSH_USER=ubuntu
 
 **How it works:** Connects at init time with `BatchMode=yes` and `StrictHostKeyChecking=accept-new`, then captures the remote login shell's environment once into a snapshot file. Every command runs as a fresh `bash -c` that sources that snapshot, `cd`s to the tracked working directory, and runs your command.
 
+**Slow hosts and jump hosts:** `TERMINAL_SSH_HOST` can be any alias from your `~/.ssh/config` (with `ProxyJump`, `HostName`, `IdentityFile` and so on). Hermes waits 30 seconds for a connection, which covers logging in through a bastion. If your SSH config sets `ConnectTimeout` for that host, Hermes uses your value instead, and so do `hermes doctor` and the connection test in `hermes setup terminal`.
+
 **Skill / config env passthrough:** variables a skill declares in `required_environment_variables`, or that you list under `terminal.env_passthrough`, are forwarded with OpenSSH `SendEnv` — the names go on the `ssh` command line and the values travel in the client's environment, never in the remote command text. The remote `sshd` must accept them; add to `/etc/ssh/sshd_config` on the server and reload sshd:
 
 ```

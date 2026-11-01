@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from unittest.mock import MagicMock
 
@@ -453,3 +454,20 @@ class TestRealSSHBackend:
         assert _run(f"wc -c < {shlex.quote(path)}")["output"].strip() == str(len(content.encode()))
         read = json.loads(read_file_tool(path, task_id="ssh_test"))
         assert "beta: ünïcödé ✓" in read["content"], read
+
+
+@pytest.mark.skipif(os.name == "nt" or not shutil.which("ssh"), reason="needs a POSIX OpenSSH client")
+def test_connect_timeout_set_in_ssh_config_is_not_overridden(tmp_path, monkeypatch):
+    """A command-line ``-o ConnectTimeout`` beats ssh_config, so passing ours unconditionally made a
+    user's budget for a slow (ProxyJump) host unreachable; unset, a hop-tolerant default applies."""
+    from tools.environments.remote_common import ssh_connect_timeout
+    cfg = tmp_path / "ssh_config"
+    cfg.write_text("Host slowhop\n  ConnectTimeout 75\n", encoding="utf-8")
+    shim = tmp_path / "bin" / "ssh"
+    shim.parent.mkdir()
+    shim.write_text(f'#!/bin/sh\nexec {shutil.which("ssh")} -F {cfg} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim.parent}{os.pathsep}{os.environ['PATH']}")
+
+    assert ssh_connect_timeout(["u@slowhop"]) == ([], 75)
+    assert ssh_connect_timeout(["u@otherhost"]) == (["-o", "ConnectTimeout=30"], 30)

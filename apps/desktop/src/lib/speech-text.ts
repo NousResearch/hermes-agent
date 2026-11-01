@@ -34,11 +34,16 @@ const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
 const HASH_PREFIX_HEX_RE = /\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}/gi
 const HEX_RUN_RE = /[0-9a-fA-F]{7,64}/
 const IDENTIFIER_TOKEN_RE = /[A-Za-z0-9_./~@-]+/g
-const DATE_TOKEN_RE = /^\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?$/
+// Dates: year-first ("2026-09-28", "2026/06/02"), then numeric D/M or M/D with an
+// optional /YY or /YYYY ("19/10", "10/19", "19-10-2026"). Both parts must be a
+// real day/month and the separator must repeat, so "32/10", "19/13" and
+// "19/10-2026" stay identifiers. "2/3" is a date or a fraction; both are speakable.
+const DATE_TOKEN_RE =
+  /^(?:\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|(?:0?[1-9]|[12]\d|3[01])([-/])(?:0?[1-9]|1[0-2])(?:\1(?:\d{2}|\d{4}))?|(?:0?[1-9]|1[0-2])([-/])(?:0?[1-9]|[12]\d|3[01])(?:\2(?:\d{2}|\d{4}))?)$/
 
 function isDenseIdentifier(token: string): boolean {
-  if (token.includes('@') || DATE_TOKEN_RE.test(token)) {
-    return false // email addresses, dates ("2026-09-28", "2026/06/02")
+  if (token.includes('@') || DATE_TOKEN_RE.test(token.replace(/\.+$/, ''))) {
+    return false // email addresses, dates ("2026-09-28", "2026/06/02", "19/10.")
   }
 
   if (/^(?:~\/|\.\.?\/|\/)/.test(token)) {

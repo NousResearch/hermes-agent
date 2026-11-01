@@ -277,7 +277,8 @@ class GatewayTurnProgressMixin:
             and isinstance(args.get("command"), str) and args["command"].strip()
         ):
             return None, None
-        cmd_full = args["command"].rstrip()
+        from gateway.stream_consumer_fences import escape_code_fences_for_display
+        cmd_full = escape_code_fences_for_display(args["command"].rstrip())  # an inner ``` would close the block
         header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()

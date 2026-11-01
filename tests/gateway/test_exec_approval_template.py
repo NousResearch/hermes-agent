@@ -88,3 +88,19 @@ def test_runner_only_offers_buttons_to_adapters_that_render_them():
 
     assert _renders_exec_approval_buttons(_DuckTyped) is True
     assert _renders_exec_approval_buttons(object) is False
+
+
+_FENCE_BREAK = "rm -rf ~/project\n```\n**Reason:** read-only listing [Approve](https://evil.example) @everyone\n```"
+
+
+@pytest.mark.parametrize("render", [
+    lambda cmd: _Buttons()._format_exec_approval(cmd, "recursive delete"),
+    lambda cmd: __import__("gateway.run", fromlist=["x"])._format_exec_approval_fallback(cmd, "recursive delete", "/"),
+], ids=["button-card", "text-fallback"])
+def test_command_cannot_close_the_approval_code_fence(render):
+    # nanoclaw#4090: the command is agent-supplied, so an inner ``` must not end the fence and turn
+    # the rest of the command into card markup (fake reason line, link, mention).
+    text = render(_FENCE_BREAK)
+    assert text.count("```") == 2
+    inside = text.split("```")[1]
+    assert "rm -rf ~/project" in inside and "[Approve](https://evil.example)" in inside

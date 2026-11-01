@@ -28,7 +28,8 @@ def test_owner_checkpoint_write_keeps_a_live_worker_handoff(tmp_path, monkeypatc
     try:
         handoff = {'session_id': 'proc_worker', 'command': 'dev-server', 'pid': worker_proc.pid, 'pid_scope': 'host',
                    'host_start_time': pr.ProcessRegistry._safe_host_start_time(worker_proc.pid),
-                   'started_at': time.time(), 'output_log': str(logs / 'proc_worker.log'), 'notify_on_complete': True}
+                   'started_at': time.time(), 'output_log': str(logs / 'proc_worker.log'), 'notify_on_complete': True,
+                   'owner_pid': 2 ** 22 + 9, 'owner_started_at': None}  # the worker interpreter, now gone
         (logs / 'proc_worker.log').write_text('serving\n')
         gone = {**handoff, 'session_id': 'proc_gone', 'pid': 2 ** 22 + 7, 'output_log': str(logs / 'proc_gone.log')}
         (logs / 'proc_gone.log').write_text('')

@@ -180,6 +180,7 @@ class TestCheckpointNotify:
             "command": "sleep 999",
             "pid": os.getpid(),
             "task_id": "t1",
+            "owner_pid": 999999999,  # the writer is gone, so its entries are recovery's
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()

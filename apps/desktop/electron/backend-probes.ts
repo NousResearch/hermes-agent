@@ -1,6 +1,7 @@
 /** Bounded backend probes. A file on disk is not proof of a usable runtime. */
 
 import { spawn } from 'node:child_process'
+import { statSync } from 'node:fs'
 
 import { buildDesktopBackendEnv } from './backend-env'
 import { windowsShellCommand } from './windows-child-options'
@@ -30,6 +31,88 @@ function resolveProbeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 const PROBE_TIMEOUT_MS = resolveProbeTimeoutMs()
+
+// Probe-verdict memo. Backend resolution re-runs on every profile dial, and
+// each `--version`/import probe is a fresh child spawn (15s budget + one
+// retry on timeout). A healthy install therefore pays seconds of spawns per
+// dial for an answer that changes only when the binary does: cache the
+// boolean verdict per command (+ its mtime, so a replaced binary re-probes)
+// with a short TTL, and share the in-flight promise across concurrent dials.
+const PROBE_VERDICT_TTL_MS = 30_000
+const PROBE_VERDICT_MAX_ENTRIES = 32
+
+interface ProbeVerdict {
+  at: number
+  promise: Promise<boolean> | null
+  result: boolean | null
+}
+
+const probeVerdicts = new Map<string, ProbeVerdict>()
+
+function mtimeOf(command: string): string {
+  // Shell probes quote the binary ("C:\...cmd"); stat the inner path. A
+  // bare PATH name has no statable file — the TTL alone bounds its staleness.
+  try {
+    return String(statSync(command.replace(/^"(.*)"$/, '$1')).mtimeMs)
+  } catch {
+    return 'nomtime'
+  }
+}
+
+async function memoizedProbeVerdict(key: string, probe: () => Promise<boolean>): Promise<boolean> {
+  const cached = probeVerdicts.get(key)
+  const now = Date.now()
+
+  if (cached) {
+    if (cached.result !== null && now - cached.at < PROBE_VERDICT_TTL_MS) {
+      return cached.result
+    }
+
+    if (cached.promise) {
+      return cached.promise
+    }
+  }
+
+  if (probeVerdicts.size >= PROBE_VERDICT_MAX_ENTRIES && !probeVerdicts.has(key)) {
+    const oldest = probeVerdicts.keys().next()
+
+    if (!oldest.done) {
+      probeVerdicts.delete(oldest.value)
+    }
+  }
+
+  const entry: ProbeVerdict = { at: now, promise: null, result: cached?.result ?? null }
+  probeVerdicts.set(key, entry)
+  entry.promise = probe().then(
+    result => {
+      entry.promise = null
+      entry.result = result
+      entry.at = Date.now()
+
+      return result
+    },
+    error => {
+      // A failed probe carries no verdict: drop the entry so the next
+      // caller re-probes instead of sharing the throw.
+      if (probeVerdicts.get(key) === entry) {
+        probeVerdicts.delete(key)
+      }
+
+      throw error
+    }
+  )
+
+  return entry.promise
+}
+
+/**
+ * Forget every cached probe verdict — after a bootstrap install lands (a
+ * verdict minted seconds ago must not hide the new runtime for the TTL), or
+ * in tests that script success-then-failure on one path.
+ */
+function invalidateBackendProbeVerdicts(): void {
+  probeVerdicts.clear()
+}
 
 function isTimeoutError(err: unknown): boolean {
   if (!err || typeof err !== 'object') {
@@ -111,26 +194,30 @@ async function canImportHermesCli(
     return false
   }
 
-  try {
-    const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env }
+  const key = `hermes-import:${pythonPath}:${opts.cwd ?? ''}:${mtimeOf(pythonPath)}`
 
-    // Bootstrap selects the committed generation before any dependency import.
-    await execProbe(
-      pythonPath,
-      ['-c', 'import hermes_bootstrap; import hermes_yaml; import dotenv; import hermes_cli.config'],
-      {
-        cwd: opts.cwd,
-        env: { ...env, ...buildDesktopBackendEnv({ currentEnv: env }) },
-        stdio: 'ignore',
-        timeout: PROBE_TIMEOUT_MS,
-        windowsHide: true
-      }
-    )
+  return memoizedProbeVerdict(key, async () => {
+    try {
+      const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env }
 
-    return true
-  } catch {
-    return false
-  }
+      // Bootstrap selects the committed generation before any dependency import.
+      await execProbe(
+        pythonPath,
+        ['-c', 'import hermes_bootstrap; import hermes_yaml; import dotenv; import hermes_cli.config'],
+        {
+          cwd: opts.cwd,
+          env: { ...env, ...buildDesktopBackendEnv({ currentEnv: env }) },
+          stdio: 'ignore',
+          timeout: PROBE_TIMEOUT_MS,
+          windowsHide: true
+        }
+      )
+
+      return true
+    } catch {
+      return false
+    }
+  })
 }
 
 /**
@@ -168,25 +255,33 @@ async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }
     return false
   }
 
-  try {
-    await execProbe(windowsShellCommand(hermesCommand, Boolean(opts?.shell)), ['--version'], {
-      stdio: 'ignore',
-      timeout: PROBE_TIMEOUT_MS,
-      shell: Boolean(opts?.shell),
-      windowsHide: true
-    })
+  const shell = Boolean(opts?.shell)
+  const key = `hermes-version:${shell}:${hermesCommand}:${mtimeOf(windowsShellCommand(hermesCommand, shell))}`
 
-    return true
-  } catch {
-    return false
-  }
+  return memoizedProbeVerdict(key, async () => {
+    try {
+      await execProbe(windowsShellCommand(hermesCommand, shell), ['--version'], {
+        stdio: 'ignore',
+        timeout: PROBE_TIMEOUT_MS,
+        shell,
+        windowsHide: true
+      })
+
+      return true
+    } catch {
+      return false
+    }
+  })
 }
 
 export {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
+  invalidateBackendProbeVerdicts,
   isTimeoutError,
+  memoizedProbeVerdict,
+  mtimeOf,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,

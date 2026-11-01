@@ -13,7 +13,7 @@ import { computed } from 'nanostores'
 
 import type { HermesActiveWork } from '@/global'
 import { $sessions } from '@/store/session'
-import { $workingSessionIds } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 
 const $activeWork = computed([$workingSessionIds, $sessions], (workingIds, sessions): HermesActiveWork => {
   const titleById = new Map(sessions.map(session => [session.id, session.title?.trim() ?? '']))

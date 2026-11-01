@@ -4,11 +4,11 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
   $sessionStates,
-  $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
   reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 

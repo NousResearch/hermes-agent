@@ -17,6 +17,8 @@ import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
+  invalidateBackendProbeVerdicts,
+  memoizedProbeVerdict,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,
@@ -177,4 +179,71 @@ test('resolveProbeTimeoutMs honours HERMES_PROBE_TIMEOUT_MS', () => {
   assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: 'nope' }), DEFAULT_PROBE_TIMEOUT_MS)
   // Cap runaway values
   assert.equal(resolveProbeTimeoutMs({ HERMES_PROBE_TIMEOUT_MS: '999999' }), 120_000)
+})
+
+test('memoizedProbeVerdict shares one probe across concurrent callers', async () => {
+  invalidateBackendProbeVerdicts()
+  let calls = 0
+
+  const probe = async () => {
+    calls += 1
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    return true
+  }
+
+  const results = await Promise.all([
+    memoizedProbeVerdict('memo-concurrent', probe),
+    memoizedProbeVerdict('memo-concurrent', probe),
+    memoizedProbeVerdict('memo-concurrent', probe)
+  ])
+
+  assert.deepEqual(results, [true, true, true])
+  assert.equal(calls, 1)
+})
+
+test('memoizedProbeVerdict serves repeat verdicts without re-probing', async () => {
+  invalidateBackendProbeVerdicts()
+  let calls = 0
+
+  const probe = async () => {
+    calls += 1
+
+    return calls === 1
+  }
+
+  assert.equal(await memoizedProbeVerdict('memo-repeat', probe), true)
+  // Even though the underlying answer flipped, the TTL memo holds.
+  assert.equal(await memoizedProbeVerdict('memo-repeat', probe), true)
+  assert.equal(calls, 1)
+
+  invalidateBackendProbeVerdicts()
+  assert.equal(await memoizedProbeVerdict('memo-repeat', probe), false)
+  assert.equal(calls, 2)
+})
+
+test('verifyHermesCli re-probes after the binary is replaced (mtime key)', async () => {
+  invalidateBackendProbeVerdicts()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes probe-mtime-'))
+  // A .cmd needs shell:true on Windows (direct spawn cannot run it); a POSIX
+  // .sh with a shebang executes directly. Same flag both calls — the shell
+  // bit is part of the memo key, so this also pins the key shape under test.
+  const onWindows = process.platform === 'win32'
+  const script = path.join(dir, onWindows ? 'probe.cmd' : 'probe.sh')
+
+  try {
+    fs.writeFileSync(script, onWindows ? '@exit 0\r\n' : '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(script, 0o755)
+    assert.equal(await verifyHermesCli(script, { shell: onWindows }), true)
+
+    // Same path, new binary (forced mtime jump — rewrites inside one
+    // millisecond can share an mtime and would legitimately stay cached).
+    fs.writeFileSync(script, onWindows ? '@exit 1\r\n' : '#!/bin/sh\nexit 1\n')
+    const bumped = Date.now() + 5_000
+    fs.utimesSync(script, new Date(bumped), new Date(bumped))
+    assert.equal(await verifyHermesCli(script, { shell: onWindows }), false)
+  } finally {
+    invalidateBackendProbeVerdicts()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

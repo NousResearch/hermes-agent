@@ -1,0 +1,42 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/pattern-use-receipt.schema.yaml
+title: Kubrick Pattern Use Receipt
+type: object
+additionalProperties: false
+required: [schema_version, receipt_id, project_id, compile_status, selected_patterns, signals, outcome, authority]
+properties:
+  schema_version: {const: 1.0.0}
+  receipt_id: {type: string, minLength: 1}
+  project_id: {type: string, minLength: 1}
+  source_compile_receipt: {type: [string, 'null']}
+  compile_status: {enum: [COMPILED, NOT_COMPUTABLE]}
+  selected_patterns:
+    type: object
+    required: [primary, supporting]
+    properties:
+      primary: {type: [string, 'null']}
+      supporting: {type: array, items: {type: string}}
+  signals:
+    type: object
+    required: [retrieval_confidence, graph_valid, anti_slop_pass, correction_iterations]
+    properties:
+      retrieval_confidence: {type: number, minimum: 0, maximum: 1}
+      graph_valid: {type: boolean}
+      anti_slop_pass: {type: boolean}
+      production_feasibility: {type: [number, 'null'], minimum: 0, maximum: 1}
+      visual_fidelity: {type: [number, 'null'], minimum: 0, maximum: 1}
+      correction_iterations: {type: integer, minimum: 0}
+      payoff_realized: {type: [boolean, 'null']}
+      cultural_boundary_respected: {type: [boolean, 'null']}
+  outcome:
+    type: object
+    required: [status, notes]
+    properties:
+      status: {enum: [ACCEPTED, REJECTED, PARTIAL, UNREVIEWED]}
+      notes: {type: array, items: {type: string}}
+  authority:
+    type: object
+    required: [state, automatic_corpus_change_allowed]
+    properties:
+      state: {const: OBSERVATION}
+      automatic_corpus_change_allowed: {const: false}

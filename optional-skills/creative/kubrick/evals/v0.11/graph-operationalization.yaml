@@ -1,0 +1,49 @@
+suite: graph-operationalization-v0.11
+runtime: standalone-hermes
+cases:
+  - id: valid_single_frame
+    expected_status: VALID
+    conditions:
+      node_count_min: 2
+      edge_density_min: 0.5
+      convergence_sites: [1, 2]
+      named_esoterica_surface: []
+      unknown_references: []
+    translation_mode: single-frame
+    expected_surface_fields: [geometry, light, material, state_differentials, convergence, residue]
+  - id: unknown_edge_reference
+    mutation: edge target references missing node
+    expected_status: INVALID
+    expected_error: unknown graph references
+  - id: weak_convergence
+    mutation: convergence site has one node and no edge
+    expected_status: INVALID
+    expected_error: lacks relational density
+  - id: excessive_convergence
+    mutation: three convergence sites
+    expected_status: INVALID
+    expected_error: exactly one or two convergence sites are required
+  - id: attribute_leakage
+    mutation: same non-generic attribute appears in geometry and material layers
+    expected_status: INVALID
+    expected_error: attribute leakage detected across disentangled layers
+  - id: named_esoterica_leak
+    mutation: audience prompt contains nigredo and rubedo
+    expected_status: INVALID
+    expected_error: named esoterica leaked into observable output
+  - id: sparse_graph
+    mutation: four nodes and one edge
+    expected_status: INVALID
+    expected_error: graph edge density below 0.5
+  - id: invalid_graph_translation
+    graph_status: INVALID
+    expected_translation_status: NOT_COMPUTABLE
+    expected_reason: GRAPH_NOT_VALID
+  - id: diagnostic_mode
+    graph_status: VALID
+    translation_mode: diagnostic
+    expected_private_semantics: true
+  - id: audience_mode_privacy
+    graph_status: VALID
+    translation_mode: single-frame
+    expected_private_semantics: false

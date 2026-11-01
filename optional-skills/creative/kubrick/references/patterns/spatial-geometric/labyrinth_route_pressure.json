@@ -1,0 +1,23 @@
+{
+  "pattern_id": "labyrinth_route_pressure",
+  "title": "Labyrinth / Route Pressure Toward a Center",
+  "version": "0.11.3",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative architectural and narrative analysis","title":"Labyrinthine route structures","date":"cross-period","cultural_context":"Spatial initiation and constrained navigation"}],
+  "observed_structure": ["the destination remains stable while the route repeatedly redirects", "each detour changes available knowledge or cost", "the final approach becomes simpler only after accumulated route pressure"],
+  "dramatic_operations": ["convert navigation into initiation", "delay access while increasing knowledge", "make route choice expose character strategy"],
+  "transformation_grammars": ["labyrinth", "detour-to-center"],
+  "cinematic_affordances": ["repeated corridor junctions with altered access", "overhead route fragments without complete map revelation", "sound from the destination crossing blocked paths", "camera movement simplifying near the center"],
+  "applicable_genres": ["thriller", "horror", "mystery", "fantasy", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "episode", "short"],
+  "cultural_scope": ["comparative spatial structure; do not claim equivalence among distinct sacred labyrinth traditions"],
+  "misuse_risks": ["maze complexity without dramatic change", "arbitrary geography", "sacred labyrinth imagery used as generic occult texture"],
+  "mutation_requirements": {"required":true,"variables":["route access","knowledge gained","cost","destination signal","path complexity"]},
+  "transferable_structure": "a stable destination is reached through detours that progressively alter knowledge, cost, and readiness",
+  "non_transferable_surface": "specific sacred labyrinth plans, ritual diagrams, or borrowed temple iconography",
+  "production_cost": {"location_dependency":0.7,"prop_dependency":0.2,"lighting_dependency":0.4,"VFX_dependency":0.2},
+  "lexicon_links": ["labyrinth", "threshold", "initiation", "guardian_of_the_threshold"],
+  "confidence": 0.82
+}

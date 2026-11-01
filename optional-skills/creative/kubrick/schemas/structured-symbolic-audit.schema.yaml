@@ -1,0 +1,52 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/structured-symbolic-audit.schema.yaml
+title: Kubrick Structured Symbolic Audit Input
+type: object
+additionalProperties: false
+required: [dramatic_function, causal_actions, motifs, channels, convergence_sites, cultural_sources]
+properties:
+  dramatic_function: {type: string, minLength: 1}
+  causal_actions: {type: array, minItems: 1, items: {type: string, minLength: 1}}
+  motifs:
+    type: array
+    items:
+      type: object
+      required: [motif_id, dramatic_function, observed_form, recurrences]
+      properties:
+        motif_id: {type: string}
+        dramatic_function: {type: string}
+        observed_form: {type: string}
+        recurrences:
+          type: array
+          items:
+            type: object
+            required: [state, mutation]
+            properties:
+              state: {type: string}
+              mutation: {type: string}
+              consequence: {type: string}
+  channels:
+    type: object
+    properties:
+      diegetic: {type: array, items: {type: string}}
+      dramaturgical: {type: array, items: {type: string}}
+      cinematic: {type: array, items: {type: string}}
+  convergence_sites:
+    type: array
+    maxItems: 2
+    items:
+      type: object
+      required: [site_id, functions]
+      properties:
+        site_id: {type: string}
+        functions: {type: array, minItems: 2, items: {type: string}}
+  cultural_sources:
+    type: array
+    items:
+      type: object
+      required: [source, boundary]
+      properties:
+        source: {type: string}
+        boundary: {type: string}
+  interpretation_claims: {type: array, items: {type: string}}
+  production_constraints: {type: array, items: {type: string}}

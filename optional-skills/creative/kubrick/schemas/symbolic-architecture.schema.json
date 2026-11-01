@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SymbolicArchitecture",
+  "type": "object",
+  "required": ["governing_tension", "motif_registry", "cinematic_encoding"],
+  "properties": {
+    "governing_tension": { "type": "string" },
+    "governing_grammar": { "type": "string" },
+    "supporting_grammars": { "type": "array", "items": { "type": "string" } },
+    "symbolic_intent": { "type": "object" },
+    "motif_registry": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "motif_id": { "type": "string" },
+          "observed_form": { "type": "object" },
+          "transformations": { "type": "array" },
+          "provenance": { "type": "string" }
+        }
+      }
+    },
+    "cinematic_encoding": {
+      "type": "object",
+      "properties": {
+        "composition_patterns": { "type": "array" },
+        "geometric_patterns": { "type": "array" },
+        "blocking_patterns": { "type": "array" },
+        "shot_recurrence": { "type": "array" }
+      }
+    },
+    "retrieval_scores": { "type": "array" },
+    "exclusions": { "type": "object" },
+    "saturation": { "type": "object" },
+    "collisions": { "type": "array" }
+  }
+}

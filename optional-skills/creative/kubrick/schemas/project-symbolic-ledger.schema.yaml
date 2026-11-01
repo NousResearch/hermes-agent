@@ -1,0 +1,72 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/project-symbolic-ledger.schema.yaml
+title: Kubrick Project Symbolic Ledger
+type: object
+additionalProperties: false
+required: [schema_version, project_id, governing_grammar, active_motifs, retired_motifs, prohibited_motifs, unresolved_payoffs, completed_payoffs, collisions, symbolic_debt, saturation_score, revision]
+properties:
+  schema_version: {const: 1.0.0}
+  project_id: {type: string, minLength: 1}
+  governing_grammar: {type: [string, 'null']}
+  supporting_grammars: {type: array, maxItems: 2, items: {type: string}}
+  active_motifs:
+    type: array
+    items:
+      type: object
+      required: [motif_id, observed_form, current_state, recurrence_count, last_mutation]
+      properties:
+        motif_id: {type: string}
+        observed_form: {type: string}
+        current_state: {type: string}
+        recurrence_count: {type: integer, minimum: 0}
+        last_mutation: {type: [string, 'null']}
+        ownership: {type: [string, 'null']}
+        pattern_links: {type: array, items: {type: string}}
+        convergence_sites: {type: array, items: {type: string}}
+  retired_motifs: {type: array, items: {type: string}}
+  prohibited_motifs: {type: array, items: {type: string}}
+  unresolved_payoffs: {type: array, items: {type: string}}
+  completed_payoffs: {type: array, items: {type: string}}
+  collisions:
+    type: array
+    items:
+      type: object
+      required: [type, patterns]
+      properties:
+        type: {enum: [REDUNDANT, CONTRADICTORY, CULTURALLY_INCOMPATIBLE, RHYTHMICALLY_OVERLAPPING, PAYOFF_COMPETITION]}
+        patterns: {type: array, minItems: 1, items: {type: string}}
+        rationale: {type: string}
+  cultural_boundaries: {type: array, items: {type: string}}
+  symbolic_debt: {type: number, minimum: 0}
+  saturation_score: {type: number, minimum: 0, maximum: 1}
+  revision: {type: integer, minimum: 0}
+  updated_at: {type: string}
+  pattern_history:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [pattern_id, evidence_of_use, source_projects, outcome_confidence]
+      properties:
+        pattern_id: {type: string}
+        evidence_of_use: {type: array, items: {type: string}}
+        source_projects: {type: array, items: {type: string}}
+        outcome_confidence: {type: number, minimum: 0, maximum: 1}
+        use_count: {type: integer, minimum: 0}
+  evidence_log:
+    type: array
+    items:
+      type: object
+      additionalProperties: true
+      properties:
+        at: {type: string}
+        kind: {type: string}
+        detail: {type: string}
+        refs: {type: array, items: {type: string}}
+        revision: {type: integer}
+  authority:
+    type: object
+    additionalProperties: false
+    properties:
+      state: {enum: [PROPOSED, OBSERVATION, LOCKED]}
+      forge_canonical: {type: boolean}

@@ -1,0 +1,59 @@
+suite: corpus-consolidation-v0.11.5
+runtime: standalone-hermes
+entrypoint: scripts/retrieve_symbolic_patterns_registry.py
+cases:
+  - id: route_identity_transformation
+    brief:
+      dramatic_problem: a rigid public identity must fail and leave a simpler operative self
+      desired_state_change: false authority becomes agency
+      observable_evidence: [failed status object, changed behavior, retained consequence]
+    expected_routes: [identity_and_transformation]
+    expected_candidates:
+      - alchemical_calcination_false_structure
+      - alchemical_coagulation_embodied_consequence
+  - id: route_authority_institutions
+    brief:
+      dramatic_problem: authority remains active after the leader exits because access and geometry preserve the system
+      desired_state_change: personal command becomes institutional pressure
+      observable_evidence: [empty center, controlled doorway, repeated work cells]
+    expected_routes: [authority_and_institutions]
+    expected_candidates:
+      - kubrick_center_transfer_authority
+      - doorway_ownership_transfer
+      - corporate_grid_enclosure_compliance
+  - id: route_sound_absence
+    brief:
+      dramatic_problem: room tone disappears and a machine rhythm migrates into another source
+      desired_state_change: local threat becomes distributed agency
+      observable_evidence: [established ambience, silence event, source mismatch]
+    expected_routes: [sound_rhythm_and_absence]
+    expected_candidates:
+      - sonic_silence_withdrawal_revelation
+      - sonic_motif_source_migration
+  - id: strong_default_bonus
+    brief:
+      dramatic_problem: a visible claim conflicts with enacted behavior and must remain interpretable without exposition
+      desired_state_change: declared authority separates from actual power
+      observable_evidence: [spoken claim, contradictory workflow, consequential edit]
+    expected_primary_preference: image_dialogue_counterpoint
+    expected_strong_default: true
+  - id: versioned_cache_key
+    brief:
+      dramatic_problem: a damaged object is repaired but its scar changes later handling
+      desired_state_change: restoration preserves consequence
+      observable_evidence: [known break, visible seam, changed grip]
+    expected_algorithm: registry-aware-v1
+    expected_corpus_version: 0.11.5
+    expected_cache_namespace: cache-registry
+  - id: gap_route_missing
+    brief:
+      dramatic_problem: a highly specific dramatic operation absent from all registered routes
+      desired_state_change: unsupported request remains unsupported
+      observable_evidence: [one concrete but unmatched behavior]
+    expected_gap_dimension: registry_route
+fail_closed_cases:
+  - id: missing_observable_evidence
+    brief:
+      dramatic_problem: make the symbolism more profound
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

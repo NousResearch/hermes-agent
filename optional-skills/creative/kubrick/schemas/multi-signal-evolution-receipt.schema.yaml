@@ -1,0 +1,80 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/multi-signal-evolution-receipt.schema.yaml
+title: Kubrick Multi-Signal Evolution Receipt
+description: Deterministic multi-signal receipt for every pattern evolution event. Structural changes never apply automatically.
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - receipt_id
+  - pattern_id
+  - evidence_sources
+  - multi_signal_scores
+  - proposed_changes
+  - human_review_gate
+  - rationale
+  - authority
+properties:
+  schema_version: {const: "1.0.0"}
+  receipt_id: {type: string, minLength: 1}
+  pattern_id: {type: string, minLength: 1}
+  evidence_sources:
+    type: object
+    additionalProperties: false
+    required: [use_receipts, forge_bundles]
+    properties:
+      use_receipts: {type: array, items: {type: string}}
+      forge_bundles: {type: array, items: {type: string}}
+      source_projects: {type: array, items: {type: string}}
+  multi_signal_scores:
+    type: object
+    additionalProperties: false
+    required:
+      - confidence_evidence
+      - mutation_success
+      - production_feasibility
+      - anti_slop_compliance
+      - cultural_boundary_respect
+      - payoff_realization
+    properties:
+      confidence_evidence: {type: number, minimum: 0, maximum: 1}
+      mutation_success: {type: [number, "null"], minimum: 0, maximum: 1}
+      production_feasibility: {type: [number, "null"], minimum: 0, maximum: 1}
+      anti_slop_compliance: {type: [number, "null"], minimum: 0, maximum: 1}
+      cultural_boundary_respect: {type: [number, "null"], minimum: 0, maximum: 1}
+      payoff_realization: {type: [number, "null"], minimum: 0, maximum: 1}
+      collision_pressure: {type: [number, "null"], minimum: 0, maximum: 1}
+      debt_pressure: {type: [number, "null"], minimum: 0, maximum: 1}
+  proposed_changes:
+    type: object
+    additionalProperties: false
+    required: [confidence_delta, lifecycle_action, structural]
+    properties:
+      confidence_delta: {type: number, minimum: -0.2, maximum: 0.2}
+      lifecycle_action: {enum: [NONE, DEPRECATE, RETIRE]}
+      structural:
+        type: object
+        additionalProperties: false
+        properties:
+          add_misuse_risks: {type: array, items: {type: string}}
+          add_mutation_variables: {type: array, items: {type: string}}
+          requires_human_approval: {const: true}
+  human_review_gate:
+    type: object
+    additionalProperties: false
+    required: [required, reasons, automatic_application_allowed]
+    properties:
+      required: {type: boolean}
+      reasons: {type: array, items: {type: string}}
+      automatic_application_allowed: {const: false}
+      large_confidence_change: {type: boolean}
+      structural_mutation: {type: boolean}
+  rationale: {type: array, minItems: 1, items: {type: string}}
+  authority:
+    type: object
+    additionalProperties: false
+    required: [state, forge_canonical, automatic_corpus_change_allowed]
+    properties:
+      state: {const: PROPOSAL}
+      forge_canonical: {const: true}
+      automatic_corpus_change_allowed: {const: false}

@@ -43,6 +43,10 @@ def main(context: Path, result: Path) -> int:
         # An acknowledged attempt is terminal even if spawning failed: replaying
         # the whole token at atexit would duplicate the successful backends.
         failed = _respawn_dashboard_processes(commands) if commands else []
+        if failed:
+            from hermes_cli.update_serve_obligations import clear_pending_restart_markers
+
+            clear_pending_restart_markers(pid for pid, command, _ in candidates if command in failed)
         handled = True
         if skipped or failed:
             print("Some stopped backends could not be relaunched; restart them manually.", file=sys.stderr)

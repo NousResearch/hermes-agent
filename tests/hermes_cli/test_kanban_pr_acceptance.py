@@ -18,10 +18,13 @@ def github(tmp_path, monkeypatch):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state["requests"].append(self.path)
+            if state.get("http_error"):
+                self.send_error(state["http_error"], "fixture-secret-must-not-escape")
+                return
             sha = state["head"]
             if self.path == "/graphql":
                 value = {"data": {"repository": {"pullRequest": {
-                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "headRefOid": sha, "baseRefName": "main", "state": state.get("pr_state", "OPEN"),
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
@@ -43,7 +46,9 @@ def github(tmp_path, monkeypatch):
             elif "/statuses" in self.path:
                 value = [[]]
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": sha}, "base": {"ref": "main"},
+                         "state": "open" if state.get("pr_state", "OPEN") == "OPEN" else "closed",
+                         "merged": state.get("pr_state") == "MERGED"}
             else:
                 self.send_error(404)
                 return
@@ -62,7 +67,10 @@ def github(tmp_path, monkeypatch):
     gh = shim / "gh"
     gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try: print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as e:\n"
+                  " print('HTTP '+str(e.code)+' '+e.read().decode(), file=sys.stderr)\n"
+                  " sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -230,3 +238,41 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("linux")
+def test_completion_reuses_bound_pr_receipt_from_prior_run(github):
+    published_pr = "https://github.com/acme/repo/pull/7"
+    with connect() as conn:
+        tid = kb.create_task(conn, title="rework", completion_contract="acme/repo")
+        kb._synthesize_ended_run(
+            conn, tid, outcome="review_requested", metadata={"published_pr": published_pr},
+        )
+        assert kb.block_task(conn, tid, reason="Waiting for operator", kind="needs_input")
+
+        assert kb.complete_task(conn, tid, summary="Approved after rework")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()[0])
+        assert receipt["ok"]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("source", ["handoff", "caller"])
+@pytest.mark.parametrize("value", [None, 42, "broken", "https://github.com/other/repo/pull/8", "https://github.com/acme/repo/pull/8", "omitted"])
+def test_prior_receipt_does_not_override_explicit_evidence(github, source, value):
+    url = "https://github.com/acme/repo/pull/7"
+    with connect() as conn:
+        tid = kb.create_task(conn, title="receipt", completion_contract=url)
+        kb._synthesize_ended_run(conn, tid, outcome="review_requested", metadata={"published_pr": url})
+        metadata = {} if value == "omitted" else {"published_pr": value}
+        if source == "handoff":
+            kb._synthesize_ended_run(conn, tid, outcome="review_requested", metadata=metadata)
+            metadata = None
+        assert kb.complete_task(conn, tid, summary="Approved", metadata=metadata) is (value == "omitted")
+        assert (kb.get_task(conn, tid).status == "done") is (value == "omitted")

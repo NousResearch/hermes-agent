@@ -469,6 +469,41 @@ describe('view state', () => {
     expect($reviewSelectedPath.get()).toBe('target.ts')
     expect($reviewDiff.get()).toBe('target diff')
   })
+
+  it('openReviewForPath falls through to another scope when the pane\'s scope cannot list the clicked file', async () => {
+    // Restart wiped the in-memory lastTurn baseline: the pane's persisted scope
+    // lists nothing (base null → empty), but the file exists in 'branch'.
+    const review = stubReview({
+      list: vi.fn(async (_cwd: string, scope: string) =>
+        scope === 'branch' ? { files: [file('Service.ts')] } : { files: [] }
+      ),
+      diff: vi.fn(async () => 'branch diff')
+    })
+
+    $reviewOpen.set(true)
+    $reviewScope.set('lastTurn')
+
+    await openReviewForPath('Service.ts')
+
+    expect($reviewScope.get()).toBe('branch')
+    expect($reviewSelectedPath.get()).toBe('Service.ts')
+    expect($reviewDiff.get()).toBe('branch diff')
+    expect(review.list).toHaveBeenLastCalledWith('/repo', 'branch', null)
+  })
+
+  it('openReviewForPath restores the user\'s scope when no scope lists the clicked file', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('other.ts')] })) })
+    $reviewOpen.set(true)
+    $reviewScope.set('lastTurn')
+
+    await openReviewForPath('vanished.ts')
+
+    // The card was stale; the pane is left exactly as the user had it.
+    expect($reviewScope.get()).toBe('lastTurn')
+    expect($reviewSelectedPath.get()).toBeNull()
+    // Initial list + one per alternative scope + the restoring refresh.
+    expect(review.list).toHaveBeenCalledTimes(4)
+  })
 })
 
 describe('mutations', () => {

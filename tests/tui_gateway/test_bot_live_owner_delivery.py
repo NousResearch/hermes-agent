@@ -48,6 +48,8 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_reopen_routed_session_row": noop,
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
+        # A new turn supersedes any pending quota resume.
+        "contextlib": contextlib, "_clear_quota_resume": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
@@ -87,6 +89,7 @@ def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_
         '_poll_bot_live_delivery_once': lambda *a: calls.append('legacy-claim'),
         '_maybe_fire_tui_loop_tick': lambda *a: None,
         '_maybe_fire_tui_heartbeat_tick': lambda *a: None,
+        '_QUOTA_RESUME_POLL_SECONDS': 0, '_maybe_fire_quota_resume': lambda *a: None,
         '_notif_poll_kanban': lambda *a: None,
         '_session_profile_runtime_scope': lambda session: contextlib.nullcontext(),
         '_session_home': lambda session: tmp_path,

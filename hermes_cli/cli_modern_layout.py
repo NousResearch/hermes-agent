@@ -388,12 +388,15 @@ def modern_input_rules(cli, kb):
     bottom = Window(char="─", height=lambda: cli._tui_input_rule_height("bottom"), style=rule_style)
 
     def _can_queue() -> bool:
+        # Complete first, like a shell: an open menu or visible ghost suggestion takes Tab.
         from prompt_toolkit.application import get_app
         from cli import _looks_like_slash_command
         from hermes_cli.cli_subagent_monitor import modal_prompt_active
+        from hermes_cli.commands_completion import ghost_suggestion_visible
         buf = get_app().current_buffer
         text = buf.text.strip()
         return bool(getattr(cli, "_agent_running", False) and text and buf.complete_state is None
+                    and not ghost_suggestion_visible(buf)
                     and not _looks_like_slash_command(text) and not text.startswith("!")
                     and not modal_prompt_active(cli))
 

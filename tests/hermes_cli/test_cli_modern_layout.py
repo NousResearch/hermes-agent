@@ -172,6 +172,39 @@ def test_tab_never_queues_what_a_prompt_owns(prompt):
         assert not tab.filter(), prompt
 
 
+def test_tab_completes_ghost_suggestion_before_queueing():
+    """Tab while a turn runs accepts the ghost auto-suggestion first (shell muscle memory); only a
+    composer with nothing left to complete queues, so a half-typed message is never sent."""
+    from types import SimpleNamespace
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.auto_suggest import Suggestion
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import BufferControl, Layout, Window
+    from cli import HermesCLI
+    from hermes_cli.cli_modern_layout import modern_input_rules
+
+    cli = SimpleNamespace(_agent_running=True, _tui_input_rule_height=lambda pos: 1)
+    kb = KeyBindings()
+    modern_input_rules(cli, kb)
+    tab = next(b for b in kb.bindings if b.keys == (Keys.ControlI,))
+    buf = Buffer(document=Document("fix the fla"))  # cursor at the end, as after typing
+    buf.suggestion = Suggestion("ky test")
+    app = Application(layout=Layout(Window(BufferControl(buffer=buf))))
+    with set_app(app):
+        buf.cursor_position = 3  # moved left: prompt_toolkit keeps the stale suggestion but hides it
+        assert tab.filter()  # nothing visible to complete, so Tab queues rather than inserting mid-word
+        buf.cursor_position = len(buf.text)
+        assert not tab.filter()
+        HermesCLI._tui_handle_tab(None, SimpleNamespace(current_buffer=buf))  # the fallback Tab binding
+        assert buf.text == "fix the flaky test"
+        buf.suggestion = None
+        assert tab.filter()  # control: nothing left to complete, so Tab queues
+
+
 def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
     """The glyph layout's echo of a long prompt is one logical line per source line: the terminal
     wraps it, so widening the window re-flows it instead of keeping old-width breaks."""

@@ -20,7 +20,15 @@ _INTERRUPTED_PLACEHOLDER = "[interrupt: no assistant output for this turn]"
 _LEGACY_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
 
 
-def hidden_interrupt_placeholder_row() -> dict:
+def hidden_interrupt_placeholder_row(reasoning: str = "") -> dict:
     """A fresh assistant row that is invisible in transcripts but carries the placeholder as its
-    non-empty ``api_content``, so the pre-call sanitizer does not re-heal it every call (#88955)."""
-    return {"role": "assistant", "content": "", "display_kind": "hidden", "api_content": _INTERRUPTED_PLACEHOLDER}
+    non-empty ``api_content``, so the pre-call sanitizer does not re-heal it every call (#88955).
+
+    ``reasoning`` attaches reasoning already streamed before the interrupt so it survives the
+    persist (#134946); it lives in ``reasoning_content`` only — never ``content``/``api_content``,
+    which the wire replays byte-for-byte. An empty ``reasoning_content`` key is omitted so the
+    row keeps its exact pre-#134946 shape for every caller with no reasoning."""
+    row = {"role": "assistant", "content": "", "display_kind": "hidden", "api_content": _INTERRUPTED_PLACEHOLDER}
+    if isinstance(reasoning, str) and reasoning.strip():
+        row["reasoning_content"] = reasoning
+    return row

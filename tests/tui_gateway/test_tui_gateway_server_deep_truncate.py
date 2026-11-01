@@ -20,7 +20,7 @@ def _session(agent=None, **extra):
 
 def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
     # register() rebinds the handlers onto the server namespace, so the flag is read there.
-    monkeypatch.setattr(server, "DEEP_TRUNCATE_ENFORCED", True)  # the next release's behaviour
+    # Enforced since the rollout flip (#145556): no monkeypatch, the default now refuses.
     replaced = []
 
     class _FakeDB:
@@ -71,7 +71,6 @@ def test_prompt_submit_refuses_deep_truncation_without_confirm(monkeypatch):
 def test_deep_truncate_counts_every_durable_row_a_merged_carrier_holds(monkeypatch):
     """A user;user run repaired into one live carrier is several durable user turns: cutting at
     its first row archives all of them, so it needs confirm_deep_truncate like any deep cut."""
-    monkeypatch.setattr(server, "DEEP_TRUNCATE_ENFORCED", True)
     replaced = []
 
     physical = [{"_row_id": 101, "role": "user", "content": "a"}, {"_row_id": 102, "role": "user", "content": "b"},
@@ -202,10 +201,9 @@ def test_archived_user_turns_counts_a_carrier_without_its_own_row_id():
         methods_prompt._load_durable_truncation_history = original
 
 
-def test_unconfirmed_deep_truncation_is_warn_only_this_release(monkeypatch, caplog):
-    """Rollout (G15-B): an older client without confirm_deep_truncate keeps working for one release;
-    the cut runs and the would-be refusal is logged."""
-    import logging
+def test_unconfirmed_deep_truncation_is_refused_by_default(monkeypatch, caplog):
+    """Rollout complete (#145556): an unconfirmed deep cut is refused with 4033 before any
+    rows move, and the refusal names the counts the client needs to confirm."""
 
     replaced = []
 
@@ -222,13 +220,12 @@ def test_unconfirmed_deep_truncation_is_warn_only_this_release(monkeypatch, capl
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server.threading, "Thread", lambda *a, **k: types.SimpleNamespace(start=lambda: None))
     try:
-        with caplog.at_level(logging.WARNING):
-            result = server.handle_request({"id": "1", "method": "prompt.submit", "params": {
-                "session_id": "warn-only-sid", "text": "u1", "truncate_before_row_id": 102,
-                "confirm_truncate": True}})
-        assert result.get("error") is None
-        assert replaced == [history[:2]]
-        assert "ALLOWED (warn-only release) unconfirmed deep truncation" in caplog.text
+        result = server.handle_request({"id": "1", "method": "prompt.submit", "params": {
+            "session_id": "warn-only-sid", "text": "u1", "truncate_before_row_id": 102,
+            "confirm_truncate": True}})
+        assert result["error"]["code"] == 4033
+        assert result["error"]["data"] == {"archived_messages": 4, "archived_user_turns": 2}
+        assert replaced == [] and server._sessions["warn-only-sid"]["history"] == history
     finally:
         server._sessions.pop("warn-only-sid", None)
 

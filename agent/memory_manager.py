@@ -475,31 +475,29 @@ class MemoryManager:
         )
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
-        """Queue ``fn`` on the serialized worker (created lazily; None once shutting down) and track its
-        durability class. Runs under the caller's contextvars (``ctx_bound``). If the executor is
-        unavailable outside shutdown, run inline — the historical fail-safe."""
+        """Queue ``fn`` on the serialized worker (created lazily, retired when its queue drains) and
+        track its durability class. Runs under the caller's contextvars (``ctx_bound``). If the
+        executor is unavailable outside shutdown, run inline — the historical fail-safe."""
         fn = ctx_bound(in_owner_home(self._bound_scope, fn))
-        executor = None if self._shutting_down else self._sync_executor
-        if executor is None and not self._shutting_down:
+        future = None
+        try:
+            # Acquire + submit under one lock: _forget_background_future retires the idle worker
+            # under the same lock, so a submit can never race a retirement into the inline fallback.
+            # The callback is attached outside it — an already-completed future fires callbacks
+            # synchronously.
             with self._sync_executor_lock:
-                if self._sync_executor is None and not self._shutting_down:
+                if self._shutting_down:
+                    logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
+                    return
+                if self._sync_executor is None:
                     try:
                         # Daemon workers: a wedged provider must never block interpreter exit.
                         from tools.daemon_pool import DaemonThreadPoolExecutor
                         self._sync_executor = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="mem-sync")
                     except Exception as e:  # pragma: no cover - resource exhaustion
                         logger.warning("Failed to create memory sync executor: %s", e)
-                executor = self._sync_executor
-        future = None
-        try:
-            # Submit+track atomically with the shutdown snapshot. The callback is attached
-            # outside the lock: an already-completed future invokes callbacks synchronously.
-            with self._sync_executor_lock:
-                if self._shutting_down:
-                    logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
-                    return
-                if executor is not None:
-                    future = executor.submit(fn)
+                if self._sync_executor is not None:
+                    future = self._sync_executor.submit(fn)
                     self._background_futures[future] = kind
         except RuntimeError:
             if self._shutting_down:
@@ -545,8 +543,21 @@ class MemoryManager:
         return ((self._bound_scope or {}).get("home_key") or self._home_key, provider.name)
 
     def _forget_background_future(self, future: Future) -> None:
+        """Drop a finished task; the last one out retires the idle worker.
+
+        A manager's single parked worker otherwise outlived its agent for the process's whole life
+        (one ``mem-sync`` thread per session since boot) whenever the agent was dropped on a
+        path that never called ``release_soft``. The worker is rebuilt lazily on the next write, so
+        retirement never loses or reorders queued work: it only runs with the queue empty.
+        """
         with self._sync_executor_lock:
             self._background_futures.pop(future, None)
+            executor = None
+            if not self._background_futures and not self._shutting_down:
+                executor, self._sync_executor = self._sync_executor, None
+        if executor is not None:
+            # wait=False: this runs on the worker's own done-callback; a None sentinel stops it.
+            executor.shutdown(wait=False, cancel_futures=False)
 
     def flush_pending(self, timeout: Optional[float] = None) -> bool:
         """Block until queued sync/prefetch work has drained (False on timeout).

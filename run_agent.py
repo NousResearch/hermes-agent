@@ -187,14 +187,23 @@ def _notify_context_engine_session_end(agent: Any, messages: Optional[list]) -> 
         _quietly(lambda: engine.on_session_end(agent.session_id or "", messages or []))
 
 
-def _pool_may_recover_from_rate_limit(pool) -> bool:
+def _pool_may_recover_from_rate_limit(
+    pool, *, model: Optional[str] = None, failed_key: Optional[str] = None,
+    failed_entry_id: Optional[str] = None,
+) -> bool:
     """Wait for credential-pool rotation (True) or fall back to ``fallback_model`` (False) after a 429.
 
-    Rotation only helps when the pool has somewhere to go; a single-credential pool would retry the same quota.
+    Rotation only helps when the pool has somewhere ELSE to go for the model that was
+    rate-limited: not the credential that just failed (nor a duplicate seat sharing its key),
+    not an entry benched for *model* — including a bench a sibling process persisted that this
+    pool has not seen yet. Otherwise the turn would sleep through ``Retry-After`` (up to 600s)
+    and rotate onto an entry that fails the same way, while the fallback chain sits unused.
 
-    See issues #11314 and #13636.
+    See issues #11314, #13636 and #117933.
     """
-    return pool is not None and pool.has_available() and len(pool.entries()) > 1
+    if pool is None or len(pool.entries()) <= 1:
+        return False
+    return bool(pool.has_rotation_target(model=model, exclude_key=failed_key, exclude_id=failed_entry_id))
 
 
 class _StreamErrorEvent(Exception):

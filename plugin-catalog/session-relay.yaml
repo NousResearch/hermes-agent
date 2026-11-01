@@ -1,7 +1,7 @@
 name: session-relay
 version: "0.4.0"
 repo: https://github.com/ikuro4kin-dev/hermes-session-relay
-sha: 6765362ae3458a6bf74e5ef20da7e0d917861616
+sha: 6a3a3f3ac26e03bf82a05e80d848ba72bcf4bd1b
 title: Session Relay
 description: "Hands a long-running conversation over to a fresh session before the context window fills up: a ⚡ chip in the status bar shows live context usage, and at the threshold (45% by default) the agent writes a hand-off note while the plugin opens a new chat, seeded with that note as its first message and named after the current one (+1). On Telegram and other messaging platforms the gateway half provides a session_relay_handoff tool; after /new it attaches that chat’s note to the first message of the new session, so the fresh session opens with the hand-off. The same hand-off can run automatically on gateway channels, opt-in via auto_handoff (off by default) with auto_threshold_percent (45% by default): a watchdog measures each chat from the trailing lines of the gateway’s own logs/agent.log, waits until the chat is idle, and then resets it the same way; a pending relay is cancelled only by a real message from the user, after which the chat is left alone for 15 minutes. Disclosure: each relay, manual or automatic, runs one extra agent turn and therefore uses model tokens."
 maintainer: ikuro4kin-dev
@@ -11,9 +11,9 @@ requires_hermes: ">=0.22.0"
 docs_url: https://github.com/ikuro4kin-dev/hermes-session-relay#readme
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/6765362ae3458a6bf74e5ef20da7e0d917861616/assets/banner.png
+image: https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/6a3a3f3ac26e03bf82a05e80d848ba72bcf4bd1b/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/6765362ae3458a6bf74e5ef20da7e0d917861616/assets/status-bar.png
+  - https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/6a3a3f3ac26e03bf82a05e80d848ba72bcf4bd1b/assets/status-bar.png
 capabilities:
   provides_tools:
     - session_relay_handoff

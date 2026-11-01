@@ -6861,8 +6861,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
                 return
         elif video := msg.video or getattr(msg, "video_note", None):
+            is_video_note = video is not msg.video
             if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
                 return
+            if is_video_note and event.media_types:
+                # A round video note stays a video attachment for visual analysis, but its
+                # audio track is also eligible for the normal STT pipeline
+                # (gateway.run._event_media_is_stt_input).
+                event.metadata["telegram_video_note"] = True
         elif msg.document and await self._cache_inbound_document(msg, event):
             return
         media_group_id = getattr(msg, "media_group_id", None)

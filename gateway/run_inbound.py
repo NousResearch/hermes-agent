@@ -1427,6 +1427,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     audio_file_paths.append(path)
                 elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
                     audio_paths.append(path)
+            elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
+                # A Telegram round video note stays in video_paths for vision AND its audio
+                # track goes through STT, like a voice note.
+                audio_paths.append(path)
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
         return image_paths, audio_paths, audio_file_paths, video_paths

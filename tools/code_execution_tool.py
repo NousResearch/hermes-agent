@@ -294,6 +294,9 @@ def _call(tool_name, args):
     # Session kernels outlive the RPC server's 300s idle window, so their
     # connection can be legitimately gone by the next cell. The server
     # re-accepts (HERMES_RPC_PERSISTENT=1); retry once on a fresh socket.
+    # A recv TIMEOUT is not a dead connection: the request was delivered and
+    # is still being served (e.g. waiting on an approval), so replaying it
+    # would run the tool twice. Only a dead connection is retried.
     _attempts = 2 if os.environ.get("HERMES_RPC_PERSISTENT") == "1" else 1
     with _call_lock:
         for _attempt in range(_attempts):
@@ -309,7 +312,7 @@ def _call(tool_name, args):
                     if buf.endswith(b"\\n"):
                         break
                 break
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as _exc:
                 global _sock
                 try:
                     if _sock is not None:
@@ -317,7 +320,7 @@ def _call(tool_name, args):
                 except OSError:
                     pass
                 _sock = None
-                if _attempt + 1 >= _attempts:
+                if isinstance(_exc, socket.timeout) or _attempt + 1 >= _attempts:
                     raise
     raw = buf.decode().strip()
     result = json.loads(raw)

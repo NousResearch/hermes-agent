@@ -1062,8 +1062,24 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
         # patch_replace already attached a richer "Did you mean?" snippet.
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
             failure_count = 0
+            _resolved_target = (_path_to_resolved.get(path) or path) if path else ""
             if mode == "replace" and path:
-                failure_count = _record_patch_failure(task_id, _path_to_resolved.get(path) or path)
+                failure_count = _record_patch_failure(task_id, _resolved_target)
+            if old_string and any(tok in old_string for tok in ("[CREDIT_CARD]", "[REDACTED", "«redacted:")):
+                result_dict["_redaction_warning"] = (
+                    "old_string contains a view-layer redaction placeholder ([CREDIT_CARD] / [REDACTED]) "
+                    "that read_file injected for display; the file on disk holds the unredacted text. "
+                    "Anchor old_string on surrounding unredacted lines or use terminal python3 to edit "
+                    "around the redacted span."
+                )
+            with _read_tracker_lock:
+                _cov = (_read_tracker.get(task_id) or {}).get("read_coverage", {}).get(_resolved_target)
+            if _cov and _cov.get("ranges") and _resolved_target not in _known:
+                _r_str = ", ".join(f"{s}-{e}" for s, e in _cov["ranges"][:4])
+                result_dict["_coverage_hint"] = (
+                    f"Partial read coverage on {path!r}: you only read line range(s) {_r_str}. "
+                    "Re-read the target region with read_file before retrying."
+                )
             if failure_count >= 3:
                 result_dict["_hint"] = (
                     f"This is failure #{failure_count} patching {path!r}. "
@@ -1073,6 +1089,11 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                     "surrounding context lines, or (3) re-read the file in "
                     "full, then use write_file to replace it if the targeted "
                     "region is hard to anchor.")
+            elif failure_count == 2:
+                result_dict["_hint"] = (
+                    f"This is failure #2 patching {path!r}. Copy the exact target lines from "
+                    "the 'Did you mean' section above (without line-number prefixes) or call "
+                    "read_file on that line range before retrying.")
             elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "

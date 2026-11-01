@@ -1479,18 +1479,16 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
-    """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
-    the placeholder header). Never overwrites an existing profile ``.env``.
+    """Give every named profile lacking a ``.env`` one; never overwrites an existing one.
 
-    Profiles created before the dashboard/CLI started seeding a ``.env`` (PR #44792) have none, so once the
-    Channels/Keys endpoints became profile-scoped those profiles stopped inheriting the root install's
-    credentials and showed everything as unconfigured. To avoid breaking anyone on update, copy the DEFAULT
-    install's ``.env`` into each named profile that lacks one — that preserves the effective credentials
-    those profiles were already running with (they previously read the root ``.env`` via the process
-    environment). Users can then diverge per profile from there.
+    Pre-#44792 profiles read the root ``.env`` through the process environment, so on update each
+    gets a copy of the default's (else the placeholder header) to keep its model/tool credentials.
+    Messaging-channel keys are stripped like ``--clone``: one bot credential can't be consumed twice.
     """
+    from hermes_cli.profile_channels import ChannelKeyIndex, strip_channel_env_file
     backfilled: list[str] = []
-    default_env = _get_default_hermes_home() / ".env"
+    default_home = _get_default_hermes_home()
+    default_env, index = default_home / ".env", None
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
@@ -1498,6 +1496,7 @@ def backfill_profile_envs(quiet: bool = False) -> list[str]:
         try:
             if default_env.is_file():
                 shutil.copy2(default_env, env_path)
+                strip_channel_env_file(env_path, index := index or ChannelKeyIndex(default_home))
             else:
                 env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)

@@ -542,8 +542,14 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
 
 
 def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
-    value = cell.findtext(f"{s}v") or ""
+    cached = cell.find(f"{s}v")
+    value = cached.text or "" if cached is not None else ""
     typ = cell.get("t", "")
+    formula = cell.find(f"{s}f")
+    if formula is not None and (cached is None or (not value and typ != "str")):
+        # Generated workbooks often have no calculated cache. Retain their
+        # formula without pretending to evaluate it or reporting an empty cell.
+        return f"[uncached formula: ={formula.text}]" if formula.text else "[uncached formula]"
     if typ == "s":
         try:
             return shared[int(value)]

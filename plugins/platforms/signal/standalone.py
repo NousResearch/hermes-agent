@@ -60,11 +60,32 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             return {"error": "Signal account not configured"}
         valid_media = media_files or []
         attachment_paths = []
+        try:
+            from gateway.platforms.base import _log_safe_path, validate_media_delivery_path
+        except Exception:
+            validate_media_delivery_path = None
+            _log_safe_path = lambda p: str(p)[:200]
         for media_path, _is_voice in valid_media:
-            if os.path.exists(media_path):
-                attachment_paths.append(media_path)
+            # Defense-in-depth (#34270): do not attach a path the delivery policy
+            # rejects, even if a caller skipped filter_media_delivery_paths.
+            # Import failure fails closed (skip the file).
+            safe_path = None
+            if validate_media_delivery_path is None:
+                logger.warning("Signal: media path validator unavailable, skipping %s", _log_safe_path(media_path))
             else:
-                logger.warning("Signal media file not found, skipping: %s", media_path)
+                try:
+                    safe_path = validate_media_delivery_path(media_path)
+                except Exception:
+                    safe_path = None
+            if safe_path:
+                attachment_paths.append(safe_path)
+            elif os.path.exists(media_path):
+                logger.warning(
+                    "Signal: skipping unsafe media path outside allowed roots: %s",
+                    _log_safe_path(media_path),
+                )
+            else:
+                logger.warning("Signal media file not found, skipping: %s", _log_safe_path(media_path))
         # No attachments still means one (text-only) batch; text rides on batch #0 only.
         per_batch = rl.SIGNAL_MAX_ATTACHMENTS_PER_MSG
         att_batches = [attachment_paths[i:i + per_batch] for i in range(0, len(attachment_paths), per_batch)] or [[]]

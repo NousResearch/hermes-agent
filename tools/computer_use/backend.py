@@ -13,6 +13,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.provider_base import ProviderBase
 
 
+WINDOW_GONE_CODES = frozenset({"window_not_found", "window_id_not_found", "window_target_not_found",
+                               "px_window_not_found", "bring_to_front_window_not_found"})
+
+
+def is_window_gone(code: Optional[str], message: str) -> bool:
+    """Recognize a dead window even when a capture error lost its structured code."""
+    return code in WINDOW_GONE_CODES or any(part in str(message or "").lower() for part in (
+        "no record of window", "is not a live window", "closed or stale",
+        "is stale or no longer running", "no window with window_id"))
+
+
 @dataclass
 class UIElement:
     """One interactable element on the current screen."""

@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_dir_acl import make_user_dir
 
 from agent.image_eviction_policy import image_dimensions_from_bytes
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
+from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, is_window_gone
 
 logger = logging.getLogger(__name__)
 
@@ -526,6 +526,13 @@ def _classify_action_result(res: ActionResult) -> dict[str, Any]:
     if res.effect == "unverifiable":
         return {"decision": "verify_fresh_state", "hint": ("Input was delivered but not confirmed. Re-capture and check the "
                 "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
+    if is_window_gone(res.code, res.message) or "window_changed" in res.meta:
+        changed = res.meta.get("window_changed") or {}
+        candidate, pid = changed.get("candidate_window_id"), res.meta.get("pid")
+        capture = f"capture(pid={pid}, window_id={candidate})" if candidate is not None else "capture by app"
+        return {"decision": "recapture", "hint": (
+            "The target window closed or was recreated, so the input did not land. Do not repeat it or change "
+            f"delivery modes. Take a new {capture} and act only on the fresh screenshot.")}
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
         meta = res.meta if isinstance(res.meta, dict) else {}
         delivered, requested = meta.get("delivered_chars"), meta.get("requested_chars")
@@ -752,7 +759,17 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
                                                             else {"app": getattr(backend, "_last_app", None)}))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
-        return _text_response(res)
+        if not is_window_gone(None, str(e)):
+            return _text_response(res)
+        sole_window = getattr(backend, "_sole_window_of", None)
+        candidate = sole_window(exact["pid"], exact["window_id"]) if sole_window and exact["pid"] is not None else None
+        if clear_target := getattr(backend, "_clear_active_target", None):
+            clear_target()
+        capture = f"capture(pid={exact['pid']}, window_id={candidate})" if candidate is not None else "capture"
+        payload = _action_payload(res)
+        payload["follow_up_capture"] = {"ok": False, "reason": "window_changed", "candidate_window_id": candidate,
+                                        "hint": f"the window closed; take a new {capture}"}
+        return json.dumps(payload)
     fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
     resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):

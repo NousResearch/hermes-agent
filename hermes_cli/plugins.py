@@ -1475,6 +1475,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         entry = self._plugin_skills.get(qualified_name)
         return entry["path"] if entry else None
 
+    def find_plugin_skill_leaf(self, area: str, leaf: str) -> Optional[str]:
+        """Return the qualified name of the plugin skill ``area`` that has a nested ``leaf/SKILL.md``."""
+        for qualified, entry in sorted(self._plugin_skills.items()):
+            if entry["bare_name"] == area and (entry["path"].parent / leaf / "SKILL.md").is_file():
+                return qualified
+        return None
+
     def list_plugin_skills(self, plugin_name: str) -> list[str]:
         """Return sorted bare names of all skills registered by *plugin_name*."""
         prefix = f"{plugin_name}:"

@@ -986,6 +986,14 @@ def _read_referenced_script(
         return None, False
 
 
+def _is_null_device(metadata: os.stat_result) -> bool:
+    """Whether *metadata* is ``os.devnull``: executing or sourcing it runs nothing."""
+    try:
+        return stat.S_ISCHR(metadata.st_mode) and os.path.samestat(metadata, os.stat(os.devnull))
+    except OSError:
+        return False
+
+
 def _read_referenced_script_unlocked(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
@@ -1014,11 +1022,12 @@ def _read_referenced_script_unlocked(
         metadata = os.fstat(descriptor)
         # Directories are not scripts. Docker Desktop writes ``fpath=(~/.docker/completions …)`` into
         # ``~/.zshrc``; the walk then treats that dir as a referenced script and used to fail-closed,
-        # blocking ``source ~/.zshrc`` (#86753). Devices/sockets stay fail-closed.
+        # blocking ``source ~/.zshrc`` (#86753).
         if not stat.S_ISREG(metadata.st_mode):
             # Directories are not scripts (`fpath=(~/.docker/completions …)` in ~/.zshrc must not
-            # block `source ~/.zshrc`). Devices/sockets stay fail-closed.
-            return None, not stat.S_ISDIR(metadata.st_mode)
+            # block `source ~/.zshrc`), and the null device reads empty (`diff <(…) /dev/null`).
+            # Other devices/sockets stay fail-closed.
+            return None, not (stat.S_ISDIR(metadata.st_mode) or _is_null_device(metadata))
         # Sniff a small prefix first: compiled binaries are never shell scripts, so skip them
         # WITHOUT reading the rest or feeding decoded garbage into the recursion.
         # Deliberately NOT keyed on the mere presence of a NUL byte (#77927): bash executes a text script

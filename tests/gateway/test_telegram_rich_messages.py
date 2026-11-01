@@ -77,6 +77,15 @@ def _make_adapter(extra=None):
     return adapter
 
 
+def test_rich_messages_always_forces_rich_for_plain_text():
+    """``rich_messages: always`` opts every non-empty reply into the rich path."""
+    plain = "just a plain sentence, no tables or math"
+    assert _make_adapter({})._needs_rich_rendering(plain) is False
+    always = _make_adapter({"rich_messages": "always"})
+    assert always._needs_rich_rendering(plain) is True
+    assert always._needs_rich_rendering("") is False
+
+
 def _rich_api_kwargs(adapter):
     """Return the api_kwargs dict from the single sendRichMessage call."""
     call = adapter._bot.do_api_request.call_args

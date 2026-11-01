@@ -606,7 +606,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # math). Opt-in: current clients make rich messages hard to copy as plain text. rich_drafts is a
         # separate opt-in (Desktop can leave rich draft frames overlaid): off keeps native draft transport
         # but skips rich draft rendering; the final reply still lands via sendRichMessage.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # "always" forces rich rendering for every message regardless of whether tables/math are present.
+        _raw_rich = getattr(self.config, "extra", {}).get("rich_messages") if getattr(self.config, "extra", None) else None
+        self._rich_messages_always: bool = str(_raw_rich or "").strip().lower() == "always"
+        self._rich_messages_enabled: bool = self._rich_messages_always or self._coerce_bool_extra("rich_messages", False)
         # CJK stays on legacy MarkdownV2 by default (Desktop/macOS garble, #47653); opt-in for unaffected clients.
         self._allow_cjk_rich_messages: bool = self._coerce_bool_extra("allow_cjk_rich_messages", False)
         self._rich_drafts_enabled: bool = self._coerce_bool_extra("rich_drafts", False)
@@ -1277,7 +1280,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return default
         if isinstance(value, str):
             lowered = value.strip().lower()
-            if lowered in {"true", "1", "yes", "on"}:
+            if lowered in {"true", "1", "yes", "on", "always"}:
                 return True
             if lowered in {"false", "0", "no", "off"}:
                 return False
@@ -1331,6 +1334,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     def _needs_rich_rendering(self, content: str) -> bool:
         """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math.
         Ordinary replies stay on MarkdownV2 so clients render consistent font weight/spacing.
+        If rich_messages is configured as 'always', every non-empty message uses rich rendering.
 
         The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
         tables (MarkdownV2 has no table syntax and rewrites them into bullet lists), GFM task lists,
@@ -1338,6 +1342,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """
         if not content:
             return False
+        if getattr(self, "_rich_messages_always", False):
+            return True
         if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
             return True
         if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):

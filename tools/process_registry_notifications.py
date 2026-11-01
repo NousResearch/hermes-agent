@@ -4,11 +4,92 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 TUI inject into the agent conversation."""
 
 import time
+import logging
 from dataclasses import dataclass
 from contextlib import suppress
 
+logger = logging.getLogger("tools.process_registry")
+
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
+
+
+class ProcessNotificationMixin:
+    """Completion queue ownership and rendering, shared by every registry consumer."""
+
+    def drain_notifications(
+        self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
+    ) -> list[tuple[dict, str]]:
+        """Pop all pending events and return ``(raw_event, formatted_text)`` pairs.
+        Skips completions per ``_drain_should_skip`` (gateway/TUI pass
+        ``skip_poll_observed=False``). Routing (``_owns_event``): async-delegation events
+        always need ownership proof, ordinary events once they carry ``session_key`` or
+        ``origin_ui_session_id``; ``owns_event(evt)`` (strongest; the TUI passes a
+        compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
+        equality; non-owned events are re-queued for their owner. No filter consumes
+        everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        from tools.process_registry import (
+            format_process_notification, is_child_process_notification, should_surface_notification)
+        from queue import Empty
+
+        self.restore_completions()
+        owned_events: list[dict] = []
+        requeue: list[dict] = []
+        # delegation.surface_child_process_notifications, read at most once per drain
+        # and only when an sa- event shows up.
+        surface_child: bool | None = None
+        with self.completion_routing_lock:
+            scan_count = self.completion_queue.qsize()
+            for _ in range(max(0, scan_count)):
+                try:
+                    evt = self.completion_queue.get_nowait()
+                except Empty:
+                    break
+                is_async_delegation = evt.get("type") == "async_delegation"
+                if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
+                    requeue.append(evt)
+                    continue
+                # Routing happened first so a foreign session cannot drop the owner's
+                # event via its own consumed/observed state.
+                _evt_sid = evt.get("session_id", "")
+                if evt.get("type") == "completion" and self._drain_should_skip(
+                    _evt_sid, skip_poll_observed=skip_poll_observed):
+                    continue
+                # Subagent-owned process notifications are suppressed by default — the
+                # child's delegation result is the deliverable. Judge ownership on
+                # owner_task_id (RAW spawning id; task_id is the container key, collapsed
+                # by _resolve_container_task_id). Dropped, NOT requeued: children never
+                # drain, so a requeue would pin the event forever. 'async_delegation'
+                # is the result itself and is NEVER suppressed.
+                _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+                if is_child_process_notification(evt):
+                    if surface_child is None:
+                        surface_child = self._surface_child_process_notifications()
+                    if not should_surface_notification(evt, surface_child=surface_child):
+                        logger.debug(
+                            "Suppressed subagent-owned process notification "
+                            "(delegation.surface_child_process_notifications=false): "
+                            "type=%s session_id=%s task_id=%s",
+                            evt.get("type", "completion"), _evt_sid, _evt_task_id)
+                        continue
+                owned_events.append(evt)
+            for evt in requeue:
+                self.completion_queue.put(evt)
+
+        # Formatting can touch configuration and redactors; keep it outside the
+        # routing reservation so a slow formatter never blocks a current-turn carrier.
+        results: list[tuple[dict, str]] = []
+        for evt in owned_events:
+            try:
+                text = format_process_notification(evt)
+            except Exception:
+                with self.completion_routing_lock:
+                    self.completion_queue.put(evt)
+                logger.exception("Could not format completion; kept for retry")
+                continue
+            if text:
+                results.append((evt, text))
+        return results
 
 
 @dataclass(frozen=True, slots=True)

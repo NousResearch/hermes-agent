@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from cli import HermesCLI
+from tools.process_registry import ProcessRegistry
 from tools.process_registry_notifications import format_process_notification
 from tui_gateway import server
 
@@ -23,7 +24,8 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         cli = HermesCLI.__new__(HermesCLI)
         cli.session_id = event["session_key"]
         cli._pending_input = queue.Queue()
-        registry = SimpleNamespace(drain_notifications=lambda **kw: [(event, payload)], completion_queue=queue.Queue())
+        registry = ProcessRegistry()
+        registry.completion_queue.put(event)
         monkeypatch.setattr("tools.process_registry.process_registry", registry)
         monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
         monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
@@ -75,7 +77,18 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
         monkeypatch.setattr(server, "_notif_dispatch_event", lambda *args: dispatched.append(args))
         session = {"session_key": event["session_key"], "history_lock": threading.RLock()}
-        server._notif_handle_event("ui-session", session, event, set(), registry, format_process_notification, None)
+        # Exercise the same routing reservation + ordered batch handler as the
+        # poller, instead of calling its internal per-event helper directly.
+        registry.completion_queue.put(event)
+        ready, actions = server._notif_drain_ready("ui-session", session, registry)
+        server._notif_handle_ready(
+            "ui-session", session, ready, set(), registry,
+            format_process_notification, None, reservations=actions,
+        )
+        assert len(emitted) == len(dispatched) == 1
+        assert registry.completion_queue.empty()
+        assert session["running"] is True
+        assert dispatched[0][4] == "claimed"
         assert emitted[0][2]["text"] == expected
         assert dispatched[0][3] == payload
         assert server._async_delegation_display_metadata(event)["display_text"] == expected

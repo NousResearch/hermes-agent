@@ -628,6 +628,10 @@ def finalize_turn(
 
     vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
 
+    # Release only carriers not committed to the transcript; durable evidence stays put.
+    from agent.delegation_inject import release_pending_injects_safely
+    release_pending_injects_safely(agent, messages, turn_id=turn_id)
+
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

@@ -75,6 +75,7 @@ def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_
     import time
     import tools.bot_live_delivery as mailbox
     from tools.process_registry import process_registry
+    from tui_gateway import server
     calls = []
     monkeypatch.setattr(mailbox, 'find_canonical_live_owner', lambda home: calls.append(home))
     stop = threading.Event()
@@ -90,6 +91,8 @@ def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_
         '_notif_poll_kanban': lambda *a: None,
         '_session_profile_runtime_scope': lambda session: contextlib.nullcontext(),
         '_session_home': lambda session: tmp_path,
+        '_notif_drain_ready': server._notif_drain_ready,
+        '_notif_log_failure': server._notif_log_failure,
         '_notif_handle_ready': lambda sid, session, ready, *a, **kw: (delivered.extend(ready), stop.set()),
     })
     poll(stop, 'live', {'agent': object(), 'history_lock': threading.RLock(), 'session_key': 'chat',

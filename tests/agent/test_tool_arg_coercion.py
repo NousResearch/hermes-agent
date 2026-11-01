@@ -394,3 +394,17 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+    def test_stringified_array_gets_the_same_nested_repair_as_a_native_one(self):
+        """#142215: a JSON-string array whose elements carry JSON-string fields is
+        repaired exactly like the native-array form (real clarify schema), so
+        ``choices`` reaches the validator as a list either way."""
+        import json as _json
+
+        def payload():
+            return [{"question": "Q?", "choices": _json.dumps(["A", "B"])}]
+
+        native = coerce_tool_args("clarify", {"questions": payload()})
+        stringified = coerce_tool_args("clarify", {"questions": _json.dumps(payload())})
+        assert stringified == native
+        assert native["questions"][0]["choices"] == ["A", "B"]

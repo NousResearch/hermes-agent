@@ -103,7 +103,7 @@ def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):
     # main() resolves HermesCLI from ``cli`` at call time, so patch it there.
     monkeypatch.setitem(_sys.modules, "cli", types.SimpleNamespace(HermesCLI=_FakeCLI))
     monkeypatch.setattr(sw, "_prepare_slash_worker_runtime", lambda: None)
-    monkeypatch.setattr(sw.sys, "stdin", type("S", (), {"readline": lambda self: ""})())
+    monkeypatch.setattr(sw.sys, "stdin", type("S", (), {"readline": lambda self, size=-1: ""})())
     monkeypatch.setattr(_sys, "argv", ["slash_worker", "--session-key", "s", "--model", "m",
                                        "--provider", "moa"])
 

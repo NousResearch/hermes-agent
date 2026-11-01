@@ -26,6 +26,7 @@ import time
 from typing import TYPE_CHECKING
 
 from tui_gateway._stdin_recovery import handle_spurious_eof
+from tui_gateway._input_limits import FrameTooLarge, read_frame
 
 if TYPE_CHECKING:
     from cli import HermesCLI
@@ -182,7 +183,13 @@ def main():
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []
     while True:
-        raw = sys.stdin.readline()
+        try:
+            raw = read_frame(sys.stdin)
+        except FrameTooLarge as exc:
+            # The id sits inside the dropped line, so the gateway side times out this one
+            # request; the drained stream stays aligned for the next.
+            _sw_log(f"dropping oversized request: {exc}")
+            continue
         if not raw:
             if not handle_spurious_eof(_sw_recovery_times, _sw_log):
                 break

@@ -1006,6 +1006,9 @@ _SLASH_BUILTINS = {
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
+    from tui_gateway._input_limits import field_error
+    if too_long := field_error("name", params.get("name")) or field_error("arg", params.get("arg")):
+        return _err(rid, 4000, too_long)
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
@@ -1029,6 +1032,9 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    from tui_gateway._input_limits import field_error
+    if too_long := field_error("command", params.get("command")):
+        return _err(rid, 4000, too_long)  # before anything is resolved or sent to the slash worker
     cmd = params.get("command", "").strip()
     if not cmd:
         return _err(rid, 4004, "empty command")
@@ -1919,9 +1925,12 @@ def _(rid, params: dict) -> dict:
 
 @method("shell.exec")
 def _(rid, params: dict) -> dict:
+    from tui_gateway._input_limits import field_error
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    if too_long := field_error("command", cmd):
+        return _err(rid, 4000, too_long)
     try:
         approval = _tools_mod("tools.approval_detection")
         is_hardline, hardline_desc = approval.detect_hardline_command(cmd)

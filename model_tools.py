@@ -272,7 +272,9 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
+        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER"),
+        bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
     )
 
@@ -379,6 +381,55 @@ def _rewrite_browser_exec(td: dict[str, Any], available: set) -> Optional[dict[s
     return td if "terminal" in available else None
 
 
+# Opt-in (#34545). The model often drives the browser for a plain URL fetch when
+# web_extract would do. Off by default so the schema stays advisory-free.
+_PREFER_FETCH_DIRECTIVE = (
+    "IMPORTANT: this deployment is configured to prefer web_extract"
+    " for non-interactive content retrieval. Use web_extract to fetch"
+    " page or document content from a URL. Only use browser_exec"
+    " when the task requires interaction the fetch tools cannot do —"
+    " logging in, clicking, filling/submitting forms, JS-rendered or"
+    " scroll-dependent content."
+)
+
+
+def _prefer_fetch_over_browser() -> bool:
+    """Whether browser_exec should defer plain fetches to web_extract.
+
+    Reads ``web.prefer_fetch_over_browser`` (default false). ``HERMES_PREFER_FETCH_OVER_BROWSER``
+    overrides config when set. Any failure stays false so the schema is unchanged.
+    """
+    env = os.environ.get("HERMES_PREFER_FETCH_OVER_BROWSER")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from hermes_cli.config import load_config as _load
+
+        cfg = _load() or {}
+        web_cfg = cfg.get("web")
+        if not isinstance(web_cfg, dict):
+            return False
+        return bool(web_cfg.get("prefer_fetch_over_browser", False))
+    except Exception as exc:
+        logger.debug("Could not resolve web.prefer_fetch_over_browser: %s", exc)
+        return False
+
+
+def _rewrite_browser_exec_prefer_fetch(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
+    """Append the prefer-fetch directive only when web_extract is actually available.
+
+    The browser tool stays registered either way (#34545). A hard prefer line with web
+    off would name a tool the session does not have.
+    """
+    if "web_extract" not in available or not _prefer_fetch_over_browser():
+        return td
+    fn = td["function"]
+    desc = fn.get("description", "")
+    if _PREFER_FETCH_DIRECTIVE in desc:
+        return td
+    return _fn_def({**fn, "description": desc + " " + _PREFER_FETCH_DIRECTIVE})
+
+
 def _rewrite_browser_exec_vision(td: dict[str, Any], available: set) -> Optional[dict[str, Any]]:
     """Point a header that says screenshots are not attached at vision_analyze, only when the
     session has it (an auxiliary vision route alone does not expose the tool)."""
@@ -461,7 +512,9 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "discord": _discord_rewriter("get_dynamic_schema_core"),
     "discord_admin": _discord_rewriter("get_dynamic_schema_admin"),
     "browser_cdp": _rewrite_browser_cdp,
-    "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault),
+    "browser_exec": _compose_rewriters(
+        _rewrite_browser_exec, _rewrite_browser_exec_vision, _rewrite_input_tool_for_vault,
+        _rewrite_browser_exec_prefer_fetch),
     "browser_vault": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }

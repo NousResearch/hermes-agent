@@ -363,6 +363,33 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
+def test_archive_rejects_symlink_without_moving_its_source(skills_home, monkeypatch):
+    """The current index follows links, but curator must never relocate their source checkout."""
+    from tools import skill_usage
+    from tools.skill_usage import archive_skill
+
+    skills_dir = skills_home / "skills"
+    source = skills_home.parent / "repo-skills" / "linked-skill"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: linked-skill\ndescription: linked\n---\n", encoding="utf-8",
+    )
+    link = skills_dir / "linked-skill"
+    link.symlink_to(source, target_is_directory=True)
+    (skills_dir / ".bundled_manifest").write_text(
+        "linked-skill:symlink:\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+
+    ok, msg = archive_skill("linked-skill")
+
+    assert ok is False
+    assert "symlinked skill" in msg
+    assert link.is_symlink()
+    assert (source / "SKILL.md").exists()
+    assert not (skills_dir / ".archive" / "linked-skill").exists()
+
+
 def test_forget_removes_record(skills_home):
     from tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")

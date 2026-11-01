@@ -107,6 +107,10 @@ class CanonicalPendingPrompt(Result):
     multi_select: bool | None = None
     # Local viewer turns: the seconds the gateway waits before it gives up on this prompt.
     timeout_s: int | None = None
+    # Guardian escalation context (approval-explain): why the guardian escalated, and
+    # whether it denied (the card then offers once/deny only).
+    smart_reason: str | None = None
+    smart_denied: bool | None = None
 
 
 class CanonicalSnapshotInfo(SessionInventoryFields):

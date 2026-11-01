@@ -69,8 +69,12 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     # the host's shebang limit.
     driver = helper / "gh-driver.py"
     gh.rename(driver)
-    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n')
+    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n',
+                  encoding="utf-8", newline="\n")  # a CRLF shebang names no interpreter
     gh.chmod(0o755)
+    # The renderer launches gh from Python; on Windows that resolves through PATHEXT, which never
+    # matches the extensionless shell fake (and would otherwise reach a real gh.exe).
+    (helper / "gh.cmd").write_text(f'@"{sys.executable}" "{driver}" %*\r\n', encoding="utf-8", newline="")
     needs = {name: {"result": "success"} for name in job["needs"]}
     for name in [*gates.values(), termux]:
         needs[name]["result"] = "failure"

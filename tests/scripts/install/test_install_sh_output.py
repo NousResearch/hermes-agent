@@ -1,7 +1,6 @@
 """install.sh child output: one status line on a terminal, the full stream in CI."""
 import os
 from pathlib import Path
-import pty
 import re
 import shlex
 import subprocess
@@ -27,6 +26,8 @@ def _script(code: int) -> str:
 
 def _on_terminal(tmp_path: Path, code: int) -> tuple[str, str]:
     """Run under a pseudo-terminal; return the transcript as the screen shows it."""
+    import pty  # POSIX-only (needs termios); a module-level import breaks collection on Windows
+
     controller, terminal = pty.openpty()
     proc = subprocess.Popen(["bash", "-c", _script(code)], stdin=terminal, stdout=terminal, stderr=terminal,
                             env=_env(tmp_path), close_fds=True)

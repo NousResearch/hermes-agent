@@ -32,6 +32,8 @@ def release_body(monkeypatch):
         return subprocess.CompletedProcess(argv, 0, '', '')
 
     monkeypatch.setattr(rbt.subprocess, 'run', gh)
+    # The fake above is the gh; never resolve a host's real one.
+    monkeypatch.setattr(rbt.shutil, 'which', lambda _name: None)
     return state
 
 

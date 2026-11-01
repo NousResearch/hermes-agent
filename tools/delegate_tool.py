@@ -291,7 +291,7 @@ def _build_child_agent(
         with delegated_child_context():
             try:
                 child = AIAgent(
-                    **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
+                    **rt, max_iterations=max_iterations, max_steps=getattr(parent_agent, "max_steps", None), prefill_messages=getattr(parent_agent, "prefill_messages", None),
                     enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                     ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                     side_agent=True,
@@ -590,7 +590,9 @@ def delegate_task(
         )
 
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    # ``max_iterations: null`` / invalid in config.yaml → the bounded default, never None (KAN-319).
+    from agent.step_limits import normalize_max_iterations
+    default_max_iter = normalize_max_iterations(cfg.get("max_iterations"), default=DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
     if max_iterations is not None and max_iterations != default_max_iter:

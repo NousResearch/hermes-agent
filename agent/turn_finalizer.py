@@ -21,6 +21,7 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.served_model import result_model_fields
+from agent.step_limits import agent_max_steps
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
@@ -123,18 +124,24 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logge
 
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
-    _pending_verification_response, _pending_verification_response_previewed, logger,
+    _pending_verification_response, _pending_verification_response_previewed, logger, step_count=0,
 ) -> tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
+    # max_steps=None means "no step cap" (KAN-319): normalize before comparing,
+    # since getattr's default does not apply when the attribute exists as None.
+    _max_steps = agent_max_steps(agent)
+    step_exhausted = _max_steps is not None and (step_count or 0) >= _max_steps
     preserved_verification_fallback = False
     if (
-        final_response is None and budget_exhausted and not interrupted and not failed
+        final_response is None and (budget_exhausted or step_exhausted) and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
+        # Step-cap exhaustion reuses the ``max_iterations_reached(`` prefix: kanban recovery,
+        # explainers, failure copy, API routes and metrics all classify by that prefix.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         if _pending_verification_response:
             # A verification gate withheld a composed answer, then the budget ran out:
@@ -526,13 +533,13 @@ def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
-    _pending_verification_response_previewed=False,
+    _pending_verification_response_previewed=False, step_count=0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
-        agent, final_response=final_response, api_call_count=api_call_count,
+        agent, final_response=final_response, api_call_count=api_call_count, step_count=step_count,
         interrupted=interrupted, failed=failed, messages=messages,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,

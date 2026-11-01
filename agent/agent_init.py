@@ -22,6 +22,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
+import yaml
+
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
@@ -2284,8 +2286,14 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    max_steps: Optional[int] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
+    from agent.step_limits import normalize_max_iterations, normalize_max_steps
+
+    # KAN-319: callers (delegation config, YAML) can pass ``None``; the loop and finalizer
+    # compare this against an int counter, so pin it to a positive int here.
+    max_iterations = normalize_max_iterations(max_iterations)
 
     if safe_worker_enabled():
         skip_context_files = skip_memory = skip_background_review = True
@@ -2302,6 +2310,36 @@ def init_agent(
     agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    # Per-agent max_steps (KAN-319). An explicit constructor value (e.g. inherited by a
+    # delegated child) wins; otherwise read the routing config. Always normalized:
+    # None / invalid / <=0 → no cap. Resolve via the Hermes root (profile-independent,
+    # same location ``~/.hermes`` meant), not ``~``, so a
+    # per-account HOME does not silently drop the config.
+    agent.max_steps = normalize_max_steps(max_steps)
+    from hermes_constants import _account_home, get_default_hermes_root
+    _hermes_root = get_default_hermes_root()
+    hermes_routing_path = os.path.join(str(_hermes_root), "hermes-routing.config.yaml")
+    if not os.path.exists(hermes_routing_path):
+        _account_routing_path = os.path.join(str(_account_home() / ".hermes"), "hermes-routing.config.yaml")
+        if os.path.exists(_account_routing_path):
+            hermes_routing_path = _account_routing_path
+            _hermes_root = _account_home() / ".hermes"
+    if agent.max_steps is None and os.path.exists(hermes_routing_path):
+        try:
+            with open(hermes_routing_path) as f:
+                routing_cfg = yaml.safe_load(f) or {}
+            agent_fleet = routing_cfg.get("agent_fleet", {}) or {}
+            # T1.1: merge markdown agent profiles (.hermes/agents/*.md) over config.
+            try:
+                from hermes_cli.agent_profiles import load_agent_profiles, merge_agent_profiles
+                md_profiles = load_agent_profiles(home=_hermes_root)
+                agent_fleet = merge_agent_profiles(agent_fleet, md_profiles)
+            except Exception:
+                pass
+            agent_cfg = agent_fleet.get(getattr(agent, "_profile_name", None) or "default", {}) or {}
+            agent.max_steps = normalize_max_steps(agent_cfg.get("max_steps"))  # None → no cap
+        except Exception:
+            agent.max_steps = None  # no cap on error
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's
     # renderer (StdoutProxy would mangle them). None = builtins.print.
     agent._print_fn = None

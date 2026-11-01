@@ -31,6 +31,7 @@ from agent.prompt_caching import (
 )
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.step_limits import agent_max_steps
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
@@ -1484,6 +1485,7 @@ class _LoopState:
     # reports a prompt below threshold.
     max_compression_attempts: Any
     api_call_count: int = 0
+    step_count: int = 0
     final_response: Any = None
     interrupted: bool = False
     failed: bool = False
@@ -1721,10 +1723,19 @@ def _run_conversation_turn(
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
         return _prelude_result
+    # Normalized once per turn (KAN-319): None/invalid/<=0 → no step cap, so the loop
+    # and turn_finalizer agree and a raw YAML value is never compared to an int.
+    _max_steps = agent_max_steps(agent)
     while _prelude_action != "break" and (
         (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
-    ):
+    ) and (_max_steps is None or s.step_count < _max_steps):
         if _run_phase(begin_iteration, agent, s).action == "break":
+            break
+        s.step_count += 1
+        # On the final step (step_count reaches max_steps), drop tool calls and force text summary
+        if _max_steps is not None and s.step_count >= _max_steps:
+            # Force text summary: skip tool calls, model will produce text response
+            s.finish_reason = "max_steps"
             break
         _run_phase(prepare_iteration, agent, s)
         _run_phase(assemble_api_request, agent, s)

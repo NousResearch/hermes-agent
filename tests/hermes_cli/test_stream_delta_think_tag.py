@@ -137,3 +137,22 @@ class TestFlushRecovery:
         assert not cli._in_reasoning_block
         full = "".join(cli._emitted)
         assert "Launch production" in full
+
+
+class TestFlushRecoversHeldBackFragment:
+    """A partial open-tag prefix held back at end-of-stream must be emitted, not dropped."""
+
+    @pytest.mark.parametrize("tail", ["<", "<th"])
+    def test_flush_emits_partial_tag_outside_reasoning_block(self, tail):
+        cli = _make_cli_stub()
+        cli._stream_box_live = False
+        cli._in_stream_table = False
+        cli._stream_table_buf = []
+        cli.final_response_markdown = "none"
+        cli._close_reasoning_box = lambda: None
+        cli._release_held_status_lines = lambda: None
+
+        cli._stream_delta("a " + tail)
+        assert "".join(cli._emitted) == "a "
+        cli._flush_stream()
+        assert "".join(cli._emitted) == "a " + tail

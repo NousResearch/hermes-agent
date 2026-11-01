@@ -357,6 +357,26 @@ class TestMediaGroups:
         assert event.text == "two images"
         assert event.media_urls == ["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]
         assert len(event.media_types) == 2
+    @pytest.mark.asyncio
+    async def test_document_album_keeps_one_media_text_inlined_flag_per_url(self, adapter):
+        """Regression: a document album merged via _merge_into_pending must rebuild
+        media_text_inlined so it stays empty or exactly one flag per URL — native
+        admission (gateway.session_envelope._validate_native) otherwise rejects the
+        whole album with RuntimeStoreError('invalid_params') and the files never
+        reach the agent (silent drop)."""
+        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        for i in range(3):
+            doc = _make_document(file_name=f"model{i}.xlsx", mime_type=mime)
+            msg = _make_message(document=doc, media_group_id="album-1")
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+            assert adapter.handle_message.await_count == 0
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert len(event.media_urls) == 3
+        assert len(event.media_types) == 3
+        assert event.media_text_inlined == [False, False, False]
+        assert len(event.media_text_inlined) in (0, len(event.media_urls))
 
 
 # ---------------------------------------------------------------------------

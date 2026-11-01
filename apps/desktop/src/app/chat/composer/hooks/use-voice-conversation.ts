@@ -115,6 +115,7 @@ export function useVoiceConversation({
   const conversationRef = useRef<Conversation | null>(null)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
+  const spokenSourceTextRef = useRef('')
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
   const stopBargeMonitorRef = useRef<(() => void) | null>(null)
   const bargeCapturePendingRef = useRef(false)
@@ -215,6 +216,7 @@ export function useVoiceConversation({
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
+    spokenSourceTextRef.current = ''
   }
 
   const handleTurn = useCallback(
@@ -439,6 +441,7 @@ export function useVoiceConversation({
         speechSessionRef.current = null
         responseIdRef.current = null
         spokenSourceLengthRef.current = 0
+        spokenSourceTextRef.current = ''
         setStatus('listening')
 
         return
@@ -677,10 +680,17 @@ export function useVoiceConversation({
 
       const response = pendingResponse()
 
-      if (response && response.id === responseId) {
+      // Persistence may replace the temporary row id while this same reply streams.
+      const sameReply =
+        response &&
+        (response.id === responseId ||
+          (spokenSourceTextRef.current.length > 0 && response.text.startsWith(spokenSourceTextRef.current)))
+
+      if (response && sameReply) {
         if (response.text.length > spokenSourceLengthRef.current) {
           session.append(response.text.slice(spokenSourceLengthRef.current))
           spokenSourceLengthRef.current = response.text.length
+          spokenSourceTextRef.current = response.text
         }
 
         if (!response.pending) {
@@ -857,6 +867,7 @@ export function useVoiceConversation({
 
       responseIdRef.current = responseId
       spokenSourceLengthRef.current = 0
+      spokenSourceTextRef.current = ''
       setStatus('speaking')
 
       // VAD barge-in: the user talking over the reply cuts playback, drops

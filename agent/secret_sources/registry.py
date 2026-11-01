@@ -322,12 +322,32 @@ def _profile_alias_target(var: str, profile: str) -> Optional[str]:
     return alias if alias and is_valid_env_name(alias) and alias.endswith(_ALIAS_SUFFIXES) else None
 
 
+def _register_applied_secret(var: str, value: str, home_path: Path) -> None:
+    """Hand an applied value to the exact-value redaction scrub, scoped to ``home_path``.
+
+    The apply funnel is the only place a secret source's value is guaranteed to pass
+    through, so registering here covers every current and future source at once.
+
+    Bulk sources apply every var of a blob, ``DEBUG=true`` included, and the scrub is an
+    unanchored substring replace over every later tool result: so a single-line value is
+    registered only when it looks like a credential (opaque shape, or a secret-named var
+    with a non-trivial value). Multi-line values always register, line by line.
+    """
+    from agent.redact import _key_has_secret_keyword, _looks_like_opaque_credential, register_vault_redaction_value
+
+    single = value.strip()
+    if ("\n" in value or _looks_like_opaque_credential(single)
+            or (len(single) >= 8 and _key_has_secret_keyword(var))):
+        register_vault_redaction_value(value, home=home_path)
+
+
 class _Applier:
     """Apply phase state for one orchestrated pass: sequential, first-wins, attributed."""
 
     def __init__(self, env: MutableMapping[str, str], report: ApplyReport,
-                 protected: dict[str, str], preserve: frozenset) -> None:
+                 protected: dict[str, str], preserve: frozenset, home_path: Path) -> None:
         self.env, self.report, self.protected, self.preserve = env, report, protected, preserve
+        self.home_path = home_path
         self.claimed: dict[str, str] = {}  # var → source name that won it
 
     def apply_source(self, source: SecretSource, cfg: dict, result: FetchResult,
@@ -375,6 +395,7 @@ class _Applier:
         sr.applied.append(var)
         self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed,
                                                  authoritative=override and var not in self.preserve)
+        _register_applied_secret(var, value, self.home_path)
         return True
 
 
@@ -428,7 +449,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # An alias never shadows a var some source supplies by its real name.
     supplied_directly = {v for _, _, r in fetches if r.ok for v in r.secrets if isinstance(v, str)}
 
-    applier = _Applier(env, report, protected, preserve)
+    applier = _Applier(env, report, protected, preserve, home_path)
     for source, cfg, result in fetches:
         applier.apply_source(source, cfg, result, profile, supplied_directly)
     return report

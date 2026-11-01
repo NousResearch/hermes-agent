@@ -432,6 +432,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_send_retry import SendRetryMixin
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -1610,11 +1611,6 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
-# Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
-# typed failure so the delivery ledger owns the wait (#91969: a 97-minute FloodWait slept verbatim
-# pinned the send coroutine and froze inbound on every platform).
-_SEND_RETRY_INLINE_WAIT_CAP_SECS = 60.0
-
 # Platform-neutral send-failure kinds for ``SendResult.error_kind``: too_long (size cap),
 # bad_format (markup rejected; plain-text retry fixes), forbidden (the bot CANNOT reach the user),
 # not_found (chat/thread/message gone), rate_limited, transient (connection-level, retry-safe),
@@ -1805,7 +1801,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(SendRetryMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3526,129 +3522,6 @@ class BasePlatformAdapter(ABC):
         if isinstance(live_adapter, BasePlatformAdapter) and live_adapter.platform == self.platform:
             return live_adapter
         return self
-
-    @records_delivery
-    async def _send_with_retry(
-        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
-        max_retries: int = 2, base_delay: float = 2.0) -> SendResult:
-        """Send with exponential-backoff retry on transient network errors; permanent
-        failures fall back to a plain-text send, exhausted retries notify the user."""
-        async def _send(text: str) -> SendResult:
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-        async def _send_again(previous: SendResult) -> Optional[SendResult]:
-            """Retry: the whole payload normally; only the undelivered remainder after a partial split
-            delivery (``raw_response["partial_overflow"]``). ``None`` when the adapter cannot resume — the
-            caller then keeps the partial failure rather than re-sending the already-visible head."""
-            if not self._is_partial_delivery(previous):
-                return await _send(content)
-            return await self._resume_partial_send(chat_id, previous, reply_to=reply_to, metadata=metadata)
-
-        result = await _send(content)
-        if result.success or self._send_retry_is_final(result):
-            return result
-        error_str = result.error or ""
-        # A rate-limited / flood-capped send is transient: it should back off
-        # (honoring the server's retry_after when present) rather than fall
-        # through to the plain-text fallback, which re-enters the ban and can
-        # truncate content.  Gate on the platform-neutral classifier as well so
-        # platforms that surface a rate limit without a retry_after field
-        # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
-        is_rate_limited = self._is_rate_limited_error(error_str)
-        is_network = (
-            result.retryable
-            or is_rate_limited
-            or result.retry_after is not None
-            or self._is_retryable_error(error_str)
-        )
-        # Timeouts: not safe to retry (may have delivered) and not a formatting error.
-        if not is_network and self._is_timeout_error(error_str):
-            return result
-        if is_network:
-            # A server-requested retry_after (Telegram FloodWait) overrides backoff, once per send.
-            server_retry_after = result.retry_after
-            for attempt in range(1, max_retries + 1):
-                backoff = server_retry_after
-                if backoff is None:
-                    backoff = base_delay * (2 ** (attempt - 1))
-                elif backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS:
-                    # Never hold this coroutine open for a long server penalty: a 97-minute
-                    # FloodWait slept verbatim once froze inbound on every platform (#91969).
-                    # Return the typed failure; the delivery ledger redelivers after the cooldown.
-                    logger.error(
-                        "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
-                        "typed failure for redelivery instead of sleeping: %s",
-                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
-                    )
-                    return result
-                delay = backoff + random.uniform(0, 1)
-                server_retry_after = None
-                logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
-                               attempt, max_retries, delay, error_str)
-                await asyncio.sleep(delay)
-                resumed = await _send_again(result)
-                if resumed is None:
-                    logger.warning(
-                        "[%s] Split send partly delivered and the remainder cannot be resumed safely; "
-                        "not re-sending the whole payload (would duplicate the visible head): %s", self.name, error_str)
-                    return result
-                result = resumed
-                if result.success:
-                    logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
-                    return result
-                error_str = result.error or ""
-                if self._send_retry_is_final(result):
-                    return result
-                if result.retry_after is not None:
-                    server_retry_after = result.retry_after
-                # The failure kind can change between attempts (a transient error may
-                # later surface as a flood/rate-limit, or a rate-limited send may give
-                # way to a permanent formatting error). Reclassify from the refreshed
-                # error_str on every attempt so the break/continue decision below
-                # reflects the current attempt, not a stale first-send classification.
-                is_rate_limited = self._is_rate_limited_error(error_str)
-                if not (
-                    result.retryable
-                    or is_rate_limited
-                    or result.retry_after is not None
-                    or self._is_retryable_error(error_str)
-                ):
-                    break  # error switched to non-transient — fall through to plain-text fallback
-            else:
-                # All retries exhausted (loop completed without break) — notify user.
-                # If the final failure is a rate-limit / still carries a server
-                # retry_after, do NOT send the delivery-failure notice now: the notice
-                # send would land inside the same flood penalty and re-enter the ban
-                # (a fourth send at t=378 in an [0, 189, 378, 378] sequence). Return
-                # the typed failure so the delivery ledger owns redelivery after the
-                # cooldown instead — no extra sleep or request needed.
-                if self._is_rate_limited_error(error_str) or result.retry_after is not None:
-                    logger.error(
-                        "[%s] Rate-limited send exhausted retries; returning typed failure "
-                        "for redelivery (no notice sent inside active flood penalty): %s",
-                        self.name, error_str,
-                    )
-                    return result
-                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
-                # Not a diagnostic: the requested result itself was lost and this is its only signal.
-                notice = t("gateway.notify.delivery_failed_retry")
-                try:
-                    await _send(notice)
-                except Exception as notify_err:
-                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
-                return result
-        # Non-network / post-retry formatting failure: try plain text as fallback. A
-        # rate-limited error never reaches here: it classifies as network above and the
-        # loop only breaks on a non-transient, non-rate-limited error.
-        if self._is_partial_delivery(result):
-            # Part of a split payload is already on screen; a plain-text re-send of the whole would duplicate it.
-            logger.warning("[%s] Send failed after partial delivery: %s — not re-sending as plain text", self.name, error_str)
-            return result
-        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
-        if not fallback_result.success:
-            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
-        return fallback_result
 
     def _send_retry_is_final(self, result: SendResult) -> bool:
         """True when a failed send must be returned as-is: neither a retry nor the plain-text

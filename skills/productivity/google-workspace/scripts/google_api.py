@@ -18,6 +18,10 @@ Usage:
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
   python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
   python google_api.py docs get DOC_ID
+  python google_api.py docs replace DOC_ID --find "old" --replace "new"
+  python google_api.py slides get PRESENTATION_ID [--slide 3]
+  python google_api.py slides replace PRESENTATION_ID --find "old" --replace "new" [--slide 3,5]
+  python google_api.py slides thumbnail PRESENTATION_ID --slide 1 --out "$TMPDIR/slide1.png"
 """
 
 import argparse
@@ -27,6 +31,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from datetime import datetime, timedelta, timezone, UTC
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -1141,6 +1146,170 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 
 
 # =========================================================================
+# Docs (extra write paths)
+# =========================================================================
+
+
+def docs_replace(args):
+    """Find/replace across a Doc body (optionally limited to one tab)."""
+    request = {
+        "replaceAllText": {
+            "containsText": {"text": args.find, "matchCase": not args.ignore_case},
+            "replaceText": args.replace,
+        }
+    }
+    tab_id = getattr(args, "tab", None)
+    if tab_id:
+        request["replaceAllText"]["tabsCriteria"] = {"tabIds": [tab_id]}
+
+    service = build_service("docs", "v1")
+    result = service.documents().batchUpdate(
+        documentId=args.doc_id, body={"requests": [request]},
+    ).execute()
+    changed = sum(
+        r.get("replaceAllText", {}).get("occurrencesChanged", 0)
+        for r in result.get("replies", [])
+    )
+    out = {
+        "status": "replaced",
+        "documentId": args.doc_id,
+        "occurrencesChanged": changed,
+        "url": f"https://docs.google.com/document/d/{args.doc_id}/edit",
+    }
+    if tab_id:
+        out["tab"] = tab_id
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
+# Slides
+# =========================================================================
+
+
+def _slides_texts(elements: list) -> list:
+    """Collect non-empty text runs from Slides page elements."""
+    out = []
+    for el in elements or []:
+        shape = el.get("shape")
+        if not shape:
+            continue
+        for te in shape.get("text", {}).get("textElements", []):
+            run = te.get("textRun")
+            if not run:
+                continue
+            chunk = (run.get("content") or "").strip()
+            if chunk:
+                out.append(chunk)
+    return out
+
+
+def _slides_resolve(slides: list, spec: str | None) -> list:
+    """Resolve a slide spec (1-based index or objectId, comma separated) to objectIds."""
+    resolved = []
+    for item in (spec or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item.isdigit() and 1 <= int(item) <= len(slides):
+            resolved.append(slides[int(item) - 1].get("objectId", ""))
+        elif any(sl.get("objectId") == item for sl in slides):
+            resolved.append(item)
+        else:
+            raise SystemExit(f"Unknown slide '{item}': pass a 1-based index or a slide objectId")
+    return resolved
+
+
+def slides_get(args):
+    """Dump a deck as text: per-slide indexes, objectIds, texts and speaker notes."""
+    service = build_service("slides", "v1")
+    presentation = service.presentations().get(presentationId=args.presentation_id).execute()
+    all_slides = presentation.get("slides", [])
+    keep = set(_slides_resolve(all_slides, args.slide)) if args.slide else set()
+
+    slides = []
+    for i, sl in enumerate(all_slides, 1):
+        object_id = sl.get("objectId", "")
+        if keep and object_id not in keep:
+            continue
+        entry = {
+            "index": i,
+            "objectId": object_id,
+            "texts": _slides_texts(sl.get("pageElements", [])),
+        }
+        notes = _slides_texts(sl.get("notesPage", {}).get("pageElements", []))
+        if notes:
+            entry["notes"] = notes
+        slides.append(entry)
+
+    print(json.dumps({
+        "presentationId": presentation.get("presentationId", ""),
+        "title": presentation.get("title", ""),
+        "slideCount": len(all_slides),
+        "url": f"https://docs.google.com/presentation/d/{args.presentation_id}/edit",
+        "slides": slides,
+    }, indent=2, ensure_ascii=False))
+
+
+def slides_replace(args):
+    """Find/replace text in a deck, optionally limited to specific slides."""
+    request = {
+        "replaceAllText": {
+            "containsText": {"text": args.find, "matchCase": not args.ignore_case},
+            "replaceText": args.replace,
+        }
+    }
+    service = build_service("slides", "v1")
+    if args.slide:
+        presentation = service.presentations().get(presentationId=args.presentation_id).execute()
+        request["replaceAllText"]["pageObjectIds"] = _slides_resolve(
+            presentation.get("slides", []), args.slide
+        )
+
+    result = service.presentations().batchUpdate(
+        presentationId=args.presentation_id, body={"requests": [request]},
+    ).execute()
+    changed = sum(
+        r.get("replaceAllText", {}).get("occurrencesChanged", 0)
+        for r in result.get("replies", [])
+    )
+    print(json.dumps({
+        "status": "replaced",
+        "presentationId": args.presentation_id,
+        "occurrencesChanged": changed,
+        "url": f"https://docs.google.com/presentation/d/{args.presentation_id}/edit",
+    }, indent=2, ensure_ascii=False))
+
+
+def slides_thumbnail(args):
+    """Export one slide as a PNG (URL, and optionally saved to disk)."""
+    service = build_service("slides", "v1")
+    presentation = service.presentations().get(presentationId=args.presentation_id).execute()
+    resolved = _slides_resolve(presentation.get("slides", []), args.slide)
+    if len(resolved) != 1:
+        raise SystemExit("--slide must resolve to exactly one slide")
+
+    thumb = service.presentations().pages().getThumbnail(
+        presentationId=args.presentation_id,
+        pageObjectId=resolved[0],
+        thumbnailProperties_thumbnailSize=args.size,
+    ).execute()
+
+    out = {
+        "presentationId": args.presentation_id,
+        "slideObjectId": resolved[0],
+        "contentUrl": thumb.get("contentUrl", ""),
+        "width": thumb.get("width"),
+        "height": thumb.get("height"),
+    }
+    if args.out and thumb.get("contentUrl"):
+        out_path = Path(args.out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(thumb["contentUrl"], out_path)
+        out["savedTo"] = str(out_path)
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # CLI parser
 # =========================================================================
 
@@ -1293,6 +1462,30 @@ def main():
     p.add_argument("--sheet-name", default="", help="Name of the first tab (defaults to 'Sheet1')")
     p.set_defaults(func=sheets_create)
 
+    # --- Slides ---
+    sl = sub.add_parser("slides")
+    sl_sub = sl.add_subparsers(dest="action", required=True)
+
+    p = sl_sub.add_parser("get")
+    p.add_argument("presentation_id")
+    p.add_argument("--slide", default="", help="Restrict to these slides, as 1-based indexes or objectIds (e.g. '3' or '3,5')")
+    p.set_defaults(func=slides_get)
+
+    p = sl_sub.add_parser("replace")
+    p.add_argument("presentation_id")
+    p.add_argument("--find", required=True)
+    p.add_argument("--replace", required=True, help="Replacement text (empty string deletes)")
+    p.add_argument("--slide", default="", help="Limit the replacement to these slides (indexes or objectIds)")
+    p.add_argument("--ignore-case", action="store_true")
+    p.set_defaults(func=slides_replace)
+
+    p = sl_sub.add_parser("thumbnail")
+    p.add_argument("presentation_id")
+    p.add_argument("--slide", required=True, help="Slide index (1-based) or objectId")
+    p.add_argument("--size", default="LARGE", choices=["SMALL", "MEDIUM", "LARGE"])
+    p.add_argument("--out", default="", help="Also save the PNG to this path")
+    p.set_defaults(func=slides_thumbnail)
+
     # --- Docs ---
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)
@@ -1312,6 +1505,14 @@ def main():
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
     p.add_argument("--tab", default=None, help="Tab ID to append to (required for multi-tab Docs)")
     p.set_defaults(func=docs_append)
+
+    p = docs_sub.add_parser("replace")
+    p.add_argument("doc_id")
+    p.add_argument("--find", required=True, help="Text to find")
+    p.add_argument("--replace", required=True, help="Replacement text (empty string deletes)")
+    p.add_argument("--tab", default=None, help="Limit the replacement to this tab ID")
+    p.add_argument("--ignore-case", action="store_true")
+    p.set_defaults(func=docs_replace)
 
     args = parser.parse_args()
     args.func(args)

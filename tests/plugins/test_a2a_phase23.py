@@ -755,6 +755,31 @@ class TestSSRFProtection:
         assert security.is_safe_callback_url("http://192.168.1.1/hook") is False
         assert security.is_safe_callback_url("http://172.16.0.1/hook") is False
 
+    def test_decimal_octal_hex_ip_bypasses_blocked(self, monkeypatch):
+        # 2130706433 = 127.0.0.1 (integer), 0177.0.0.1 (octal), 0x7f000001 (hex)
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "tok")
+        assert security.is_safe_callback_url("http://2130706433/hook") is False
+        assert security.is_safe_callback_url("http://0177.0.0.1/hook") is False
+        assert security.is_safe_callback_url("http://0x7f000001/hook") is False
+        # 2852039166 = 169.254.169.254 (integer), 0xa9fea9fe (hex), 0251.0376.0251.0376 (octal)
+        assert security.is_safe_callback_url("http://2852039166/latest/meta-data/") is False
+        assert security.is_safe_callback_url("http://0xa9fea9fe/latest/meta-data/") is False
+        assert security.is_safe_callback_url("http://0251.0376.0251.0376/latest/meta-data/") is False
+        # 0 = 0.0.0.0 (unspecified)
+        assert security.is_safe_callback_url("http://0/admin") is False
+        # 3232235521 = 192.168.0.1 (private)
+        assert security.is_safe_callback_url("http://3232235521/hook") is False
+
+    def test_decimal_ip_allowed_in_local_mode_if_loopback(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        assert security.is_safe_callback_url("http://2130706433/hook") is True
+        assert security.is_safe_callback_url("http://0177.0.0.1/hook") is True
+        assert security.is_safe_callback_url("http://0x7f000001/hook") is True
+        # Non-loopback private/metadata still blocked in local mode
+        assert security.is_safe_callback_url("http://2852039166/latest/meta-data/") is False
+        assert security.is_safe_callback_url("http://3232235521/hook") is False
+
     def test_non_http_schemes_blocked(self):
         assert security.is_safe_callback_url("file:///etc/passwd") is False
         assert security.is_safe_callback_url("ftp://example.com/file") is False

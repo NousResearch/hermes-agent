@@ -40,13 +40,22 @@ class StreamingWaitMonitor:
 
     def _rearm_or_abandon_after_kill(self, elapsed: float) -> None:
         """After a stale kill: re-arm the stale timer and announce the reconnect, unless the
-        same dispatched attempt has now been killed ``_STALE_ABANDON_KILLS`` times without
-        unwinding. Then the request is parked where a socket shutdown cannot reach it, and
-        re-killing it every window would stall the turn forever: a worker thread is abandoned;
-        an inline call (cron, delegated children) runs on the caller's thread and cannot be,
-        so the monitor stops touching activity and the owner's inactivity watchdog ends it."""
+        kill bookkeeping gave up on a wedged attempt (see ``_note_attempt_kill``)."""
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
+        if self._note_attempt_kill(elapsed, "stale"):
+            return
+        if self._claims_liveness():  # the reconnect notice touches activity too (_emit_wait_notice)
+            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+            self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+
+    def _note_attempt_kill(self, elapsed: float, kind: str) -> bool:
+        """Count a stale or ``stream_max_lifetime`` kill of the current attempt. Once the same
+        dispatched attempt has been killed ``_STALE_ABANDON_KILLS`` times without unwinding,
+        the request is parked where a socket shutdown cannot reach it, and re-killing it every
+        window would stall the turn forever: a worker thread is abandoned (returns True); an
+        inline call (cron, delegated children) runs on the caller's thread and cannot be, so
+        the monitor stops touching activity and the owner's inactivity watchdog ends it."""
         with self.stream_attempt_lock:
             attempt = int(self.stream_attempt_state["current"])
         rekill = bool(attempt) and attempt == self._last_killed_attempt
@@ -54,19 +63,18 @@ class StreamingWaitMonitor:
         self._same_attempt_kills = self._same_attempt_kills + 1 if rekill else 1
         if not rekill:
             self._liveness_withheld_at = None
-        if attempt and self._same_attempt_kills >= _STALE_ABANDON_KILLS:
-            if self.worker is not None:
-                self._abandon_wedged_worker(elapsed, attempt)
-                return
-            if self._liveness_withheld_at is None:
-                logger.error(
-                    "Inline streaming call did not unwind after %d stale kills of attempt %s; no longer "
-                    "reporting it as active, so the inactivity watchdog can end it. model=%s",
-                    self._same_attempt_kills, attempt, self.api_kwargs.get("model", "unknown"))
-            self._liveness_withheld_at = self.last_chunk_time["t"]
-        if self._claims_liveness():  # the reconnect notice touches activity too (_emit_wait_notice)
-            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-            self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        if not attempt or self._same_attempt_kills < _STALE_ABANDON_KILLS:
+            return False
+        if self.worker is not None:
+            self._abandon_wedged_worker(elapsed, attempt, kind)
+            return True
+        if self._liveness_withheld_at is None:
+            logger.error(
+                "Inline streaming call did not unwind after %d %s kills of attempt %s; no longer "
+                "reporting it as active, so the inactivity watchdog can end it. model=%s",
+                self._same_attempt_kills, kind, attempt, self.api_kwargs.get("model", "unknown"))
+        self._liveness_withheld_at = self.last_chunk_time["t"]
+        return False
 
     def _forget_invisible_deltas(self, exc) -> bool:
         """Deltas fired but nothing visible reached a consumer (whitespace/think-only deltas,
@@ -85,17 +93,20 @@ class StreamingWaitMonitor:
             self.first_delta_fired["done"] = False
         return tool_in_flight
 
-    def _abandon_wedged_worker(self, elapsed: float, attempt: int) -> None:
+    def _abandon_wedged_worker(self, elapsed: float, attempt: int, kind: str) -> None:
         """Like the /stop path, leave the (daemon) worker behind and end this call with a
         retryable timeout; ``run()`` discards anything the worker writes later."""
         logger.error(
-            "Streaming worker did not unwind after %d stale kills of attempt %s (%.0fs since last chunk); "
-            "abandoning the request. model=%s", self._same_attempt_kills, attempt, elapsed,
+            "Streaming worker did not unwind after %d %s kills of attempt %s (%.0fs); "
+            "abandoning the request. model=%s", self._same_attempt_kills, kind, attempt, elapsed,
             self.api_kwargs.get("model", "unknown"))
         self._request_cancelled["value"] = True
-        self._abandon_error = TimeoutError(
-            f"Provider stream stalled: no chunks and the request worker did not unwind after "
-            f"{self._same_attempt_kills} stale-stream kills; request abandoned.")
+        if kind == "stale":
+            self._abandon_error = TimeoutError(
+                f"Provider stream stalled: no chunks and the request worker did not unwind after "
+                f"{self._same_attempt_kills} stale-stream kills; request abandoned.")
+        else:  # the copy names the setting, like a cap kill that did unwind
+            self._abandon_error = StreamLifetimeExceeded(elapsed, self._lifetime.cap)
         self._call_done.set()
 
     def _poll_local_load_notice(self, now: float) -> bool:
@@ -218,6 +229,9 @@ class StreamingWaitMonitor:
         # Accounted, never bumped: a stale re-kill or /stop while it unwinds must not strike it either.
         self._stale_counted_attempts.add(attempt)
         self.last_chunk_time["t"] = time.time()  # the stale timer restarts with the kill
+        # A worker the abort cannot unwind would be re-cut every window forever (the stale
+        # detector may be off): same give-up as a stale kill, without its reconnect notice.
+        self._note_attempt_kill(elapsed, "stream_max_lifetime")
 
     def _as_lifetime_error(self, e: Exception) -> Exception:
         """The worker's transport error for an attempt the cap killed, replaced by one that names

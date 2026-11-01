@@ -274,3 +274,23 @@ def test_abandon_joins_the_worker_for_relay_teardown_like_stop(wedged, monkeypat
 
     assert isinstance(outcome.get("error"), TimeoutError), outcome
     assert len(joined) == 1 and joined[0][0] is not None and joined[0][1] == "Abandoned streaming"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_wedged_worker_under_the_lifetime_cap_is_abandoned_with_stale_off(wedged, monkeypatch, tmp_path, caplog):
+    """agent.stream_max_lifetime kills that cannot unwind the worker get the same give-up as
+    stale kills: with the stale detector off, the cap alone must still end the turn."""
+    from agent.stream_max_lifetime import StreamLifetimeExceeded
+
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "inf")
+    (tmp_path / "config.yaml").write_text("agent:\n  stream_max_lifetime: 1\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with caplog.at_level("WARNING"):
+        caller, outcome = _call_in_thread(wedged)
+        caller.join(timeout=10.0)
+
+    assert not caller.is_alive(), "the cap re-killed the same wedged attempt forever"
+    assert isinstance(outcome.get("error"), StreamLifetimeExceeded), outcome
+    assert _log_count(caplog, "stream_max_lifetime 1s") == 3  # _STALE_ABANDON_KILLS
+    assert _log_count(caplog, "Stream stale for") == 0
+    assert wedged._consecutive_stale_streams == 0, "cap kills must not feed the stale breaker"

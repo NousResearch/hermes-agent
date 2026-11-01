@@ -148,6 +148,13 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     command = command or ""
     quote = None  # None | "'" | '"'
     has_reinterpretable = False
+    # test/[ /[[ with a -v operand reinterprets the subscript at check time
+    # (bash array-index expansion), so quoted metacharacters there are not
+    # literal. See issue #145763.
+    _first_tokens = command.lstrip().split(None, 1)
+    _first_token = _first_tokens[0] if _first_tokens else ""
+    test_v_mode = _first_token in ("test", "[", "[[") and bool(
+        re.search(r"(?<!\S)-v(?=\s|$)", command))
     i = 0
     n = len(command)
     while i < n:
@@ -177,6 +184,8 @@ def _has_allowlist_shell_operator(command: str) -> bool:
         i += 1
     # An unterminated quote means we can't reason about the command shape.
     if quote is not None:
+        return True
+    if test_v_mode and has_reinterpretable:
         return True
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 

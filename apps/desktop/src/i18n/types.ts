@@ -811,6 +811,7 @@ export interface Translations extends NoticeTranslations {
       windowControlsAuto: string
       windowControlsShow: string
       windowControlsHide: string
+      windowControlsRestart: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

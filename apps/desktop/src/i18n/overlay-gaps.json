@@ -1112,6 +1112,7 @@
   "settings.appearance.windowControlsAuto": ["ar"],
   "settings.appearance.windowControlsDesc": ["ar"],
   "settings.appearance.windowControlsHide": ["ar"],
+  "settings.appearance.windowControlsRestart": ["ar"],
   "settings.appearance.windowControlsShow": ["ar"],
   "settings.appearance.windowControlsTitle": ["ar"],
   "settings.billing.amountValidation.decimal": ["ar","ja","ru"],

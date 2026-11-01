@@ -79,6 +79,11 @@ function writeLinuxWindowControlsMode(configPath: string, mode: LinuxWindowContr
   fs.writeFileSync(configPath, JSON.stringify({ mode }, null, 2), 'utf8')
 }
 
+export interface LinuxWindowControlsStatus {
+  mode: LinuxWindowControlsMode
+  restartNeeded: boolean
+}
+
 interface LinuxWindowControlsIpc {
   handle(channel: string, listener: (event: unknown, mode: unknown) => unknown): unknown
 }
@@ -86,8 +91,12 @@ interface LinuxWindowControlsIpc {
 // titleBarOverlay is fixed when a window is created, so the setting is stored
 // here and only read at launch. The file stays the single source of truth; the
 // renderer asks for it instead of keeping a second copy in localStorage.
-export function registerLinuxWindowControlsIpc(ipcMain: LinuxWindowControlsIpc, configPath: string): void {
-  ipcMain.handle('hermes:window-controls:mode:get', () => readLinuxWindowControlsMode(configPath))
+export function registerLinuxWindowControlsIpc(
+  ipcMain: LinuxWindowControlsIpc,
+  configPath: string,
+  status: (mode: LinuxWindowControlsMode) => LinuxWindowControlsStatus
+): void {
+  ipcMain.handle('hermes:window-controls:mode:get', () => status(readLinuxWindowControlsMode(configPath)))
 
   ipcMain.handle('hermes:window-controls:mode:set', (_event, mode) => {
     if (!isMode(mode)) {
@@ -95,18 +104,24 @@ export function registerLinuxWindowControlsIpc(ipcMain: LinuxWindowControlsIpc, 
     }
 
     writeLinuxWindowControlsMode(configPath, mode)
+
+    return status(mode)
   })
 }
 
 export function setupLinuxWindowControls(ipcMain: LinuxWindowControlsIpc, userData: string, isWsl: boolean): boolean {
   const configPath = path.join(userData, 'window-controls.json')
 
-  registerLinuxWindowControlsIpc(ipcMain, configPath)
+  const hiddenWith = (mode: LinuxWindowControlsMode) =>
+    linuxWindowControlsHidden({ env: process.env, isWsl, mode, platform: process.platform })
 
-  return linuxWindowControlsHidden({
-    env: process.env,
-    isWsl,
-    mode: readLinuxWindowControlsMode(configPath),
-    platform: process.platform
-  })
+  const hiddenAtLaunch = hiddenWith(readLinuxWindowControlsMode(configPath))
+
+  // Compares outcomes, not names: Auto to Show on KDE changes nothing on screen.
+  registerLinuxWindowControlsIpc(ipcMain, configPath, mode => ({
+    mode,
+    restartNeeded: hiddenWith(mode) !== hiddenAtLaunch
+  }))
+
+  return hiddenAtLaunch
 }

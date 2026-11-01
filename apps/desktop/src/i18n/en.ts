@@ -988,10 +988,11 @@ export const en: Translations = {
       appActionsRight: 'Right',
       windowControlsTitle: 'Window Buttons',
       windowControlsDesc:
-        'Minimize, maximize and close in the titlebar. Auto hides them on tiling window managers. Changes apply after restart.',
+        'Minimize, maximize and close in the titlebar. Auto hides them on tiling window managers.',
       windowControlsAuto: 'Auto',
       windowControlsShow: 'Show',
       windowControlsHide: 'Hide',
+      windowControlsRestart: 'Restart Hermes to apply this change.',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

@@ -746,10 +746,11 @@ export const zhOverrides = {
       appActionsRight: '右侧',
       windowControlsTitle: '窗口按钮',
       windowControlsDesc:
-        '标题栏中的最小化、最大化和关闭按钮。自动模式会在平铺式窗口管理器上隐藏它们。更改在重启后生效。',
+        '标题栏中的最小化、最大化和关闭按钮。自动模式会在平铺式窗口管理器上隐藏它们。',
       windowControlsAuto: '自动',
       windowControlsShow: '显示',
       windowControlsHide: '隐藏',
+      windowControlsRestart: '重启 Hermes 以应用此更改。',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',

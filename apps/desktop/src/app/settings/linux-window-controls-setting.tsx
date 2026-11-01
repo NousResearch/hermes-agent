@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
-import type { LinuxWindowControlsMode } from '@/global'
+import type { LinuxWindowControlsMode, LinuxWindowControlsStatus } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { AlertTriangle, RefreshCw } from '@/lib/icons'
 import { linuxWindowControlsAvailable } from '@/lib/platform'
 import { notifyError } from '@/store/notifications'
 
@@ -14,14 +17,14 @@ export function LinuxWindowControlsSetting() {
   const { t } = useI18n()
   const a = t.settings.appearance
   const bridge = window.hermesDesktop?.windowControls
-  const [mode, setMode] = useState<LinuxWindowControlsMode | null>(null)
+  const [status, setStatus] = useState<LinuxWindowControlsStatus | null>(null)
 
   useEffect(() => {
     let current = true
 
     bridge
       ?.getLinuxMode?.()
-      .then(saved => current && setMode(saved))
+      .then(saved => current && setStatus(saved))
       .catch(error => notifyError(error, t.settings.config.failedLoad))
 
     return () => {
@@ -29,19 +32,26 @@ export function LinuxWindowControlsSetting() {
     }
   }, [bridge, t.settings.config.failedLoad])
 
-  const change = async (next: LinuxWindowControlsMode) => {
-    const previous = mode
+  const change = async (mode: LinuxWindowControlsMode) => {
+    const previous = status
 
     triggerHaptic('selection')
-    setMode(next)
+    setStatus({ mode, restartNeeded: status?.restartNeeded ?? false })
 
     try {
-      await bridge?.setLinuxMode?.(next)
+      const saved = await bridge?.setLinuxMode?.(mode)
+
+      if (saved) {
+        setStatus(saved)
+      }
     } catch (error) {
-      setMode(previous)
+      setStatus(previous)
       notifyError(error, t.messaging.failedSave(a.windowControlsTitle))
     }
   }
+
+  const restart = () =>
+    window.hermesDesktop?.relaunchApp?.().catch(error => notifyError(error, t.notifications.errors.restartHermesFailed))
 
   if (!linuxWindowControlsAvailable()) {
     return null
@@ -57,8 +67,22 @@ export function LinuxWindowControlsSetting() {
             { id: 'show', label: a.windowControlsShow },
             { id: 'hide', label: a.windowControlsHide }
           ]}
-          value={mode ?? 'auto'}
+          value={status?.mode ?? 'auto'}
         />
+      }
+      below={
+        status?.restartNeeded && (
+          <Alert className="mt-3" variant="warning">
+            <AlertTriangle />
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+              <span>{a.windowControlsRestart}</span>
+              <Button onClick={() => void restart()} size="sm" variant="secondary">
+                <RefreshCw />
+                {t.messaging.restartNow}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )
       }
       description={a.windowControlsDesc}
       id={settingElementId(SETTING_IDS.appearance.windowControls)}

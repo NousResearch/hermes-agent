@@ -1021,10 +1021,11 @@ export const frOverrides = {
       appActionsRight: 'À droite',
       windowControlsTitle: 'Boutons de fenêtre',
       windowControlsDesc:
-        "Réduire, agrandir et fermer dans la barre de titre. Le mode Auto les masque sur les gestionnaires de fenêtres en mosaïque. Les changements s'appliquent après un redémarrage.",
+        "Réduire, agrandir et fermer dans la barre de titre. Le mode Auto les masque sur les gestionnaires de fenêtres en mosaïque.",
       windowControlsAuto: 'Auto',
       windowControlsShow: 'Afficher',
       windowControlsHide: 'Masquer',
+      windowControlsRestart: 'Redémarrez Hermes pour appliquer ce changement.',
       terminalFontTitle: 'Police du terminal',
       terminalFontDesc:
         'Choisissez une police installée pour les terminaux Desktop. Les Nerd Fonts affichent correctement Powerlevel10k et les icônes du shell ; laissez vide pour utiliser JetBrains Mono intégré.',

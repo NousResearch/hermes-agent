@@ -1015,10 +1015,11 @@ export const deOverrides = {
       appActionsRight: 'Rechts',
       windowControlsTitle: 'Fensterschaltflächen',
       windowControlsDesc:
-        'Minimieren, Maximieren und Schließen in der Titelleiste. „Automatisch“ blendet sie bei Tiling-Fenstermanagern aus. Änderungen werden nach einem Neustart wirksam.',
+        'Minimieren, Maximieren und Schließen in der Titelleiste. „Automatisch“ blendet sie bei Tiling-Fenstermanagern aus.',
       windowControlsAuto: 'Automatisch',
       windowControlsShow: 'Anzeigen',
       windowControlsHide: 'Ausblenden',
+      windowControlsRestart: 'Starte Hermes neu, um diese Änderung zu übernehmen.',
       terminalFontTitle: 'Terminalschrift',
       terminalFontDesc:
         'Wählen Sie eine installierte Schrift für Desktop-Terminals. Nerd Fonts rendern Powerlevel10k- und Shell-Icons; lassen Sie das Feld leer, um das gebündelte JetBrains Mono zu verwenden.',

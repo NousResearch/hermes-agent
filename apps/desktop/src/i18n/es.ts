@@ -1018,10 +1018,11 @@ export const esOverrides = {
       appActionsRight: 'Derecha',
       windowControlsTitle: 'Botones de ventana',
       windowControlsDesc:
-        'Minimizar, maximizar y cerrar en la barra de título. Automático los oculta en los gestores de ventanas en mosaico. Los cambios se aplican al reiniciar.',
+        'Minimizar, maximizar y cerrar en la barra de título. Automático los oculta en los gestores de ventanas en mosaico.',
       windowControlsAuto: 'Automático',
       windowControlsShow: 'Mostrar',
       windowControlsHide: 'Ocultar',
+      windowControlsRestart: 'Reinicia Hermes para aplicar este cambio.',
       terminalFontTitle: 'Fuente de terminal',
       terminalFontDesc:
         'Elige una fuente instalada para las terminales del escritorio. Las Nerd Fonts renderizan Powerlevel10k y los iconos de shell; déjalo vacío para usar la JetBrains Mono incluida.',

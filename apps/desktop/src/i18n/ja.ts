@@ -527,10 +527,11 @@ export const jaOverrides = {
       appActionsRight: '右',
       windowControlsTitle: 'ウィンドウボタン',
       windowControlsDesc:
-        'タイトルバーの最小化、最大化、閉じるボタンです。自動ではタイル型ウィンドウマネージャーで非表示になります。変更は再起動後に適用されます。',
+        'タイトルバーの最小化、最大化、閉じるボタンです。自動ではタイル型ウィンドウマネージャーで非表示になります。',
       windowControlsAuto: '自動',
       windowControlsShow: '表示',
       windowControlsHide: '非表示',
+      windowControlsRestart: 'この変更を適用するには Hermes を再起動してください。',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',

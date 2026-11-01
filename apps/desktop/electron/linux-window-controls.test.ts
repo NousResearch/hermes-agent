@@ -3,13 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
 import {
   isTilingSession,
   linuxWindowControlsHidden,
   readLinuxWindowControlsMode,
-  registerLinuxWindowControlsIpc
+  registerLinuxWindowControlsIpc,
+  setupLinuxWindowControls
 } from './linux-window-controls'
 
 const TILING_ENVS = [
@@ -58,14 +59,21 @@ test('the saved mode round-trips, and a bad file or value falls back safely', as
   const configPath = path.join(dir, 'nested', 'window-controls.json')
   const handlers = new Map<string, (event: unknown, mode: unknown) => unknown>()
 
-  registerLinuxWindowControlsIpc({ handle: (channel, listener) => handlers.set(channel, listener) }, configPath)
+  registerLinuxWindowControlsIpc(
+    { handle: (channel, listener) => handlers.set(channel, listener) },
+    configPath,
+    mode => ({
+      mode,
+      restartNeeded: mode === 'hide'
+    })
+  )
 
   const get = handlers.get('hermes:window-controls:mode:get')!
   const set = handlers.get('hermes:window-controls:mode:set')!
 
-  assert.equal(get(null, undefined), 'auto')
+  assert.deepEqual(get(null, undefined), { mode: 'auto', restartNeeded: false })
 
-  set(null, 'hide')
+  assert.deepEqual(set(null, 'hide'), { mode: 'hide', restartNeeded: true })
   assert.equal(readLinuxWindowControlsMode(configPath), 'hide')
 
   assert.throws(() => set(null, 'sideways'), /Unknown window controls mode: sideways/)
@@ -73,6 +81,36 @@ test('the saved mode round-trips, and a bad file or value falls back safely', as
 
   fs.writeFileSync(configPath, '{not json')
   assert.equal(readLinuxWindowControlsMode(configPath), 'auto')
+
+  fs.rmSync(dir, { force: true, recursive: true })
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+test.runIf(process.platform === 'linux')('a restart is asked for only when the buttons would really change', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-window-controls-'))
+  const handlers = new Map<string, (event: unknown, mode: unknown) => unknown>()
+
+  for (const name of ['HYPRLAND_INSTANCE_SIGNATURE', 'I3SOCK', 'NIRI_SOCKET', 'SWAYSOCK', 'XDG_SESSION_DESKTOP']) {
+    vi.stubEnv(name, '')
+  }
+
+  vi.stubEnv('XDG_CURRENT_DESKTOP', 'KDE')
+
+  const hidden = setupLinuxWindowControls(
+    { handle: (channel, listener) => handlers.set(channel, listener) },
+    dir,
+    false
+  )
+
+  const set = handlers.get('hermes:window-controls:mode:set')!
+
+  assert.equal(hidden, false)
+  assert.deepEqual(set(null, 'show'), { mode: 'show', restartNeeded: false })
+  assert.deepEqual(set(null, 'hide'), { mode: 'hide', restartNeeded: true })
+  assert.deepEqual(set(null, 'auto'), { mode: 'auto', restartNeeded: false })
 
   fs.rmSync(dir, { force: true, recursive: true })
 })

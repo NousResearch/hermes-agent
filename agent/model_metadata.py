@@ -1422,11 +1422,41 @@ def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float 
         return None
 
 
+# /api/ps is the Ollama-only fingerprint. An OpenAI-compat router/gateway on a loopback port can
+# emulate the whole Ollama surface (/api/tags, /api/version, /api/show all answer 200 — magpie does),
+# so `detect_local_server_type` alone labels it "ollama" and num_ctx is injected as Ollama's `options`.
+# That parameter is invalid on the OpenAI wire, so any strict upstream behind the router 400s the
+# whole run ("Unsupported parameter(s): `options`"). Real Ollama always answers /api/ps with a
+# "models" list; emulators 404 it. Cached: this runs at agent init, not per turn.
+_OLLAMA_PS_CACHE: dict[str, tuple[bool, float]] = {}
+_OLLAMA_PS_TTL_SECONDS = 300.0
+
+
+def _ollama_ps_fingerprint(base_url: str, api_key: str) -> bool:
+    """True when ``/api/ps`` answers like a real Ollama server (short TTL cache)."""
+    import httpx
+    server_url = _server_root(base_url)
+    _hit = _OLLAMA_PS_CACHE.get(server_url)
+    if _hit is not None and (time.monotonic() - _hit[1]) < _OLLAMA_PS_TTL_SECONDS:
+        return _hit[0]
+    _ok = False
+    try:
+        with httpx.Client(timeout=2.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(server_url)) as client:
+            resp = client.get(f"{server_url}/api/ps")
+            _ok = resp.status_code == 200 and "models" in resp.text
+    except Exception:
+        _ok = False
+    _OLLAMA_PS_CACHE[server_url] = (_ok, time.monotonic())
+    return _ok
+
+
 def _is_ollama_server(base_url: str, api_key: str) -> bool:
     try:
         # Forward the API key: a remote API-keyed endpoint answers the probe waterfall with 401s without it,
         # and an unauthorized probe can never produce a positive verdict (#89863).
-        return detect_local_server_type(base_url, api_key=api_key) == "ollama"
+        if detect_local_server_type(base_url, api_key=api_key) != "ollama":
+            return False
+        return _ollama_ps_fingerprint(base_url, api_key)
     except Exception:
         return False
 

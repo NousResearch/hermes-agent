@@ -192,6 +192,7 @@ export const pt: Translations = {
   analytics: {
     period: "Período:",
     totalTokens: "Tokens totais",
+    inclCacheRead: "incl. leitura de cache",
     totalSessions: "Sessões totais",
     apiCalls: "Chamadas à API",
     dailyTokenUsage: "Utilização diária de tokens",
@@ -203,6 +204,7 @@ export const pt: Translations = {
     edits: "Geridas pelo agente",
     lastUsed: "Última utilização",
     input: "Entrada",
+    cacheRead: "Leitura de cache",
     output: "Saída",
     total: "Total",
     noUsageData: "Sem dados de utilização para este período",

@@ -1296,6 +1296,10 @@ def _apply_agent_section(agent, _agent_cfg):
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
 
+    # Turn-boundary transcript checkpoint for agents without a session DB (agent/transcript_checkpoint.py).
+    from agent.transcript_checkpoint import resolve_interval
+    agent._transcript_checkpoint_every = resolve_interval(_agent_section.get("transcript_checkpoint_every"))
+
     # Wall-clock run budget from config — only when the constructor arg was not given.
     if agent.run_budget_seconds is None:
         agent.run_budget_seconds = _normalize_run_budget_seconds(

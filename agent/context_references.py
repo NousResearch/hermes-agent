@@ -179,6 +179,17 @@ def parse_context_references(message: str, *, plugins: bool = True) -> list[Cont
     return refs
 
 
+def may_have_context_references(message: str, *, plugins: bool = True) -> bool:
+    """Cheaply decide whether turn setup may be needed for references.
+
+    Keep unknown ``@prefix:value`` syntax as a candidate when plugins are enabled: a plugin
+    provider can be registered by the runtime resolution that follows this check.
+    """
+    if parse_context_references(message, plugins=plugins):
+        return True
+    return bool(plugins and _PLUGIN_REFERENCE_PATTERN.search(message or ""))
+
+
 def preprocess_context_references(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None,

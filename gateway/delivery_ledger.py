@@ -13,6 +13,7 @@ best-effort: ledger failures must never block a send; callers wrap every call in
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -365,6 +366,25 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
             **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
 
 
+def _recovery_held(obligation_id: str) -> bool:
+    """Operator maintenance hold: preserve exact old rows without resending them.
+
+    New obligations and their first sends are unaffected. A configured but unreadable
+    hold fails closed for recovery only, never disables recording or new delivery.
+    """
+    path = os.environ.get("HERMES_DELIVERY_RECOVERY_HOLD_FILE")
+    if not path:
+        return False
+    try:
+        with open(path, encoding="utf-8") as handle:
+            ids = json.load(handle)
+        if not isinstance(ids, list) or any(not isinstance(value, str) for value in ids):
+            return True
+        return obligation_id in ids
+    except (OSError, ValueError, TypeError):
+        return True
+
+
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
                       deliverable_targets: Optional[set] = None) -> list[dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
@@ -397,6 +417,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
         ).fetchall()
         for (oid, session_key, platform, chat_id, thread_id, content, state, attempts, created_at,
              owner_pid, owner_started_at, adapter_profile, last_error, updated_at) in rows:
+            if _recovery_held(oid):
+                continue
             if _owner_alive(owner_pid, owner_started_at):
                 continue  # a live gateway still owns this row
             if attempts >= MAX_ATTEMPTS or (now - created_at) > STALE_AFTER_SECONDS:  # exhausted -> abandoned
@@ -472,6 +494,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                WHERE state='failed' AND platform=?""", (platform,)).fetchall()
         for (oid, session_key, row_platform, chat_id, thread_id, content, attempts, created_at,
              owner_pid, owner_started_at, last_error, adapter_profile, updated_at) in rows:
+            if _recovery_held(oid):
+                continue
             # Exact process-start matching prevents PID reuse from stealing work.
             if adapter_profile != expected_profile or owner_pid != pid or owner_started_at != started:
                 continue

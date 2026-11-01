@@ -223,6 +223,21 @@ never sees a quality enum it might reject. The shared top-level `image_gen.model
 is never passed through — it can hold another provider's id (a FAL path, for
 instance) from an earlier selection.
 
+**Model precedence.** The provider-scoped `image_gen.<provider>.model` and the
+provider's env var are explicit intent for *this* provider, so they are resolved
+before the shared top-level `image_gen.model` is consulted — including when the
+top-level value happens to be a catalog id. A leftover `image_gen.model` from a
+previous provider selection therefore cannot shadow your gateway's model. The
+top-level knob remains the fallback for when the provider-scoped key is unset:
+
+```text
+explicit call argument
+  → <PROVIDER>_IMAGE_MODEL env var
+  → image_gen.<provider>.model          # custom ids pass through verbatim
+  → image_gen.model                     # shared fallback (catalog ids only)
+  → provider default
+```
+
 **Reusing a named custom endpoint.** If the gateway is already declared under
 `providers:` for chat, point the image provider at it by *name* instead of
 repeating its URL and key:

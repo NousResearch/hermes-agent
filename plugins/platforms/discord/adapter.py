@@ -1213,6 +1213,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
+from plugins.platforms.discord import adapter_message_text as _msg_text
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
 from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
@@ -5245,7 +5246,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 nonlocal has_unverified
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
-                content = getattr(msg, "clean_content", msg.content) or ""
+                content = _msg_text.message_text(msg)
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
                     or _looks_like_nonconversational_history_message(content)
@@ -5281,6 +5282,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # ── Primary window: recent channel activity since the last bot turn ──
             collected: list[tuple[str, str]] = []  # (message_id, line)
             seen_ids: set = set()
+            hit_partition = _after_obj is not None  # a cached window already starts after our last turn
             # oldest_first=False explicitly — discord.py 2.x flips the default to True when `after=`
             # is given, selecting the *earliest* N messages (see test_fetch_channel_context_cache_*).
             async for msg in channel.history(
@@ -5296,6 +5298,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     continue
                 # Partition point: our own conversational message (needed for cold start).
                 if msg.author == self._client.user:
+                    hit_partition = True
                     break
                 line = _keep(msg)
                 if line is None:
@@ -5328,6 +5331,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     reply_collected.append((mid, line))
                     if mid:
                         seen_ids.add(mid)
+            # Newest-first here, so the thread starter row lands on top after the reverse below.
+            collected.extend(await _msg_text.thread_starter_rows(channel, _keep, is_thread=is_thread_channel,
+                                                                 warm=hit_partition))
             if not collected and not reply_collected:
                 return ""
             # history is newest-first; reverse each window, reply context (older) first.
@@ -6137,16 +6143,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
-        snapshot_attachments = []
-        if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
-            for snap in message.message_snapshots:
-                if getattr(snap, "content", None):
-                    snapshot_text_parts.append(snap.content.strip())
-                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
+        # A forward's text and files live in its snapshots; marked, so forwarded text never reads as a /command.
+        forwarded_attachments = _msg_text.snapshot_attachments(message)
+        if not raw_content:
+            raw_content = normalized_content = _msg_text.message_text(message, clean=False).strip()
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
@@ -6227,12 +6227,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             notify_error,
                         )
                     return False
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
+        referenced = await _msg_text.resolve_reference(message)
+        referenced_attachments = (list(getattr(referenced, "attachments", None) or [])
+                                  + _msg_text.snapshot_attachments(referenced)) if referenced is not None else []
+        all_attachments = list(message.attachments) + forwarded_attachments + referenced_attachments
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
@@ -6288,7 +6286,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
             # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            _is_reply = message.reference is not None
+            _is_reply = message.reference is not None and not _msg_text.is_forward_reference(message.reference)
             if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
@@ -6312,12 +6310,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
+        reply_to_id = reply_to_text = None
+        if message.reference and not _msg_text.is_forward_reference(message.reference):
             reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            reply_to_text = _msg_text.message_text(referenced, clean=False) or None if referenced is not None else None
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.id), media_urls=media_urls, media_types=media_types,

@@ -19,7 +19,7 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
+from agent.delegation_registry import DEFAULT_BACKEND, _launch_scope_key, _registry, backend_status, configured_backend
 from agent.provider_registry import lower_key
 
 _rebuild_requests: set[str] = set()
@@ -45,9 +45,17 @@ def _info(name: str) -> BackendInfo:
 
 
 def list_backends() -> list[BackendInfo]:
-    """``default`` first, then every registered backend (unavailable ones included, with their reason)."""
-    names = [DEFAULT_BACKEND, *sorted({p.name for p in _registry.list_providers()} - {DEFAULT_BACKEND})]
-    return [_info(name) for name in names]
+    """``default`` first, then every registered backend (unavailable ones included, with their reason).
+
+    The launch home's registrations are included when the active home is a served profile: a
+    multiplexed gateway registers each home's plugins into that home's scope bucket (#145746), so
+    ``/delegation`` must consult the launch home too or the backends boot discovery registered are
+    not selectable here."""
+    names = {p.name for p in _registry.list_providers()}
+    scope = _launch_scope_key()
+    if scope is not None:
+        names |= {p.name for p in _registry.list_providers(scope=scope)}
+    return [_info(name) for name in [DEFAULT_BACKEND, *sorted(names - {DEFAULT_BACKEND})]]
 
 
 def saved_backend() -> str:

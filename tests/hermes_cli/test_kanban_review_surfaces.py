@@ -179,7 +179,7 @@ def test_domain_and_cli_review_handoffs_redact_before_persistence(
         assert kb.request_review(
             conn,
             direct_id,
-            summary=f"direct {secret}",
+            reviewer="reviewer", summary=f"direct {secret}",
             metadata={"nested": [secret]},
             expected_run_id=direct_run.current_run_id,
         )

@@ -258,7 +258,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     assert not kb.request_review(
         conn,
         task_id,
-        summary="must wait",
+        reviewer="reviewer", summary="must wait",
         expected_run_id=implementation.current_run_id,
     )
     still_running = kb.get_task(conn, task_id)
@@ -268,7 +268,7 @@ def test_parent_reopen_blocks_request_review_until_parent_is_done(conn) -> None:
     assert kb.request_review(
         conn,
         task_id,
-        summary="parent stable",
+        reviewer="reviewer", summary="parent stable",
         expected_run_id=implementation.current_run_id,
     )
 

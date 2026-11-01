@@ -309,7 +309,7 @@ def test_disabled_tool_handler_refuses_and_writes_nothing(
 def test_disabled_card_still_offers_kanban_complete_and_hides_request_review(
     board: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tools import kanban_tools as kt  # noqa: F401 - registers the tools
+    from tools import kanban_tools as kt
     from tools.registry import invalidate_check_fn_cache, registry
 
     with kbc.connect() as conn:
@@ -327,7 +327,7 @@ def test_disabled_card_still_offers_kanban_complete_and_hides_request_review(
 def test_optional_worker_keeps_request_review_and_its_reviewer_argument(
     board: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import tools.kanban_tools  # noqa: F401 - registers the tools
+    import tools.kanban_tools
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="plain", assignee="worker")
@@ -345,7 +345,7 @@ def test_optional_worker_keeps_request_review_and_its_reviewer_argument(
 def test_required_implementer_schema_omits_reviewer_argument(
     board: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import tools.kanban_tools  # noqa: F401 - registers the tools
+    import tools.kanban_tools
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="gated", assignee="worker", reviewer="reviewer")
@@ -360,7 +360,7 @@ def test_required_implementer_schema_omits_reviewer_argument(
 def test_required_reviewer_run_keeps_reviewer_argument(
     board: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import tools.kanban_tools  # noqa: F401 - registers the tools
+    import tools.kanban_tools
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="gated", assignee="worker", reviewer="reviewer")
@@ -458,7 +458,7 @@ def test_optional_native_review_cycle_keeps_policy(board: Path) -> None:
         tid = kb.create_task(conn, title="plain", assignee="worker", reviewer=None)
         run = kb.claim_task(conn, tid)
         ok, why = kb.request_review(
-            conn, tid, summary="first", expected_run_id=run.current_run_id, with_reason=True,
+            conn, tid, reviewer="reviewer", summary="first", expected_run_id=run.current_run_id, with_reason=True,
         )
         assert ok is True, why
         assert kb.get_task(conn, tid).review_policy == "optional"

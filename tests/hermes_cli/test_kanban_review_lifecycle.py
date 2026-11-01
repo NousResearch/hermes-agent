@@ -148,7 +148,7 @@ def test_repeated_review_requests_never_triage(kanban_home: Path) -> None:
             run_id = kb.get_task(conn, tid).current_run_id
             ok = kb.request_review(
                 conn, tid,
-                summary="pass complete",
+                reviewer="reviewer", summary="pass complete",
                 expected_run_id=run_id,
             )
             assert ok is True
@@ -206,7 +206,7 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         kbd._set_worker_pid(conn, tid, os.getpid())
 
         # 1) No run id, no force -> refused with a distinct reason.
-        ok, reason = kb.request_review(conn, tid, with_reason=True)
+        ok, reason = kb.request_review(conn, tid, reviewer="reviewer", with_reason=True)
         assert ok is False
         assert reason is not None and "live claim" in reason
         row = conn.execute(
@@ -216,11 +216,11 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         assert row["status"] == "running"
         assert row["claim_lock"] is not None  # live claim untouched
         # bool-mode caller sees plain False.
-        assert kb.request_review(conn, tid) is False
+        assert kb.request_review(conn, tid, reviewer="reviewer") is False
 
         # 2) Worker path: proving ownership via expected_run_id works.
         assert kb.request_review(
-            conn, tid, summary="done", expected_run_id=claimed.current_run_id,
+            conn, tid, reviewer="reviewer", summary="done", expected_run_id=claimed.current_run_id,
         ) is True
         assert kb.get_task(conn, tid).status == "review"
 
@@ -228,7 +228,7 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
     with kbc.connect() as conn:
         tid2 = kb.create_task(conn, title="forced", assignee="worker")
         assert kb.claim_task(conn, tid2) is not None
-        assert kb.request_review(conn, tid2, summary="override", force=True) is True
+        assert kb.request_review(conn, tid2, reviewer="reviewer", summary="override", force=True) is True
         assert kb.get_task(conn, tid2).status == "review"
 
 
@@ -292,7 +292,7 @@ def test_request_review_whitespace_only_summary_does_not_crash(
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
 
-        ok = kb.request_review(conn, tid, summary=blank, expected_run_id=run_id)
+        ok = kb.request_review(conn, tid, reviewer="reviewer", summary=blank, expected_run_id=run_id)
         assert ok is True
         assert kb.get_task(conn, tid).status == "review"
 
@@ -315,7 +315,7 @@ def test_complete_task_closes_review_to_done(kanban_home: Path) -> None:
         tid = kb.create_task(conn, title="approve me", assignee="worker")
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="ready",
+            conn, tid, reviewer="reviewer", summary="ready",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -351,7 +351,7 @@ def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None
         )
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="please review",
+            conn, tid, reviewer="reviewer", summary="please review",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
 
@@ -394,7 +394,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         tid = kb.create_task(conn, title="park", assignee="worker")
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, reviewer="reviewer", summary="done",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -450,7 +450,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert claimed is not None
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
-            conn, review_id, summary="PR ready",
+            conn, review_id, reviewer="qa", summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
@@ -659,6 +659,14 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "---\nname: domain-specific-review\ndescription: test double\n---\n\nbody\n",
         encoding="utf-8",
     )
+    # The reviewer must carry the review skill: a non-empty skill tree makes
+    # resolution strict, so seed sdlc-review explicitly (as the gate suite does).
+    review_dir = kanban_home / "skills" / "sdlc-review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "SKILL.md").write_text(
+        "---\nname: sdlc-review\ndescription: test double\n---\n\nbody\n",
+        encoding="utf-8",
+    )
 
     with kbc.connect() as conn:
         task_id = kb.create_task(
@@ -672,7 +680,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         assert kb.request_review(
             conn,
             task_id,
-            summary="ready",
+            reviewer="qa", summary="ready",
             expected_run_id=implementation.current_run_id,
         )
         monkeypatch.setattr(
@@ -721,7 +729,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
             assert kb.request_review(
                 conn,
                 task_id,
-                summary="ready",
+                reviewer="reviewer", summary="ready",
                 expected_run_id=implementation.current_run_id,
             )
             review_ids.append(task_id)
@@ -810,7 +818,7 @@ def test_review_cycle_end_to_end(kanban_home: Path) -> None:
         # Pass 1: implement -> review.
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="v1",
+            conn, tid, reviewer="reviewer", summary="v1",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -820,7 +828,7 @@ def test_review_cycle_end_to_end(kanban_home: Path) -> None:
         assert kb.get_task(conn, tid).status == "ready"
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="v2",
+            conn, tid, reviewer="reviewer", summary="v2",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"

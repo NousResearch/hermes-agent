@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import asdict
 from typing import Any, Callable, Mapping, Optional
 
@@ -187,7 +188,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
     if isinstance(turns, str):
         turns = turns.strip() or None
     if turns is not None:
-        if isinstance(turns, str) and turns.isdigit():
+        if isinstance(turns, str) and turns.isdecimal():
             turns = int(turns)
         if isinstance(turns, bool) or not isinstance(turns, int) or turns < 1:
             raise _bad_request(f"{label}: max_iterations must be a whole number of 1 or more "
@@ -202,11 +203,12 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
                 seconds = float(seconds)
             except ValueError:
                 seconds = None
-            else:
-                seconds = int(seconds) if seconds.is_integer() else seconds
-        if seconds is None or isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
+        if (seconds is None or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or not math.isfinite(seconds) or seconds < 0):
             raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
                                f"(got {entry.get('child_timeout_seconds')!r}).")
+        if isinstance(seconds, float) and seconds.is_integer():
+            seconds = int(seconds)
         row["child_timeout_seconds"] = seconds
     # Route fields the editor never touches (request_overrides, label, profile) round-trip as stored.
     validated = {*_OPTION_TEXT_KEYS, "api_key", "reasoning_effort", "service_tier", "fallback_providers",

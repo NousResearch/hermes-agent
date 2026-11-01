@@ -245,7 +245,7 @@ def test_a_route_child_timeout_of_zero_is_pinned_as_zero():
     assert child._delegate_child_timeout == 0
 
 
-@pytest.mark.parametrize("bad", [-1, "300", True, [300]])
+@pytest.mark.parametrize("bad", [-1, "300", True, [300], float("nan"), float("inf")])
 def test_a_bad_route_child_timeout_refuses_that_task_and_its_sibling_runs(bad):
     result, built, _ = _spawn([{**LOCAL, "child_timeout_seconds": bad}, None], cfg={"child_timeout_seconds": 1400})
     (refused,) = result["refused"]

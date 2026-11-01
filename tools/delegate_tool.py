@@ -305,7 +305,12 @@ def _build_child_agent(
                     tool_progress_callback=child_progress_cb,
                     iteration_budget=None,  # fresh budget per subagent
                     # A profile route carries that profile's identity (its SOUL.md under the bound home).
-                    **({"load_soul_identity": True} if profile_home is not None else {}),
+                    # delegation.inherit_soul (off by default) gives default children the parent's SOUL.md
+                    # the same way (the cron pattern: persona kept, cwd context files still skipped).
+                    **({"load_soul_identity": True}
+                       if profile_home is not None
+                       or is_truthy_value((delegation_cfg or {}).get("inherit_soul"), default=False)
+                       else {}),
                 )
             except BaseException:
                 # No child close() will ever run: release the dedicated handle here.

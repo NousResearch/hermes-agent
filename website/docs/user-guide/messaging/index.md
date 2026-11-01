@@ -349,7 +349,7 @@ Details:
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
-- `fallback_providers` takes the same shape as the top-level key and replaces the global chain for that channel; `[]` disables fallback there.
+- `fallback_providers` takes the same entries as the top-level key and replaces the global chain for that channel; `[]` disables fallback there. A custom endpoint entry carries its own `base_url` (and `key_env` when it needs a key), as in [Fallback Providers](../features/fallback-providers.md#custom-endpoint-fallback).
 
 ## Per-Room Intentional Silence
 

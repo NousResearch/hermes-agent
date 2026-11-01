@@ -98,8 +98,12 @@ class CLITuiRuntimeMixin:
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+        from hermes_cli.cli_process_notifications import input_is_system_authored
         from tools.process_registry_notifications import TimelineNotification
         self._tui_dock_drop_dequeued()
+        # Provenance is read off the queued item before unwrapping: a notification turn stays
+        # system-authored through the unwrap, whatever its text says.
+        system_authored = input_is_system_authored(user_input)
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -159,7 +163,8 @@ class CLITuiRuntimeMixin:
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
+            self.chat(notification_preview or user_input, images=submit_images or None,
+                      voice_input=is_voice_input, system_authored=system_authored)
         finally:
             self._tui_after_turn()
 

@@ -640,3 +640,13 @@ def test_dm_admission_config_falls_back_to_os_environ_when_unscoped(monkeypatch)
     adapter = object.__new__(FeishuAdapter)
     adapter._apply_settings(settings)
     assert adapter._admit(make_sender(open_id="ou_anyone"), make_message(chat_type="p2p")) is None
+
+
+def test_dm_allowlist_wildcard_admits_any_sender(monkeypatch):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({"*"})
+    sender = make_sender(open_id="ou_unknown")
+    message = make_message(chat_type="p2p")
+    assert adapter._admit(sender, message) is None

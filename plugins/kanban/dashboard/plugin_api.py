@@ -27,6 +27,7 @@ from fastapi import (
     APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from plugins.kanban.dashboard.execution_controls import ExecutionControlBody, control_patch
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_workflow
@@ -411,7 +412,7 @@ def get_task(
 
 # --- POST /tasks ------------------------------------------------------------
 
-class CreateTaskBody(BaseModel):
+class CreateTaskBody(ExecutionControlBody):
     title: str
     body: Optional[str] = None
     assignee: Optional[str] = None
@@ -422,10 +423,7 @@ class CreateTaskBody(BaseModel):
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
-    max_runtime_seconds: Optional[int] = None
     skills: Optional[list[str]] = None
-    goal_mode: bool = False
-    goal_max_turns: Optional[int] = None
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
@@ -530,7 +528,7 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 
 # --- PATCH /tasks/:id  and  POST /tasks/bulk ---------------------------------
 
-class UpdateTaskBody(BaseModel):
+class UpdateTaskBody(ExecutionControlBody):
     status: Optional[str] = None
     assignee: Optional[str] = None
     priority: Optional[int] = None
@@ -691,6 +689,17 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+    with _value_error_400():
+        controls = control_patch(payload)
+    if controls:
+        from hermes_cli.kanban_db_controls import assert_operator_context
+
+        with _map_errors(403, PermissionError):
+            assert_operator_context()
+        with _board_conn(board) as (board, conn), _value_error_400(), _map_errors(403, PermissionError):
+            _require_task(conn, task_id)
+            kanban_db.edit_task(conn, task_id, board=board, **controls)
+            return {"task": _task_dict(kanban_db.get_task(conn, task_id))}
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
         # For a combined assignee+review patch, request_review must capture the

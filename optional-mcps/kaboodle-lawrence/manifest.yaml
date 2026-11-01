@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: kaboodle-lawrence
+description: >-
+  Kaboodle Lawrence: deeper independent second-opinion review of your
+  agent's work for complex and consequential tasks. Advisory only.
+source: https://kaboodleai.com/get-started
+
+# Kaboodle is one service with two Agent Partners, each its own remote MCP
+# server: Lawrence (this entry, deeper) and Mission (`kaboodle-mission`,
+# fast). Install either or both; one Kaboodle account signs in to both.
+#
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration +
+# PKCE, public client (verified live: Hermes registers its own client, no
+# pre-registered app). Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://lawrence.mcp.kaboodleai.com/
+
+auth:
+  type: oauth
+
+# The server exposes one tool, `kaboodle_guidance`. Pinned so a tool the
+# server adds later is opt-in via `hermes mcp configure kaboodle-lawrence`
+# rather than enabled for every catalog user without review.
+tools:
+  default_enabled:
+    - kaboodle_guidance
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - kaboodle
+    - kaboodle lawrence
+  hosts:
+    - lawrence.mcp.kaboodleai.com
+
+post_install: |
+  Kaboodle is invite-only for now. You need a Kaboodle account from an
+  invitation; joining the early access list at
+  https://kaboodleai.com/early-access does not create an account or
+  guarantee one. If you have an invitation, finish account setup at
+  https://kaboodleai.com first.
+
+  On first connection Hermes opens a browser to sign in to Kaboodle (or run
+  `hermes mcp login kaboodle-lawrence`). Approve access, then restart the
+  session (or /reload-mcp) so `kaboodle_guidance` loads.
+
+  Each review sends the work your agent submits (a plan, draft, diff or
+  result) to Kaboodle and returns two independent reviewers' advice. It
+  never approves, blocks or acts. Do not submit secrets, credentials or
+  material you are not authorized to share. Your agent may call the tool
+  on its own; Lawrence reviews are more thorough and can use more plan
+  credits (see https://kaboodleai.com/pricing). A large review can take a
+  few minutes. Very large artifacts are refused, not truncated; split
+  them into parts. Privacy: https://kaboodleai.com/privacy
+
+  For fast everyday review, also install `kaboodle-mission`.

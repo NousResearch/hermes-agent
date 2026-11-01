@@ -1,7 +1,7 @@
-"""``hermes update``'s .env backfill must not hand a profile the default's bot credentials.
+"""``hermes update``'s .env backfill must never copy the default's secrets into a profile.
 
-One bot token can't be consumed twice: a copied TELEGRAM_BOT_TOKEN only ever surfaces as a
-``duplicate_credential`` fatal next to the default's live adapter (Desktop: "Backend telegram down").
+Secrets are profile-scoped, and one bot token can't be consumed twice: a copied TELEGRAM_BOT_TOKEN only
+ever surfaces as a ``duplicate_credential`` fatal next to the default's live adapter.
 """
 
 from __future__ import annotations
@@ -22,14 +22,13 @@ def profile_env(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_backfill_keeps_model_keys_and_drops_messaging_channels(profile_env):
+def test_backfill_never_copies_default_credentials(profile_env):
     (profile_env / ".hermes" / ".env").write_text(
-        "OPENROUTER_API_KEY=root-key\nTELEGRAM_BOT_TOKEN=123:abc\nTELEGRAM_ALLOWED_USERS=42\n"
-        "DISCORD_BOT_TOKEN=d1\nDISCORD_HOME_CHANNEL=9\nFAL_KEY=f\n",
-        encoding="utf-8",
+        "OPENROUTER_API_KEY=root-key\nTELEGRAM_BOT_TOKEN=123:abc\nDISCORD_BOT_TOKEN=d1\n", encoding="utf-8"
     )
     p = create_profile("legacy", no_alias=True, no_skills=True)
     (p / ".env").unlink()
 
     assert backfill_profile_envs(quiet=True) == ["legacy"]
-    assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\nFAL_KEY=f\n"
+    assert all(line.startswith("#") or not line.strip()
+               for line in (p / ".env").read_text(encoding="utf-8-sig").splitlines())

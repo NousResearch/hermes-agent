@@ -1479,26 +1479,17 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
-    """Give every named profile lacking a ``.env`` one; never overwrites an existing one.
-
-    Pre-#44792 profiles read the root ``.env`` through the process environment, so on update each
-    gets a copy of the default's (else the placeholder header) to keep its model/tool credentials.
-    Messaging-channel keys are stripped like ``--clone``: one bot credential can't be consumed twice.
+    """Seed the placeholder ``.env`` header into every named profile lacking one; never
+    overwrites an existing file. It never copies the default's ``.env``: secrets are
+    profile-scoped, and a copied bot token makes two adapters fight over one bot.
     """
-    from hermes_cli.profile_channels import ChannelKeyIndex, strip_channel_env_file
     backfilled: list[str] = []
-    default_home = _get_default_hermes_home()
-    default_env, index = default_home / ".env", None
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
             continue
         try:
-            if default_env.is_file():
-                shutil.copy2(default_env, env_path)
-                strip_channel_env_file(env_path, index := index or ChannelKeyIndex(default_home))
-            else:
-                env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
+            env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)
             backfilled.append(entry.name)
         except OSError as e:

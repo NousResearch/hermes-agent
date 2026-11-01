@@ -99,10 +99,11 @@ async def probe(peer):
                     assert authority.agent(ref) is agent
                     admitted = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
                     assert len(admitted) == 3 and all(row['status'] == 'terminal' for row in admitted), admitted
-                if os.environ.get('API_RUN') == 'controls':
+                if os.environ.get('API_RUN') in ('controls', 'cancel-by-key'):
                     async def create_run(text):
                         async with client.post(f'http://127.0.0.1:{api_port}/v1/runs', json={
-                            'session_id': ref.session_id, 'input': text, 'instructions': 'API_STABLE_SYSTEM'}, headers=headers) as response:
+                            'session_id': ref.session_id, 'input': text, 'instructions': 'API_STABLE_SYSTEM'},
+                            headers={**headers, 'Idempotency-Key': text}) as response:
                             assert response.status == 202, await response.text()
                             return (await response.json())['run_id']
                     blocking = await create_run('BLOCK_FIFO')
@@ -112,7 +113,9 @@ async def probe(peer):
                         steered = await response.json()
                         assert response.status == 200 and steered['accepted'], steered
                     queued = await create_run('CANCEL_ONLY_QUEUED')
-                    async with client.post(f'http://127.0.0.1:{api_port}/v1/runs/{queued}/stop', headers=headers) as response:
+                    control_path = 'cancel' if os.environ.get('API_RUN') == 'cancel-by-key' else f'{queued}/stop'
+                    async with client.post(f'http://127.0.0.1:{api_port}/v1/runs/{control_path}',
+                            headers={**headers, 'Idempotency-Key': 'CANCEL_ONLY_QUEUED'}) as response:
                         stopped = await response.json()
                         assert response.status == 200 and stopped['status'] == 'cancelled', stopped
                     pending_rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)

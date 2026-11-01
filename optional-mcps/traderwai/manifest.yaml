@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: traderwai
+description: 'TraderWAI: charts, market data, backtests and orders on your broker (MetaTrader, cTrader, TradeLocker, Bybit, Binance and more).'
+source: https://github.com/leonardo-mazzitelli/traderwai-mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint, PKCE S256, public clients); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.traderwai.com
+
+auth:
+  type: oauth
+
+# Excluded: account-admin tools that permanently remove a linked broker account
+# or account group. Users manage those from the TraderWAI web app.
+tools:
+  default_excluded:
+    - delete_broker_account
+    - delete_account_group
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - traderwai
+    - metatrader
+    - ctrader
+    - tradelocker
+  hosts:
+    - traderwai.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to TraderWAI
+  (or run `hermes mcp login traderwai`). Approve access, then restart
+  the session so tools load. Charts, market data and backtests work
+  right away; link a broker account at traderwai.com to trade.
+
+  CAUTION: once a broker account is linked, this server can place REAL
+  orders on it (forex, gold, indices, crypto). Hermes's normal
+  tool-approval flow applies, but review orders carefully before
+  approving, and start with a demo account.

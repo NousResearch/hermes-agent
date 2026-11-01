@@ -959,7 +959,8 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _skill_catalog
+    from tools.skills_tool import _skill_catalog, find_plugin_skills
+    from tools.skills_tool_plugin import plugin_bare_name_notes
     from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
@@ -968,18 +969,26 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     builtin_names = set(_read_manifest())
     # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
     all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    plugin_skills = find_plugin_skills(skip_disabled=True)  # not on disk: skill_view loads them as plugin:skill
+    plugin_names = {s["name"] for s in plugin_skills}
+    # Bare-name precedence (on-disk > plugin, plugins tied → qualify): matches skill_view's lookup.
+    bare_notes = plugin_bare_name_notes(plugin_skills, {
+        n for s in _skill_catalog(skip_disabled=True, include_hidden=True) for n in (s["name"], s["path"].parent.name)})
+    all_skills += plugin_skills
     root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
 
-    counts = {"hub": 0, "builtin": 0, "local": 0}
+    counts = {"hub": 0, "builtin": 0, "local": 0, "plugin": 0}
     enabled_count = disabled_count = 0
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
-        if hub_entry:
+        if name in plugin_names:
+            source_type, source_display, trust = "plugin", name.split(":", 1)[0], "plugin"
+        elif hub_entry:
             source_type, source_display = "hub", hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
         else:
@@ -993,7 +1002,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         disabled_count += not is_enabled
         status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
         # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
-        if note := skill_command_collision_note(name):
+        if note := skill_command_collision_note(name) or bare_notes.get(name):
             status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,
                       _trust_cell(trust, source_display), status)
@@ -1002,7 +1011,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     tail = (f"{enabled_count} enabled shown" if enabled_only
             else f"{enabled_count} enabled, {disabled_count} disabled")
     c.print(f"[dim]{counts['hub']} hub-installed, {counts['builtin']} builtin, "
-            f"{counts['local']} local — {tail}[/]\n")
+            f"{counts['local']} local, {counts['plugin']} plugin — {tail}[/]\n")
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:

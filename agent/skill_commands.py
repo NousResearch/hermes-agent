@@ -649,7 +649,8 @@ def invalidate_plugin_skill_commands() -> None:
 
 
 def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
-    """Project enabled plugin skills into the interactive-only slash namespace (``/plugin:skill``).
+    """Project enabled plugin skills into the interactive-only slash namespace (``/plugin:skill``,
+    plus ``/skill`` when the bare name is unambiguous; on-disk skills win that name).
 
     Config disable lists (``skills.disabled``, ``plugins.disabled``) are applied on EVERY call, so a
     config-only disable takes effect without a rescan.
@@ -712,9 +713,21 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
         }
+    commands.update(_bare_plugin_skill_aliases(commands))
     with _publish_lock:
         _plugin_skill_commands, _plugin_skill_commands_tag = commands, tag
     return commands
+
+
+def _bare_plugin_skill_aliases(qualified: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """``/skill`` for every plugin skill whose bare name exactly one plugin registers and no built-in
+    command takes. On-disk skills still win: the interactive merge keeps the filesystem entry."""
+    owners: dict[str, list[dict[str, Any]]] = {}
+    for info in qualified.values():
+        owners.setdefault(info["name"].split(":", 1)[1].lower(), []).append(info)
+    return {
+        f"/{bare}": {**infos[0], "bare_alias": True} for bare, infos in owners.items()
+        if len(infos) == 1 and skill_command_collision_note(bare) is None}
 
 
 def _merge_interactive_skill_commands(
@@ -723,10 +736,10 @@ def _merge_interactive_skill_commands(
     """Merge interactive sources with filesystem commands winning collisions."""
     commands = dict(filesystem_commands)
     for command, info in plugin_commands.items():
-        if command in commands:
-            logger.warning("Plugin skill %r collides with %r; keeping the first", command, commands[command]["name"])
-        else:
+        if command not in commands:
             commands[command] = info
+        elif not info.get("bare_alias"):  # a shadowed bare alias is precedence, not a conflict
+            logger.warning("Plugin skill %r collides with %r; keeping the first", command, commands[command]["name"])
     return commands
 
 

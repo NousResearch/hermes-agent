@@ -1384,10 +1384,17 @@ def abort_turn_on_interrupt(
     # Capture the classified stop before hard-cancel wipes ``_tool_interrupt_reason``.
     # An interrupt before any tool leaves a user tail, so the durable closer is the
     # only writer of the user-visible notice — and it reads the result, not the agent.
-    from agent.interrupt_control import interrupt_issuer
+    from agent.interrupt_control import USER_INTERRUPT_REASONS, interrupt_issuer
     issuer = interrupt_issuer(agent)
     tool_reason = getattr(agent, "_tool_interrupt_reason", None)
-    turn_exit_reason = f"interrupted_by_system({issuer})" if issuer else "interrupted_by_user"
+    # Empty issuer is not a user stop. interrupt_issuer returns None for both a
+    # human reason and a missing one; only the human set may say interrupted_by_user.
+    if issuer:
+        turn_exit_reason = f"interrupted_by_system({issuer})"
+    elif tool_reason in USER_INTERRUPT_REASONS:
+        turn_exit_reason = "interrupted_by_user"
+    else:
+        turn_exit_reason = "interrupted_by_system(unrecorded)"
     # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
     # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
     agent.clear_interrupt(hard_cancel=True)

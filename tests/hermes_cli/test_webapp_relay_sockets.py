@@ -120,6 +120,28 @@ def test_revoking_the_grant_closes_the_relayed_socket(live_gateway):
         assert (closed.value.code, closed.value.reason) == (4401, "Gateway relay revoked")
 
 
+def _rpc(ws, rid, method):
+    ws.send_text(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": {}}))
+    while (frame := ws.receive_json()).get("id") != rid:
+        pass  # events (gateway.ready, ...) arrive between replies
+    return frame
+
+
+@pytest.mark.parametrize("scopes", [(), ("display",)])
+def test_a_relayed_gateway_socket_reaches_screen_and_voice_methods_only_with_their_scope(live_gateway, scopes):
+    # The gateway's own socket carries the Bot Screen's grabs and takeover and the voice recorder as
+    # RPCs, so a grant without those scopes must not reach them there either.
+    hub, _there, row = _pair_live(live_gateway, scopes=scopes)
+    with hub.websocket_connect(_relayed_url(hub, row, "/api/ws", "gateway"), headers=ORIGIN) as ws:
+        for rid, method in enumerate(("display.thumbnail", "display.lease.acquire", "voice.record"), start=1):
+            if method.split(".")[0] in scopes:
+                if method == "display.thumbnail":  # read-only, so it may run here
+                    assert _rpc(ws, rid, method).get("error", {}).get("code") != 4030
+                continue
+            error = _rpc(ws, rid, method).get("error") or {}
+            assert error.get("code") == 4030 and "not granted" in error.get("message", ""), (method, error)
+
+
 def test_a_socket_opened_under_a_grant_needs_that_grants_scope(relay_app):
     """The upgrade never crosses the relayed-request gate, so a ticket minted through the relay is
     checked again against the socket it opens."""

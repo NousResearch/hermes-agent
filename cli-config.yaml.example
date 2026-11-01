@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -1694,10 +1694,11 @@ platform_toolsets:
 #       max_file_bytes: 52428800
 #       safety_ratio: 0.85
 #   gemini:
-#     model: "gemini-3.1-flash-tts-preview"
+#     model: "gemini-3.8-flash-tts"   # 2.5/3.1 preview TTS models retire 2026-11-17
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#     style: ""  # Gemini 3.8: optional concise speech_metadata.style; overrides persona file
 #   xai:
 #     voice_id: "eve"       # built-in or custom voice ID from xAI Console
 #     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"

@@ -234,6 +234,8 @@ def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: dict[
         _run_edge_tts(text, file_str, tts_config)
     elif engine == "openai":
         _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
+    elif engine == "gemini":
+        _generate_gemini_tts(text, file_str, tts_config, instructions=instructions)
     else:
         globals()[entry[2]](text, file_str, tts_config)
 
@@ -726,8 +728,8 @@ TTS_SCHEMA = {
                 "description": (
                     "Optional voice-design guidance: tone, emotion, pacing, accent, "
                     "whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). "
-                    "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
-                    "voice-design servers). Silently ignored by backends that don't support it."
+                    "Forwarded to OpenAI voice-design backends and Gemini 3.8 TTS. "
+                    "Silently ignored by backends that don't support it."
                 )
             }
         },

@@ -4,7 +4,7 @@
   "parameters": {
     "properties": {
       "instructions": {
-        "description": "Optional voice-design guidance: tone, emotion, pacing, accent, whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible voice-design servers). Silently ignored by backends that don't support it.",
+        "description": "Optional voice-design guidance: tone, emotion, pacing, accent, whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). Forwarded to OpenAI voice-design backends and Gemini 3.8 TTS. Silently ignored by backends that don't support it.",
         "type": "string"
       },
       "output_path": {

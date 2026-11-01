@@ -188,6 +188,15 @@ def _resolve_openrouter_runtime(
                       *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "") or entry_key
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
+    # A persisted api_mode belongs to the provider it was recorded for and never follows a switch
+    # (``_configured_api_mode``): a config naming another provider (direct Anthropic's anthropic_messages)
+    # must not pin this route's wire. Unset/``auto`` providers and, on bare custom, local-server aliases
+    # (ollama, vllm, …) keep their mode.
+    route = "custom" if requested_norm == "custom" else "openrouter"
+    if cfg_provider != "auto" and not (
+        rp._provider_supports_explicit_api_mode(route, cfg_provider) or (route == "custom" and rp._resolves_to_custom(cfg_provider))
+    ):
+        model_cfg = {k: v for k, v in model_cfg.items() if k != "api_mode"}
     cfg_api_mode = rp._parse_api_mode(model_cfg.get("api_mode"))
     # Explicit "custom" stays "custom" rather than relabeling to "openrouter".
     if requested_norm != "custom":

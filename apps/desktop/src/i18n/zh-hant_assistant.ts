@@ -153,7 +153,7 @@ export const zhHantAssistant = {
         truncated: {
           title: '回覆被截斷',
           body: (_provider, model) =>
-            `${model || '模型'}在完成前停止，因此最後一步沒有執行。按「繼續」即可從中斷處接續。`
+            `${model || '模型'}的回覆在完成前中斷了。按「繼續」即可從中斷處接續。`
         },
         invalid_response: {
           title: '無法讀取回覆',
@@ -226,6 +226,12 @@ export const zhHantAssistant = {
         launch_credentials_unavailable: {
           title: '此聊天的 API 金鑰已變更',
           body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
+        },
+        local_runtime_unavailable: {
+          title: '無法連線到本機模型伺服器',
+          body: '本機模型伺服器尚未執行：它可能仍在啟動中。請稍後重試，或切換到其他模型。',
+          bodyNoRetry:
+            '本機模型伺服器已關閉。請在 Hermes 桌面應用程式或終端機中的 `hermes model` 啟動它，或切換到其他模型。'
         }
       },
       errorLayers: {

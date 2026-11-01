@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhCronControl } from './zh_cron_control'
 import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
@@ -2838,6 +2839,7 @@ export const zhOverrides = {
   },
 
   cron: {
+    control: zhCronControl,
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,
@@ -3141,7 +3143,6 @@ export const zhOverrides = {
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
-      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',

@@ -78,8 +78,10 @@ export function errorCardText(
     // wait, the model, the way forward); the table body is only the fallback for an older backend.
     const ownSentence = isFreeTierSurface(surface) || surface?.code === 'usage_window'
 
+    const body = surface?.retryable === false && copy.bodyNoRetry ? copy.bodyNoRetry : copy.body
+
     return {
-      body: (ownSentence && surface?.message) || render(copy.body, provider, model),
+      body: (ownSentence && surface?.message) || render(body, provider, model),
       title: render(copy.title, provider, model)
     }
   }

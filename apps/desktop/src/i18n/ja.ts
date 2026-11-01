@@ -7,6 +7,7 @@ import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaCronControl } from './ja_cron_control'
 import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
@@ -1921,6 +1922,7 @@ export const jaOverrides = {
   },
 
   cron: {
+    control: jaCronControl,
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,

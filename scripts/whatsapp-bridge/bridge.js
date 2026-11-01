@@ -391,6 +391,16 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+// True from the first connection attempt until the socket opens, and again from a close that
+// scheduled a reconnect until it lands. A logged-out session never gets here (the process exits),
+// so a 503 carrying reconnectPending: true means "wait and resend", not "this bridge is dead".
+let reconnectPending = true;
+
+// One gate for every send-shaped route: 503 + the bridge's own verdict on whether it will
+// reconnect, so the Python adapter can mark the failure retryable only when it honestly is.
+function bridgeNotConnected(res, error = 'Not connected to WhatsApp') {
+  return res.status(503).json({ error, reconnectPending });
+}
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -444,6 +454,7 @@ async function startSocket() {
       connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
+        reconnectPending = false;
         emitPairEvent({ event: 'error', error: 'logged_out', reason });
         if (!PAIR_JSON) {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
@@ -451,6 +462,7 @@ async function startSocket() {
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
+        reconnectPending = true;
         emitPairEvent({ event: 'disconnected', reason });
         if (!PAIR_JSON) {
           if (reason === 515) {
@@ -463,6 +475,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      reconnectPending = false;
       const connectedUser = sock?.user
         ? {
             id: sock.user.id || null,
@@ -859,7 +872,7 @@ app.get('/messages', (req, res) => {
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return bridgeNotConnected(res);
   }
 
   const { chatId, message, replyTo, mentions } = req.body;
@@ -899,7 +912,7 @@ app.post('/send', async (req, res) => {
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return bridgeNotConnected(res);
   }
 
   const { chatId, messageId, message } = req.body;
@@ -933,7 +946,7 @@ app.post('/edit', async (req, res) => {
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return bridgeNotConnected(res);
   }
 
   const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
@@ -1036,7 +1049,7 @@ app.post('/send-media', async (req, res) => {
 // low-level transport helper.
 app.post('/send-poll', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return bridgeNotConnected(res);
   }
 
   const { chatId, question, options, selectableCount } = req.body;
@@ -1058,7 +1071,7 @@ app.post('/send-poll', async (req, res) => {
 // Send native WhatsApp location pin
 app.post('/send-location', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+    return bridgeNotConnected(res);
   }
 
   const { chatId, latitude, longitude, name, address } = req.body;
@@ -1080,7 +1093,7 @@ app.post('/send-location', async (req, res) => {
 // Typing indicator
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected' });
+    return bridgeNotConnected(res, 'Not connected');
   }
 
   const { chatId } = req.body;
@@ -1098,7 +1111,7 @@ app.post('/typing', async (req, res) => {
 // it through the authoritative DM/group/mention intake policy.
 app.post('/read', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
-    return res.status(503).json({ error: 'Not connected' });
+    return bridgeNotConnected(res, 'Not connected');
   }
 
   const receiptKeys = inboundReadReceiptKeys({
@@ -1147,6 +1160,7 @@ app.get('/chat/:id', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: connectionState,
+    reconnectPending,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,

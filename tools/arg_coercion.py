@@ -1,8 +1,10 @@
-"""Tool-argument type coercion: repair string-typed values the model emitted against a tool's JSON Schema.
+"""Tool-argument type coercion: repair mistyped values the model emitted against a tool's JSON Schema.
 
 Models emit "42" for integers, "true" for booleans, JSON-encoded strings for
 arrays/objects (also nested inside containers), and bare scalars where an array
-is expected (wrapped in a one-element list). Coercion is schema-guided and
+is expected (wrapped in a one-element list). The mirror mistake — a bare JSON
+number/boolean where the schema asks for a string (long digit IDs, snowflakes) —
+is repaired to its exact string form. Coercion is schema-guided and
 conservative: originals are kept whenever a repair is not unambiguous.
 """
 
@@ -19,7 +21,7 @@ logger = logging.getLogger("model_tools")
 
 
 def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Coerce string-typed args to their JSON-Schema types; originals kept on failure."""
+    """Coerce mistyped args to their JSON-Schema types; originals kept on failure."""
     if not args or not isinstance(args, dict):
         return args
 
@@ -73,6 +75,19 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
                 args[key] = _normalize_json_strings_for_schema(
                     value, prop_schema, root_schema=parameters
                 )
+                continue
+            # Mirror image of _coerce_value: models emit long digit IDs (snowflakes,
+            # org_uids) as bare JSON numbers — tokenizers quote digit runs rarely, and
+            # the tool_call bridge hides concrete schemas from provider-side validation.
+            # Repair only when the schema accepts string but not the value's native
+            # kind (unions stay untouched; the validator remains authoritative).
+            native_kinds = _native_json_kinds(value)
+            if (native_kinds
+                    and _schema_accepts_kind(prop_schema, "string", parameters)
+                    and not any(_schema_accepts_kind(prop_schema, kind, parameters) for kind in native_kinds)):
+                args[key] = _stringify_scalar(value)
+                logger.info("coerce_tool_args: coerced bare %s to string for %s.%s",
+                            type(value).__name__, tool_name, key)
             continue
         if not expected and not _schema_allows_null(prop_schema):
             continue
@@ -228,6 +243,31 @@ def _coerce_number(value: str, integer_only: bool = False):
 def _coerce_boolean(value: str):
     """Parse "true"/"false" (case-insensitive); original string otherwise."""
     return {"true": True, "false": False}.get(value.strip().lower(), value)
+
+
+def _native_json_kinds(value: Any) -> tuple[str, ...]:
+    """JSON-Schema kinds a natively-typed (non-str) scalar satisfies; empty for non-scalars."""
+    if isinstance(value, bool):  # bool first: it is an int subclass
+        return ("boolean",)
+    if isinstance(value, int):
+        return ("integer", "number")
+    if isinstance(value, float):
+        return ("number",)
+    return ()
+
+
+def _stringify_scalar(value: Any) -> str:
+    """Render a bare JSON scalar as the string the schema asked for (JSON spellings).
+
+    Integers stringify exactly (no float round-trip, so >2**53 ids survive). Floats
+    that are already integral drop the ".0"; the rest keep str()'s repr — a float
+    above 2**53 has already lost precision upstream, repair is best-effort.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 # JSON-Schema scalar/container type -> coercer; "null" and unions are handled in _coerce_value.

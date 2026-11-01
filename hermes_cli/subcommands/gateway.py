@@ -152,6 +152,16 @@ def build_gateway_parser(
     _flag(gateway_restart, "--detach", help=(
         "Without an installed service, start the replacement in the background (as `gateway ensure` "
         "does) instead of in this terminal; used by apps that run the restart as a short-lived client"))
+    _flag(gateway_restart, "--cancel",
+        help="Cancel a pending scheduled restart instead of restarting now (shutdown -c equivalent).")
+    gateway_restart.add_argument("--in", metavar="DURATION", default=None,
+        help="Restart after a relative delay (e.g. 10m, 90s, 2h) instead of immediately. "
+             "The gateway announces the restart before it happens.")
+    gateway_restart.add_argument("--at", metavar="TIME", default=None,
+        help="Restart at an absolute wall-clock time (HH:MM, ISO-8601, or epoch seconds) instead of "
+             "immediately. The gateway announces the restart before it happens.")
+    gateway_restart.add_argument("--reason", metavar="TEXT", default="",
+        help="Human-readable reason included in the pre-restart announcement (e.g. 'update to v0.21.6').")
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

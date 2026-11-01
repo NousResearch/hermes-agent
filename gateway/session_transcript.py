@@ -226,17 +226,14 @@ class SessionTranscriptMixin:
                 exc_info=True)
 
     def _live_compression_child(self, session_id: str) -> str:
-        """Transitive compression tip of *session_id* if it is a different, still-live row, else ""
-        (a depth-1 lookup misses multi-hop lineages). Uses the PARENT's proven owner handle: the
-        child's id is unpublished until its write succeeds, so a by-id lookup would hit the ambient
-        store."""
+        """Unique live canonical leaf of *session_id*'s compression chain, else "".
+
+        Uses the parent's proven owner handle: the child's id is unpublished until its write
+        succeeds, so a by-id lookup would hit the ambient store.
+        """
         owner_db = self._db_for_session_id(session_id)
-        tip = owner_db.get_compression_tip(session_id) if owner_db is not None else None
-        if tip and tip != session_id:
-            tip_row = owner_db.get_session(tip)
-            if tip_row is not None and tip_row.get("ended_at") is None:
-                return str(tip)
-        return ""
+        child = owner_db.find_live_compression_child(session_id) if owner_db is not None else None
+        return str(child["id"]) if child and child.get("id") else ""
 
     def _migrate_transcript_queue_to_child(
         self, session_id: str, queue_session_id: str, child_id: str, pending: list, msg
@@ -270,6 +267,21 @@ class SessionTranscriptMixin:
             self._save()
         (getattr(self, "_session_owner_hints", None) or {}).pop(child_id, None)
 
+    def _append_rerouted_transcript(self, child_id: str, msg: dict[str, Any]) -> Optional[Exception]:
+        """Append on the resolved owner, retrying only proven FTS corruption on that same id."""
+        try:
+            self._append_transcript_message(child_id, msg)
+        except Exception as exc:
+            logger.debug("Rerouted transcript append failed for %s", child_id, exc_info=True)
+            if not self._is_fts_corruption_error(exc) or not self._rebuild_fts_once():
+                return exc
+            try:
+                self._append_transcript_message(child_id, msg)
+            except Exception as retry_exc:
+                logger.debug("Rerouted transcript FTS retry failed for %s", child_id, exc_info=True)
+                return retry_exc
+        return None
+
     def _append_to_transcript_serialized(self, session_id: str, message: dict[str, Any]) -> None:
         """Append a message to a session's transcript (SQLite), draining the per-session retry
         queue.
@@ -284,17 +296,20 @@ class SessionTranscriptMixin:
 
         def _ack_head() -> bool:
             """Pop the acknowledged head (retry lock held). True if queue drained."""
+            nonlocal msg
             if pending and pending[0] is msg:
                 pending.pop(0)
             if not pending:
                 self._dirty_transcripts.pop(queue_session_id, None)
                 self._transcript_append_failures.pop(session_id, None)
                 return True
+            msg = pending[0]
             return False
 
         # DB write outside the retry lock so other sessions can append.
         while True:
             spool_exc = None
+            child_id = ""
             try:
                 # Spooled backlog (cap eviction, a stalled session, a boot hold-back) is older than
                 # ``msg``: replay it first. While any of it stays on disk ``msg`` stays queued, since
@@ -319,11 +334,8 @@ class SessionTranscriptMixin:
                         # only after the write succeeds — load-bearing for backlog order).
                         if _owner_key:
                             self._lazy("_session_owner_hints", dict)[child_id] = _owner_key
-                        try:
-                            self._append_transcript_message(child_id, msg)
-                        except Exception as reroute_exc:
-                            exc = reroute_exc
-                        else:
+                        exc = self._append_rerouted_transcript(child_id, msg)
+                        if exc is None:
                             with self._transcript_retry_lock:
                                 pending = self._migrate_transcript_queue_to_child(
                                     session_id, queue_session_id, child_id, pending, msg)
@@ -343,7 +355,7 @@ class SessionTranscriptMixin:
                             "Session DB transcript append rejected for compression-ended %s with "
                             "no unique live child; not retrying", session_id)
                         return
-                if self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
+                if not child_id and self._is_fts_corruption_error(exc) and self._rebuild_fts_once():
                     if spool_exc is not None:
                         continue  # repaired: drain the older spool again before ``msg``
                     try:
@@ -352,7 +364,9 @@ class SessionTranscriptMixin:
                         exc = retry_exc
                     else:
                         with self._transcript_retry_lock:
-                            _ack_head()
+                            queue_empty = _ack_head()
+                        if queue_empty:
+                            return
                         continue
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
@@ -371,8 +385,6 @@ class SessionTranscriptMixin:
             else:
                 with self._transcript_retry_lock:
                     queue_empty = _ack_head()
-                    if not queue_empty:
-                        msg = pending[0]
                 if queue_empty:
                     return
                 continue

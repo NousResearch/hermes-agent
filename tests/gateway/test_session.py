@@ -1222,8 +1222,7 @@ class TestGatewaySessionDbRecovery:
 
     def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
         """A stale writer behind >=2 compression hops (root -> mid -> tip) must
-        reroute to the live tip via the transitive ``get_compression_tip`` walk
-        — the depth-1 live-child lookup found nothing here (#82001)."""
+        reroute only when the conservative resolver proves a unique live leaf."""
         import threading
         from types import SimpleNamespace
 
@@ -1296,12 +1295,9 @@ class TestGatewaySessionDbRecovery:
         from hermes_state_errors import CompressionSessionClosedError
 
         class FakeDb:
-            def get_compression_tip(self, session_id):
+            def find_live_compression_child(self, session_id):
                 assert session_id == "parent"
-                return "child"
-
-            def get_session(self, session_id):
-                return {"id": session_id, "ended_at": None}
+                return {"id": "child"}
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -1361,6 +1357,67 @@ class TestGatewaySessionDbRecovery:
         assert "parent" not in store._dirty_transcripts
         assert "child" not in store._dirty_transcripts
 
+
+    @pytest.mark.parametrize("reroute", [False, True])
+    @pytest.mark.parametrize("backlog", [False, True])
+    def test_fts_retry_drains_once_on_the_actual_destination(self, tmp_path, reroute, backlog):
+        import threading
+        from types import SimpleNamespace
+        from typing import Any
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("parent", source="telegram")
+        target = "parent"
+        if reroute:
+            db.end_session("parent", "compression")
+            db.create_session("child", source="telegram", parent_session_id="parent")
+            target = "child"
+
+        store: Any = object.__new__(SessionStore)
+        store._db = db
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="parent")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = (
+            {"parent": [{"role": "user", "content": "older"}]} if backlog else {}
+        )
+        store._transcript_append_failures = {}
+        attempts = []
+        rebuilds = []
+        failed_once = False
+
+        def append(session_id, message):
+            nonlocal failed_once
+            attempts.append((session_id, message["content"]))
+            # Bound the broken pre-fix drain without hiding its duplicate writes.
+            if len(attempts) > 5:
+                raise RuntimeError("transcript retry did not advance")
+            if session_id == target and not failed_once:
+                failed_once = True
+                raise RuntimeError("messages_fts is malformed")
+            db.append_message(session_id, message["role"], message["content"])
+
+        store._append_transcript_message = append
+        store._rebuild_fts_once = lambda: rebuilds.append(True) or True
+        first = "older" if backlog else "newer"
+        expected_attempts = ([("parent", first)] if reroute else []) + [
+            (target, first), (target, first)
+        ]
+        if backlog:
+            expected_attempts.append((target, "newer"))
+        try:
+            store.append_to_transcript("parent", {"role": "assistant", "content": "newer"})
+            assert attempts == expected_attempts
+            assert rebuilds == [True]
+            assert store._entries["route"].session_id == target
+            assert store._dirty_transcripts == {}
+            assert [m["content"] for m in db.get_messages(target)] == (
+                ["older", "newer"] if backlog else ["newer"]
+            )
+        finally:
+            db.close()
 
     def test_fts_corruption_error_requires_fts_provenance(self):
         """_is_fts_corruption_error must not treat a generic malformed-image

@@ -73,9 +73,14 @@ def test_gateway_passes_a_profile_gate_to_the_cron_ticker(tmp_path, monkeypatch)
 
     monkeypatch.setattr(
         gw_run, "_cron_tick_profile_homes", lambda _cfg: [("default", tmp_path), ("b", home_b)])
+    scheduler_mode = {}
+
+    def _scheduler_for_profile_mode(_provider, multiplex_profiles=False):
+        scheduler_mode["multiplex_profiles"] = multiplex_profiles
+        return scheduler_provider.InProcessCronScheduler()
+
     monkeypatch.setattr(
-        scheduler_provider, "scheduler_for_profile_mode",
-        lambda _p, multiplex_profiles=False: scheduler_provider.InProcessCronScheduler())
+        scheduler_provider, "scheduler_for_profile_mode", _scheduler_for_profile_mode)
     from cron import scheduler_thread
 
     monkeypatch.setattr(scheduler_thread, "SupervisedTickerThread", _Thread)
@@ -91,6 +96,7 @@ def test_gateway_passes_a_profile_gate_to_the_cron_ticker(tmp_path, monkeypatch)
 
     asyncio.run(_go())
 
+    assert scheduler_mode["multiplex_profiles"] is True
     gate = captured.get("profile_gate")
     assert callable(gate), "the gateway must pass a profile_gate to the cron ticker"
     # And the gate it passes is the stand-down one, not a pass-everything stub.

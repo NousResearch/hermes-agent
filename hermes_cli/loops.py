@@ -545,11 +545,12 @@ class LoopManager:
         s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
         if message is not None and s.landed_tick == next_index and wakeup_payload_digest(message) == s.landed_digest:
             # The prompt for this index already persisted as a role=user turn — claim, don't re-inject.
-            # Release the claim too: no completion can ever arrive for an injection that never
-            # happened, so a True awaiting_response here would wedge the loop (persisted).
+            # Release the claim through complete_tick: no completion can ever arrive for an
+            # injection that never happened, so a True awaiting_response here would wedge the
+            # loop (persisted) — and the --times/max_ticks caps live ONLY in complete_tick, so
+            # a manual release let a coalesced last tick run one run past the user's cap.
             s.landed_tick, s.landed_digest = 0, ""
-            s.awaiting_response = False
-            self._save()
+            self.complete_tick("")
             return None
         self._save()
         return message

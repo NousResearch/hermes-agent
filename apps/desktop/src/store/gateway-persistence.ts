@@ -2,11 +2,12 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { liveSecondaryConnectionIds, openGatewayForAgent, retainGatewayForRelay } from '@/store/gateway'
+import { liveSecondaryConnectionIds, openGatewayForAgent } from '@/store/gateway'
+import { keepRoute } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
 // Every registered gateway stays connected for as long as the window lives: its
-// home socket is dialed at startup, pinned against the idle pruner, and redialed
+// home socket is dialed at startup, kept against the idle pruner, and redialed
 // when it drops. Picking a gateway or opening one of its sessions then costs no
 // dial, and the unified Sessions list (Electron splices every pooled backend's
 // rows) shows every gateway at once instead of only the one in front.
@@ -23,7 +24,7 @@ function servedByPrimary(connection: DesktopRegistryConnection, primary: Primary
   return connection.id === LOCAL_CONNECTION_ID && primary.mode !== 'remote'
 }
 
-/** The registry connections that need their own pinned socket. */
+/** The registry connections that need their own kept socket. */
 export function persistentGatewayIds(
   registry: DesktopConnectionsRegistry | null,
   primary: PrimaryGatewayRoute
@@ -31,23 +32,22 @@ export function persistentGatewayIds(
   return (registry?.connections ?? []).filter(connection => !servedByPrimary(connection, primary)).map(c => c.id)
 }
 
-const connectedListeners = new Set<() => void>()
+/** Dialing This device where Hermes is not installed would start the installer
+ *  unseen; only a confirmed click may do that. A missing probe fails closed. */
+async function localInstalled(): Promise<boolean> {
+  const probe = window.hermesDesktop?.probeLocalBackend
 
-/** Fires each time a kept gateway (re)connects, so lists drawn before it was
- *  reachable re-pull its rows. Returns the unsubscribe. */
-export function onKeptGatewayConnected(handler: () => void): () => void {
-  connectedListeners.add(handler)
-
-  return () => connectedListeners.delete(handler)
+  return probe ? (await probe()).bootstrapNeeded !== true : false
 }
 
-function dial(connectionId: string): void {
+async function dial(connectionId: string): Promise<void> {
+  if (connectionId === LOCAL_CONNECTION_ID && !(await localInstalled())) {
+    return
+  }
+
   // Background priority: a gateway that is down or needs sign-in fails fast and
   // stays throttled; the next tick (or a focus/online nudge) tries again.
-  void openGatewayForAgent(connectionId, HOME_PROFILE).then(
-    () => connectedListeners.forEach(handler => handler()),
-    () => undefined
-  )
+  await openGatewayForAgent(connectionId, HOME_PROFILE)
 }
 
 /** Start keeping every registered gateway connected. Returns the teardown. */
@@ -68,11 +68,11 @@ export function startPersistentGateways(): () => void {
 
     for (const connectionId of wanted) {
       if (!pins.has(connectionId)) {
-        pins.set(connectionId, retainGatewayForRelay(connectionId, HOME_PROFILE, { includeLocal: true }))
+        pins.set(connectionId, keepRoute(connectionId, HOME_PROFILE))
       }
 
       if (!live.has(connectionId)) {
-        dial(connectionId)
+        void dial(connectionId).catch(() => undefined)
       }
     }
   }

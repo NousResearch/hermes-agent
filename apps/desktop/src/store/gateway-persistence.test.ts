@@ -3,15 +3,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 
 const released: string[] = []
-const retainGatewayForRelay = vi.fn((connectionId: string) => () => released.push(connectionId))
+const keepRoute = vi.fn((connectionId: string, _profile: string) => () => released.push(connectionId))
 const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const live = new Set<string>()
 
 vi.mock('@/store/gateway', () => ({
   liveSecondaryConnectionIds: () => new Set(live),
-  openGatewayForAgent,
-  retainGatewayForRelay
+  openGatewayForAgent
 }))
+vi.mock('@/store/gateway-kept-routes', () => ({ keepRoute }))
 
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $primaryGatewayRoute } = await import('@/store/gateway-primary-route')
@@ -32,11 +32,17 @@ const registry = (ids: string[]): DesktopConnectionsRegistry => ({
 
 let stop: () => void = () => undefined
 
+function installProbe(bootstrapNeeded: boolean): void {
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    probeLocalBackend: vi.fn(async () => ({ bootstrapNeeded }))
+  }
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   released.length = 0
   live.clear()
-  retainGatewayForRelay.mockClear()
+  keepRoute.mockClear()
   openGatewayForAgent.mockClear()
   $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' })
   $connectionsRegistry.set(registry(['local', 'homelab', 'vps']))
@@ -45,12 +51,16 @@ beforeEach(() => {
 afterEach(() => {
   stop()
   vi.useRealTimers()
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
 it('keeps every registered gateway the primary socket does not serve connected, and lets a removed one go', () => {
   stop = startPersistentGateways()
 
-  expect(retainGatewayForRelay.mock.calls.map(call => call[0])).toEqual(['homelab', 'vps'])
+  expect(keepRoute.mock.calls).toEqual([
+    ['homelab', 'default'],
+    ['vps', 'default']
+  ])
   expect(openGatewayForAgent.mock.calls).toEqual([
     ['homelab', 'default'],
     ['vps', 'default']
@@ -64,15 +74,25 @@ it('keeps every registered gateway the primary socket does not serve connected, 
 
   $connectionsRegistry.set(registry(['local', 'homelab']))
   expect(released).toEqual(['vps'])
-  expect(retainGatewayForRelay).toHaveBeenCalledTimes(2)
+  expect(keepRoute).toHaveBeenCalledTimes(2)
 })
 
-it('pins This device on its own socket when a remote gateway is the primary', () => {
+it('with a remote primary, keeps This device only where Hermes is installed (never starts the installer)', async () => {
   $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  installProbe(true)
   stop = startPersistentGateways()
+  await vi.advanceTimersByTimeAsync(0)
 
-  expect(retainGatewayForRelay.mock.calls).toEqual([
-    ['local', 'default', { includeLocal: true }],
-    ['vps', 'default', { includeLocal: true }]
+  expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default']])
+
+  stop()
+  openGatewayForAgent.mockClear()
+  installProbe(false)
+  stop = startPersistentGateways()
+  await vi.advanceTimersByTimeAsync(0)
+
+  expect(openGatewayForAgent.mock.calls).toEqual([
+    ['vps', 'default'],
+    ['local', 'default']
   ])
 })

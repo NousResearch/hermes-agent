@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
@@ -462,6 +463,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
       $showAllProfiles.set(false)
     }
 
+    // Project ids name rows in one backend's projects.db; leave before the
+    // fresh draft copies the project's folder into its cwd.
+    if (currentConnectionId !== connectionId) {
+      exitProjectScope()
+    }
+
     if (currentNewChatIntent() === draftIntent) {
       // The open runtime belongs to the gateway being left; unbind it now, not
       // when the fresh draft renders, so nothing pairs it with the target.
@@ -485,6 +492,24 @@ export async function selectConnection(connectionId: string, options: SelectConn
       return
     }
 
+    // A kept socket can outlive cookie/native OAuth REST auth. Prove the
+    // cheapest protected read before the draft is replaced; the exact failure
+    // reaches the caller (network failures are not sign-in errors).
+    if (
+      targetConnection.authMode === 'oauth' &&
+      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
+    ) {
+      await withTimeout(
+        getProfiles({ connectionId, profile: targetProfile }),
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+        timeoutMessage
+      )
+
+      if (revision !== switchRevision) {
+        return
+      }
+    }
+
     try {
       await withTimeout(
         ensureGatewayAgent(connectionId, targetProfile, { beforeActivate, signal: activation.signal }),
@@ -505,11 +530,6 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
     if (!targetIsActive()) {
       throw new Error(`Connection "${targetConnection.label}" did not become active.`)
-    }
-
-    // Project ids name rows in one backend's projects.db.
-    if (currentConnectionId !== connectionId) {
-      exitProjectScope()
     }
 
     await rememberConnection(connectionId)

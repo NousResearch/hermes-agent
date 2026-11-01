@@ -347,6 +347,57 @@ describe('selectConnection', () => {
     expect($connection.get()?.connectionId).toBe('local')
   })
 
+  it.each(['remote', 'cloud'] as const)(
+    'requires protected REST auth on a warm %s socket before replacing the current chat',
+    async kind => {
+      const oauthRegistry: DesktopConnectionsRegistry = {
+        ...registry,
+        connections: registry.connections.map(connection =>
+          connection.id === 'homelab' ? { ...connection, kind, authMode: 'oauth' } : connection
+        )
+      }
+
+      setConnectionsRegistry(oauthRegistry)
+      const source = { connectionId: 'work-vps', mode: 'remote' as const, profile: 'research', registryScoped: true }
+      $connection.set(source)
+      $activeGatewayProfile.set('research')
+      $activeSessionId.set('source-runtime')
+      $newChatProfile.set('research')
+      setApiRequestConnection('work-vps')
+      setApiRequestProfile('research')
+      setLastUsed.mockImplementationOnce(async id => ({ ok: true, registry: { ...oauthRegistry, lastUsed: id } }))
+
+      // A kept socket already passed its handshake; opening it succeeds even
+      // though fresh REST requests no longer authenticate.
+      const expired = new Error(kind === 'remote' ? '401 Unauthorized: no_cookie' : '403 Forbidden: session expired')
+      api.mockRejectedValueOnce(expired)
+
+      await expect(selectConnection('homelab', { profile: 'scout' })).rejects.toBe(expired)
+      expect($connection.get()).toBe(source)
+      expect($activeSessionId.get()).toBe('source-runtime')
+      expect($newChatProfile.get()).toBe('research')
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+      expect(requestFreshSession).not.toHaveBeenCalled()
+      expect(exitProjectScope).not.toHaveBeenCalled()
+      expect(setLastUsed).not.toHaveBeenCalled()
+
+      // Auth refreshed externally: the next click proves the read again and lands.
+      await selectConnection('homelab', { profile: 'scout' })
+      expect(api).toHaveBeenCalledTimes(2)
+      expect($activeConnectionId.get()).toBe('homelab')
+      expect($activeSessionId.get()).toBeNull()
+    }
+  )
+
+  it("leaves the old gateway's project before the fresh draft is requested", async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await selectConnection('homelab')
+
+    expect(exitProjectScope.mock.invocationCallOrder[0]).toBeLessThan(requestFreshSession.mock.invocationCallOrder[0])
+  })
+
   it("#93937: the previous gateway's runtime is unbound BEFORE the picked gateway is published", async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

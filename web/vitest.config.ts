@@ -5,7 +5,7 @@ import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 /** Same component/hook-scoped compiler preset as vite.config.ts. */
 function compilerPreset() {
   const preset = reactCompilerPreset();
-  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/;
+  (preset.rolldown.filter ??= {}).code = /\/>|<\/|from\s*['"][^'"]*react/;
   return preset;
 }
 import path from "path";

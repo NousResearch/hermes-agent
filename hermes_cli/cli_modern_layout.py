@@ -144,11 +144,11 @@ def reasoning_text_line(line: str) -> str:
     return f"{_DIM}{line}{_RST}"
 
 
-def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
+def thought_rows(seconds: float | None, text: str, full: bool, *, clamp_lines: int = _REASONING_PREVIEW_LINES) -> list[str]:
     """A reasoning block printed after the fact (no live stream): dim bar, its text (first 10
-    lines unless ``full``, as classic), then the ``∴ Thought for 3s`` summary."""
+    lines by default unless ``full``, as classic), then the ``∴ Thought for 3s`` summary."""
     lines = (text or "").strip().splitlines()
-    shown = lines if full or len(lines) <= _REASONING_PREVIEW_LINES else lines[:_REASONING_PREVIEW_LINES]
+    shown = lines if full or len(lines) <= clamp_lines else lines[:clamp_lines]
     rows = ["", separator(False), *(reasoning_text_line(line) for line in shown)]
     if len(shown) < len(lines):
         rows.append(f"{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - len(shown))}{_RST}")

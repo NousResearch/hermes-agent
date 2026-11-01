@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-01
+
+- Added deterministic regression coverage for modern MCP activity names, preserving the full tool suffix in emitted events.
+
 ## 2026-10-31
 
 - Added regression coverage proving profile activity reporting remains best-effort when its endpoint refuses the connection.

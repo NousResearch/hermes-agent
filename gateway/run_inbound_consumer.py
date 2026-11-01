@@ -8,8 +8,8 @@ differs from the runtime home when that bot serves a chat for another profile.
 
 Fail-open: a callback that raises, times out or returns anything other than
 ``{"action": "handled"}`` is logged/ignored and the message proceeds to the agent, so one buggy
-plugin can never blackhole a profile's traffic. The payload is a plain snapshot, never live
-runner/session-store handles.
+plugin can never blackhole a profile's traffic. The payload is a plain snapshot with copied attachment
+metadata but no file bytes, never live runner/session-store handles.
 """
 
 from __future__ import annotations
@@ -40,10 +40,22 @@ async def run_post_admission_hook(
             from hermes_cli.lifecycle import ainvoke_hook, has_hook
             if not has_hook(POST_ADMISSION_HOOK):
                 return False, None
+            media_urls = list(getattr(event, "media_urls", None) or [])
+            media_types = list(getattr(event, "media_types", None) or [])
+            media_text_inlined = list(getattr(event, "media_text_inlined", None) or [])
+            raw_media_filenames = list(getattr(event, "media_filenames", None) or [])
+            media_types = (media_types + [""] * len(media_urls))[:len(media_urls)]
+            media_text_inlined = (media_text_inlined + [None] * len(media_urls))[:len(media_urls)]
+            media_filenames = [
+                value if isinstance(value, str) and value else None
+                for value in (raw_media_filenames + [None] * len(media_urls))[:len(media_urls)]
+            ]
             results = await ainvoke_hook(
                 POST_ADMISSION_HOOK, session_key=session_key,
                 platform=source.platform.value if source.platform else "",
                 source=source.to_dict(), message_id=event.message_id, text=event.text or "",
+                media_urls=media_urls, media_types=media_types,
+                media_text_inlined=media_text_inlined, media_filenames=media_filenames,
             )
     except asyncio.CancelledError:
         raise

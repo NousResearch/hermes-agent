@@ -49,12 +49,22 @@ def _runner(*, multiplex=False):
     return runner
 
 
-def _event(text="queue my report", profile=None):
+def _event(text="queue my report", profile=None, *, media_urls=None, media_types=None,
+           media_text_inlined=None, media_filenames=None):
     source = SessionSource(
         platform=Platform.WHATSAPP, user_id="15551234567@s.whatsapp.net",
         chat_id="15551234567@s.whatsapp.net", user_name="tester", chat_type="dm", profile=profile,
     )
-    return MessageEvent(text=text, message_id="m1", source=source)
+    event = MessageEvent(
+        text=text, message_id="m1", source=source,
+        media_urls=media_urls or [], media_types=media_types or [],
+        media_text_inlined=media_text_inlined or [],
+    )
+    # Keep these tests compatible with older MessageEvent versions; adapters may add the optional
+    # field before it becomes a declared dataclass field.
+    if media_filenames is not None:
+        event.media_filenames = media_filenames
+    return event
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +96,122 @@ async def test_handled_consumes_the_turn_and_its_reply_is_delivered():
     assert first["source"]["chat_id"] == "15551234567@s.whatsapp.net" and first["session_key"]
     assert "gateway" not in first and "session_store" not in first
 
+
+@pytest.mark.asyncio
+async def test_authorized_consumer_receives_attachment_metadata_only_after_auth(tmp_path):
+    seen = []
+    _register(lambda **kwargs: seen.append(kwargs) or {"action": "handled"})
+    media = tmp_path / "synthetic.jpg"
+    media.write_bytes(b"synthetic-only")
+
+    denied = _runner()
+    denied._is_user_authorized_for_source = lambda _source: False
+    denied._get_unauthorized_dm_behavior = lambda *_args, **_kwargs: "ignore"
+    denied._hm_report_ignored_dm = AsyncMock()
+    denied_event = _event(
+        media_urls=[str(media)], media_types=["image/jpeg"], media_text_inlined=[False],
+    )
+    assert await denied._handle_message(denied_event) is None
+    assert seen == []
+
+    runner = _runner()
+    event = _event(
+        media_urls=[str(media)], media_types=["image/jpeg"], media_text_inlined=[False],
+        media_filenames=["synthetic-original.jpg"],
+    )
+    assert await runner._handle_message(event) is None
+    assert seen[0]["media_urls"] == [str(media)]
+    assert seen[0]["media_types"] == ["image/jpeg"]
+    assert seen[0]["media_text_inlined"] == [False]
+    assert seen[0]["media_filenames"] == ["synthetic-original.jpg"]
+
+
+@pytest.mark.asyncio
+async def test_hook_aligns_missing_attachment_metadata_as_isolated_copies(tmp_path):
+    received = []
+
+    def consume(**kwargs):
+        received.append({
+            "media_urls": list(kwargs["media_urls"]),
+            "media_types": list(kwargs["media_types"]),
+            "media_text_inlined": list(kwargs["media_text_inlined"]),
+            "media_filenames": list(kwargs["media_filenames"]),
+        })
+        for key in ("media_urls", "media_types", "media_text_inlined", "media_filenames"):
+            kwargs[key].clear()
+        return {"action": "handled"}
+
+    _register(consume)
+    urls = [str(tmp_path / "synthetic-photo.jpg"), str(tmp_path / "synthetic-audio.ogg")]
+    event = _event(media_urls=urls)
+
+    assert await _runner()._handle_message(event) is None
+    assert received == [{
+        "media_urls": urls,
+        "media_types": ["", ""],
+        "media_text_inlined": [None, None],
+        "media_filenames": [None, None],
+    }]
+    assert event.media_urls == urls
+    assert event.media_types == []
+    assert event.media_text_inlined == []
+    assert not hasattr(event, "media_filenames")
+
+
+@pytest.mark.asyncio
+async def test_hook_passes_platform_filenames_as_aligned_copies(tmp_path):
+    received = []
+
+    def consume(**kwargs):
+        received.append({
+            "media_urls": list(kwargs["media_urls"]),
+            "media_types": list(kwargs["media_types"]),
+            "media_text_inlined": list(kwargs["media_text_inlined"]),
+            "media_filenames": list(kwargs["media_filenames"]),
+        })
+        kwargs["media_urls"].clear()
+        kwargs["media_types"].clear()
+        kwargs["media_text_inlined"].clear()
+        kwargs["media_filenames"].clear()
+        return {"action": "handled"}
+
+    _register(consume)
+    urls = [str(tmp_path / "cached-a.bin"), str(tmp_path / "cached-b.bin")]
+    original_names = ["", "camera original name.jpg", "surplus.pdf"]
+    event = _event(
+        media_urls=urls, media_types=["image/jpeg"], media_text_inlined=[False],
+        media_filenames=original_names,
+    )
+
+    assert await _runner()._handle_message(event) is None
+    assert received == [{
+        "media_urls": urls,
+        "media_types": ["image/jpeg", ""],
+        "media_text_inlined": [False, None],
+        "media_filenames": [None, "camera original name.jpg"],
+    }]
+    assert event.media_urls == urls
+    assert event.media_types == ["image/jpeg"]
+    assert event.media_text_inlined == [False]
+    assert event.media_filenames == original_names
+
+
+@pytest.mark.asyncio
+async def test_narrow_legacy_callback_ignores_additive_attachment_fields():
+    seen = []
+
+    def legacy(session_key, platform, source, message_id, text):
+        seen.append((session_key, platform, source, message_id, text))
+        return {"action": "handled"}
+
+    _register(legacy)
+    event = _event(media_urls=["C:/synthetic/cache/item.bin"], media_types=["application/octet-stream"])
+
+    assert await _runner()._handle_message(event) is None
+    assert len(seen) == 1
+    assert seen[0][1:] == (
+        "whatsapp", event.source.to_dict(), "m1", "queue my report",
+    )
 
 @pytest.mark.asyncio
 async def test_a_raising_consumer_fails_open_and_the_message_reaches_the_agent():

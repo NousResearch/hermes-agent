@@ -105,8 +105,9 @@ class GatewayGoalManager(_Remote):
     def pause(self, reason="user-paused"):
         return self._rpc("pause", reason=reason)
 
-    def resume(self, *, reset_budget=True):
-        return self._rpc("resume", reset_budget=reset_budget)
+    def resume(self, *, reset_budget=True, max_turns=None):
+        kwargs = {"max_turns": max_turns} if max_turns is not None else {}
+        return self._rpc("resume", reset_budget=reset_budget, **kwargs)
 
     def clear(self):
         self._rpc("clear")
@@ -254,12 +255,24 @@ class GatewayHeartbeatManager(_Remote):
         return bool(self._rpc("abandon_fire"))
 
 
+def _drafts(arg):
+    """``/goal draft <text>``, also behind a valid ``--turns N`` (main's dispatcher reports a bad one)."""
+    from hermes_cli import goal_command
+    arg = (arg or "").strip()
+    if arg.startswith("--turns"):
+        try:
+            arg = goal_command._parse_turns(arg)[1]
+        except ValueError:
+            return False
+    return [token.lower() for token in arg.split(None, 1)[:1]] == ["draft"]  # main lowercases the verb
+
+
 def dispatch_goal_command(mgr, arg, *, authorize_gate, last_user_message=None, progress=None):
     """``goal_command.dispatch_goal_command`` for the classic CLI: on a gateway manager ``/goal draft``
     (its contract drafter is an auxiliary-model call) runs whole on the gateway; every other form is
     main's dispatcher over the proxy, so its output strings stay main's."""
     from hermes_cli import goal_command
-    if isinstance(mgr, GatewayGoalManager) and (arg or "").split(None, 1)[:1] == ["draft"]:
+    if isinstance(mgr, GatewayGoalManager) and _drafts(arg):
         if progress is not None:
             progress("Drafting completion contract…")
         return mgr.command(arg, last_user_message)

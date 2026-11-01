@@ -21,7 +21,12 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
+from hermes_cli.dashboard_auth import (
+    LoginStart,
+    ProviderError,
+    RefreshExpiredError,
+    Session,
+)
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JSON_HEADERS,
@@ -120,6 +125,27 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         disco = self._get_discovery()
         return pkce_login_start(
             disco["authorization_endpoint"], client_id=self._client_id, scope=self._scopes, redirect_uri=redirect_uri)
+
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        # ``_refresh_request`` sends the configured ``scope`` deliberately: some IDPs
+        # narrow the granted scope on refresh otherwise, dropping identity claims
+        # from the rotated ID token. But other IDPs — WSO2 IS among them — reject a
+        # refresh grant that repeats the scope string at all, and RFC 6749 §6 makes
+        # the parameter optional, so both readings are defensible. Sending it
+        # unconditionally strands the second group: their rejection surfaces as an
+        # expired refresh token and forces a full interactive re-login on every
+        # access-token expiry. So keep sending it, and on refusal retry once with a
+        # fresh payload identical except for the omitted ``scope``. The retry only
+        # runs on a path that otherwise ends in interactive login, so it cannot
+        # break a working refresh; a genuinely expired token just fails twice.
+        try:
+            return super().refresh_session(refresh_token=refresh_token)
+        except RefreshExpiredError:
+            data, headers = self._refresh_request(refresh_token)
+            retry_data = {k: v for k, v in data.items() if k != "scope"}
+            return self._grant(
+                retry_data, headers=headers, bad_request_exc=RefreshExpiredError,
+                previous_refresh_token=refresh_token)
 
     def revoke_session(self, *, refresh_token: str) -> None:
         # Best-effort RFC 7009 revocation when the IDP advertises an endpoint.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from contextlib import contextmanager, nullcontext
@@ -53,6 +54,10 @@ def get_mcp_server_filter() -> Optional[list[str]]:
 
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
+    # Per-run overlay alone is enough to start discovery even when config.yaml has no mcp_servers.
+    # health: allow HX002 -- per-run overlay path from the spawning process, not a durable setting
+    if (os.getenv("HERMES_MCP_OVERLAY") or "").strip():
+        return True
     try:
         from hermes_cli.config import read_raw_config
 

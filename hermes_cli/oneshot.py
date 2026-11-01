@@ -335,6 +335,14 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
+    # Machine-readable session id for in-process chat callers (exact line form).
+    from utils import env_var_enabled
+
+    session_id = result.get("session_id")
+    if env_var_enabled("HERMES_INPROCESS_CHAT") and session_id:
+        real_stdout.write(f"session_id: {session_id}\n")
+        real_stdout.flush()
+
     exit_code = _oneshot_exit_code(response, result)
     if exit_code == 1:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
@@ -568,7 +576,25 @@ def _run_agent(
 
     ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
+    # Overlay MCP servers are not in config.yaml platform toolsets; when the enabled list is
+    # concrete, append mcp-<name> so discovery's tools are selectable for this turn.
+    if isinstance(toolsets_list, list):
+        try:
+            from tools.mcp_tool_config import _load_mcp_overlay
+
+            listed = set(toolsets_list)
+            for name in _load_mcp_overlay():
+                mcp_ts = f"mcp-{name}"
+                if mcp_ts not in listed and name not in listed:
+                    toolsets_list.append(mcp_ts)
+                    listed.add(mcp_ts)
+        except Exception:
+            logging.debug("oneshot: MCP overlay toolset merge failed", exc_info=True)
+
     skills_prompt = _build_preloaded_skills_prompt(skills)
+    env_ephemeral = (os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT") or "").strip()
+    ephemeral_parts = [part for part in (env_ephemeral, skills_prompt) if part]
+    ephemeral_system_prompt = "\n\n".join(ephemeral_parts) or None
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
@@ -590,7 +616,7 @@ def _run_agent(
             fallback_model=get_fallback_chain(cfg) or None,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
             request_overrides=runtime.get("request_overrides"),
-            ephemeral_system_prompt=skills_prompt,
+            ephemeral_system_prompt=ephemeral_system_prompt,
             reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
@@ -607,6 +633,10 @@ def _run_agent(
         # agent.session_id mid-turn without opening a second root, so keep the entry id.
         relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if not isinstance(result, dict):
+            result = {}
+        if getattr(agent, "session_id", None):
+            result["session_id"] = agent.session_id
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
@@ -663,3 +693,64 @@ def _oneshot_clarify_callback(questions: list) -> dict:
     return {"answers": {}, "outcome": "undelivered", "notice": (
         "oneshot mode: no user available. Pick the best choices using your own judgment, "
         "or make the most reasonable assumption you can, and continue.")}
+
+
+def _run_and_exit_oneshot(
+    prompt: str,
+    *,
+    model: object = None,
+    provider: object = None,
+    toolsets: object = None,
+    skills: object = None,
+    usage_file: object = None,
+    resume: object = None,
+    reasoning: object = None,
+) -> None:
+    """Run one turn then hard-exit; process cleanup lives on ``hermes_cli.main``.
+
+    Late-imports ``_cleanup_oneshot_runtime`` / ``_exit_after_oneshot`` from main
+    inside this function so oneshot and main do not import each other at module load.
+    Re-exported on ``hermes_cli.main`` under the same name so existing patches on
+    ``main_mod._run_and_exit_oneshot`` keep working.
+    """
+    try:
+        rc = run_oneshot(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            skills=skills,
+            usage_file=usage_file,
+            resume=resume,
+            reasoning=reasoning,
+        )
+    except KeyboardInterrupt:
+        rc = 130
+    except SystemExit as exc:
+        if exc.code is not None and not isinstance(exc.code, int):
+            print(exc.code, file=sys.stderr)
+            rc = 1
+        else:
+            rc = exc.code
+    except BaseException:  # health: allow BLE001 -- hard-exit boundary: map any escape to rc=1 then os._exit
+        # ``run_oneshot`` already maps agent failures to an int rc; anything
+        # still escaping means it malfunctioned. Print it but never fall
+        # through to interpreter teardown (the SIGABRT path this routine fixes).
+        import traceback
+        try:
+            traceback.print_exc()
+        except OSError:
+            # stderr may already be closed on the hard-exit path
+            pass
+        rc = 1
+    try:
+        from hermes_cli.main import _cleanup_oneshot_runtime
+
+        _cleanup_oneshot_runtime()
+    finally:
+        # Even an interrupt during cleanup must not fall back into interpreter
+        # finalization, where the native SIGABRT occurs.
+        # The hard exit is the safety boundary for #43055.
+        from hermes_cli.main import _exit_after_oneshot
+
+        _exit_after_oneshot(rc)

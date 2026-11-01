@@ -13,6 +13,7 @@ import sys
 import time
 
 from pathlib import Path
+from collections.abc import Iterable
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
 from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
@@ -21,13 +22,15 @@ _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run bu
 
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
-                               scope_home: str | None = None) -> list[int]:
+                               scope_home: str | Iterable[str] | None = None) -> list[int]:
     """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
 
     *scope_home*: keep only backends whose resolved Hermes home (see
-    ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
-    ``--stop`` and the post-update cleanup pass their own home so another install's or
-    profile's backend on the same machine is never a target (#113978).
+    ``_hermes_home_for_pid``) is this home (or one of these homes); unreadable ownership is
+    spared, never guessed. ``--stop`` passes its own home; the post-update cleanup passes every
+    home the update owns (the install root and its profiles), so another install's backend on
+    the same machine is never a target (#113978) while a sibling profile's is refreshed.
+    Only ``None`` means "no filter": an empty collection of homes matches nothing.
     """
     from hermes_cli.dashboard_procs import (
         _caller_ancestor_pids,
@@ -40,7 +43,7 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
-    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
+    return pids if scope_home is None else _pids_owned_by_hermes_home(pids, scope_home)
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:

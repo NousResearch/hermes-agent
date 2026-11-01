@@ -178,6 +178,46 @@ def test_apply_extra_headers_merges_onto_existing_defaults():
     }
 
 
+def test_lowercase_auth_and_user_agent_replace_sdk_defaults_on_the_wire():
+    """A configured header differing only in case from an SDK-owned one goes out ONCE, with the
+    configured value (the SDK merges plain dicts: ``authorization`` used to ride beside its own
+    ``Authorization``)."""
+    import http.server
+    import threading
+
+    import openai
+
+    seen = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append([(k.lower(), v) for k, v in self.headers.items() if k.lower() in ("authorization", "user-agent")])
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error": {"message": "probe"}}')
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base_url = f"http://127.0.0.1:{server.server_port}/v1"
+    client_kwargs = {"api_key": "sk-default", "base_url": base_url, "default_headers": {"User-Agent": "hermes"}}
+    apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, base_url, custom_providers=[{
+        "name": "gw", "base_url": base_url,
+        "extra_headers": {"authorization": "Bearer gateway", "user-agent": "CorpWAF/1.0"},
+    }])
+    try:
+        openai.OpenAI(max_retries=0, **client_kwargs).chat.completions.create(
+            model="m", messages=[{"role": "user", "content": "hi"}])
+    except openai.BadRequestError:
+        pass
+    finally:
+        server.shutdown()
+    assert sorted(seen[0]) == [("authorization", "Bearer gateway"), ("user-agent", "CorpWAF/1.0")]
+
+
 def test_apply_extra_headers_noop_without_match():
     """No matching base_url -> no default_headers key added."""
     client_kwargs = {"api_key": "x", "base_url": "https://other.example.com/v1"}

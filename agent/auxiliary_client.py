@@ -885,6 +885,7 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     WAF rejecting ``User-Agent`` / ``X-Stainless-*`` works for aux calls. SECURITY: never log values."""
     try:
         from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config_providers import merge_headers, normalize_extra_headers
         _cfg = load_config()
         user_headers = cfg_get(_cfg, "model", "default_headers")
         alias_headers = cfg_get(_cfg, "model", "extra_headers")
@@ -892,11 +893,9 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
             user_headers = {**(user_headers if isinstance(user_headers, dict) else {}), **alias_headers}
     except Exception:
         return headers
-    if not isinstance(user_headers, dict) or not user_headers:
+    if not (user_headers := normalize_extra_headers(user_headers)):
         return headers
-    merged = dict(headers or {})
-    merged.update({str(k): str(v) for k, v in user_headers.items() if v is not None})
-    return merged or headers
+    return merge_headers(headers, user_headers)
 
 
 def build_or_headers(or_config: dict | None = None) -> dict:
@@ -5074,9 +5073,10 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         )
         _clean_base, _dq = _extract_url_query_params(custom_base)
         extra = {"default_query": _dq} if _dq else {}
+        from hermes_cli.config_providers import merge_headers
         from hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
-        _custom_headers = {**(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}),
-                           **get_custom_provider_extra_headers(custom_base)}
+        _custom_headers = merge_headers(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision),
+                                        get_custom_provider_extra_headers(custom_base))
         if _custom_headers:
             extra["default_headers"] = _custom_headers
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)

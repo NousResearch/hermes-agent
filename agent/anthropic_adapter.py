@@ -450,7 +450,8 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
     # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
     # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
-    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
+    from hermes_cli.config_providers import merge_headers
+    merged = merge_headers(merged, _custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)

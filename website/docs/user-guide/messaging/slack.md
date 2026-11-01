@@ -657,6 +657,13 @@ slack:
   # Env: SLACK_REQUIRE_MENTION_CHANNELS.
   require_mention_channels: ""
 
+  # The :eyes: → :white_check_mark: reactions normally mark only messages that
+  # @mention the bot (or 1:1 DMs). With this on, unmentioned replies in a
+  # thread the bot already follows get them too, so a follow-up shows it was
+  # picked up. Never affects threads the bot does not follow.
+  # Env: SLACK_THREAD_REPLY_REACTIONS.
+  thread_reply_reactions: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:

@@ -331,3 +331,75 @@ def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
     workspace._copy_core_inputs(core, destination)
 
     assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"
+
+
+def test_locale_catalogs_travel_into_the_snapshot(tmp_path):
+    """agent/i18n.py reads <snapshot>/locales; without it every string is its raw key.
+
+    Regression: the snapshot copied only directories that matched
+    ``packages.find.include``, and ``locales/`` is data rather than a package,
+    so a fresh install shipped no catalogs at all. Gateway messages then
+    rendered as ``gateway.kanban.ping.completed`` in the chat.
+    """
+    core = tmp_path / "core"
+    catalogs = core / "locales"
+    catalogs.mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+    (core / "agent").mkdir()
+    (core / "agent" / "__init__.py").write_text("", encoding="utf-8")
+    (catalogs / "en.yaml").write_text('gateway.kanban.ping.completed: "DONE"\n', encoding="utf-8")
+    (catalogs / "zh.yaml").write_text('gateway.kanban.ping.completed: "完成"\n', encoding="utf-8")
+    # Cache noise inside the catalog dir must not ride along.
+    (catalogs / "__pycache__").mkdir()
+    (catalogs / "__pycache__" / "en.cpython-314.pyc").write_text("BYTECODE\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "locales/en.yaml").is_file()
+    assert (destination / "locales/zh.yaml").read_text(encoding="utf-8") == (
+        'gateway.kanban.ping.completed: "完成"\n'
+    )
+    assert not (destination / "locales/__pycache__").exists()
+
+
+def test_snapshot_does_not_absorb_unlisted_top_level_dirs(tmp_path):
+    """The bare-data allowance stays closed: no arbitrary top-level folder is copied."""
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+    (core / "agent").mkdir()
+    (core / "agent" / "__init__.py").write_text("", encoding="utf-8")
+    (core / "not-a-package").mkdir()
+    (core / "not-a-package" / "secret.txt").write_text("NOPE\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert not (destination / "not-a-package").exists()
+
+
+def test_bare_data_dir_that_is_also_a_package_does_not_collide(tmp_path):
+    """A bare-data name the project also lists as a package is copied once, by the package loop."""
+    core = tmp_path / "core"
+    package = core / "locales"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["locales"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "locales" / "__init__.py").is_file()

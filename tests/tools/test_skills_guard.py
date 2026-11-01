@@ -644,6 +644,19 @@ def test_relaxed_rule_attack_still_blocks(tmp_path, case):
 class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
+    def test_chmod_skipped_warning_is_not_suid(self, tmp_path):
+        script = tmp_path / "builder.py"
+        script.write_text('warnings.append(f"chmod skipped for {output_path}: {exc}")\n', encoding="utf-8")
+
+        assert not any(f.pattern_id == "suid_bit" for f in scan_file(script, script.name))
+
+    @pytest.mark.parametrize("line", ["chmod u+s /bin/tool", "chmod +s /bin/tool", "chmod g+s /bin/tool"])
+    def test_chmod_setting_suid_bit_still_fires(self, tmp_path, line):
+        script = tmp_path / "install.sh"
+        script.write_text(line + "\n", encoding="utf-8")
+
+        assert any(f.pattern_id == "suid_bit" for f in scan_file(script, script.name))
+
     def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
         # #110974: a 3-level relative doc link in a README is documentation structure, not
         # filesystem access, yet it scored `high` and hard-blocked community installs.

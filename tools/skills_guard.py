@@ -448,7 +448,7 @@ THREAT_PATTERNS = [
      "setuid_setgid", "medium", "privilege_escalation", "mentions setuid/setgid (informational)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),
-    (r'chmod\s+[u+]?s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
+    (r'\bchmod\s+(?:-\w+\s+)*[ugoa]*[+=]s', "suid_bit", "critical", "privilege_escalation", "sets SUID/SGID bit on a file"),
     # ── Agent config persistence ──
     # Bare mentions of config files are not threats (authoring guides, setup docs) — flagging them blocked
     # popular community skills. Tiers: mechanical shell writes = critical; prose modification intent =

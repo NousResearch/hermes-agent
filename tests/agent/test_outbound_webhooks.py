@@ -219,6 +219,12 @@ class TestParseConfig:
         )
         assert targets[0].matcher == "terminal|delegate_task"
 
+    def test_list_matcher_is_any_of(self):
+        targets = outbound_webhooks.iter_configured_targets(
+            _cfg({"url": "https://example.com", "events": ["post_tool_call"], "matcher": ["terminal", "delegate_task"]})
+        )
+        assert [targets[0].matches_tool(t) for t in ("terminal", "delegate_task", "read_file")] == [True, True, False]
+
     def test_secret_env_wins_over_literal(self, monkeypatch):
         monkeypatch.setenv("MY_HOOK_SECRET", "from-env")
         targets = outbound_webhooks.iter_configured_targets(

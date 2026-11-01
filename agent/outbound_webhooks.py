@@ -32,6 +32,7 @@ from agent.shell_hooks import (
     _home_key,
     _payload_fields,
     _utc_now_iso,
+    normalize_matcher,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,9 @@ class WebhookTarget(_ToolMatcherMixin):
     events: list[str]
     name: str = ""
     secret: Optional[str] = None
-    matcher: Optional[str] = None
+    matcher: Optional[str] = None  # a list is joined by __post_init__
     timeout: int = DEFAULT_TIMEOUT_SECONDS
-    compiled_matcher: Optional[re.Pattern] = field(default=None, repr=False)
+    compiled_matcher: tuple = field(default=(), repr=False)
 
     @property
     def label(self) -> str:
@@ -188,10 +189,9 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
     if not events:
         warn(" has no valid events — skipped")
         return None
-    matcher = raw.get("matcher")
-    if matcher is not None and not isinstance(matcher, str):
-        warn(".matcher must be a string regex; ignoring")
-        matcher = None
+    matcher, ok = normalize_matcher(raw.get("matcher"))
+    if not ok:
+        warn(".matcher must be a regex string or a non-empty list of them; ignoring")
     if matcher is not None and not any(e in _TOOL_SCOPED_EVENTS for e in events):
         warn(".matcher=%r will be ignored — matcher is only honored for pre_tool_call / post_tool_call.", matcher)
         matcher = None

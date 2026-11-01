@@ -647,7 +647,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
+    (id: string, opts: { keepCurrent?: boolean } = {}) => {
+      const { keepCurrent = false } = opts
       const flight = ++attachmentFlight.current
       pendingAttachments.current.add(flight)
       const current = captureDestination()
@@ -737,11 +738,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               cancelResumeScrollRef.current?.()
               cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 
-              if (previousSid && previousSid !== r.session_id) {
+              if (!keepCurrent && previousSid && previousSid !== r.session_id) {
                 void closeSession(previousSid)
               }
 
-              adoptAttachment(r, previousSid, previousSubscription, true)
+              adoptAttachment(r, previousSid, previousSubscription, !keepCurrent)
             })
             .catch((e: Error) => {
               if (flight !== attachmentFlight.current) {

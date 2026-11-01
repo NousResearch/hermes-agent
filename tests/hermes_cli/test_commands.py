@@ -3,7 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
@@ -356,6 +356,32 @@ class TestStackedSkillCompletion:
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
+class TestSubcommandHintFallback:
+    """For commands without explicit ``subcommands``, the args_hint pipe
+    fallback drives subcommand tab completion (#134372)."""
+
+    def test_spaced_pipes_produce_entries(self):
+        # "[reason | off]" etc. previously matched nothing, leaving the
+        # command without any subcommand completion.
+        assert SUBCOMMANDS.get("/pause") == ["reason", "off"]
+        assert SUBCOMMANDS.get("/loop") == ["status", "pause", "resume", "stop"]
+        assert "show" in SUBCOMMANDS.get("/goal", [])
+
+    def test_names_with_underscores_and_dashes_are_not_truncated(self):
+        # The old char class [a-z] cut "codex_app_server" down to "codex" and
+        # "session-id" down to "session", suggesting tokens that don't exist.
+        assert SUBCOMMANDS.get("/codex-runtime") == ["auto", "codex_app_server"]
+        assert SUBCOMMANDS.get("/topic") == ["off", "help", "session-id"]
+
+    def test_compact_pipes_still_parse(self):
+        assert SUBCOMMANDS.get("/tools") == ["list", "disable", "enable"]
+
+    def test_flag_alternations_do_not_become_subcommands(self):
+        # "[--global|--session]" / "--preview|--dry-run" are flag pairs, not
+        # subcommand lists; each alternative starts with "-", so the fallback
+        # must keep skipping them.
+        assert "/model" not in SUBCOMMANDS
+        assert "/compress" not in SUBCOMMANDS
 
 
 # ── Subcommand tab completion ───────────────────────────────────────────

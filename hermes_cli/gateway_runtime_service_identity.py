@@ -153,6 +153,151 @@ def subprocess_command(argv: list[str]) -> str:
     return subprocess.list2cmdline(argv)
 
 
+# systemd's shell_maybe_quote(SHELL_ESCAPE_POSIX): a value that needs quoting
+# prints as $'...', with \\ and ' escaped. v249+ writes every other control
+# byte as a C escape (\a \b \f \n \r \t \v, else \ooo octal, up to \377);
+# v234-v248 escapes only \n and \t and leaves the rest raw, so both forms
+# reach the regex below. UTF-8 stays raw either way.
+_POSIX_QUOTED = re.compile(rb"\$'((?:[^\\']|\\(?:[abfnrtv\\']|[0-3][0-7]{2}))*)'")
+_C_ESCAPES = {
+    b"a": b"\a", b"b": b"\b", b"f": b"\f", b"n": b"\n",
+    b"r": b"\r", b"t": b"\t", b"v": b"\v",
+    b"\\": b"\\", b"'": b"'",
+}
+# systemd validates every environment name before it enters the manager block
+# (env_name_is_valid: alphanumerics and "_", never a leading digit), and D-Bus
+# rejects the same names on set-environment. A name outside that set cannot be
+# in a real dump, so refusing one keeps a mis-parsed line from being read as an
+# environment variable.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def manager_environment_pairs(value: str) -> dict[str, str]:
+    r"""Decode ``systemctl show-environment`` output.
+
+    One ``KEY=VALUE`` per line: a different grammar from the space-separated
+    ``Environment=`` property that :func:`environment_pairs` reads, so the two
+    readers stay apart.
+
+    Two dialects reach us. From v234 the value systemd needs to quote prints as
+    ``$'...'``, with ``\\`` and ``\'`` escaped. v249+ also writes every other
+    control byte as a C escape, ``\ooo`` octal where there is no short form;
+    v234-v248 escapes only ``\n`` and ``\t`` and leaves the rest raw. UTF-8
+    stays raw either way, so the decode is byte-level and returns ``os.fsdecode``
+    values the way ``os.environ`` does. Up to v233 the block was written with
+    ``puts()`` and carries no escaping at all, so a backslash or a quote there is
+    a literal character rather than the start of an escape.
+
+    The quoting dialect is tried first, and a dump is only re-read as the raw
+    dialect when it holds no ``$'`` value at all. That ordering is what keeps
+    the two apart without guessing: from v234 every value containing a
+    backslash, a quote, whitespace or another shell character is quoted, so an
+    unquoted one cannot come from a quoting host.
+
+    Split on ``\n`` only: ``str.splitlines`` also breaks on ``\x0b``, ``\x0c``,
+    ``\x1c``-``\x1e``, ``\x85``, ``\u2028`` and ``\u2029``, which systemd
+    emits raw inside a value and which would otherwise cut a pair in half.
+    """
+    try:
+        return _manager_environment_pairs_quoted(value)
+    except ValueError:
+        if _has_quoted_value(value):
+            raise
+    return _manager_environment_pairs_raw(value)
+
+
+def _has_quoted_value(value: str) -> bool:
+    """Whether any assignment in *value* carries an ANSI-C quoted value."""
+    for line in value.split("\n"):
+        _, separator, val = line.partition("=")
+        if separator and val.startswith("$'"):
+            return True
+    return False
+
+
+def _manager_environment_pairs_quoted(value: str) -> dict[str, str]:
+    """Read the v234+ dialect, where anything ambiguous is wrapped in ``$'...'``."""
+    result = {}
+    for line in value.split("\n"):
+        if not line:
+            continue
+        key, separator, val = line.partition("=")
+        if not separator or not key or not _ENV_NAME.fullmatch(key):
+            _unverified()
+        if val.startswith("$'"):
+            quoted = _POSIX_QUOTED.fullmatch(os.fsencode(val))
+            if not quoted:
+                _unverified()
+            val = os.fsdecode(
+                re.sub(
+                    rb"\\([0-7]{3}|.)",
+                    lambda m: _C_ESCAPES.get(m[1]) or bytes([int(m[1], 8)]),
+                    quoted[1],
+                )
+            )
+        elif "\\" in val or "'" in val:
+            _unverified()
+        result[key] = val
+    return result
+
+
+def _manager_environment_pairs_raw(value: str) -> dict[str, str]:
+    """Read the up-to-v233 dialect, where ``puts()`` wrote the value verbatim.
+
+    Nothing is escaped, so a backslash and a quote are ordinary characters. The
+    one thing that format cannot say outright is a newline inside a value: it
+    was written as a line break, and the following line has no ``KEY=`` to open
+    a pair. Since every real assignment does have one, a line without ``=`` can
+    only continue the value above it, so it is appended back with the newline
+    the writer replaced.
+    """
+    result = {}
+    last = None
+    for line in value.split("\n"):
+        if not line:
+            continue
+        key, separator, val = line.partition("=")
+        if separator:
+            if not key or not _ENV_NAME.fullmatch(key):
+                _unverified()
+            result[key] = val
+            last = key
+        elif last is None:
+            _unverified()
+        else:
+            result[last] += "\n" + line
+    return result
+
+
+def manager_environment_pairs_json(value: str) -> dict[str, str]:
+    """Decode the JSON form of ``systemctl show-environment``.
+
+    ``systemctl show-environment --output=json`` prints the manager's
+    environment block as a JSON object, with each value already unescaped and
+    unquoted. That removes the shell-quoting grammar entirely: there is no
+    ``$'...'`` wrapper to decode, no escape set to interpret, and no line
+    separator to split on, so every byte the manager can hold round-trips
+    exactly.
+
+    systemd gained this output mode in v250; older releases print the plain
+    text form instead, which :func:`manager_environment_pairs` still reads.
+    """
+    try:
+        data = json.loads(value)
+    except ValueError:
+        _unverified()
+    if not isinstance(data, dict):
+        _unverified()
+    result = {}
+    for key, val in data.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            _unverified()
+        if not _ENV_NAME.fullmatch(key):
+            _unverified()
+        result[key] = val
+    return result
+
+
 def environment_pairs(value: str) -> dict[str, str]:
     # systemctl uses C escapes for unusual bytes. Do not silently reinterpret
     # those with shell escaping (not the same grammar).
@@ -167,7 +312,7 @@ def environment_pairs(value: str) -> dict[str, str]:
     return result
 
 
-def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, system: bool) -> None:
+def verify_systemd(props: dict[str, str], manager_env: dict[str, str], home: Path, *, system: bool) -> None:
     import pwd
 
     # systemd 259 omits empty exec-command lists and EnvironmentFiles from
@@ -192,7 +337,7 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
         service_uid = 0 if system else uid
     if service_uid != uid:
         raise ValueError("service_account_mismatch")
-    inherited = environment_pairs(manager_env)
+    inherited = manager_env
     env = inherited if not system else {k: v for k, v in inherited.items() if k in props["PassEnvironment"].split()}
     env.update(environment_pairs(props["Environment"]))
     for item in shlex.split(props["UnsetEnvironment"]):

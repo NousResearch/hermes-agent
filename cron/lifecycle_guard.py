@@ -9,10 +9,12 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import re
 import shlex
+import socket
 import stat
 import sys
 from pathlib import Path
@@ -289,6 +291,100 @@ _DATA_SINK_EXECUTABLES = frozenset(
 )
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
+# ``ssh <host> <command>`` runs <command> on the REMOTE host: it cannot SIGTERM this gateway, so a
+# lifecycle command there is (for this guard) data. Loopback targets reach this host and stay
+# blocked; so do options that run text LOCALLY (ProxyCommand / LocalCommand). Address literals are
+# classified by the resolver ssh itself uses (AI_NUMERICHOST), so 127.1 / 2130706433 / ::ffff:7f00:1
+# count as loopback, and an address-shaped host that does not parse stays blocked. A hostname that
+# resolves to this machine cannot be detected from text and is an accepted residual gap.
+_SSH_EXECUTABLES = frozenset({"ssh", "autossh"})
+_SSH_VALUE_OPTIONS = frozenset("BbcDEeFIiJLlMmOoPpQRSWw")
+_SSH_LOCAL_EXEC_OPTION = re.compile(r"(?i)(?:proxycommand|localcommand|permitlocalcommand|knownhostscommand)")
+_LOOPBACK_HOST = re.compile(
+    r"(?i)^(?:localhost(?:\.localdomain)?|(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|0\.0\.0\.0|0:0:0:0:0:0:0:1)$"
+)
+
+
+def _ssh_remote_host(arguments: list[str]) -> Optional[str]:
+    """Destination host of an ``ssh`` argument list (user@ and [brackets] stripped), or None when
+    it cannot be determined or an option would execute text locally."""
+    i = 0
+    while i < len(arguments):
+        token = arguments[i]
+        if _SSH_LOCAL_EXEC_OPTION.search(token):
+            return None
+        if token == "--":
+            i += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            flags = token[1:]
+            for pos, flag in enumerate(flags):
+                if flag in _SSH_VALUE_OPTIONS:
+                    value = flags[pos + 1:] or (arguments[i + 1] if i + 1 < len(arguments) else "")
+                    if _SSH_LOCAL_EXEC_OPTION.search(value):
+                        return None
+                    if not flags[pos + 1:]:
+                        i += 1
+                    break
+            i += 1
+            continue
+        break
+    if i >= len(arguments):
+        return None
+    host = arguments[i]
+    if host.startswith("ssh://"):
+        host = host[len("ssh://"):].split("/", 1)[0]
+    host = host.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host or None
+
+
+_PLAIN_HOSTNAME = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9_-]*)(?:\.[A-Za-z0-9_-]+)*$")
+# inet_aton accepts 1-4 dot parts, each decimal, octal (leading 0) or hex (0x): 127.1, 2130706433.
+_NUMERIC_LABEL = re.compile(r"(?i)^(?:0x[0-9a-f]*|[0-9]+)$")
+
+
+def _numeric_host_is_local(host: str) -> Optional[bool]:
+    """For a host written as an address literal: True when it reaches this machine (loopback,
+    unspecified, IPv4-mapped/compatible loopback) or cannot be parsed; False for a real remote
+    address. None when ``host`` is a plain hostname (not decidable from text)."""
+    if ":" not in host and not all(_NUMERIC_LABEL.match(label) for label in host.split(".")):
+        return None if _PLAIN_HOSTNAME.match(host) else True
+    try:
+        infos = socket.getaddrinfo(host, None, flags=socket.AI_NUMERICHOST)
+    except (OSError, UnicodeError, ValueError):
+        return True  # numeric-shaped but unparseable: fail closed
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+        except ValueError:
+            return True
+        if isinstance(address, ipaddress.IPv6Address):
+            embedded = address.ipv4_mapped or (
+                ipaddress.IPv4Address(int(address)) if int(address) < 2**32 else None)
+            if embedded is not None and (embedded.is_loopback or embedded.is_unspecified):
+                return True
+        if address.is_loopback or address.is_unspecified:
+            return True
+    return False
+
+
+def _is_remote_ssh_segment(segment: list[str], index: int) -> bool:
+    """True for ``ssh <non-loopback host> ...``: its command runs on another machine."""
+    if Path(segment[index]).name not in _SSH_EXECUTABLES:
+        return False
+    host = _ssh_remote_host(segment[index + 1:])
+    if not host:
+        return False
+    host = host[:-1] if host.endswith(".") else host
+    if not host or _LOOPBACK_HOST.match(host):
+        return False
+    return _numeric_host_is_local(host) is not True
+
+
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
 # sqlite3 dot-commands (`.shell`, `.system`) also disable masking. Dot must be followed by a NAME
 # character so relative paths (`.`, `./x`) stay paths.
@@ -742,7 +838,9 @@ def _mask_data_sink_arguments(text: str) -> str:
         rebuilt: list[str] = []
         for segment in _split_segments(tokens, keep_controls=True):
             index = _command_token_index(segment)
-            if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
+            if index is not None and (
+                    Path(segment[index]).name in _DATA_SINK_EXECUTABLES
+                    or _is_remote_ssh_segment(segment, index)):
                 arguments = segment[index + 1 :]
                 if not any(
                     _DOT_COMMAND_ARGUMENT.match(argument)

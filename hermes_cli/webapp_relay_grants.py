@@ -67,6 +67,9 @@ _SOCKET_TICKET_SCOPES = {"host-terminal": "terminal", "speak-stream": "voice", "
 _SOCKET_PATH_SCOPES = {"/api/pty": "terminal", "/api/console": "terminal", "/api/host-terminal": "terminal",
                        "/api/display/ws": "display", "/api/audio/speak-stream": "voice",
                        "/api/audio/transcribe-stream": "voice"}
+#: JSON-RPC namespaces on a relayed ``/api/ws`` each optional scope opens: the bot screens and voice its
+#: routes and sockets carry also answer over the gateway's own socket (screen grabs, takeover, recording).
+_RPC_SCOPES = {"display": "display", "voice": "voice"}
 _SELF_REVOKE = re.compile(r"^/api/webapp/relay/grants/([A-Za-z0-9_-]{1,64})$")
 
 
@@ -331,6 +334,22 @@ def relay_grant_of(ws) -> Optional[str]:
     """The relay grant live socket *ws* was opened under, or None. A socket it opens on the hub's
     behalf (a screen viewer) records the same one."""
     return getattr(ws, "_hermes_relay_grant", None) if ws is not None else None
+
+
+def relay_rpc_refusal(ws, method) -> Optional[str]:
+    """Why JSON-RPC *method* may not run on *ws*, a socket another gateway relays here, or None (also
+    for a socket nobody relays): its namespace needs a scope the grant lacks."""
+    grant_id = relay_grant_of(ws)
+    needed = _RPC_SCOPES.get(str(method or "").split(".", 1)[0]) if grant_id is not None else None
+    if needed is None:
+        return None
+    home = getattr(getattr(getattr(ws, "app", None), "state", None), "webapp_home", None)
+    grant = grant_for(home, grant_id) if home is not None else None
+    if grant is None:
+        return "ticket minted under a gateway relay grant that has since been revoked"
+    if needed not in grant.get("scopes", []):
+        return f"this gateway relay was not granted {needed} access"
+    return None
 
 
 async def _close(ws) -> None:

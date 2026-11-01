@@ -20,6 +20,7 @@ import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
+import { knownSupplierNamer } from '@/lib/model-suppliers'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
@@ -280,7 +281,7 @@ function SidebarSessionRowImpl({
   // Card footer line: which model worked on it and how big it got. Rendered
   // as separate spans with a flex gap — a joined string can't put real space
   // between them (HTML collapses runs of whitespace to one).
-  const model = card && session.model ? displayModelName(session.model) : ''
+  const model = card && session.model ? displayModelName(session.model, { supplier: knownSupplierNamer }) : ''
   const size = card && session.message_count > 0 ? r.messageCount(session.message_count) : ''
   // Live plan progress ("3/7"), far right of the footer. A selector keyed to
   // this row: only rows whose own fraction changes repaint on todo events.

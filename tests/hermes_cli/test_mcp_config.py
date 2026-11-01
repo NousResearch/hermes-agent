@@ -786,6 +786,37 @@ class TestMcpLogin:
         assert "Authenticated" not in out
         assert "client_id" in out
 
+    def test_login_false_success_finite_token_without_refresh(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A one-hour access token without refresh is not commissioned by login, and the
+        shared token check the server lists and connector installs use still reports it."""
+        _seed_config(tmp_path, {
+            "fragile": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "fragile.json").write_text(
+                '{"access_token":"x","expires_in":3600,"expires_at":9999999999}'
+            )
+            return [("a", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import _oauth_tokens_present, cmd_mcp_login
+
+        assert cmd_mcp_login(_make_args(name="fragile")) == 1
+        out = capsys.readouterr().out
+
+        assert "sent no refresh token" in out
+        assert "Authenticated" not in out
+        assert "client_id" not in out, "the manual-client guidance is for a missing token"
+        assert _oauth_tokens_present("fragile")
+
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""
         _seed_config(tmp_path, {
@@ -874,7 +905,7 @@ class TestMcpReauth:
         )
         from hermes_cli.mcp_config import cmd_mcp_reauth
 
-        cmd_mcp_reauth(_make_args(name=None, all=True))
+        assert cmd_mcp_reauth(_make_args(name=None, all=True)) == 0
         out = capsys.readouterr().out
 
         assert visited == ["gh", "jira"]
@@ -892,7 +923,7 @@ class TestMcpReauth:
         )
         from hermes_cli.mcp_config import cmd_mcp_reauth
 
-        cmd_mcp_reauth(_make_args(name=None, all=True))
+        assert cmd_mcp_reauth(_make_args(name=None, all=True)) == 1
         out = capsys.readouterr().out
 
         assert "Re-authenticated 1/2 server(s)" in out

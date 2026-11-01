@@ -77,11 +77,17 @@ x_search:
   # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
   # Each retry backs off (1.5x attempt seconds, capped at 5s).
   retries: 2
+
+  # Optional cap on server-side search rounds per call, sent as the
+  # Responses API `max_turns`. X Search is billed per post and profile
+  # fetched, so a cap bounds cost per call. Unset or 0 keeps xAI's default.
+  # max_turns: 3
 ```
 
 `reasoning_effort` is sent to the xAI Responses API as
 `reasoning: {effort: ...}`. Leave it unset for models that do not support
-configurable reasoning. Invalid values fail before an API request is made.
+configurable reasoning. Invalid values fail before an API request is made. `max_turns` must be an
+integer; invalid values also fail before a request.
 
 ## Tool parameters
 
@@ -105,6 +111,7 @@ The tool returns JSON with:
 - `degraded` — `true` when any narrowing filter (`allowed_x_handles`, `excluded_x_handles`, `from_date`, `to_date`) was set AND both citation channels came back empty. In that case the `answer` was synthesized from the model's own knowledge rather than the X index, so treat it as unsourced. `false` otherwise (including the "no filters set" case — a broad unsourced answer is just an answer, not a filter miss)
 - `degraded_reason` — short string naming which filters were active, or `null` when `degraded` is `false`
 - `credential_source` — `"xai-oauth"` if OAuth resolved, `"xai"` if API key resolved
+- `usage` — the Responses API `usage` object when xAI returns one, including `server_side_tool_usage_details` (`x_search_calls`, `x_posts_fetched`, `x_users_fetched`), so callers can account for per-post X Search billing
 - `model`, `query`, `provider`, `tool`, `success`
 
 ### Date validation

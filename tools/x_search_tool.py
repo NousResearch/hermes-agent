@@ -55,6 +55,23 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
         return default
 
 
+def _get_x_search_max_turns() -> Optional[int]:
+    """Optional cap on xAI server-side search rounds per call; unset or <= 0 keeps xAI's default."""
+    raw_value = _load_x_search_config().get("max_turns")
+    try:
+        turns = int(raw_value) if raw_value not in (None, "") else 0
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"x_search.max_turns must be an integer (got {raw_value!r})") from exc
+    return turns if turns > 0 else None
+
+
+def _extract_usage(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """xAI ``usage`` (tokens plus ``server_side_tool_usage_details`` such as x_posts_fetched), kept so
+    per-post X Search billing shows up in receipts instead of being discarded."""
+    usage = payload.get("usage")
+    return usage if isinstance(usage, dict) and usage else None
+
+
 def _resolve_xai_bearer() -> tuple[str, str, str]:
     """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
     when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
@@ -232,6 +249,7 @@ def x_search_tool(
             enable_image_understanding, enable_video_understanding,
         )
         reasoning_effort = _get_x_search_reasoning_effort()
+        max_turns = _get_x_search_max_turns()
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -244,6 +262,8 @@ def x_search_tool(
         }
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
+        if max_turns:
+            payload["max_turns"] = max_turns
         headers = {
             "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
             "User-Agent": hermes_xai_user_agent(),
@@ -262,6 +282,9 @@ def x_search_tool(
                 f"no citations returned despite filters: {', '.join(active_filters)}" if degraded else None
             ),
         }
+        usage = _extract_usage(data)
+        if usage:
+            result["usage"] = usage
         return json.dumps(result, ensure_ascii=False)
     except requests.HTTPError as e:
         logger.error("x_search failed: %s", e, exc_info=True)

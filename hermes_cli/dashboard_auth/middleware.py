@@ -43,7 +43,7 @@ _log = logging.getLogger(__name__)
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/login", "/auth/callback", "/auth/native/authorize", "/auth/native/token",
     "/auth/native/refresh", "/auth/password-login", "/auth/logout", "/login",
-    "/api/auth/providers", "/api/mcp/oauth/callback/",
+    "/api/mcp/oauth/callback/",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
 # Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and

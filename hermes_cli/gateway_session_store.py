@@ -70,6 +70,7 @@ class GatewaySessionStore:
         self.current: dict | None = None
         self._reader = None
         self._create_parameters = None
+        self._create_sources = None
 
     def __bool__(self):
         return not self.connection.final
@@ -165,8 +166,9 @@ class GatewaySessionStore:
         from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = _launch_cwd()
-        # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
-        params["source"] = create_surface(session_source_for("cli"))
+        # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source —
+        # kept inside the surfaces this gateway serves (``gateway_source``).
+        params["source"] = self.gateway_source()
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
         # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
         local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
@@ -183,11 +185,40 @@ class GatewaySessionStore:
     def client_env(self):
         """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
         from hermes_cli.gateway_chat import client_env_policy
+        self.describe_create_contract()
+        return client_env_policy(self._create_parameters)
+
+    def describe_create_contract(self):
+        """Cache the owner's ``session_create`` contract (its accepted parameters and surfaces) once."""
         if self._create_parameters is None:
             described = self.call("runtime.describe")
             contract = described.get("session_create") if isinstance(described, dict) else None
             self._create_parameters = list((contract or {}).get("parameters") or [])
-        return client_env_policy(self._create_parameters)
+            self._create_sources = [str(item) for item in (contract or {}).get("sources") or []]
+        return self._create_parameters, self._create_sources or []
+
+    def gateway_source(self):
+        """Main's row label, kept inside the surfaces this gateway serves.
+
+        ``HERMES_SESSION_SOURCE`` is bridged into every child process of an automation session
+        (kanban, cron, a2a), and those labels are not creatable surfaces: the create contract's
+        closed set refuses them with a bare ``invalid_params``, so any ``hermes chat -q`` run from
+        such a terminal died at agent init. An INHERITED label the contract does not serve falls
+        back to the thin client's own rule (``hermes_cli.gateway_chat``): the label this run would
+        have had with no env — ``oneshot`` for a finite run, ``cli`` otherwise. An explicit
+        ``--source`` is never silently rewritten: an unsupported one raises the thin client's copy.
+        A gateway whose describe carries no sources (older build) keeps the pre-contract behaviour.
+        """
+        from agent.session_source import create_surface, session_source_for
+        source = create_surface(session_source_for("cli"))
+        sources = self.describe_create_contract()[1]
+        if not sources or source in sources:
+            return source
+        from gateway.session_context import get_session_env
+        if get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1":
+            raise GatewayClientError(f"Gateway does not support source {source!r}")
+        finite = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+        return "oneshot" if finite and "oneshot" in sources else "cli"
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it

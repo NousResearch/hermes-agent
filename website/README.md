@@ -21,6 +21,14 @@ This website is built using [Docusaurus](https://docusaurus.io/), a modern stati
   produced by `scripts/generate-skill-docs.py`, which emits the same relative form.
 - Pin `{#anchor}` on cross-linked headings so the zh-Hans mirror keeps the same id.
 
+## Social card
+
+Link previews (Open Graph, X `summary_large_image`) use `static/img/social-card.png`, a 1200x630 card
+built from the site banner (`themeConfig.image`). Docusaurus emits the absolute `og:image`,
+`twitter:image` and `twitter:card` tags from that one setting. Regenerate it with
+`python3 website/scripts/generate-social-card.py` (needs Pillow; `--check` fails on a stale PNG), and
+verify a build with `python3 website/scripts/check_social_card.py website/build`.
+
 ## Installation
 
 ```bash

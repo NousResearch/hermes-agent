@@ -53,6 +53,7 @@ tts:
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
+    # proxy: "http://127.0.0.1:8080"  # Optional HTTP(S) proxy override; "" disables proxying
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -123,6 +124,21 @@ MiniMax TTS selects its region, endpoint, and credential together:
 - An explicitly selected region must have its matching credential. Hermes never borrows the other region's key. A `base_url` override does not change the selected credential, and an override pointing at the other region's official endpoint is rejected.
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Edge TTS proxies
+
+Edge TTS accepts HTTP(S) proxies, passed explicitly to `edge-tts`. When
+`tts.edge.proxy` is omitted, Hermes uses the first non-empty value in this order:
+`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `https_proxy`, `http_proxy`, `all_proxy`.
+`NO_PROXY` and `no_proxy` bypass the environment proxy for `speech.platform.bing.com`
+(port 443), including domain suffix and wildcard entries.
+
+Set `tts.edge.proxy` to an HTTP(S) URL to override environment selection, including
+`NO_PROXY`. Set it to `""` to force a direct connection even when proxy environment
+variables are set. Invalid URLs, non-string values (including YAML `null`), and
+SOCKS proxies produce a configuration error before connecting; Hermes does not
+silently fall back to a direct connection. Use an HTTP(S) endpoint from your proxy
+software instead. Other TTS providers are unaffected.
 
 ### Gemini Persona Prompts
 

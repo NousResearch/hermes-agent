@@ -3438,6 +3438,23 @@ def _default_to_chat(args) -> None:
     cmd_chat(args)
 
 
+def _apply_json_output_default(args) -> None:
+    """Promote --json default to True when display.json_output is set (#147088).
+
+    Only affects subcommands that declare a ``json`` attribute via ``--json``;
+    an explicit CLI --json already sets args.json=True, so this only promotes
+    the default from False when the config opt-in is set.
+    """
+    if hasattr(args, "json") and not args.json:
+        try:
+            from hermes_cli.config import load_config_readonly
+            _cfg = load_config_readonly()
+            if _cfg.get("display", {}).get("json_output", False):
+                args.json = True
+        except Exception:
+            pass
+
+
 def main():
     """Main entry point for hermes CLI."""
     _set_process_title()
@@ -3542,6 +3559,10 @@ def main():
     if args.command is None:
         _default_to_chat(args)
         return
+
+    # display.json_output: make --json the default for every subcommand that
+    # declares the flag, so scripts/cron no longer repeat --json on each call (#147088).
+    _apply_json_output_default(args)
 
     # A handler's int return code becomes the exit code (None = success).
     if hasattr(args, "func"):

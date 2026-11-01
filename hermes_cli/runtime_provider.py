@@ -1061,6 +1061,9 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     from hermes_cli.left_core_migration import recover_for_provider
     recover_for_provider(requested_provider)  # a provider whose plugin left core: install it before resolving
     _raise_if_provider_disabled(requested_provider)
+    from hermes_cli.runtime_provider_custom import recover_main_custom_request
+    requested_provider = recover_main_custom_request(requested_provider, explicit_base_url, target_model)
+    _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
     # every path (background review, curator, MoA slots, delegation) instead of "Unknown provider".
     # The pre-expansion name is what the codex_app_server overlay judges: ``openai`` is eligible,

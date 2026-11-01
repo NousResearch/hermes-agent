@@ -620,6 +620,22 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
+test('pathWithProfileScope leaves named profile routes to their path authority', () => {
+  // A local multiplexed gateway mints the native grant for the profile in this
+  // path. Adding the sidebar's ambient profile query makes the two selectors
+  // disagree and the gateway correctly rejects the request.
+  for (const path of ['/api/profiles/research', '/api/profiles/research/soul']) {
+    assert.equal(pathWithProfileScope(path, 'default'), path)
+  }
+
+  // These are collection routes, not a profile named "sessions" or "active".
+  assert.equal(
+    pathWithProfileScope('/api/profiles/sessions/sidebar?recents_profile=research', 'research'),
+    '/api/profiles/sessions/sidebar?recents_profile=research&profile=research'
+  )
+  assert.equal(pathWithProfileScope('/api/profiles/active', 'research'), '/api/profiles/active?profile=research')
+})
+
 test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
   assert.equal(
     pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {

@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
-                                          normalize_provider_tool_call_ids)
+                                          normalize_provider_tool_call_ids,
+                                          synchronize_tool_call_sidecar_ids)
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
 
@@ -97,6 +98,9 @@ def validate_tool_calls(
     }
     agent._uniquify_tool_call_ids(tool_calls, taken=taken)
     normalize_provider_tool_call_ids(tool_calls)
+    synchronize_tool_call_sidecar_ids(
+        tool_calls, getattr(assistant_message, "bedrock_content_blocks", None),
+    )
 
     # Repair mismatched tool names before validating (model hallucinations).
     repaired_ids = set()

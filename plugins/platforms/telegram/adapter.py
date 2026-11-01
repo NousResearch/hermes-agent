@@ -6238,8 +6238,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
         for attr, mtype in (
             ("sticker", MessageType.STICKER), ("photo", MessageType.PHOTO), ("video", MessageType.VIDEO),
-            ("video_note", MessageType.VIDEO),
-            ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
+            ("video_note", MessageType.VIDEO), ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
             if getattr(msg, attr, None):
                 return mtype
         return MessageType.DOCUMENT
@@ -6311,10 +6310,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
         if msg.photo:
             return msg.photo[-1], "", "", "image"
-        if msg.video:
-            return msg.video, "", "video/mp4", "video"
-        if getattr(msg, "video_note", None):
-            return msg.video_note, "", "video/mp4", "video"
+        if video := msg.video or getattr(msg, "video_note", None):
+            return video, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -6863,11 +6860,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif msg.audio:
             if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
                 return
-        elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
-                return
-        elif getattr(msg, "video_note", None):
-            if await self._cache_inbound_av(msg, event, msg.video_note, "video note", "video", ".mp4", "video/mp4"):
+        elif video := msg.video or getattr(msg, "video_note", None):
+            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
                 return
         elif msg.document and await self._cache_inbound_document(msg, event):
             return

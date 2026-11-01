@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import sqlite3
 from functools import partial
 from pathlib import Path
 import weakref
@@ -40,6 +41,43 @@ def _pin_first():
     ``kanban_db.pin_first_board_resolution``)."""
     from hermes_cli import kanban_db
     return kanban_db.pin_first_board_resolution()
+
+
+class _NotifierSubscriptionProbe:
+    """Keep one read-only connection alive while the notifier watcher is running."""
+
+    def __init__(self) -> None:
+        self._conn: sqlite3.Connection | None = None
+        self._path: Path | None = None
+        self._identity: tuple[int, int] | None = None
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+        self._conn = self._path = self._identity = None
+
+    def _open(self, path: Path) -> sqlite3.Connection:
+        identity = (path.stat().st_dev, path.stat().st_ino)
+        if self._conn is None or self._path != path or self._identity != identity:
+            self.close()
+            self._conn = _kbn().open_notify_subs_reader(path)
+            self._path, self._identity = path, identity
+        return self._conn
+
+    def count(self, *, board: str | None, notifier_profiles: set[str], include_unowned: bool) -> int:
+        from hermes_cli import kanban_db
+
+        path = kanban_db.kanban_db_path(board=board)
+        if not path.exists():
+            self.close()
+            return 0
+        try:
+            return _kbn().count_notify_subs(
+                path, connection=self._open(path), notifier_profiles=notifier_profiles,
+                include_unowned=include_unowned)
+        except sqlite3.Error:
+            self.close()
+            raise
 
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
@@ -226,13 +264,15 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
 class _Collector:
     """One tick's claim state: which profiles/platforms this gateway serves and the GC gate."""
 
-    def __init__(self, runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int) -> None:
+    def __init__(self, runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int,
+                 probe: _NotifierSubscriptionProbe | None = None) -> None:
         self.runner = runner
         self.kb = kb
         self.notifier_profile = notifier_profile
         self.gc_due = gc_due
         self.gc_retention_days = gc_retention_days
         self.deliveries: list[dict] = []
+        self.probe = probe
         self.include_unowned = runner._owns_kanban_dispatcher_lock()
         self.profile_adapters = getattr(runner, "_profile_adapters", {})
         self.notifier_profiles = {notifier_profile}
@@ -278,8 +318,11 @@ class _Collector:
         """Cheap read-only probe before the writable connect() (schema init, WAL
         sidecars, checkpoints); a probe failure falls back to the writable open."""
         try:
-            count = _kbn().count_notify_subs(
-                board=slug, notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
+            count = (self.probe.count(board=slug, notifier_profiles=self.notifier_profiles,
+                                      include_unowned=self.include_unowned)
+                     if self.probe else _kbn().count_notify_subs(
+                         board=slug, notifier_profiles=self.notifier_profiles,
+                         include_unowned=self.include_unowned))
         except Exception as exc:
             logger.debug("kanban notifier: read-only subscription probe failed "
                          "for board %s (%s); falling back to writable open", slug, exc)
@@ -353,7 +396,8 @@ class _Collector:
             conn.close()
 
 
-def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int) -> list[dict]:
+def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], gc_due: bool, gc_retention_days: int,
+                      probe: _NotifierSubscriptionProbe | None = None) -> list[dict]:
     """Claim unseen terminal events for every owned subscription on every board.
 
     Each gateway polls only subscriptions owned by profiles whose adapters it
@@ -361,7 +405,7 @@ def _notifier_collect(runner: Any, kb: Any, *, notifier_profile: Optional[str], 
     holding the singleton dispatcher lock.
     """
     return _Collector(
-        runner, kb, notifier_profile=notifier_profile, gc_due=gc_due, gc_retention_days=gc_retention_days,
+        runner, kb, notifier_profile=notifier_profile, gc_due=gc_due, gc_retention_days=gc_retention_days, probe=probe,
     ).collect()
 
 

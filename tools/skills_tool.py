@@ -756,27 +756,29 @@ registry.register(
 
 
 def _skill_view_with_bump(args, **kw):
-    """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
+    """Invoke skill_view, then bump foreground view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
     same skill file in this session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
+    background_review = is_background_review()
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
     # (a) skips the read-mark its read-before-write guard requires and (b) lets it patch from a
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
-    dedup_task_id = None if is_background_review() else task_id
+    dedup_task_id = None if background_review else task_id
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
             if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
                 return stub
-            if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
+            # Foreground loading is an activation proxy (#144101). Review inspections update neither
+            # counters nor activity stamps: they must not consume post-patch reuse evidence or refresh
+            # the curator's inactivity clock (latest use/view/patch activity).
+            if not background_review and (resolved := parsed.get("name") or name):  # canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
                 bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -360,8 +361,9 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
-    def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
-        from tools.skills_tool import _skill_view_with_bump
+    @pytest.mark.parametrize("origin", ["foreground", "background_review"])
+    def test_registered_view_tracks_use_with_task_and_session(self, tmp_path, origin):
+        from tools.registry import registry
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
@@ -369,19 +371,69 @@ class TestSkillView:
             patch("tools.skill_usage.bump_use") as bump_use,
         ):
             _make_skill(tmp_path, "my-skill")
-            raw = _skill_view_with_bump(
-                {"name": "my-skill"},
-                task_id="task-view",
-                session_id="session-view",
-            )
+            token = set_current_write_origin(origin)
+            try:
+                raw = registry.dispatch(
+                    "skill_view", {"name": "my-skill"},
+                    task_id="task-view", session_id="session-view",
+                )
+            finally:
+                reset_current_write_origin(token)
 
-        assert json.loads(raw)["success"] is True
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Step 1: Do the thing." in result["content"]
+        assert not result.get("dedup")
+        if origin == "background_review":
+            bump_view.assert_not_called()
+            bump_use.assert_not_called()
+            return
         bump_view.assert_called_once_with("my-skill")
         bump_use.assert_called_once_with(
             "my-skill",
             task_id="task-view",
             session_id="session-view",
         )
+
+    def test_background_review_preserves_usage_and_post_patch_reuse(self, tmp_path, monkeypatch):
+        import importlib
+        from hermes_cli import lifecycle
+        from tools import skill_usage as usage
+        from tools.registry import registry
+
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        importlib.reload(usage)
+        monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", home / "skills")
+        _make_skill(home / "skills", "my-skill")
+        usage.bump_use("my-skill")
+        usage.bump_view("my-skill")
+        usage.bump_patch("my-skill")
+        before = usage.load_usage()["my-skill"]
+        events = []
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+        monkeypatch.setattr(lifecycle, "invoke_hook", lambda name, **kw: events.append(kw))
+        monkeypatch.setattr(usage, "_now_iso", lambda: "2100-01-01T00:00:00+00:00")
+
+        token = set_current_write_origin("background_review")
+        try:
+            raw = registry.dispatch("skill_view", {"name": "my-skill"}, task_id="task-usage")
+        finally:
+            reset_current_write_origin(token)
+        assert "Step 1: Do the thing." in json.loads(raw)["content"]
+        assert usage.load_usage()["my-skill"] == before
+        assert events == []
+
+        registry.dispatch("skill_view", {"name": "my-skill"}, task_id="task-usage")
+        after = usage.load_usage()["my-skill"]
+        assert after["view_count"] == before["view_count"] + 1
+        assert after["use_count"] == before["use_count"] + 1
+        assert after["last_viewed_at"] == after["last_used_at"] == "2100-01-01T00:00:00+00:00"
+        assert after["last_reused_patch_generation"] == before["patch_generation"]
+        assert [event["reuse_after_patch"] for event in events if event["action"] == "loaded"] == [True]
 
 
     def test_view_reference_files(self, tmp_path):

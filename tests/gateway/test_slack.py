@@ -2574,6 +2574,32 @@ class TestFormatMessage:
         assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
 
 
+    def test_link_label_gt_is_escaped(self, adapter):
+        """The label is stashed behind a placeholder before the escape pass runs,
+        so it must be escaped when the entity is built — a bare ``>`` would close
+        the ``<url|label>`` entity early (#132074)."""
+        assert adapter.format_message("[docs > setup](http://x.com)") == \
+            "<http://x.com|docs &gt; setup>"
+
+
+    def test_link_label_all_three_escapables(self, adapter):
+        assert adapter.format_message("[R&D <team>](http://x.com)") == \
+            "<http://x.com|R&amp;D &lt;team&gt;>"
+
+
+    def test_link_label_pre_escaped_entity_not_double_escaped(self, adapter):
+        """Decode-then-encode mirrors the plain-text escape pass: an already
+        escaped label stays singly escaped."""
+        assert adapter.format_message("[a &amp; b](http://x.com)") == \
+            "<http://x.com|a &amp; b>"
+
+
+    def test_link_url_stays_raw(self, adapter):
+        """Only the label is escaped; the URL keeps its raw separators."""
+        assert adapter.format_message("[q](https://x.com/?a=1&b=2)") == \
+            "<https://x.com/?a=1&b=2|q>"
+
+
     # --- Entity preservation (spec-compliance) ---
 
 

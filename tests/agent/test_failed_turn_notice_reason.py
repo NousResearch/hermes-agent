@@ -47,6 +47,27 @@ def test_bare_call_without_reason_keeps_legacy_static_copy():
     ) == PARTIAL_FAILED_TURN_NOTICE
 
 
+def test_unglossed_loop_error_still_names_a_why():
+    """A site code absent from FAILURE_CAUSE_GLOSS must not drop the Why clause."""
+    text = failed_turn_notice(
+        [{"role": "user", "content": "run it"}],
+        failure_reason="loop_error",
+    )
+    assert text.startswith(FAILED_TURN_NOTICE)
+    assert "Why:" in text
+    assert text.strip() != FAILED_TURN_NOTICE
+
+
+def test_unglossed_gateway_connection_still_names_a_why():
+    """A second unglossed site code is also kept, not only loop_error."""
+    text = failed_turn_notice(
+        [{"role": "user", "content": "run it"}],
+        failure_reason="gateway_connection",
+    )
+    assert "Why:" in text
+    assert text.strip() != FAILED_TURN_NOTICE
+
+
 def test_untyped_matcher_accepts_reasoned_suffix():
     base = failed_turn_notice(
         [{"role": "tool", "content": "x"}],

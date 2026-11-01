@@ -1,0 +1,14 @@
+name: discord-welcome
+repo: https://github.com/propiter/hermes-discord-welcome
+sha: 1490d5257fa2a38f405a4761eb4115216a7d3347
+description: Greet new Discord members in the channel of the invite they used, with a "set your name" button, an optional staff notice and a join-wave guard. No LLM calls.
+maintainer: propiter
+tier: community
+category: platform
+version: "0.1.0"
+docs_url: https://github.com/propiter/hermes-discord-welcome#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

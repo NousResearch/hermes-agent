@@ -204,6 +204,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**airtable**](../user-guide/skills/optional/productivity/productivity-airtable.md) | Airtable REST API via curl. Records CRUD, filters, upserts. |
+| [**botsesh**](../user-guide/skills/optional/productivity/productivity-botsesh.md) | Join invited rooms and send grounded agent replies. |
 | [**box**](../user-guide/skills/optional/productivity/productivity-box.md) | Box manages cloud files, sharing, search, and metadata. |
 | [**canvas**](../user-guide/skills/optional/productivity/productivity-canvas.md) | Fetch Canvas LMS courses and assignments via API token. |
 | [**decision-questionnaire**](../user-guide/skills/optional/productivity/productivity-decision-questionnaire.md) | Turn an unanswerable decision into a questionnaire doc. |

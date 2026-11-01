@@ -50,7 +50,17 @@ _BUSY_MODE_BEHAVIOR = {
 
 # /diff argument -> diff mode (unknown args leave the mode unchanged).
 _DIFF_MODE_BY_ARG = {**dict.fromkeys(("staged", "--staged", "cached", "--cached"), "staged"),
-                     **dict.fromkeys(("all", "--all", "head"), "all"), "session": "session"}
+                     **dict.fromkeys(("all", "--all", "head"), "all"),
+                     "session": "session", "turn": "turn"}
+
+
+def _diff_turn_index(args: list[str]) -> int:
+    """``/diff turn [N]`` — N counts back from the most recent turn (default 0)."""
+    for arg in args:
+        if arg.isdigit():
+            return int(arg)
+    return 0
+
 
 # /voice subcommand -> stored mode (None = auto-TTS disabled), confirmation i18n key.
 _VOICE_MODE_BY_ARG = {
@@ -787,14 +797,18 @@ class GatewaySlashCommandsMixin(
         for low in args:
             mode = _DIFF_MODE_BY_ARG.get(low, mode)
         cwd = self._terminal_cwd()
-        if mode == "session":
-            # Cumulative checkpoint-baseline diff.
+        if mode in ("session", "turn"):
+            # Checkpoint-baseline diffs: cumulative for the whole session, or
+            # one turn's own changes ("/diff turn [N]").
             mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
                 return reason
-            result = await asyncio.to_thread(mgr.session_diff, cwd)
+            if mode == "session":
+                result = await asyncio.to_thread(mgr.session_diff, cwd)
+            else:
+                result = await asyncio.to_thread(mgr.turn_diff, cwd, _diff_turn_index(args))
         else:
             from tools.working_diff import collect_working_diff
             result = await asyncio.to_thread(collect_working_diff, cwd, mode)

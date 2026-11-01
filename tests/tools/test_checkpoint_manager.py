@@ -215,6 +215,58 @@ class TestListCheckpoints:
 
 
 # =========================================================================
+# /diff turn — one turn's own slice, not the cumulative session diff
+# =========================================================================
+
+class TestTurnDiff:
+    def _three_turns(self, mgr, work_dir):
+        """Turn 1 edits main.py, turn 2 adds notes.md, turn 3 edits main.py again."""
+        assert mgr.ensure_checkpoint(str(work_dir), "turn-1") is True
+        (work_dir / "main.py").write_text("print('one')\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "turn-2") is True
+        (work_dir / "notes.md").write_text("notes\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "turn-3") is True
+        (work_dir / "main.py").write_text("print('three')\n")
+
+    def test_current_turn_starts_at_newest_checkpoint(self, mgr, work_dir):
+        self._three_turns(mgr, work_dir)
+        result = mgr.turn_diff(str(work_dir))  # index 0 = the turn in progress
+        assert result["success"] is True
+        assert result["turn"] == 0
+        assert result["checkpoint"] == mgr.list_checkpoints(str(work_dir))[0]["hash"]
+        # Only the current turn's edit — not the earlier one, nor notes.md.
+        assert "-print('one')" in result["diff"]
+        assert "+print('three')" in result["diff"]
+        assert "notes.md" not in result["diff"]
+
+    def test_earlier_turn_slices_between_consecutive_checkpoints(self, mgr, work_dir):
+        self._three_turns(mgr, work_dir)
+        result = mgr.turn_diff(str(work_dir), 1)  # the turn that began one checkpoint back
+        assert result["success"] is True
+        assert result["turn"] == 1
+        assert "+notes" in result["diff"]
+        assert "print('three')" not in result["diff"]  # a later turn's edit
+
+    def test_turn_with_no_changes_reports_empty_text(self, mgr, work_dir):
+        assert mgr.ensure_checkpoint(str(work_dir), "turn-1") is True
+        result = mgr.turn_diff(str(work_dir))  # nothing mutated since the snapshot
+        assert result["success"] is True
+        assert not result["stat"].strip() and not result["diff"].strip()
+
+    def test_index_beyond_retained_checkpoints_is_rejected(self, mgr, work_dir):
+        self._three_turns(mgr, work_dir)
+        result = mgr.turn_diff(str(work_dir), 99)
+        assert result["success"] is False
+        assert "no retained checkpoint" in result["error"]
+
+    def test_no_checkpoints_still_succeeds_empty(self, mgr, work_dir):
+        result = mgr.turn_diff(str(work_dir))
+        assert result == {"success": True, "stat": "", "diff": "", "empty": True}
+
+
+# =========================================================================
 # Pruning: max_snapshots actually enforced (v2 fix)
 # =========================================================================
 

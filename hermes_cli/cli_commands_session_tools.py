@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import io
+import os
 import shlex
 from contextlib import redirect_stdout
 from io import StringIO
@@ -319,18 +320,89 @@ def _stop_background_work() -> None:
         _cp(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
 
-def print_session_diff(cli, result: dict, stat_only: bool) -> None:
-    """Render a ``CheckpointManager.session_diff`` result (``/diff session``): this process's agent's,
-    or the gateway session's ``rollback.session_diff`` (``diff_lines``: its uncut body's line count)."""
+def print_session_diff(cli, result: dict, stat_only: bool, *, empty_key: str = "diff.no_session_changes") -> None:
+    """Render a checkpoint diff result: this process's agent's, or the gateway session's
+    ``rollback.session_diff`` (``diff_lines``: its uncut body's line count)."""
     if not result.get("success"):
         return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
     stat, diff = result.get("stat", ""), result.get("diff", "")
     if result.get("empty") or (not stat and not diff):
-        return print(f"  {_t('diff.no_session_changes')}")
+        return print(f"  {_t(empty_key)}")
     if stat:
         cli._print_diff_text(f"\n{stat}")
     if (diff or result.get("diff_lines")) and not stat_only:  # a body cut to nothing still names its lines
         cli._print_diff_body(diff, _t("diff.stat_hint_session"), total=int(result.get("diff_lines") or 0))
+
+
+def print_turn_diff(cli, result: dict, stat_only: bool) -> None:
+    """Render a ``CheckpointManager.turn_diff`` result (``/diff turn [N]``): one turn's own
+    changes, sliced between consecutive checkpoints."""
+    print_session_diff(cli, result, stat_only, empty_key="rollback.no_changes_since")
+
+
+# /diff argument -> mode (anything else is a path; --stat/stat is the stat flag).
+_DIFF_MODES = {
+    "staged": "staged", "--staged": "staged", "cached": "staged", "--cached": "staged",
+    "all": "all", "--all": "all", "head": "all", "session": "session", "turn": "turn"}
+# /diff mode -> stat headline catalog key (``cli.commands.diff.*``).
+_DIFF_LABELS = {"working": "diff.label_working", "staged": "diff.label_staged", "all": "diff.label_all"}
+
+
+def handle_diff_command(cli, command: str) -> None:
+    """``/diff [working|staged|all|session|turn [N]] [--stat] [<path>...]`` — git changes in the
+    cwd.  ``session`` is everything Hermes changed since the earliest retained checkpoint;
+    ``turn [N]`` just one turn's own changes (N counts back from the current turn, default 0)."""
+    stat_only = False
+    mode = "working"
+    paths: list[str] = []
+    turn_index = 0
+    for arg in _shlex_args(command):  # shlex preserves quoted paths
+        low = arg.lower()
+        if low in ("--stat", "stat"):
+            stat_only = True
+        elif low in _DIFF_MODES:
+            mode = _DIFF_MODES[low]
+        elif mode == "turn" and low.isdigit():
+            turn_index = int(low)
+        else:
+            paths.append(arg)
+    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+    if mode in ("session", "turn"):
+        mgr = cli._checkpoint_manager(_lines(_t("diff.not_enabled")))
+        if mgr is None:
+            return
+        if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+            return print(f"  {reason}")
+        if mode == "session":
+            return print_cli_session_diff(cli, cwd, stat_only)
+        return print_turn_diff(cli, mgr.turn_diff(cwd, turn_index), stat_only)
+    from tools.working_diff import collect_working_diff
+    result = collect_working_diff(cwd, mode=mode, paths=paths or None)
+    if not result.get("success"):
+        return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
+    stat, diff = result.get("stat", ""), result.get("diff", "")
+    untracked = result.get("untracked", [])
+    if result.get("empty") or (not stat and not diff and not untracked):
+        return print(f"  {_gt('diff.no_changes')}")
+    if stat:
+        print(f"\n  {_t(_DIFF_LABELS[mode])}:")
+        cli._print_diff_text(stat)
+    if untracked and mode in ("working", "all"):
+        _pr(f"\n  {_t('diff.untracked')}", *(f"    + {rel}" for rel in untracked[:20]))
+        if len(untracked) > 20:
+            print(f"    {_t('diff.and_more', count=len(untracked) - 20)}")
+    if diff and not stat_only:
+        cli._print_diff_body(diff, _t("diff.stat_hint"))
+
+
+def print_cli_session_diff(cli, cwd: str, stat_only: bool) -> None:
+    """Print the cumulative checkpoint-baseline diff (/diff session) for a local ``cwd``."""
+    mgr = cli._checkpoint_manager(_lines(_t("diff.not_enabled")))
+    if mgr is None:
+        return
+    if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
+        return print(f"  {reason}")
+    print_session_diff(cli, mgr.session_diff(cwd), stat_only)
 
 
 def _print_local_delegations() -> None:

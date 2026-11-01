@@ -122,6 +122,28 @@ def test_h3_max_turbo_static_key_and_1080p_alias():
     assert i2v["image_url"] == "https://example.com/i.png"
 
 
+def test_flux_3_max_payload_matches_declared_schema():
+    """FLUX 3 Max (fal post-train) declares `seed` and a plain int duration
+    enum on both endpoints and keeps aspect_ratio on i2v — unlike base FLUX 3,
+    whose schema has no seed. Keys must stay inside the live OpenAPI inputs."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload, _normalize_family_key
+
+    meta = FAL_FAMILIES["flux-3-max"]
+    declared = {"prompt", "image_url", "end_image_url", "duration", "seed", "aspect_ratio",
+                "generate_audio", "reasoning_level", "resolution"}
+    t2v = _build_payload(meta, prompt="x", image_url=None, duration=23, aspect_ratio="2:1",
+                         resolution="1080p", negative_prompt="ugly", audio=False, seed=7)
+    assert set(t2v) <= declared and "image_url" not in t2v
+    assert t2v["duration"] == 20 and isinstance(t2v["duration"], int)
+    assert (t2v["seed"], t2v["aspect_ratio"], t2v["generate_audio"]) == (7, "2:1", False)
+
+    i2v = _build_payload(meta, prompt="x", image_url="https://example.com/i.png", duration=6,
+                         aspect_ratio="9:16", resolution="720p", negative_prompt=None, audio=None, seed=None)
+    assert set(i2v) <= declared and i2v["aspect_ratio"] == "9:16"
+    assert _normalize_family_key("blackforestlabs/flux-3-max") == "flux-3-max"
+    assert _normalize_family_key("blackforestlabs/flux-3") == "flux-3"
+
+
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():
     """Seedance 2.5 / MiniMax H3 / Grok 1.5 i2v endpoints derive the
     aspect ratio from the input image; sending the key is rejected."""

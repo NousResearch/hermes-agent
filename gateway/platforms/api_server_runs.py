@@ -799,7 +799,13 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         return history_err
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
-    route = self._resolve_route(body.get("model"))
+    runtime_request = self._session_runtime_request_from_body(body)
+    lock_error = self._runtime_lock_error(runtime_request)
+    if lock_error is not None:
+        return lock_error
+    # A run lock is per-turn: do not persist it as a standing session selection (voice/MoA).
+    locked = bool(runtime_request.get("require_model_lock"))
+    route = runtime_request.get("route") if locked else self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
     selection_error = self._request_route_conflict_error(
         session_id=session_id, gateway_session_key=gateway_session_key,
@@ -866,7 +872,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
-            route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+            route=route, confirmed_runtime_lock=locked,
+            room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
@@ -991,7 +998,13 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, _run_usage(agent), _served_runtime(agent)
+        runtime = _served_runtime(agent)
+        if run.agent_kwargs.get("confirmed_runtime_lock"):
+            runtime = self._turn_runtime_metadata(
+                agent, route=run.agent_kwargs.get("route"),
+                requested_runtime={k: run.agent_kwargs.get(f"requested_{k}") for k in ("provider", "model")},
+                route_source="raw_request", confirmed_runtime_lock=True)
+        return r, _run_usage(agent), runtime
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[dict[str, Any]], None]:

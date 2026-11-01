@@ -1015,6 +1015,75 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     assert adapter._should_observe_unmentioned_group_message(human) is False
 
 
+def test_free_response_chat_does_not_lift_bots_require_mention():
+    """#147623: a free-response chat lifts the *human* mention requirement only. An unmentioned
+    sibling bot stays gated there exactly as it does in a mention-only chat, and the chat-wide
+    exception must not become a general bypass of ``bots_require_mention``."""
+    adapter = _make_adapter(
+        require_mention=True,
+        bots_require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        free_response_chats=["-100"],
+    )
+
+    # Humans keep the free-response behaviour: no mention needed.
+    assert adapter._should_process_message(_group_message("no mention here")) is True
+
+    # Bots do not: plain chatter and quote-replies stay suppressed.
+    assert adapter._should_process_message(_bot_sender_message("notification: build done")) is False
+    assert adapter._should_process_message(_bot_sender_message("auto-reply", reply_to_bot=True)) is False
+
+    # An explicit @mention still gets through, so the gate is not a blanket bot ban.
+    text = "@hermes_bot ping"
+    assert (
+        adapter._should_process_message(_bot_sender_message(text, entities=[_mention_entity(text)]))
+        is True
+    )
+
+
+def test_free_response_topic_does_not_lift_bots_require_mention():
+    """The topic-level exception (#147623) has to behave like the chat-level one."""
+    adapter = _make_adapter(
+        require_mention=True,
+        bots_require_mention=True,
+        allowed_chats=["-200"],
+        group_allowed_chats=["-200"],
+        free_response_topics=["-200:31"],
+    )
+
+    bot_msg = _group_message("thread notification", chat_id=-200, thread_id=31)
+    bot_msg.from_user.id = 555
+    bot_msg.from_user.is_bot = True
+    assert adapter._should_process_message(bot_msg) is False
+
+    human_msg = _group_message("no mention here", chat_id=-200, thread_id=31)
+    assert adapter._should_process_message(human_msg) is True
+
+
+def test_free_response_chat_keeps_a_suppressed_bot_message_as_observed_context():
+    """#147623 expected behaviour: the bot message the trigger gate drops is still eligible for
+    observed context when observation and authorization are enabled, even in a free-response chat
+    (the observation gate used to exclude those chats before reaching the bot-suppression check)."""
+    adapter = _make_adapter(
+        require_mention=True,
+        bots_require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        free_response_chats=["-100"],
+    )
+
+    bot_msg = _bot_sender_message("notification: build done")
+    assert adapter._should_process_message(bot_msg) is False
+    assert adapter._should_observe_unmentioned_group_message(bot_msg) is True
+
+    # A human message here is dispatched, so it must not be recorded twice.
+    human_msg = _group_message("no mention here")
+    assert adapter._should_process_message(human_msg) is True
+    assert adapter._should_observe_unmentioned_group_message(human_msg) is False
+
+
 def _replying_to(message, *, user_id=None, message_id=10, sender_chat=None):
     message.reply_to_message = SimpleNamespace(
         from_user=SimpleNamespace(id=user_id) if user_id else None, message_id=message_id, text="earlier", caption=None,

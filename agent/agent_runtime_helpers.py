@@ -34,7 +34,9 @@ from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_messag
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
-from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.primary_runtime_snapshot import (
+    _build_primary_runtime_snapshot, _restore_switch_snapshot, _snapshot_switch_state,
+)
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -1461,17 +1463,18 @@ def restore_primary_runtime(agent) -> bool:
     )
     if blocked:
         return False
-    agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if not (isinstance(fallback_route, (list, tuple)) and len(fallback_route) == 2):
         fallback_route = (getattr(agent, "model", ""), getattr(agent, "provider", ""))
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
+    from agent.primary_runtime_restore_attempt import primary_runtime_restore_attempt
+    from agent.route_binding import reinstall_primary_runtime
     try:
-        from agent.route_binding import reinstall_primary_runtime
-        reinstall_primary_runtime(
-            agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
-        )
+        with primary_runtime_restore_attempt(agent):
+            reinstall_primary_runtime(
+                agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
+            )
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -1483,8 +1486,8 @@ def restore_primary_runtime(agent) -> bool:
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
         return True
-    except Exception as e:
-        logger.warning("Failed to restore primary runtime: %s", e)
+    except Exception:
+        logger.exception("Failed to restore primary runtime")
         return False
 
 
@@ -2118,32 +2121,10 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
-_SWITCH_SNAPSHOT_FIELDS = (
-    "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
-    "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
-    "_credential_pool", "_credential_pool_entry_id",
-    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
-)
-_MISSING = object()
 
 
-def _snapshot_switch_state(agent) -> dict[str, Any]:
-    """Snapshot every field the swap+rebuild mutates so a failed rebuild rolls back atomically
-    (else a new model name + OLD client 400s next turn). The sentinel distinguishes unset from
-    None: tests build bare agents via ``__new__`` without all fields."""
-    snapshot = {name: getattr(agent, name, _MISSING) for name in _SWITCH_SNAPSHOT_FIELDS}
-    # Shallow-copy the dict so mutating the live one doesn't poison the rollback target.
-    snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
-    return snapshot
 
 
-def _restore_switch_snapshot(agent, snapshot: dict[str, Any]) -> None:
-    for name, value in snapshot.items():
-        if value is _MISSING:
-            continue  # attribute did not exist before the swap; don't fabricate it
-        with contextlib.suppress(Exception):
-            setattr(agent, name, value)
 
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):

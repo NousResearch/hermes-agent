@@ -82,3 +82,45 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
     return rt
+
+
+_SWITCH_SNAPSHOT_FIELDS = (
+    "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
+    "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
+    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_credential_pool", "_credential_pool_entry_id",
+    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+)
+
+
+_MISSING = object()
+
+
+_PRIMARY_RESTORE_SNAPSHOT_FIELDS = (
+    "request_overrides", "_transport_cache", "_use_prompt_caching", "_use_native_cache_layout",
+    "reasoning_config", "_restore_wait_logged", "_fallback_activated", "_fallback_index",
+    "_rate_limit_backoff_count", "_consecutive_stale_streams", "_provider_fallback_active",
+    "_provider_fallback_route", "_cached_system_prompt", "_compression_feasibility_checked",
+    "_last_feasibility_notice", "_compression_warning", "_bedrock_region", "_bedrock_guardrail_config",
+)
+
+
+def _snapshot_switch_state(agent, *, fields=()) -> dict[str, Any]:
+    """Snapshot every field the swap+rebuild mutates so a failed rebuild rolls back atomically
+    (else a new model name + OLD client 400s next turn). The sentinel distinguishes unset from
+    None: provider-specific runtime fields may be absent before their first binding."""
+    snapshot = {name: getattr(agent, name, _MISSING) for name in (*_SWITCH_SNAPSHOT_FIELDS, *fields)}
+    # Shallow-copy the dict so mutating the live one doesn't poison the rollback target.
+    kwargs = getattr(agent, "_client_kwargs", _MISSING)
+    snapshot["_client_kwargs"] = dict(kwargs or {}) if kwargs is not _MISSING else _MISSING
+    return snapshot
+
+
+def _restore_switch_snapshot(agent, snapshot: dict[str, Any]) -> None:
+    for name, value in snapshot.items():
+        if value is _MISSING:
+            if name in vars(agent):
+                delattr(agent, name)
+            continue
+        setattr(agent, name, value)
+

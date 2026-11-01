@@ -945,7 +945,7 @@ class MemoryManager:
         for provider in list(self._providers):
             try:
                 provider.initialize(session_id=session_id, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- isolate arbitrary plugin init failures and keep other providers usable.
                 failure = {"status": "failed", "error_type": type(exc).__name__}
                 with self._provider_initialization_failures_lock:
                     self._provider_initialization_failures[provider.name] = failure
@@ -957,7 +957,7 @@ class MemoryManager:
                 )
                 try:
                     provider.shutdown()
-                except Exception as cleanup_exc:
+                except Exception as cleanup_exc:  # health: allow BLE001 -- cleanup failure must not block healthy providers; retain only its type.
                     with self._provider_initialization_failures_lock:
                         previous = self._provider_initialization_failures.get(
                             provider.name, failure

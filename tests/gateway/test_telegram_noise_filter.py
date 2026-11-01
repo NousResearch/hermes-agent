@@ -34,7 +34,6 @@ NOISY_STATUS_MESSAGES = [
     "💤 Resumed after 3600s idle — compacting ~120,000 tokens before continuing.",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
-    "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
     # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
     "🗜️ Context too large (~250,000 tokens) — compressing (1/3)...",
@@ -112,12 +111,22 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
         "ℹ Configured compression model 'small-model' failed (timeout). Recovered using main model — check auxiliary.compression.model in config.yaml.",
         "⏳ Retrying in 4.2s (attempt 1/3)...",
-        "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
         "⚠️ Max retries (3) exhausted — trying fallback...",
     ]
 
     for message in noisy_messages:
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+
+
+def test_rate_limit_wait_notice_is_visible_only_on_telegram():
+    message = "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)..."
+    assert _prepare_gateway_status_message("telegram", "warn", message) == f"⚠️ {message}"
+    assert _prepare_gateway_status_message("slack", "warn", message) is None
+
+
+def test_rate_limit_phrase_embedded_in_unrelated_diagnostic_does_not_bypass_noise_filter():
+    message = "Retry worker says Rate limited. Waiting 30.0s (attempt 2/3)... while compressing context"
+    assert _prepare_gateway_status_message("telegram", "warn", message) is None
 
 
 def test_programmatic_surfaces_keep_raw_status():

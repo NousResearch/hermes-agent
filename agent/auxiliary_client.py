@@ -7500,6 +7500,7 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),
+    (_is_transient_transport_error, "server capacity error"),
 )
 
 

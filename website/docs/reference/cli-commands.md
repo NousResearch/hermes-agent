@@ -47,7 +47,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | Command | Purpose |
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
-| `hermes infer` | Make one model call using the selected profile, without starting an agent session. |
+| `hermes infer` | Invoke a configured model for one prompt without starting an agent session. |
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
@@ -265,7 +265,7 @@ hermes infer - --schema ./classification.schema.json --json < ./message.txt
 hermes infer "Explain this result" --json --include-response
 ```
 
-`infer` sends one user prompt to the selected provider and prints its text to
+`infer` sends one user prompt through the selected route and prints its text to
 stdout. Pass `-` or omit the prompt to read standard input. `--json` prints an
 envelope with `ok`, `text`, `parsed`, `provider`, `model`, `usage`, and `error`.
 An optional `--schema` file requests JSON output and validates the response
@@ -275,9 +275,12 @@ text, route, usage, and a machine-readable `error.code` (`invalid_json` or
 `schema_mismatch`) and exits nonzero. Other request failures return an envelope
 with `text: null` and `error.code: request_failed`. Without `--json`, failures
 write only an error to stderr. Schema validation does not trigger a repair
-request; configured provider retries and fallbacks still apply. A script can
-inspect the returned text and apply a local transformation or alternate schema
-without another model request. Use `--max-tokens` and `--timeout` to bound a call.
+request; configured provider retries and fallbacks still apply, so one invocation
+may make more than one provider request. A script can inspect the returned text
+and apply a local transformation or alternate schema
+without another model request. `--max-tokens` requests an output limit and
+`--timeout` sets a request timeout; neither is a universal hard bound across
+providers, adapters, retries, and fallbacks.
 
 For provider diagnostics, `--json --include-response` adds `response`: a JSON
 snapshot of the completion object returned to Hermes by its model client. It
@@ -285,6 +288,8 @@ can expose fields such as `finish_reason`, refusal data, or additional choices
 that are not represented in `text`. The shape varies by provider and adapter;
 it is not the original upstream HTTP payload. The ordinary envelope fields are
 the stable interface for scripts. If no response arrives, `response` is `null`.
+`ok` reports request and requested-validation success, not whether the model's
+answer is useful or whether a refusal should count as a failure for a script.
 
 The command uses the profile's configured provider, model, credentials, and
 fallback policy, including Hermes model aliases. Supply both `--provider` and

@@ -511,7 +511,9 @@ def _connected_summary(names, *, lazy_tools: int = 0,
     servers. The reason is the recorded connect error; a candidate this pass never attempted (still
     inside its retry cooldown from an earlier failure) has none."""
     with _core._lock:
-        keys = {n: _server_key(n) for n in names}
+        # A discovery pass snapshots new names before shared-connection adoption. Resolve again
+        # here so an adopter counts the owner's live connection instead of its absent own key.
+        keys = {n: _resolve_server_key(n) for n in names}
         connected = [n for n in names
                      if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
         tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)

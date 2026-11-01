@@ -256,3 +256,5 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+def test_system_prompt_forbids_terminal_synthesis_child():
+    assert 'Do NOT create a final "synthesis", "rollup", "aggregate"' in decomp._SYSTEM_PROMPT

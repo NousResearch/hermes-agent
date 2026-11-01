@@ -30,7 +30,7 @@ description: "充分发挥 Hermes Agent 潜力的实用建议——prompt 技巧
 
 ### 对复杂工作流使用 Skill
 
-在写一大段 prompt 解释如何做某件事之前，先检查是否已有对应的 skill。输入 `/skills` 浏览可用的 skill，或直接调用，例如 `/axolotl` 或 `/github-pr-workflow`。
+在写一大段 prompt 解释如何做某件事之前，先检查是否已有对应的 skill。输入 `/skills` 浏览可用的 skill，或直接调用，例如 `/axolotl` 或 `/github`。
 
 ## CLI 高级用户技巧
 

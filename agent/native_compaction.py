@@ -239,6 +239,16 @@ def _is_compaction_item(item: Any) -> bool:
     return isinstance(item, dict) and item.get("type") == "compaction"
 
 
+def _is_synthetic_user_item(item: dict[str, Any], source: Any, text: str) -> bool:
+    """User-role runtime scaffolding (todo snapshot, flagged nudges, process notices), judged on the
+    extracted text plus the raw source row's provenance flags when present. Textless rows (image-only)
+    and unflagged prose are real asks."""
+    from agent.native_compaction_synthetic import is_synthetic_user_row
+
+    flags = source if isinstance(source, dict) and source.get("role") == "user" else item
+    return is_synthetic_user_row(flags, text)
+
+
 def prune_pre_checkpoint_items(
     items: list[dict[str, Any]],
     retained_user_token_budget: int = RETAINED_USER_MESSAGE_TOKEN_BUDGET,
@@ -253,6 +263,8 @@ def prune_pre_checkpoint_items(
         [checkpoint run] + [retained user & summary messages (newest-first budget)] + [post]
 
     - The NEWEST contiguous run of checkpoints wins; relative order is preserved.
+    - Real user asks claim ``retained_user_token_budget`` first; synthetic user-role rows
+      (todo snapshot, nudges, process notices) only use what is left. Output keeps chronological order.
     - User messages are kept verbatim within ``retained_user_token_budget``; the boundary
       message is head-truncated when it only partially fits (strings or text-only typed
       ``input_text`` parts, preserving part metadata). An oversized unsupported/mixed-content
@@ -292,12 +304,13 @@ def prune_pre_checkpoint_items(
     has_sources = isinstance(item_sources, list) and len(item_sources) == len(items)
     pre_sources: list[Any] = item_sources[:first_cp] if has_sources else [None] * len(pre)
 
-    retained_reversed: list[dict[str, Any]] = []
+    retained: list[tuple[int, dict[str, Any]]] = []
+    deferred_synthetic: list[tuple[int, dict[str, Any], str]] = []
     user_remaining = max(0, int(retained_user_token_budget))
     summary_remaining = max(0, int(retained_summary_token_budget))
     seen_summary_texts: set = set()
 
-    def _retain_summary(text: Optional[str], retained_item: dict[str, Any]) -> None:
+    def _retain_summary(pos: int, text: Optional[str], retained_item: dict[str, Any]) -> None:
         """Retain a summary whole when it fits the budget and is not a duplicate (never sliced)."""
         nonlocal summary_remaining
         if not text or summary_remaining <= 0 or text in seen_summary_texts:
@@ -305,10 +318,37 @@ def prune_pre_checkpoint_items(
         cost = _approx_tokens(text)
         if cost <= summary_remaining:
             seen_summary_texts.add(text)
-            retained_reversed.append(retained_item)
+            retained.append((pos, retained_item))
             summary_remaining -= cost
 
-    for item, source in zip(reversed(pre), reversed(pre_sources)):
+    def _retain_user(pos: int, item: dict[str, Any], text: str) -> None:
+        """Retain a user message whole, or head-truncate the boundary and stop older retention."""
+        nonlocal user_remaining
+        if user_remaining <= 0:
+            return
+        content = item.get("content")
+        parts_cost = _input_text_parts_cost(content)
+        cost = parts_cost if parts_cost is not None else _approx_tokens(text)
+        if cost <= user_remaining:
+            retained.append((pos, item))
+            user_remaining -= cost
+            return
+        if isinstance(content, str):
+            head = _head_within_budget(content, user_remaining)
+            keep = bool(head.strip())
+        elif parts_cost is not None:
+            head = _truncate_input_text_parts(content, user_remaining)
+            keep = any(part["text"].strip() for part in head)
+        else:
+            keep = False
+        if keep:
+            retained.append((pos, {**item, "content": head}))
+        # A non-truncatable boundary (e.g. text + image) must not let
+        # an older completed ask replace the newer oversized ask.
+        user_remaining = 0
+
+    for pos in range(len(pre) - 1, -1, -1):
+        item, source = pre[pos], pre_sources[pos]
         if not isinstance(item, dict):
             continue
         # Source-based detection sees past a lossy conversion; it only fires
@@ -319,7 +359,7 @@ def prune_pre_checkpoint_items(
         if enable_summary_retention and isinstance(source, dict) and _is_summary_item(source):
             text = flatten_message_text(source.get("content"))
             _src_role = source.get("role")
-            _retain_summary(text if text.strip() else None,
+            _retain_summary(pos, text if text.strip() else None,
                             {"type": "message", "role": _src_role if _src_role in ("user", "assistant") else "assistant",
                              "content": text})
             continue
@@ -336,30 +376,16 @@ def prune_pre_checkpoint_items(
                 continue
             text = ""
         if is_summary:
-            _retain_summary(text, item)
-        elif user_remaining > 0:
-            content = item.get("content")
-            parts_cost = _input_text_parts_cost(content)
-            cost = parts_cost if parts_cost is not None else _approx_tokens(text)
-            if cost <= user_remaining:
-                retained_reversed.append(item)
-                user_remaining -= cost
-            else:
-                if isinstance(content, str):
-                    head = _head_within_budget(content, user_remaining)
-                    keep = bool(head.strip())
-                elif parts_cost is not None:
-                    head = _truncate_input_text_parts(content, user_remaining)
-                    keep = any(part["text"].strip() for part in head)
-                else:
-                    keep = False
-                if keep:
-                    retained_reversed.append({**item, "content": head})
-                # A non-truncatable boundary (e.g. text + image) must not let
-                # an older completed ask replace the newer oversized ask.
-                user_remaining = 0
+            _retain_summary(pos, text, item)
+        elif _is_synthetic_user_item(item, source, text):
+            deferred_synthetic.append((pos, item, text))
+        else:
+            _retain_user(pos, item, text)
+    for pos, item, text in deferred_synthetic:
+        _retain_user(pos, item, text)
 
-    result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]
+    retained.sort(key=lambda entry: entry[0])
+    result = items[first_cp : last_cp + 1] + [kept for _, kept in retained] + items[last_cp + 1 :]
     logger.debug("Pruned pre-checkpoint items: %d input -> %d retained (user_rem=%d, summary_rem=%d)",
                  len(items), len(result), user_remaining, summary_remaining)
     return result

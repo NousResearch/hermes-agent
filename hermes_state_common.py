@@ -764,6 +764,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
 CREATE INDEX IF NOT EXISTS idx_messages_tool_names_by_session
     ON messages(session_id, tool_name)
     WHERE role = 'tool' AND tool_name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_session_role
+    ON messages(session_id, role);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);

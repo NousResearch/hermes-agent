@@ -3,6 +3,7 @@ usage, activity, model/platform breakdowns). ``InsightsEngine(db).generate(days=
 
 import json
 import sqlite3
+import threading
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -16,6 +17,37 @@ import itertools
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
+_ASSISTANT_CALLS_CACHE_LOCK = threading.Lock()
+_ASSISTANT_CALLS_WATERMARK_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _ingest_assistant_call_rows(
+    rows: Any,
+    calls_by_session: dict[str, Counter],
+    skills_by_session: dict[str, list[tuple[str, str, Any]]],
+) -> int:
+    highest_id = 0
+    for row in rows:
+        mid = int(row["id"] or 0)
+        if mid > highest_id:
+            highest_id = mid
+        sid = row["session_id"]
+        ts = row["timestamp"]
+        try:
+            for fn in _iter_functions(row["tool_calls"]):
+                if not isinstance(fn, dict):
+                    continue
+                tname = fn.get("name")
+                if not tname:
+                    continue
+                calls_by_session[sid][tname] += 1
+                if tname in _SKILL_TOOLS:
+                    sk_name = (_parse_json(fn.get("arguments"), dict) or {}).get("name")
+                    if isinstance(sk_name, str) and sk_name.strip():
+                        skills_by_session[sid].append((tname, sk_name, ts))
+        except (TypeError, AttributeError):
+            continue
+    return highest_id
 
 
 def _fmt_est_cost(est_cost: float) -> str:
@@ -104,6 +136,9 @@ class InsightsEngine:
         " ORDER BY started_at DESC",
         alias="",
     )
+    _GET_SESSION_IDS_ALL, _GET_SESSION_IDS_WITH_SOURCE = _scoped(
+        "SELECT s.id FROM sessions s WHERE s.started_at >= ?",
+    )
 
     # ``INDEXED BY`` pins the partial index so the plan is deterministic on a
     # fresh state.db (before ANALYZE) for both branches; without it the
@@ -158,8 +193,9 @@ class InsightsEngine:
         " WHERE s.started_at >= ?",
     )
     _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
-    _SOURCE_SCOPED = ("_GET_SESSIONS", "_GET_TOOL_CALLS", "_GET_SKILL_CALLS", "_GET_TOOL_NAMES",
+    _SOURCE_SCOPED = ("_GET_SESSIONS", "_GET_SESSION_IDS", "_GET_TOOL_CALLS", "_GET_SKILL_CALLS", "_GET_TOOL_NAMES",
                       "_GET_MESSAGE_STATS", "_GET_MODEL_USAGE")
+    _WATERMARK_MIN_MESSAGES = 1000
 
     def __init__(self, db):
         self.db = db
@@ -238,6 +274,62 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
+    def _sync_assistant_calls_watermark(self, cutoff: float) -> Optional[dict[str, Any]]:
+        """Maintain an incremental per-DB watermark cache of parsed assistant tool_calls.
+
+        Once an assistant message with tool_calls is written, its id (INTEGER PRIMARY KEY)
+        and tool_calls JSON are immutable. Instead of re-scanning ~500 MB of historical
+        tool_calls JSON on both _get_tool_usage and _get_skill_usage, a single pass seeds
+        per-session tool and skill counters up to MAX(messages.id), and subsequent calls
+        only scan delta rows with ``m.id > watermark_id`` via primary key lookup.
+        """
+        db_key = str(getattr(self.db, "db_path", "") or "")
+        if not db_key:
+            return None
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM messages").fetchone()
+            max_id = int(row[0] or 0) if row else 0
+        except sqlite3.Error:
+            return None
+        if max_id <= self._WATERMARK_MIN_MESSAGES:
+            return None
+
+        idx_clause = f" INDEXED BY {self._MESSAGES_ASSISTANT_CALLS_INDEX}" if self._has_assistant_calls_index else ""
+        with _ASSISTANT_CALLS_CACHE_LOCK:
+            state = _ASSISTANT_CALLS_WATERMARK_CACHE.get(db_key)
+            if state is None or max_id < state["watermark_id"] or cutoff < state["min_cutoff"]:
+                seed_cutoff = min(cutoff, state["min_cutoff"]) if (state and max_id >= state["watermark_id"]) else cutoff
+                seed_sql = (
+                    f"SELECT m.id, m.session_id, m.timestamp, m.tool_calls"
+                    f" FROM messages m{idx_clause}"
+                    f" JOIN sessions s ON s.id = m.session_id"
+                    f" WHERE s.started_at >= ? AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+                )
+                calls_by_session: dict[str, Counter] = defaultdict(Counter)
+                skills_by_session: dict[str, list[tuple[str, str, Any]]] = defaultdict(list)
+                rows = self._conn.execute(seed_sql, (seed_cutoff,)).fetchall()
+                highest = _ingest_assistant_call_rows(rows, calls_by_session, skills_by_session)
+                state = {
+                    "watermark_id": max(max_id, highest),
+                    "min_cutoff": seed_cutoff,
+                    "calls_by_session": calls_by_session,
+                    "skills_by_session": skills_by_session,
+                }
+                _ASSISTANT_CALLS_WATERMARK_CACHE[db_key] = state
+            elif max_id > state["watermark_id"]:
+                delta_sql = (
+                    "SELECT m.id, m.session_id, m.timestamp, m.tool_calls"
+                    " FROM messages m"
+                    " WHERE m.id > ? AND m.role = 'assistant' AND m.tool_calls IS NOT NULL"
+                    " ORDER BY m.id ASC"
+                )
+                delta_rows = self._conn.execute(delta_sql, (state["watermark_id"],)).fetchall()
+                highest = _ingest_assistant_call_rows(
+                    delta_rows, state["calls_by_session"], state["skills_by_session"]
+                )
+                state["watermark_id"] = max(max_id, highest)
+            return state
+
     def _get_tool_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
@@ -249,12 +341,22 @@ class InsightsEngine:
         for row in self._query("_GET_TOOL_NAMES", cutoff, source):
             by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
         calls_by_session_tool = Counter()
-        for row in self._query("_GET_TOOL_CALLS", cutoff, source):
-            try:
-                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
-                calls_by_session_tool.update((row["session_id"], name) for name in names)
-            except (TypeError, AttributeError):
-                continue
+        wm_state = self._sync_assistant_calls_watermark(cutoff)
+        if wm_state is not None:
+            session_ids = [r["id"] for r in self._query("_GET_SESSION_IDS", cutoff, source)]
+            cached_calls = wm_state["calls_by_session"]
+            for sid in session_ids:
+                sc = cached_calls.get(sid)
+                if sc:
+                    for tname, cnt in sc.items():
+                        calls_by_session_tool[(sid, tname)] += cnt
+        else:
+            for row in self._query("_GET_TOOL_CALLS", cutoff, source):
+                try:
+                    names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
+                    calls_by_session_tool.update((row["session_id"], name) for name in names)
+                except (TypeError, AttributeError):
+                    continue
         tool_counts = Counter()
         for key in set(by_session_tool) | set(calls_by_session_tool):
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
@@ -263,6 +365,20 @@ class InsightsEngine:
     def _get_skill_usage(self, cutoff: float, source: str | None = None) -> list[dict]:
         """Extract per-skill usage from assistant tool calls."""
         skill_counts: dict[str, dict[str, Any]] = {}
+        wm_state = self._sync_assistant_calls_watermark(cutoff)
+        if wm_state is not None:
+            session_ids = [r["id"] for r in self._query("_GET_SESSION_IDS", cutoff, source)]
+            cached_skills = wm_state["skills_by_session"]
+            for sid in session_ids:
+                for tool_name, skill_name, timestamp in cached_skills.get(sid, ()):
+                    entry = skill_counts.setdefault(
+                        skill_name,
+                        {"skill": skill_name, "view_count": 0, "manage_count": 0, "last_used_at": None},
+                    )
+                    entry["view_count" if tool_name == "skill_view" else "manage_count"] += 1
+                    if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]):
+                        entry["last_used_at"] = timestamp
+            return list(skill_counts.values())
         for row in self._query("_GET_SKILL_CALLS", cutoff, source):
             timestamp = row["timestamp"]
             for func in _iter_functions(row["tool_calls"]):

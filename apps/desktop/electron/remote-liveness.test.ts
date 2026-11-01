@@ -395,6 +395,39 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
   })
+
+  it('uses fast 400ms retry delay when the local SSH tunnel throws immediate ECONNRESET/ECONNREFUSED', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49418', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53852', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+    const sleep = vi.fn(async () => undefined)
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+      return replacement
+    })
+    const probe = vi.fn(async () => {
+      throw new Error('read ECONNRESET')
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire,
+        sleep
+      })
+    ).resolves.toBe(replacement)
+
+    expect(sleep).toHaveBeenCalledWith(400)
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
 })
 
 describe('revalidatePooledRemoteBackends', () => {

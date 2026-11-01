@@ -440,6 +440,36 @@ class TestInsightsPopulated:
         assert focused["summary"]["total_skill_actions"] == 0
         assert focused["top_skills"] == []
 
+    def test_incremental_watermark_cache_matches_uncached_and_absorbs_deltas(self, populated_db, monkeypatch):
+        from agent import insights as insights_mod
+
+        insights_mod._ASSISTANT_CALLS_WATERMARK_CACHE.clear()
+        baseline = InsightsEngine(populated_db).get_usage_breakdown(days=30)
+        baseline_cli = InsightsEngine(populated_db).get_usage_breakdown(days=30, source="cli")
+
+        monkeypatch.setattr(InsightsEngine, "_WATERMARK_MIN_MESSAGES", 1)
+        cached_1 = InsightsEngine(populated_db).get_usage_breakdown(days=30)
+        cached_cli = InsightsEngine(populated_db).get_usage_breakdown(days=30, source="cli")
+        assert cached_1 == baseline
+        assert cached_cli == baseline_cli
+
+        # Append a new assistant message with tool_calls and verify the delta scan (m.id > watermark_id) updates counts
+        populated_db.append_message(
+            "s1",
+            role="assistant",
+            content="delta skill load",
+            tool_calls=[
+                {"function": {"name": "skill_view", "arguments": '{"name": "github-pr-workflow"}'}},
+                {"function": {"name": "terminal", "arguments": '{"command": "echo ok"}'}},
+            ],
+        )
+        populated_db._conn.commit()
+        after_delta = InsightsEngine(populated_db).get_usage_breakdown(days=30)
+        insights_mod._ASSISTANT_CALLS_WATERMARK_CACHE.clear()
+        monkeypatch.setattr(InsightsEngine, "_WATERMARK_MIN_MESSAGES", 1000)
+        uncached_after = InsightsEngine(populated_db).get_usage_breakdown(days=30)
+        assert after_delta == uncached_after
+
 # =========================================================================
 # Formatting
 # =========================================================================

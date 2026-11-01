@@ -95,7 +95,9 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
         req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
         with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
             body = resp.read(MAX_URL_BYTES + 1)
-        return True, body[:MAX_URL_BYTES].decode("utf-8", errors="replace")
+        if len(body) > MAX_URL_BYTES:
+            return False, f"monitor_url response exceeds the {MAX_URL_BYTES}-byte limit"
+        return True, body.decode("utf-8", errors="replace")
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"
 

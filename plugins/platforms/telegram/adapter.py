@@ -1833,9 +1833,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lock = self._general_request_drain_lock = asyncio.Lock()
         return lock
 
-    async def _drain_general_connections_after_pool_timeout(self) -> None:
-        """Reset the general Bot API pool (``_request[1]``) after a confirmed send pool timeout — PTB
-        guarantees the request was not sent, so resetting before retrying is safe."""
+    async def _drain_general_connections(self) -> None:
+        """Reset the general Bot API pool (``_request[1]``) after a known
+        general-path failure.
+
+        The existing send-pool timeout path and the heartbeat/progress probes
+        both use this pool. Callers only use this after the general request
+        path itself has failed; polling-only recovery leaves it untouched so
+        concurrent sends are not interrupted.
+        """
         bot = getattr(getattr(self, "_app", None), "bot", None)
         if bot is None:
             bot = getattr(self, "_bot", None)
@@ -1850,7 +1856,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 general_req.shutdown(), "General request shutdown failed/timed out after pool timeout (non-fatal)")
             if await self._bounded_request_step(
                 general_req.initialize(), "General request re-initialize failed/timed out after pool timeout (non-fatal)"):
-                logger.warning("[%s] General request pool drained after Telegram pool timeout", self.name)
+                logger.warning(
+                    "[%s] General request pool drained after Telegram request-path failure",
+                    self.name,
+                )
 
     def _spawn_polling_recovery(self, loop, coro) -> None:
         """Start ``coro`` as the tracked in-flight recovery task (reentrancy guard)."""
@@ -1861,7 +1870,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     def _recovery_in_flight(self) -> bool:
         return bool(self._polling_error_task and not self._polling_error_task.done())
 
-    def _schedule_polling_recovery(self, error: Exception, *, reason: str) -> None:
+    def _schedule_polling_recovery(
+        self,
+        error: Exception,
+        *,
+        reason: str,
+        drain_general: bool = False,
+    ) -> None:
         """Schedule background polling recovery without failing gateway startup: a transient bootstrap
         failure degrades only this adapter; the reconnect ladder recovers in the background."""
         if self._teardown_started or self.has_fatal_error:
@@ -1886,7 +1901,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.warning(
                 "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s", self.name, reason,
                 _redact_telegram_error_text(error))
-        self._spawn_polling_recovery(asyncio.get_running_loop(), self._handle_polling_network_error(error))
+        self._spawn_polling_recovery(
+            asyncio.get_running_loop(),
+            self._handle_polling_network_error(
+                error, drain_general=drain_general
+            ),
+        )
 
     async def _delete_webhook_best_effort(self, *, require_success: bool = False) -> bool:
         """Clear a stale webhook; ``require_success`` (cold start) raises so GatewayRunner disposes the
@@ -2030,7 +2050,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Run a recovery coroutine as the tracked in-flight ``_polling_error_task``."""
         self._polling_error_task = asyncio.get_running_loop().create_task(coro)
 
-    async def _handle_polling_network_error(self, error: Exception) -> None:
+    async def _handle_polling_network_error(
+        self, error: Exception, *, drain_general: bool = False
+    ) -> None:
         """Reconnect polling after a transient network interruption (NetworkError/TimedOut).
 
         Host connectivity loss (sleep, WiFi switch, VPN) kills the long-poll silently. Exponential back-off (5s→60s
@@ -2073,10 +2095,12 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # "in-flight" so every probe skips reconnect for hours.
         if not await self._stop_updater_or_go_fatal(app, "network-recovery") or self._teardown_started:
             return
-        # start_polling() bootstraps through the *general* pool before getUpdates; a confirmed pool timeout means the request
-        # was never sent, so rebuilding that pool is safe. Generic network errors stay polling-only (sends untouched).
-        if self._looks_like_pool_timeout(error):
-            await self._drain_general_connections_after_pool_timeout()
+        # start_polling() bootstraps through the *general* pool before getUpdates.
+        # A confirmed pool timeout, or an explicitly marked general-path probe
+        # failure, warrants resetting that pool. Polling-only errors leave it
+        # untouched so concurrent sends are not interrupted.
+        if self._looks_like_pool_timeout(error) or drain_general:
+            await self._drain_general_connections()
         if self._teardown_started:
             return
         await self._drain_polling_connections()
@@ -2096,7 +2120,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, _redact_telegram_error_text(retry_err))
             # Polling is dead and no more error callbacks will fire — chain the retry ourselves.
             if not self.has_fatal_error and not self._teardown_started:
-                task = asyncio.ensure_future(self._handle_polling_network_error(retry_err))
+                task = asyncio.ensure_future(
+                    self._handle_polling_network_error(
+                        retry_err, drain_general=drain_general
+                    )
+                )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
                 # The chained retry IS the in-flight recovery: it must replace the reentrancy guard.
@@ -2180,11 +2208,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             except asyncio.CancelledError:
                 return
             except (TimeoutError, OSError) as probe_err:
-                self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                self._schedule_polling_recovery(
+                    probe_err, reason="heartbeat probe", drain_general=True
+                )
             except Exception as probe_err:
                 # Non-connectivity errors (e.g. TelegramError 401) aren't CLOSE-WAIT symptoms.
                 if self._looks_like_network_error(probe_err):
-                    self._schedule_polling_recovery(probe_err, reason="heartbeat probe")
+                    self._schedule_polling_recovery(
+                        probe_err, reason="heartbeat probe", drain_general=True
+                    )
 
     async def _probe_pending_updates(self, bot, probe_timeout: float) -> None:
         """Detect a wedged or stopped getUpdates consumer via pending_update_count.
@@ -2360,7 +2392,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 return
             logger.warning(
                 "[%s] Polling progress verifier connectivity probe failed: %s", self.name, _redact_telegram_error_text(probe_err))
-            self._schedule_polling_recovery(probe_err, reason="polling progress verifier connectivity failure")
+            self._schedule_polling_recovery(
+                probe_err,
+                reason="polling progress verifier connectivity failure",
+                drain_general=True,
+            )
             return
         if self._verifier_stale(generation, progress):
             return
@@ -3557,7 +3593,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                     and not self._looks_like_connect_timeout(send_err) and not is_pool_timeout):
                     raise
                 if is_pool_timeout:
-                    await self._drain_general_connections_after_pool_timeout()
+                    await self._drain_general_connections()
                 if _send_attempt >= 2:
                     raise
                 wait = 2 ** _send_attempt

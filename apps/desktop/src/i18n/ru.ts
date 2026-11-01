@@ -504,6 +504,12 @@ export const ruOverrides = {
       appActionsDesc: 'Где в заголовке окна сидят Настройки, Макет и HUD. Справа оставляют место для вкладок слева.',
       appActionsLeft: 'Слева',
       appActionsRight: 'Справа',
+      windowControlsTitle: 'Кнопки окна',
+      windowControlsDesc:
+        'Свернуть, развернуть и закрыть в заголовке окна. В режиме «Авто» они скрыты в тайлинговых оконных менеджерах. Изменения применятся после перезапуска.',
+      windowControlsAuto: 'Авто',
+      windowControlsShow: 'Показывать',
+      windowControlsHide: 'Скрывать',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',

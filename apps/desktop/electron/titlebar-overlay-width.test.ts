@@ -39,6 +39,14 @@ test('WSLg disables the undersized native overlay in favor of renderer controls'
   )
 })
 
+test('hiding the Linux controls removes the overlay and its reservation', () => {
+  const input = { titlebarHeight: 34, color: 'transparent', linuxControlsHidden: true }
+
+  assert.equal(titleBarOverlayOptions({ platform: 'linux', ...input }), false)
+  assert.equal(nativeOverlayWidth({ linuxControlsHidden: true }), 0)
+  assert.notEqual(titleBarOverlayOptions({ platform: 'windows', ...input }), false)
+})
+
 test('native Windows and Linux keep the same window-controls overlay', () => {
   const input = { titlebarHeight: 34, color: 'transparent', foreground: '#ffffff', dark: false }
   const expected = { color: 'transparent', height: 34, symbolColor: '#ffffff' }

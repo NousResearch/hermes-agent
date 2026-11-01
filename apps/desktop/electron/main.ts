@@ -346,6 +346,7 @@ import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
+import { setupLinuxWindowControls } from './linux-window-controls'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { resolveDesktopClientVersion } from './local-runtime-version'
@@ -1432,6 +1433,7 @@ let rendererTitleBarTheme = null
 // nativeTheme.themeSource to it and persist the value so cold launches paint
 // correctly before the renderer has even loaded.
 const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
+const LINUX_WINDOW_CONTROLS_HIDDEN = setupLinuxWindowControls(ipcMain, app.getPath('userData'), IS_WSL)
 const THEME_SOURCES = new Set(['dark', 'light', 'system'])
 
 function readPersistedThemeSource() {
@@ -1635,6 +1637,7 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
 function getTitleBarOverlayOptions(win?) {
   return titleBarOverlayOptions({
+    linuxControlsHidden: LINUX_WINDOW_CONTROLS_HIDDEN,
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
     titlebarHeight: TITLEBAR_HEIGHT,
@@ -1648,10 +1651,6 @@ function getTitleBarOverlayOptions(win?) {
   })
 }
 
-// Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
   const options = getTitleBarOverlayOptions(win)
 
@@ -6059,7 +6058,7 @@ function getWindowButtonPosition(win = mainWindow) {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
+  return computeNativeOverlayWidth({ isMac: IS_MAC, linuxControlsHidden: LINUX_WINDOW_CONTROLS_HIDDEN })
 }
 
 function getWindowState(win = mainWindow) {

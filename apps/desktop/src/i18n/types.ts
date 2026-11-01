@@ -806,6 +806,11 @@ export interface Translations extends NoticeTranslations {
       appActionsDesc: string
       appActionsLeft: string
       appActionsRight: string
+      windowControlsTitle: string
+      windowControlsDesc: string
+      windowControlsAuto: string
+      windowControlsShow: string
+      windowControlsHide: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

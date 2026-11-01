@@ -321,6 +321,12 @@ export const zhHantSettings = {
       appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
       appActionsLeft: '左側',
       appActionsRight: '右側',
+      windowControlsTitle: '視窗按鈕',
+      windowControlsDesc:
+        '標題列中的最小化、最大化與關閉按鈕。自動模式會在並排式視窗管理員上隱藏它們。變更會在重新啟動後生效。',
+      windowControlsAuto: '自動',
+      windowControlsShow: '顯示',
+      windowControlsHide: '隱藏',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',

@@ -9,6 +9,7 @@ interface TitleBarOverlayOptionsInput {
   dark?: boolean
   /** Current webContents zoom factor (1 = 100%); scales the overlay height. */
   zoomFactor?: number
+  linuxControlsHidden?: boolean
 }
 
 /**
@@ -25,8 +26,13 @@ interface TitleBarOverlayOptionsInput {
  *
  * @param {{ isMac?: boolean }} opts
  */
-export function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = false } = {}) {
-  if (isMac) {
+export function nativeOverlayWidth({
+  isWindows = false,
+  isWsl = false,
+  isMac = false,
+  linuxControlsHidden = false
+} = {}) {
+  if (isMac || linuxControlsHidden) {
     return 0
   }
 
@@ -46,12 +52,17 @@ export function titleBarOverlayOptions({
   color,
   foreground,
   dark = false,
-  zoomFactor = 1
+  zoomFactor = 1,
+  linuxControlsHidden = false
 }: TitleBarOverlayOptionsInput = {}) {
   // Electron's Linux overlay keeps a narrow, unscaled three-button cluster
   // under WSLg. The renderer owns larger Windows-shaped controls there while
   // the host's RAIL local-move path continues to own edge dragging and Snap.
   if (platform === 'wslg') {
+    return false
+  }
+
+  if (platform === 'linux' && linuxControlsHidden) {
     return false
   }
 

@@ -1013,6 +1013,12 @@ export const deOverrides = {
         'Wo Einstellungen, Layout und HUD in der Titelleiste sitzen. Rechts lässt Platz für Tabs auf der linken Seite.',
       appActionsLeft: 'Links',
       appActionsRight: 'Rechts',
+      windowControlsTitle: 'Fensterschaltflächen',
+      windowControlsDesc:
+        'Minimieren, Maximieren und Schließen in der Titelleiste. „Automatisch“ blendet sie bei Tiling-Fenstermanagern aus. Änderungen werden nach einem Neustart wirksam.',
+      windowControlsAuto: 'Automatisch',
+      windowControlsShow: 'Anzeigen',
+      windowControlsHide: 'Ausblenden',
       terminalFontTitle: 'Terminalschrift',
       terminalFontDesc:
         'Wählen Sie eine installierte Schrift für Desktop-Terminals. Nerd Fonts rendern Powerlevel10k- und Shell-Icons; lassen Sie das Feld leer, um das gebündelte JetBrains Mono zu verwenden.',

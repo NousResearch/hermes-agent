@@ -1016,6 +1016,12 @@ export const esOverrides = {
         'Dónde se colocan Configuración, Diseño y HUD en la barra de título. A la derecha deja espacio para pestañas a la izquierda.',
       appActionsLeft: 'Izquierda',
       appActionsRight: 'Derecha',
+      windowControlsTitle: 'Botones de ventana',
+      windowControlsDesc:
+        'Minimizar, maximizar y cerrar en la barra de título. Automático los oculta en los gestores de ventanas en mosaico. Los cambios se aplican al reiniciar.',
+      windowControlsAuto: 'Automático',
+      windowControlsShow: 'Mostrar',
+      windowControlsHide: 'Ocultar',
       terminalFontTitle: 'Fuente de terminal',
       terminalFontDesc:
         'Elige una fuente instalada para las terminales del escritorio. Las Nerd Fonts renderizan Powerlevel10k y los iconos de shell; déjalo vacío para usar la JetBrains Mono incluida.',

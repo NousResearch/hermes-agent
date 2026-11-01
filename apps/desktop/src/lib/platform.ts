@@ -21,6 +21,13 @@ export const isWindowsPlatform = (): boolean =>
 export const isLinuxPlatform = (): boolean =>
   typeof navigator !== 'undefined' && /linux/i.test(navigator.platform || navigator.userAgent || '')
 
+/** Native Linux only: WSLg paints its own controls, the browser build has none. */
+export const linuxWindowControlsAvailable = (): boolean => {
+  const controls = typeof window === 'undefined' ? undefined : window.hermesDesktop?.windowControls
+
+  return isLinuxPlatform() && Boolean(controls?.getLinuxMode) && !controls?.custom
+}
+
 /** Globals the Hermes web server injects into the page it serves. */
 export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -66,7 +73,7 @@ export function isBrowserHostedDesktop() {
   // evaluation, use the browser bootstrap globals too; otherwise an OS check
   // can classify a browser page as native before the marker is written.
   return document.documentElement.dataset.hermesDesktopHost === 'browser' ||
-    (!window.hermesDesktop && hasBrowserHostBootstrap())
+  (!window.hermesDesktop && hasBrowserHostBootstrap())
 }
 
 /**

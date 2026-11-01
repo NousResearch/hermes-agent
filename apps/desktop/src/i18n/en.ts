@@ -986,6 +986,12 @@ export const en: Translations = {
       appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
       appActionsLeft: 'Left',
       appActionsRight: 'Right',
+      windowControlsTitle: 'Window Buttons',
+      windowControlsDesc:
+        'Minimize, maximize and close in the titlebar. Auto hides them on tiling window managers. Changes apply after restart.',
+      windowControlsAuto: 'Auto',
+      windowControlsShow: 'Show',
+      windowControlsHide: 'Hide',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

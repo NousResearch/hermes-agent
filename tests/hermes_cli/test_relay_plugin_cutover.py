@@ -134,3 +134,30 @@ def test_doctor_does_not_warn_for_legacy_env_after_new_config_is_selected(
     )
 
     assert findings == []
+
+
+def test_explicit_env_map_does_not_inherit_process_relay_vars(monkeypatch):
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "true")
+    monkeypatch.delenv(RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    findings = collect_relay_plugin_cutover_findings({}, {})
+    assert findings == []
+
+
+def test_live_deprecation_sweep_reports_shell_relay_vars_only(tmp_path, monkeypatch, capsys):
+    from hermes_cli import config
+    from hermes_cli.doctor_config import _drift_deprecations
+    from hermes_cli.doctor_report import Finding
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(config, "get_env_path", lambda: env_path)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_ENABLED", "true")
+    monkeypatch.setenv("TERMINAL_CWD", "runtime-config-bridge")
+    monkeypatch.delenv(RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    _drift_deprecations(Finding(), False, None)
+    output = capsys.readouterr().out
+    assert "HERMES_NEMO_RELAY_ATIF_ENABLED" in output
+    assert "now ignored" in output
+    assert RELAY_PLUGINS_CONFIG_ENV in output
+    assert "TERMINAL_CWD" not in output

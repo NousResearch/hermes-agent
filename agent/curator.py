@@ -731,6 +731,10 @@ def _write_run_report(
         },
         "tool_call_counts": tc_counts, "archived": diff.removed, "consolidated": diff.consolidated, "pruned": diff.pruned,
         "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
+        "incomplete": bool(llm_meta.get("incomplete")),
+        "pending_skills": list(llm_meta.get("pending_skills", []))
+        if llm_meta.get("incomplete")
+        else [],
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
@@ -806,6 +810,11 @@ def _render_report_markdown(p: dict[str, Any]) -> str:
         f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**", f"- new skills this run: **{counts.get('added_this_run', 0)}**",
         f"- state transitions (active ↔ stale ↔ archived): **{counts.get('state_transitions', 0)}**", "",
     ]
+    if p.get("incomplete"):
+        lines += [
+            "> ⚠ Review incomplete: the model response was truncated. Remaining skills are still pending; "
+            "see `pending_skills` in `run.json` and restore from the pre-run snapshot if needed.\n",
+        ]
     for key, title, intro, render, show, hint in _REPORT_SECTIONS:
         items = p.get(key) or []
         if key == "cron_rewrites":  # lets users audit that the auto-rewrite did the right thing
@@ -895,7 +904,15 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
             if dry_run:
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)
-            final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+            if llm_meta.get("incomplete"):
+                llm_meta["pending_skills"] = sorted(_by_name(_safe_curated_report()))
+                final_summary = (
+                    f"{prefix}{auto_summary}; llm: incomplete (response truncated; "
+                    f"{len(llm_meta['pending_skills'])} skill(s) remain pending). "
+                    "See curator report for recovery."
+                )
+            else:
+                final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
     except Exception as e:
         logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
         final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
@@ -1141,6 +1158,10 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        if isinstance(conv_result, dict) and conv_result.get("failure_reason") == "truncated":
+            result_meta["error"] = "review response was truncated"
+            result_meta["incomplete"] = True
+            result_meta["summary"] = "Review incomplete: the response was truncated; remaining skills are pending."
         # Tool calls for the report; arguments truncated to 400 chars so a giant skill_manage create doesn't blow it up.
         fns = (tc.get("function") or {} for msg in getattr(review_agent, "_session_messages", []) or [] if isinstance(msg, dict)
                for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict))

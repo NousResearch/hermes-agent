@@ -373,7 +373,7 @@ TOOLSET_ENV_REQUIREMENTS = {"vision": [("OPENROUTER_API_KEY", "https://openroute
 # --- Platform / Toolset Helpers ---
 _PLATFORM_ENABLE_ENV_VARS = (
     ("telegram", "TELEGRAM_BOT_TOKEN"), ("discord", "DISCORD_BOT_TOKEN"), ("slack", "SLACK_BOT_TOKEN"),
-    ("whatsapp", "WHATSAPP_ENABLED"), ("qqbot", "QQ_APP_ID"))
+    ("whatsapp", "WHATSAPP_ENABLED"), ("sms", "TWILIO_ACCOUNT_SID"), ("qqbot", "QQ_APP_ID"))
 
 
 def _get_enabled_platforms() -> list[str]:

@@ -1457,7 +1457,7 @@ def _(rid, params: dict) -> dict:
             "connector_slug": getattr(entry, "connector_slug", None),
             "installed": bool(mcp_catalog.is_installed(entry.name)),
             "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
-            "transport": str(getattr(transport, "kind", "") or transport or "stdio")})
+            "transport": getattr(transport, "type", None) or "stdio"})
     return _ok(rid, {"servers": out})
 
 

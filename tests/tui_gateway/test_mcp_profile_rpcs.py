@@ -522,3 +522,27 @@ def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root,
     assert result["ok"] is True
     assert resolved["Authorization"] == "Bearer work-token"
     assert os.environ["ALPHA_ONLY_TOKEN"] == "default-process-token"
+
+
+def test_catalog_reports_the_transport_kind_not_the_spec_repr(hermes_root):
+    """``mcp.catalog`` names each entry's transport as ``"stdio"``/``"http"``.
+
+    The catalog entries carry a ``TransportSpec`` whose field is ``type``; reading a
+    non-existent ``kind`` fell through to ``str(spec)``, so a client that compares
+    ``transport == "http"`` never matched and every http entry looked like stdio.
+    """
+    from hermes_cli.mcp_catalog import list_catalog
+
+    entries = {entry.name: entry for entry in list_catalog()}
+    payload = _result(_call("mcp.catalog", {"profile": "work"}))
+    rows = {row["name"]: row for row in payload["servers"]}
+
+    assert rows, "catalog is empty"
+    assert set(rows) == set(entries)
+    for name, row in rows.items():
+        assert row["transport"] == entries[name].transport.type, name
+        assert row["transport"] in ("stdio", "http"), name
+    # The regression was invisible for stdio-only catalogs: an http entry has to
+    # survive the round trip as "http", which the repr could never be.
+    assert "http" in {row["transport"] for row in rows.values()}
+

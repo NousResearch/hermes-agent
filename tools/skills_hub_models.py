@@ -288,7 +288,7 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         candidate = match.group(1).rstrip(".,;:")
         parsed = urlsplit(candidate)
         raw = unquote(parsed.path)
-        if (candidate.endswith("?") or any(char in raw for char in "*?[]")
+        if (candidate.endswith("?") or raw.endswith("/") or any(char in raw for char in "*?[]")
                 or (parsed.query and not _query_is_concrete(parsed.query))):
             continue
         try:
@@ -297,8 +297,11 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
             return None
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
             # Prose placeholders (``references/type-<name>.md``, truncated at ``<`` to
-            # ``references/type-``) are instructions, not files: a basename ending in a
-            # separator is skipped. No extension requirement — ``references/LICENSE`` is legitimate.
+            # ``references/type-``) are instructions, not files: a basename not ending in an
+            # alphanumeric is skipped; a trailing ``/`` must be caught on the raw path above —
+            # normalization strips it, which would otherwise admit the truncated directory
+            # (``references/sources/``) as a real path (#134628). No extension requirement —
+            # ``references/LICENSE`` is legitimate.
             base = safe.rsplit("/", 1)[-1]
             if re.search(r"[*?<>]", safe) or not re.search(r"[A-Za-z0-9]$", base):
                 continue

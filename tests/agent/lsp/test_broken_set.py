@@ -36,6 +36,7 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("[project]\nname='t'\n", encoding="utf-8")
     return repo
 
@@ -52,6 +53,7 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
+    (repo_b / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n", encoding="utf-8")
     a_src = repo_a / "x.py"
     a_src.write_text("", encoding="utf-8")

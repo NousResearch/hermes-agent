@@ -38,12 +38,12 @@ def _agent(provider="custom", requested=""):
 
 
 def test_named_custom_provider_resolves_its_own_profile():
-    """provider='custom' + requested_provider='tokenrhythm' → named profile wins."""
+    """provider='custom' + requested_provider='acme-llm' → named profile wins."""
     with patch("providers.get_provider_profile") as gp:
         def _get(name):
-            return {"custom": CustomProfile(), "tokenrhythm": _FakeNamedProfile("tokenrhythm")}.get(name)
+            return {"custom": CustomProfile(), "acme-llm": _FakeNamedProfile("acme-llm")}.get(name)
         gp.side_effect = _get
-        profile = C._resolve_agent_profile_for_test(_agent("custom", "tokenrhythm"))
+        profile = C._resolve_agent_profile_for_test(_agent("custom", "acme-llm"))
     assert type(profile).__name__ == "_FakeNamedProfile"
 
 
@@ -61,9 +61,9 @@ def test_builtin_provider_profile_not_overridden():
     with patch("providers.get_provider_profile") as gp:
         def _get(name):
             return {"anthropic": _FakeNamedProfile("anthropic"),
-                    "tokenrhythm": _FakeNamedProfile("tokenrhythm")}.get(name)
+                    "acme-llm": _FakeNamedProfile("acme-llm")}.get(name)
         gp.side_effect = _get
-        profile = C._resolve_agent_profile_for_test(_agent("anthropic", "tokenrhythm"))
+        profile = C._resolve_agent_profile_for_test(_agent("anthropic", "acme-llm"))
     assert type(profile).__name__ == "_FakeNamedProfile"
     assert profile.name == "anthropic"
 

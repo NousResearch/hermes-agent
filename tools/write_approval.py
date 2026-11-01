@@ -100,7 +100,7 @@ def list_pending(subsystem: str) -> list[dict[str, Any]]:
             records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
-    records.sort(key=lambda r: r.get("created_at", 0))
+    records.sort(key=lambda r: r.get("created_at", 0), reverse=True)
     return records
 
 

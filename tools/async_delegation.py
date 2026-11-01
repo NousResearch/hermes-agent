@@ -174,7 +174,8 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts",
+                    "task_children", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -286,6 +287,7 @@ def recover_abandoned_delegations() -> int:
     alive = _owner_liveness()
     if alive is None:
         return 0
+    from tools.async_delegation_recovery_hooks import claim_recovered_stops, deliver_recovered_stops
     now, recovered = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
@@ -324,10 +326,14 @@ def recover_abandoned_delegations() -> int:
             result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
             event, result = redact_completion_event(event), redact_child_result(result)
-            conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
-            recovered += 1
+            # Conditional on the row still being in flight: a concurrent recoverer that already classified it
+            # wins, and the process whose UPDATE landed owns replaying the children's subagent_stop.
+            recovered += conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
+                   updated_at=?, event_json=?, result_json=?, delivery_state='pending', task_json=?
+                   WHERE delegation_id=? AND state IN ('running','finalizing')""",
+                (now, now, json.dumps(event), json.dumps(result), json.dumps(claim_recovered_stops(task)),
+                 delegation_id)).rowcount
+    deliver_recovered_stops(alive)
     return recovered
 
 
@@ -816,6 +822,7 @@ def _dispatch_admitted(
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
     task_transcripts: Optional[dict[str, str]] = None,
+    task_children: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -839,6 +846,8 @@ def _dispatch_admitted(
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,
         **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
+        # subagent_start identity per task: recovery fires the matching subagent_stop after an owner death.
+        **({"task_children": dict(task_children)} if task_children else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # The one stale-monitor thread serves every profile and starts with an empty Context;
@@ -935,6 +944,7 @@ def dispatch_async_delegation_batch(
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[list[int]] = None,
     task_transcripts: Optional[dict[str, str]] = None,
+    task_children: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -952,7 +962,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes, task_transcripts=task_transcripts,
+        task_indexes=task_indexes, task_transcripts=task_transcripts, task_children=task_children,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "

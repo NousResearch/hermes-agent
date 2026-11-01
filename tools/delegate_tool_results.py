@@ -358,9 +358,22 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
         except Exception:
             pass
 
-def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
+def subagent_stop_outcome_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    """``subagent_stop`` kwargs read from one child result entry: how it ended and what it spent. Shared by the
+    live join and restart recovery so both emit one payload shape."""
+    return {
+        "child_summary": redact_child_value(entry.get("summary")),  # forced: plugins leave the process
+        "child_status": entry.get("status"),
+        "tool_call_history": _subagent_stop_tool_call_history(entry.get("tool_trace")),
+        "duration_ms": int((entry.get("duration_seconds") or 0) * 1000),
+        "model": entry.get("model"), "api_calls": entry.get("api_calls"), "tokens": entry.get("tokens"),
+        "cost_usd": entry.get("cost_usd"), "cost_status": entry.get("cost_status"),
+    }
+
+def _fire_subagent_stop_hooks(results, child_by_index, parent_agent, unit_id: Optional[str] = None) -> float:
     """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
-    entry, fire ``subagent_stop`` per child, and return the summed child cost."""
+    entry, fire ``subagent_stop`` per child, and return the summed child cost. A background unit (``unit_id``)
+    marks each child's stop delivered on its ledger row so restart recovery never replays it."""
     try:
         from hermes_cli.plugins import invoke_hook
     except Exception:
@@ -382,13 +395,15 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
                 "subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),
                 parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                 child_session_id=getattr(child, "session_id", None), child_role=child_role,
-                child_summary=redact_child_value(entry.get("summary")),  # forced: plugins leave the process
-                child_status=entry.get("status"),
-                tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
-                duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                child_subagent_id=getattr(child, "_subagent_id", None),
+                parent_tool_call_id=getattr(child, "_delegate_parent_tool_call_id", None),
+                task_index=entry.get("task_index"), **subagent_stop_outcome_fields(entry),
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
+        if unit_id:
+            from tools.async_delegation_recovery_hooks import mark_stop_fired
+            mark_stop_fired(unit_id, entry.get("task_index"))
     return children_cost_total
 
 def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
@@ -408,9 +423,10 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
 
 def _finalize_child_results(
     results: list[dict[str, Any]], task_list: list[dict[str, Any]], children: list[tuple[int, dict[str, Any], Any]],
-    parent_agent,
+    parent_agent, unit_id: Optional[str] = None,
 ) -> None:
-    """Apply host-owned summary, memory, hook, and cost contracts once."""
+    """Apply host-owned summary, memory, hook, and cost contracts once (``unit_id``: the background unit's ledger
+    row, which records each delivered ``subagent_stop``)."""
     with _parent_finalization_lock(parent_agent):
         child_by_index = {index: child for index, _task, child in children}
         for entry in results:
@@ -425,7 +441,7 @@ def _finalize_child_results(
                 entry["summary"] = parent_copy(entry["summary"], forced)
         _apply_summary_budget(results, parent_agent)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
-        _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent, unit_id))
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""

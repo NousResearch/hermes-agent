@@ -234,14 +234,17 @@ Subagent hooks describe delegated child-agent work:
 | Hook | When it fires |
 | --- | --- |
 | `subagent_start` | A delegated child agent is created. |
-| `subagent_stop` | A delegated child agent returns or fails. |
+| `subagent_stop` | A delegated child agent returns or fails, or restart recovery finds a background child whose process died first. |
 
 `subagent_start` fields include `parent_session_id`, `parent_turn_id`,
-`parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`,
-and `child_goal`.
+`parent_subagent_id`, `parent_tool_call_id`, `task_index`, `child_session_id`,
+`child_subagent_id`, `child_role`, and `child_goal`.
 
-`subagent_stop` fields include parent/child session IDs, role/status fields,
-`child_summary`, `duration_ms`, and a metadata-only `tool_call_history`. Each
+`subagent_stop` fields include parent/child session IDs, the same
+`parent_tool_call_id`/`task_index`/`child_subagent_id` as the start, role/status
+fields, `child_summary`, `duration_ms`, the child's `model`, `api_calls`,
+`tokens` and `cost_usd`/`cost_status`, and a metadata-only `tool_call_history`.
+A stop fired by restart recovery also carries `recovered=True`. Each
 history entry contains the tool name, argument names, bounded side-effect
 targets, input/output byte counts, and outcome. URL query strings and fragments
 are removed; raw arguments, prompts, commands, contents, headers, and results

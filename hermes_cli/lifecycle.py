@@ -7,6 +7,17 @@ from typing import Any, List
 
 logger = logging.getLogger(__name__)
 
+# Tool hooks that also carry ``parent_tool_call_id`` when a delegate child made the call.
+_TOOL_HOOKS = frozenset({"pre_tool_call", "post_tool_call", "transform_tool_result"})
+
+
+def _with_delegation_fields(hook_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if hook_name not in _TOOL_HOOKS:
+        return kwargs
+    from agent.delegation_context import delegation_hook_fields
+
+    return {**kwargs, **delegation_hook_fields()}
+
 
 def _observe(hook_name: str, **kwargs: Any) -> None:
     from agent.safe_worker_policy import safe_worker_enabled
@@ -33,6 +44,7 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 
     if safe_worker_enabled():
         return []
+    kwargs = _with_delegation_fields(hook_name, kwargs)
     _observe(hook_name, **kwargs)
     return _plugin_hooks(hook_name, **kwargs)
 
@@ -40,6 +52,7 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
     composition, with ``async def`` plugin callbacks awaited on that loop."""
+    kwargs = _with_delegation_fields(hook_name, kwargs)
     _observe(hook_name, **kwargs)
     from hermes_cli import plugins
 

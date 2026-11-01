@@ -205,6 +205,13 @@ def _profile_author() -> str:
     return current_profile_name("user") or "user"
 
 
+def _profile_identity() -> str | None:
+    """The calling profile for lifecycle attribution, or None when unknown;
+    unlike ``_profile_author`` it never falls back to a made-up ``"user"``."""
+    from hermes_cli.profiles import current_profile_name
+    return current_profile_name()
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -734,7 +741,8 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl,
+                             actor=_profile_identity(), source="cli")
         if task is None:
             existing = kb.get_task(conn, args.task_id)
             if existing is None:
@@ -1027,7 +1035,8 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(
+            conn, tid, actor=_profile_identity(), source="cli"))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 

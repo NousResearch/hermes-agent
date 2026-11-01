@@ -11,6 +11,7 @@ and every isinstance(..., list) consumer silently drops them.
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_messages import _SHARED_REASONING
 
 
 REASONING_DETAILS = [
@@ -116,3 +117,70 @@ class TestAppendMessageRoundTrip:
         )
         msg = _assistant(db.get_messages_as_conversation("copy"))
         assert msg["reasoning_details"] == REASONING_DETAILS
+
+
+class TestSharedReasoningStoredOnce:
+    """reasoning-content providers (DeepSeek, Kimi) hand back the same text as both
+    ``reasoning`` and ``reasoning_content``; it lands on disk once (#125273)."""
+
+    TEXT = "compare both branches first"
+
+    def _columns(self, db, sid):
+        with db._read_ctx() as conn:
+            return conn.execute(
+                "SELECT reasoning, reasoning_content FROM messages "
+                "WHERE session_id = ? AND role = 'assistant'", (sid,)).fetchone()
+
+    def _append(self, db, sid, **reasoning):
+        db.create_session(sid, source="cli")
+        db.append_message(sid, role="user", content="hi")
+        db.append_message(sid, role="assistant", content="done", **reasoning)
+
+    def test_identical_text_is_stored_once(self, db):
+        self._append(db, "s", reasoning=self.TEXT, reasoning_content=self.TEXT)
+        assert tuple(self._columns(db, "s")) == (_SHARED_REASONING, self.TEXT)
+
+    def test_both_fields_come_back_on_every_read_path(self, db):
+        self._append(db, "s", reasoning=self.TEXT, reasoning_content=self.TEXT)
+        for msg in (_assistant(db.get_messages_as_conversation("s")), _assistant(db.get_messages("s"))):
+            assert msg["reasoning"] == self.TEXT
+            assert msg["reasoning_content"] == self.TEXT
+
+    def test_differing_text_keeps_both_columns(self, db):
+        self._append(db, "s", reasoning="summary + " + self.TEXT, reasoning_content=self.TEXT)
+        assert tuple(self._columns(db, "s")) == ("summary + " + self.TEXT, self.TEXT)
+
+    def test_reasoning_only_stays_without_reasoning_content(self, db):
+        self._append(db, "s", reasoning=self.TEXT)
+        msg = _assistant(db.get_messages_as_conversation("s"))
+        assert msg["reasoning"] == self.TEXT
+        assert "reasoning_content" not in msg
+
+    def test_blank_pad_does_not_grow_reasoning(self, db):
+        # Thinking-mode tool-call pad: reasoning_content=" " with no reasoning at all.
+        self._append(db, "s", reasoning_content=" ")
+        msg = _assistant(db.get_messages_as_conversation("s"))
+        assert msg["reasoning_content"] == " "
+        assert "reasoning" not in msg
+
+    def test_reasoning_content_alone_does_not_grow_reasoning(self, db):
+        # Tool-call merge / partial-stream stub: non-blank reasoning_content, no reasoning of its own.
+        self._append(db, "s", reasoning_content=self.TEXT)
+        for msg in (_assistant(db.get_messages_as_conversation("s")), _assistant(db.get_messages("s"))):
+            assert msg["reasoning_content"] == self.TEXT
+            assert not msg.get("reasoning")
+
+    def test_rows_written_before_the_fix_still_read_back(self, db):
+        self._append(db, "s", reasoning="x", reasoning_content="y")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET reasoning = ?, reasoning_content = ? WHERE role = 'assistant'",
+            (self.TEXT, self.TEXT)))
+        msg = _assistant(db.get_messages_as_conversation("s"))
+        assert (msg["reasoning"], msg["reasoning_content"]) == (self.TEXT, self.TEXT)
+
+    def test_fork_keeps_one_copy(self, db):
+        self._append(db, "src", reasoning=self.TEXT, reasoning_content=self.TEXT)
+        _fork(db, "src", "fork")
+        assert tuple(self._columns(db, "fork")) == (_SHARED_REASONING, self.TEXT)
+        msg = _assistant(db.get_messages_as_conversation("fork"))
+        assert (msg["reasoning"], msg["reasoning_content"]) == (self.TEXT, self.TEXT)

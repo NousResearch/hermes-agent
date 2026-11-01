@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { $connectionsRegistry } from '@/store/connections'
 import { $bindings } from '@/store/keybinds'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 import { TerminalRail } from './rail'
 import { $activeTerminalId, $terminals } from './terminals'
@@ -55,6 +57,33 @@ describe('TerminalRail', () => {
       fireEvent.click(await screen.findByRole('menuitem', { name: 'NAS' }))
       expect($terminals.get().at(-1)).toMatchObject({ connectionId: 'nas', kind: 'user' })
     } finally {
+      $connectionsRegistry.set(null)
+    }
+  })
+
+  it('a menu-opened SSH tab records the active profile and no path from another host', async () => {
+    $connectionsRegistry.set({
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'nas', kind: 'ssh', label: 'NAS' }
+      ],
+      primary: 'local',
+      version: 2
+    } as unknown as DesktopConnectionsRegistry)
+    $connection.set({ connectionId: 'local' } as never)
+    const profile = $activeGatewayProfile.get()
+    $activeGatewayProfile.set('work')
+
+    try {
+      render(<TerminalRail />)
+      fireEvent.contextMenu(screen.getByRole('button', { name: 'New terminal' }))
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'NAS' }))
+
+      // The tunnel is keyed by (gateway, profile); This device's cwd means nothing on the NAS.
+      expect($terminals.get().at(-1)).toMatchObject({ connectionId: 'nas', cwd: '', profile: 'work' })
+    } finally {
+      $activeGatewayProfile.set(profile)
+      $connection.set(null)
       $connectionsRegistry.set(null)
     }
   })

@@ -22,14 +22,25 @@ import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connections'
 import { $bindings } from '@/store/keybinds'
+import { $activeGatewayProfile } from '@/store/profile'
 
-import { $localGateway, $terminalShellGateways } from './terminal-gateway'
+import { $localGateway, $terminalShellGateways, defaultTerminalGateway, shellGatewayFor } from './terminal-gateway'
 import { createTerminal } from './terminals'
 
 type GatewayChoice = Pick<DesktopRegistryConnection, 'id' | 'kind' | 'label'>
 
-const openOn = (choice: GatewayChoice) => createTerminal(undefined, { connectionId: choice.id })
+// Same {connectionId, profile} record as +, so the SSH tunnel is the active
+// profile's. The session's cwd is a path on its own host: a tab on another
+// gateway starts in its home instead.
+function openOn(choice: GatewayChoice) {
+  const gateway = shellGatewayFor(choice.id, $activeGatewayProfile.get(), $connectionsRegistry.get())
+  const session = defaultTerminalGateway()
+  const sameHost = !session || gateway?.connectionId === session.connectionId
+
+  createTerminal(sameHost ? undefined : '', gateway)
+}
 
 /** The rail's new-terminal control. Click opens on the gateway picked in
  *  Sessions; with an SSH gateway registered, the chevron (or a right-click on

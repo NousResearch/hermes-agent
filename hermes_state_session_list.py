@@ -1,15 +1,17 @@
 """Session-list page projection for ``SessionDB.list_sessions_rich``."""
 from typing import Any
 
+from hermes_state_common import _CONTINUATION_PARENT_REASONS
+
 
 def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
-    """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
-    for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-    hold a MIDDLE segment's id)."""
+    """Replace each continuation root's surfaced fields with its live tip's (root ``started_at`` kept
+    for stable ordering), one batched query. Walks compression plus hidden reset/new_session
+    children (#84870). ``_lineage_ids`` carries every chain id (a tile may hold a MIDDLE segment's id)."""
     chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
     for s in sessions:
-        if s.get("end_reason") == "compression":
-            chain = db.get_compression_chain(s["id"])
+        if s.get("end_reason") in _CONTINUATION_PARENT_REASONS:
+            chain = db.get_list_surface_chain(s["id"])
             if chain and chain[-1] != s["id"]:
                 chain_by_root[s["id"]] = chain
     tip_rows = (
@@ -39,9 +41,9 @@ def project_compression_tips(db, sessions: list[dict[str, Any]], compact_rows: b
         merged["_lineage_root_id"] = s["id"]
         merged["_lineage_ids"] = chain
         # #121148: the projected row IS an automatic continuation, not a fresh conversation and
-        # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
-        # only ever used it to hide rows — surface the kind so clients can label the provenance
-        # instead of rendering a sealed-and-rotated chat as a brand-new session.
-        merged["continuation_kind"] = "compression"
+        # not a user branch. Compression stays labeled "compression"; a hidden /new reset uses
+        # the parent's end reason so a reset lineage is not mislabeled as compaction.
+        root_reason = s.get("end_reason")
+        merged["continuation_kind"] = root_reason if root_reason and root_reason != "compression" else "compression"
         projected.append(merged)
     return projected

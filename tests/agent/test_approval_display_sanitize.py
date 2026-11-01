@@ -101,3 +101,9 @@ def test_first_render_surfaces_get_the_display_copy_while_values_stay_raw(monkey
     assert asked[0]["question"] == prose + "rm -rf ./build\u200b-cache\u27e8\\u2028 \u00d760\u27e9; " + _TAIL
     assert asked[0]["choices"][0] == "go\\u202edab (Recommended)" and asked[0]["choices_offered"][1] == "ok"
     assert result["responses"][0]["question"] == prose + raw and result["responses"][0]["user_response"] == "go\u202edab"
+    # Choices that display alike (a literal "\\u202e" beside a real U+202E) stay distinct, so each pick maps back to its own raw.
+    twins = ["go\u202edab", "go\\u202edab"]
+    result = json.loads(clarify_tool([{"question": "which?", "choices": twins}], callback=lambda qs: asked.append(qs[0]) or {
+        "answers": {qs[0]["qid"]: qs[0]["choices_offered"][1]}, "outcome": "submitted"}))
+    assert asked[-1]["choices_offered"] == ["go\\u202edab", "go\\u202edab (2)"]
+    assert result["responses"][0]["user_response"] == twins[1]

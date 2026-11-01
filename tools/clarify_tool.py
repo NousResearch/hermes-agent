@@ -124,10 +124,22 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
     from tools.human_input_hooks import human_input_request
 
     def prose(texts):
-        return [redact_approval_display(t, prose=True) for t in texts] if texts else texts
+        if not texts:
+            return texts
+        out: list[str] = []
+        for text in (redact_approval_display(t, prose=True) for t in texts):
+            label, n = text, 1
+            while label in out:  # choices that redact alike (two `***` secrets) stay distinct, so a pick maps back to its own raw
+                n += 1
+                label = f"{text} ({n})"
+            out.append(label)
+        return out
     # Every surface renders the prose display copy of the question and choices; the result echoes the raw text.
-    shown = [{**q, "question": prose([q["question"]])[0], "choices": prose(q["choices"]),
-              "choices_offered": prose(q["choices_offered"])} for q in normalized]
+    shown = []
+    for q in normalized:
+        offered = prose(q["choices_offered"])
+        shown.append({**q, "question": prose([q["question"]])[0], "choices_offered": offered,
+                      "choices": mark_recommended(list(offered)) if offered else None})
     # Observers see the questions only; the answers stay in the tool result.
     with human_input_request("clarify", prompt="\n".join(q["question"] for q in shown)) as human:
         try:

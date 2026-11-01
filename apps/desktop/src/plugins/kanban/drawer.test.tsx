@@ -13,7 +13,7 @@ import { registerPluginLocales } from '@/i18n/plugin-i18n'
 // eslint-disable-next-line no-restricted-imports
 import { $notifications, clearNotifications } from '@/store/notifications'
 
-import { bindApi, taskKey } from './api'
+import { bindApi, logKey, taskKey } from './api'
 import { TaskDrawer } from './drawer'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { KanbanTaskDetail } from './types'
@@ -236,6 +236,24 @@ describe('task attachment compatibility', () => {
     )
     expect(await screen.findByText(file.name)).toBeTruthy()
     expect(screen.queryByText(en.noAttachments)).toBeNull()
+  })
+})
+
+describe('worker log refresh', () => {
+  it('keeps polling a running worker log while the Desktop window is backgrounded', async () => {
+    detail = { ...legacyDetail, task: { ...legacyDetail.task, status: 'running' }, attachments: [] }
+    openDrawer()
+
+    await waitFor(() =>
+      expect(client.getQueryCache().find({ queryKey: logKey('local', '', legacyDetail.task.id) })).toBeDefined()
+    )
+
+    await waitFor(() =>
+      expect(client.getQueryCache().find({ queryKey: logKey('local', '', legacyDetail.task.id) })?.options).toMatchObject({
+        refetchInterval: 3_000,
+        refetchIntervalInBackground: true
+      })
+    )
   })
 })
 

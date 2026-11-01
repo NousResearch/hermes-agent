@@ -1,6 +1,6 @@
 import { liveSessionProjectId } from '@/app/chat/sidebar/projects/workspace-groups'
 import { pathLeaf } from '@/lib/display-path'
-import { $projectOwnerBySessionId } from '@/store/projects'
+import { $projectOwnerBySessionId, $projectTree } from '@/store/projects'
 import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 /**
@@ -32,9 +32,23 @@ export function sessionProjectLabel(session: SessionInfo, projects: ProjectInfo[
   if (projectId) {
     const explicit = projects.find(project => project.id === projectId)
 
-    // An explicit project shows its user-given name; an auto-project's id IS
-    // its repo root path, so it shows that folder's leaf.
-    return (explicit ? explicit.name.trim() : pathLeaf(projectId)) || null
+    if (explicit) {
+      // An explicit project shows its user-given name; an auto-project's id IS
+      // its repo root path, so it shows that folder's leaf.
+      return (explicit.name.trim() ? explicit.name.trim() : pathLeaf(projectId)) || null
+    }
+
+    // The owner id can name a project the current `projects.list` answer does
+    // not describe: the all-profiles view fans `projects.tree` out over every
+    // profile while `projects.list` stays on the active one, so a foreign
+    // profile's assignment resolves here with no ProjectInfo row. The tree's
+    // own label is the authoritative name — falling through to `pathLeaf`
+    // would leak the raw id ("p_8953c3d5") into the UI.
+    const fromTree = $projectTree.get().find(project => project.id === projectId)
+
+    if (fromTree) {
+      return fromTree.label.trim() || null
+    }
   }
 
   return pathLeaf(session.git_repo_root) || null

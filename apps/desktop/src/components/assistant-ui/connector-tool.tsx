@@ -38,6 +38,7 @@ import {
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $showToolActivity } from '@/store/tool-activity'
 
 /** The browser leg of a connection came back through `hermes://connections/done`. Show the session
  *  that opened the operation and tell its backend to read the account now instead of at its next
@@ -504,6 +505,7 @@ const MISSING_CALL_RESULT = { error: 'No result for this call.' }
  *  The gateway labels every call the tool_search bridge runs — hosted, MCP or local —
  *  so hosted-only, MCP-only and mixed batches all render the same way. */
 export function ConnectorExecution(props: ToolCallMessagePartProps) {
+  const showToolActivity = useStore($showToolActivity)
   const labels = toolLabels(props.args)
   const output = recordOf(props.result)
   const results = Array.isArray(output.results) ? output.results : []
@@ -523,13 +525,21 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
         // A batch that answered short says so on the rows it left out.
         const item = results[index] ?? (results.length > 0 ? MISSING_CALL_RESULT : props.result)
         const result = recordOf(item)
+        const isError = Boolean(result.error) || props.isError === true
+
+        // These rows are the tool feed, so `display.tool_progress: off` owns them like any other
+        // row: only the failure the user must act on stays. Nothing else gates them — their labels
+        // ride on the args, live and in a reloaded transcript.
+        if (!showToolActivity && !isError) {
+          return null
+        }
 
         return (
           <ToolFallback
             {...props}
             args={recordOf(recordOf(batch[index]).arguments ?? props.args)}
             innerToolName={props.toolName === 'tool_call' ? label.name : props.toolName}
-            isError={Boolean(result.error) || props.isError === true}
+            isError={isError}
             key={`${props.toolCallId}:${index}`}
             result={item}
             toolCallId={`${props.toolCallId}:${index}`}

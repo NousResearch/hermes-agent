@@ -560,17 +560,14 @@ the last published canary records `releases/canary/release-candidates.json`,
 the baseline of the next canary. A release that skipped bundles does not
 replace it.
 When no baseline exists, the release still runs every native smoke but skips
-the signed-package upgrade arms. A `baseline-manifest` input that does not
-exist is a blocker.
+the signed-package upgrade arms.
 It identifies actual Windows universal MSIX bundles, macOS ZIPs and package
 provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.
 
-For an existing stable release that predates this metadata, supply
-`baseline-manifest` as an HTTPS URL on the configured R2 public origin to a
-current schema-2 manifest of its actual published packages and successful native
-smoke results. Schema-1 candidates are rejected; there is no legacy admission
-path. Manifest redirects must stay on the same origin. The baseline tag must be
+The baseline must be a current schema-2 manifest of the actual published
+packages and successful native smoke results. Schema-1 candidates are rejected;
+there is no legacy admission path. Manifest redirects must stay on the same origin. The baseline tag must be
 a published stable release (for a canary, a published canary prerelease),
 package identities must agree, and versions must increase (canary macOS
 packages share `X.Y.Z`, so they are ordered by their claim stamp). Stable Windows

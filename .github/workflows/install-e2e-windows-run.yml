@@ -76,20 +76,6 @@ on:
         description: "Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg's logs + player artifacts so the report job can link a row to its zip."
         required: true
         type: string
-      setup-exe-url:
-        description: 'Bootstrap installer to install OLD with. Default: the latest published one — what a user downloads today.'
-        required: false
-        type: string
-        default: https://hermes-assets.nousresearch.com/Hermes-Setup.exe
-      timeout-minutes:
-        description: 'Job timeout. The install leg does real toolchain work and the update leg a full Electron rebuild.'
-        required: false
-        type: number
-        # Green legs take up to ~40 min; from v2026.9.24 the update alone runs the venv->PM
-        # takeover plus npm ci and a Desktop rebuild (24 min in 108542725043, 11 of them one
-        # npm ci), and the app-update driver may wait 30 min. pty-run.py's deadline and the
-        # per-step budgets bound real hangs, so the job cap only has to clear a slow runner.
-        default: 90
       bundle-manifest-url:
         type: string
         default: ''
@@ -113,7 +99,12 @@ jobs:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
     runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # The install leg does real toolchain work and the update leg a full Electron rebuild. Green
+    # legs take up to ~40 min; from v2026.9.24 the update alone runs the venv->PM takeover plus
+    # npm ci and a Desktop rebuild (24 min in 108542725043, 11 of them one npm ci), and the
+    # app-update driver may wait 30 min. pty-run.py's deadline and the per-step budgets bound
+    # real hangs, so the job cap only has to clear a slow runner.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -185,7 +176,7 @@ jobs:
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
     runs-on: windows-latest-32-core
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 90
 
     env:
       # Sibling of the checkout (D:\a\hermes-agent\hermes-desktop-gui-e2e):
@@ -259,16 +250,16 @@ jobs:
       # installers' uv/ripgrep).
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}"
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         id: update
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       # After everything, including the new runtime's launch and its smoke
       # checks: the bootstrap marker can complete on a later run than the
@@ -277,7 +268,7 @@ jobs:
       - name: Verify install stamps describe the updated checkout
         if: steps.update.outputs.known_failure == ''
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase verify-stamp -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}"
 
       - name: Stage known-failure receipt
         if: steps.update.outputs.known_failure != ''

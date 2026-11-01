@@ -28,15 +28,14 @@ permissions:
 jobs:
   reconcile:
     # Canary, commit and channel builds run Stable Release too, but none has a
-    # stable draft or head to reconcile. Never rerun their failed jobs here.
+    # stable draft or head to reconcile. Only a stable claim's run (its run-name,
+    # stable.claim_run_title) is ever rerun here.
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion != 'success' &&
        github.event.workflow_run.event == 'workflow_dispatch' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       !startsWith(github.event.workflow_run.display_title, 'Canary release ') &&
-       !startsWith(github.event.workflow_run.display_title, 'Commit release ') &&
-       !startsWith(github.event.workflow_run.display_title, 'Channel release '))
+       startsWith(github.event.workflow_run.display_title, 'Stable release '))
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.

@@ -57,10 +57,6 @@ def _claims(repo: Path, remote: str) -> list[str]:
     return claims
 
 
-def _claim_commit(repo: Path, tag: str) -> str:
-    return _git(repo, "rev-parse", f"{tag}^{{commit}}")
-
-
 def _refresh_claims(repo: Path, remote: str) -> None:
     # Pruned, so a deleted release/* branch stops admitting commits. Tags are
     # fetched separately: pruning there would delete local-only claim tags.
@@ -114,17 +110,15 @@ def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None
     return outstanding[0] if outstanding else None
 
 
-RUN_FIELDS = "databaseId,url,headBranch,headSha,displayTitle,status"
+RUN_FIELDS = "databaseId,url,displayTitle,status"
 
 
-def _is_claim_run(row: dict, claim_tag: str, commit: str) -> bool:
-    return stable.is_claim_run(
-        title=row.get("displayTitle"), head_branch=row.get("headBranch"),
-        head_sha=row.get("headSha"), claim_tag=claim_tag, commit=commit)
+def _is_claim_run(row: dict, claim_tag: str) -> bool:
+    return row.get("displayTitle") == stable.claim_run_title(claim_tag)
 
 
-def _attempt_run(execute, repository: str, ref: str, commit: str) -> dict | None:
-    """The workflow run for ``ref`` at ``commit``, or None when none is listed."""
+def _attempt_run(execute, repository: str, ref: str) -> dict | None:
+    """The workflow run for ``ref``, or None when none is listed."""
     raw = execute([
         "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
         "--json", RUN_FIELDS,
@@ -133,7 +127,7 @@ def _attempt_run(execute, repository: str, ref: str, commit: str) -> dict | None
         rows = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return None
-    return next((row for row in rows if isinstance(row, dict) and _is_claim_run(row, ref, commit)
+    return next((row for row in rows if isinstance(row, dict) and _is_claim_run(row, ref)
                  and row.get("url") and row.get("databaseId") is not None), None)
 
 
@@ -141,7 +135,7 @@ def _refuse_outstanding(outstanding: tuple[str, int, str], *, repo: Path, remote
                         repository: str, execute) -> ReleaseRefused:
     """Print the blocking run and both ways out, then return the refusal to raise."""
     version, _attempt, ref = outstanding
-    run = _attempt_run(execute, repository, ref, _claim_commit(repo, ref))
+    run = _attempt_run(execute, repository, ref)
     lines = [f"{ref} is outstanding: it has no abandon marker and v{version} is not published."]
     lines.append(f"Workflow: {run['url']}" if run else f"No workflow run is listed for {ref}.")
     lines += ["If the attempt is unfixable, abandon it:",
@@ -333,10 +327,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             ]) or "").strip()
         finally:
             os.unlink(file.name)
-        execute([
-            "gh", "workflow", "run", WORKFLOW, "--ref", stable.CONTROLLER_BRANCH, "--repo", repository,
-            "--raw-field", f"tag={tag}",
-        ])
+        execute(stable.dispatch_command(tag, repository))
         run_url = _await_run(execute, repository, tag, wait=run_wait, sleep=sleep)
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
@@ -444,13 +435,13 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def _in_progress_runs(inspect, repository: str, tag: str, commit: str) -> list[dict]:
+def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
     """Release runs of ``tag`` that have not completed, as ``gh run list`` rows."""
     rows = json.loads(inspect([
         "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
         "--json", RUN_FIELDS,
     ]) or "[]")
-    return [row for row in rows if row["status"] != "completed" and _is_claim_run(row, tag, commit)]
+    return [row for row in rows if row["status"] != "completed" and _is_claim_run(row, tag)]
 
 
 def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote: str,
@@ -460,7 +451,7 @@ def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote
         draft = _release_view(tag, repository, inspect)
         if draft is not None and draft.get("isDraft") is not True:
             raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
-        for run in _in_progress_runs(inspect, repository, tag, _claim_commit(repo, tag)):
+        for run in _in_progress_runs(inspect, repository, tag):
             execute(["gh", "run", "cancel", str(run["databaseId"]), "--repo", repository, "--force"])
             cancelled.append(run["url"])
         if draft is not None:

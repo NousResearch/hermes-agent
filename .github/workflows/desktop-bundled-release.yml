@@ -18,7 +18,6 @@ name: Desktop Bundled Release
 #     signed bundled one.
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
 #     dmg/zip/blockmap + per-arch feed inputs to the claim archive
-#   build-linux                              → DISABLED for now (dummy skips)
 #   assemble-win32-bundle                   → native universal bundles
 #   smoke-darwin / smoke-win32 (per arch)   → native install + chat
 #   termux-deb                              → .deb + APT repo staged in the claim archive
@@ -84,7 +83,7 @@ on:
       jobs:
         description: 'Comma-separated job groups. Default: every group.'
         type: string
-        default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
+        default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,termux'
       skip-tests:
         description: 'Candidate phase, any claim: build and stage without native smokes or in-build test suites (the claim has no smoke lane).'
         type: boolean
@@ -107,10 +106,6 @@ on:
         default: false
       skip-store:
         description: 'Any claim: build no Microsoft Store bundle (the claim has no windows-store lane); in the stable publish phase, submit none.'
-        type: boolean
-        default: false
-      windows-smokes-with-bundle:
-        description: 'Stable only: smoke the staged per-arch MSIX packages in the win32-bundle call, beside assembly, instead of after each per-arch build.'
         type: boolean
         default: false
     outputs:
@@ -180,11 +175,7 @@ jobs:
       win32-arm64: ${{ steps.admission.outputs.win32-arm64 }}
       win32-x64: ${{ steps.admission.outputs.win32-x64 }}
       win32-bundle: ${{ steps.admission.outputs.win32-bundle }}
-      linux-x64: ${{ steps.admission.outputs.linux-x64 }}
-      linux-arm64: ${{ steps.admission.outputs.linux-arm64 }}
       termux: ${{ steps.admission.outputs.termux }}
-      # Every group selected: the joins that render or summarize a whole build.
-      all-jobs: ${{ steps.admission.outputs.all-jobs }}
       # A channel claim's admitted request; stable verify (admission) binds it to the claim.
       channel-build: ${{ inputs.release-phase == 'candidate' && inputs.channel_build || '' }}
       channel-request-sha256: ${{ inputs.release-phase == 'candidate' && inputs.channel_request_sha256 || '' }}
@@ -835,28 +826,6 @@ jobs:
     env: *darwin-env
     steps: *darwin-steps
 
-  build-linux-x64:
-    name: bundled linux-x64 (disabled for now)
-    if: needs.validate.outputs.linux-x64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
-        shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
-
-  build-linux-arm64:
-    name: bundled linux-arm64 (disabled for now)
-    if: needs.validate.outputs.linux-arm64 == 'true'
-    needs: validate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 5
-    steps:
-      - name: Disabled
-        shell: bash
-        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
-
   stage-receipt-darwin-arm64:
     name: Stage the darwin-arm64 stable receipt
     # The receipt is staged at the end of the build join and before the smoke:
@@ -994,18 +963,16 @@ jobs:
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
 
-  # Stable passes windows-smokes-with-bundle: its per-arch calls only build, and
-  # the win32-bundle call smokes both staged MSIX beside assembly, so the bundle
-  # does not wait for a smoke after the slower arch's build.
+  # The per-arch calls only build; the win32-bundle call smokes both staged MSIX
+  # beside assembly, so the bundle does not wait for a smoke after the slower
+  # arch's build.
   smoke-win32-x64:
     name: Smoke Windows x64 MSIX
     needs: [validate, build-win32-x64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && ((inputs.windows-smokes-with-bundle != true
-           && needs.build-win32-x64.result == 'success' && needs.validate.outputs.win32-x64 == 'true')
-        || (inputs.windows-smokes-with-bundle == true && needs.validate.outputs.win32-bundle == 'true'
-           && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success')))
+      && needs.validate.outputs.win32-bundle == 'true'
+      && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success')
       && inputs.release-phase == 'candidate'
       && inputs.skip-tests != true
       && inputs.skip-signed != true
@@ -1031,10 +998,8 @@ jobs:
     needs: [validate, build-win32-arm64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && ((inputs.windows-smokes-with-bundle != true
-           && needs.build-win32-arm64.result == 'success' && needs.validate.outputs.win32-arm64 == 'true')
-        || (inputs.windows-smokes-with-bundle == true && needs.validate.outputs.win32-bundle == 'true'
-           && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success')))
+      && needs.validate.outputs.win32-bundle == 'true'
+      && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success')
       && inputs.release-phase == 'candidate'
       && inputs.skip-tests != true
       && inputs.skip-signed != true
@@ -1596,7 +1561,6 @@ jobs:
           RELEASE_PHASE: ${{ inputs.release-phase }}
           SKIP_TESTS: ${{ inputs.skip-tests }}
           SKIP_SIGNED: ${{ inputs.skip-signed }}
-          WINDOWS_SMOKES_WITH_BUNDLE: ${{ inputs.windows-smokes-with-bundle }}
         run: |
           python - <<'PY'
           import json, os
@@ -1607,7 +1571,6 @@ jobs:
           selected = {group: outputs.get(group) == 'true' for group in JOB_GROUPS}
           require_success(needs, phase_jobs(selected, os.environ['RELEASE_PHASE'],
                                             skip_tests=os.environ['SKIP_TESTS'] == 'true',
-                                            skip_signed=os.environ['SKIP_SIGNED'] == 'true',
-                                            windows_smokes_with_bundle=os.environ.get('WINDOWS_SMOKES_WITH_BUNDLE') == 'true'))
+                                            skip_signed=os.environ['SKIP_SIGNED'] == 'true'))
           PY
 

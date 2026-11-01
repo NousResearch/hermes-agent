@@ -668,7 +668,7 @@ def test_a_canary_advances_its_own_head_from_its_accepted_candidate_only(tmp_pat
                  "lanes": sorted(lane_set.CANARY), "lanesRevision": lane_set.LANES_REVISION,
                  "requireGreen": False}
         return {"tag": tag, "version": f"2.0.0+canary.{stamp}", "claim": claim,
-                "windows": channel_releases.canary_windows_version(tag)}
+                "windows": stable.stamped_windows_version(tag)}
 
     with object_server() as (url, objects, _headers, _requests, _faults):
         pub = publisher(url)
@@ -741,7 +741,7 @@ def test_a_canary_advances_its_own_head_from_its_accepted_candidate_only(tmp_pat
         assert all(p["artifact"]["key"].startswith(f"releases/tag/{first['tag']}/") for p in head["packages"])
         # Its accepted candidate, read with the claim's lanes and the tag stamp as the epoch ...
         assert set(calls["accepted"]) == {
-            (first["tag"], commit, stable.canary_epoch(first["tag"]), frozenset(first["claim"]["lanes"]))}
+            (first["tag"], commit, stable.stamped_epoch(first["tag"]), frozenset(first["claim"]["lanes"]))}
         # ... publishes its prerelease, then names the live canary and promotes the canary feeds.
         assert calls["edits"] == [["gh", "release", "edit", first["tag"], "--repo", pub.repository, "--draft=false"]]
         assert json.loads(objects["releases/canary/release-candidates.json"]) == first["accepted"]
@@ -892,9 +892,9 @@ def test_request_inputs_are_rejected_before_allocating():
 
 
 def test_canary_native_version_is_derived_from_the_current_tag():
-    from scripts.releases.channel_releases import canary_windows_version
+    from scripts.releases.stable import stamped_windows_version
 
-    assert canary_windows_version("canary.20260829T010203Z-v0.27.1") == "26.829.1.203"
+    assert stamped_windows_version("canary.20260829T010203Z-v0.27.1") == "26.829.1.203"
 
 
 def test_stable_requests_name_the_attempt_archive_only_when_given():

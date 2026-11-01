@@ -149,6 +149,11 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
 
+# Echoed by the read probes when stat itself failed with EACCES/EPERM: the entry
+# may well exist, the shell just cannot see it (search-less parent directory,
+# sandbox read-deny) — a different answer than "absent" (#138090).
+ACCESS_DENIED_SENTINEL = "__hermes_access_denied__"
+
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 _BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
@@ -647,14 +652,46 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"Cannot read '{path}': not a regular file (directory, dangling symlink, "
             "FIFO, socket, or device). Reading it could block indefinitely."))
 
+    @staticmethod
+    def _access_denied_error(path: str) -> ReadResult:
+        """Error for a path the shell cannot see into: stat denied with
+        EACCES/EPERM, or a regular file that exists but denies the read —
+        in both cases the entry may well exist."""
+        return ReadResult(error=(
+            f"Permission denied: cannot access '{path}'. The file may exist but is "
+            "not accessible (a parent directory denies search permission, or the "
+            "file denies read, or a sandbox blocks the read). Fix the permissions "
+            "or read it with the terminal tool."))
+
+    @staticmethod
+    def _access_vs_missing_branch(arg: str) -> str:
+        """Shell snippet for the probe's else-arm: tell an inaccessible path from
+        an absent one. ``[ -e ]``/``[ -L ]`` are stats that merely go FALSE on
+        EACCES/EPERM, so without this the probe cannot tell a locked file from a
+        missing one (#138090). ``ls -d`` stays a metadata-only probe and reports
+        the errno on stderr; the case patterns keep the leading ``*`` a wildcard
+        while skipping the errno's first letter ("Permission denied"/"permission
+        denied", "Operation not permitted" across GNU/BSD/busybox spellings) but
+        are anchored at the END of the message — ``ls`` always ends with the
+        strerror text, so a path merely NAMED "…permission denied…" cannot match."""
+        return (f'err="$(ls -d -- {arg} 2>&1)"; '
+                f'case "$err" in *"ermission denied"|*"peration not permitted") '
+                f'echo {ACCESS_DENIED_SENTINEL};; '
+                f'*) echo {MISSING_SENTINEL};; esac')
+
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
         ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
+        ``"access_denied"`` (the shell cannot see into the path — stat itself
+        failed with EACCES/EPERM, or the regular file exists but denies the read),
         ``"env_unavailable"``, or the named working-directory error when the exec
         wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
-        is a stat (symlinks followed) so it answers without touching content. A dangling
+        is a stat (symlinks followed) so it answers without touching content, and
+        ``[ -r ]`` guards the redirect: an unreadable-but-present regular file
+        would otherwise fail ``wc -c <`` with stderr silenced and read as EMPTY
+        (#138090). A dangling
         symlink is ``not_regular``, never ``missing``: the entry exists, and a writer
         told the path is free would follow the link and create its target."""
         arg = self._escape_shell_arg(path)
@@ -662,12 +699,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"if [ -f {arg} ] && [ -r {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"elif [ -f {arg} ]; then echo {ACCESS_DENIED_SENTINEL}; "
             f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+            f"else {self._access_vs_missing_branch(arg)}; fi")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
         if stat_output == MISSING_SENTINEL:
             return 0, "missing"
+        if stat_output == ACCESS_DENIED_SENTINEL:
+            return 0, "access_denied"
         if stat_output == NOT_REGULAR_SENTINEL:
             return 0, "not_regular"
         if stat_result.exit_code != 0:
@@ -847,10 +887,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         output = probe.stdout or ""
 
         if sentinel not in output:
-            # Single-line replies: the path is missing or not a regular file.
+            # Single-line replies: the path is missing, inaccessible, or not a regular file.
             marker = _strip_terminal_fence_leaks(output).strip()
             if marker == MISSING_SENTINEL:
                 return self._read_file_missing(path, offset, limit)
+            if marker == ACCESS_DENIED_SENTINEL:
+                return self._access_denied_error(path)
             if marker == NOT_REGULAR_SENTINEL:
                 return self._not_regular_error(path)
             logger.debug(
@@ -1029,15 +1071,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         segments each closed by a ``sentinel`` line — byte size, base64 of the first
         1000 bytes, the ``sed | cut`` page, ``wc -l``, whether the last byte is a
         newline, then the base64 and page pipeline statuses. Probes run only inside
-        ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
-        reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` (a compound
+        ``[ -f ] && [ -r ]`` (stat-not-open, like ``_probe_regular_file``,
+        with the read guard so an unreadable file reads as denied, not empty) so a
+        FIFO/device never reaches ``head``/``sed``. A missing path echoes
+        ``MISSING_SENTINEL`` and a
+        stat denied with EACCES/EPERM echoes ``ACCESS_DENIED_SENTINEL`` (a compound
         command only reports its last status). Every stage silences stderr: the local
         backend merges stderr into stdout and a stray diagnostic would land inside a
         segment. The byte clamp is ``4 * max_line_length + 1``; see ``_read_file_sequential``."""
         arg = self._escape_shell_arg(path)
         mark = f"echo {sentinel}"
         return (
-            f"if [ -f {arg} ]; then "
+            f"if [ -f {arg} ] && [ -r {arg} ]; then "
             f"wc -c < {arg} 2>/dev/null; {mark}; "
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
@@ -1045,8 +1090,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
+            f"elif [ -f {arg} ]; then echo {ACCESS_DENIED_SENTINEL}; "
             f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+            f"else {self._access_vs_missing_branch(arg)}; fi")
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
         """Not-found recovery shared by every read path. Unicode-equivalent spellings
@@ -1089,6 +1135,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return self._read_file_missing(path, offset, limit)
+        if status == "access_denied":
+            return self._access_denied_error(path)
         if status == "not_regular":
             return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
@@ -1254,6 +1302,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return self._suggest_similar_files(path)
+        if status == "access_denied":
+            return self._access_denied_error(path)
         if status == "not_regular":
             return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
@@ -1281,6 +1331,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return ReadResult(error=f"File not found: {path}", not_found=True)
+        if status == "access_denied":
+            return self._access_denied_error(path)
         if status == "not_regular":
             return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):

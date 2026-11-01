@@ -1527,6 +1527,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id = getattr(msg, "message_id", None)
         if message_id is not None:
             await self._record_rich_sent(chat_id, message_id, content)
+        else:
+            # The API accepted the call but the result carried no id. Report success here only because a
+            # blind retry could duplicate a message Telegram already holds; the confirmation step in
+            # BasePlatformAdapter (``_confirm_delivery_result``) downgrades an id-less final to the
+            # ledger's unconfirmed state, so this is a warning rather than a silent success.
+            logger.warning(
+                "[%s] sendRichMessage accepted for chat %s but returned no message_id (%d chars)",
+                self.name, chat_id, len(content))
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:

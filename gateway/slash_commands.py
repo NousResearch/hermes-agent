@@ -1386,3 +1386,32 @@ class GatewaySlashCommandsMixin(
             return t("gateway.update.start_failed", error=e)
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")
+
+    # ----- VPS ops commands (Fede 2026-10-09) -----
+    # The four below delegate to hermes_cli/<name>.py — sync helpers, run via asyncio.to_thread
+    # because every gateway adapter shares one event loop and a blocking psutil/apt call freezes
+    # the whole bot. /metrics, /audit, /tailscale, /apt-update are read-or-shell-out: a 1-2s pause
+    # is fine and dispatching through to_thread keeps Telegram/Discord responsive.
+
+    async def _handle_metrics_command(self, event: MessageEvent) -> str:
+        """Handle /metrics — VPS resource snapshot (CPU/RAM/disk/Docker/uptime)."""
+        from hermes_cli.metrics import format_metrics
+        return await asyncio.to_thread(format_metrics)
+
+    async def _handle_audit_command(self, event: MessageEvent) -> str:
+        """Handle /audit [deep] — Hermes config/state/env/cron/log scan; deep adds secret-leak scan."""
+        from hermes_cli.audit import format_audit_summary
+        arg = event.get_command_args().strip().lower()
+        deep = arg in {"deep", "--deep", "-d"}
+        return await asyncio.to_thread(format_audit_summary, deep)
+
+    async def _handle_tailscale_command(self, event: MessageEvent) -> str:
+        """Handle /tailscale [status|up|down] — control the Tailscale daemon."""
+        from hermes_cli.tailscale import format_tailscale
+        arg = event.get_command_args().strip()
+        return await asyncio.to_thread(format_tailscale, arg)
+
+    async def _handle_apt_update_command(self, event: MessageEvent) -> str:
+        """Handle /apt-update — refresh apt index and list upgradable packages."""
+        from hermes_cli.apt_update import format_apt_update
+        return await asyncio.to_thread(format_apt_update)

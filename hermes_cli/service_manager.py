@@ -419,7 +419,9 @@ class S6ServiceManager:
         return self.scandir / f"{S6_SERVICE_PREFIX}{profile}"
 
     @staticmethod
-    def _render_run_script(profile: str, extra_env: dict[str, str]) -> str:
+    def _render_run_script(
+        profile: str, extra_env: dict[str, str], *, admission_slot: Path | None = None
+    ) -> str:
         """Run script for a profile-gateway s6 service.
 
         Sources HERMES_HOME via with-contenv (run time, not baked in), resets ``HOME`` before the
@@ -468,6 +470,15 @@ class S6ServiceManager:
             gateway_cmd = "hermes gateway run --replace"
         else:
             gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
+        if admission_slot is not None:
+            import sys
+
+            # Native admission executes after the UID drop; enrollment never authorizes replacing
+            # an unrelated holder. The default (unenrolled) supervisor behavior stays unchanged.
+            gateway_cmd = shlex.join([
+                sys.executable, "-m", "hermes_cli.service_manager_admission",
+                "--slot", str(admission_slot), "--profile", profile,
+            ])
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID → s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
         lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
@@ -600,7 +611,8 @@ class S6ServiceManager:
         return True
 
     def register_profile_gateway(
-        self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True
+        self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True,
+        launch_admission: bool = False, launch_guard: dict | None = None
     ) -> None:
         """Create the s6 service directory and ``s6-svscanctl -a`` so it is picked up immediately.
 
@@ -608,6 +620,10 @@ class S6ServiceManager:
         ``gateway start``. Raises ValueError on an invalid name or existing directory, RuntimeError
         if ``s6-svscanctl`` fails.
         """
+        if launch_guard is not None and not launch_admission:
+            raise ValueError("launch guard requires native admission enrollment")
+        if launch_admission and start_now:
+            raise ValueError("launch admission enrollment requires start_now=False")
         svc_dir = self._service_dir(profile)
         if svc_dir.exists():
             raise ValueError(f"profile gateway {profile!r} already registered at {svc_dir}")
@@ -628,7 +644,9 @@ class S6ServiceManager:
 
         try:
             (tmp_dir / "type").write_text("longrun\n", encoding="utf-8")
-            _write_script(tmp_dir / "run", self._render_run_script(profile, extra_env or {}))
+            _write_script(tmp_dir / "run", self._render_run_script(
+                profile, extra_env or {}, admission_slot=svc_dir if launch_admission else None
+            ))
             _write_script(tmp_dir / "finish", self._render_finish_script())
             (tmp_dir / "log").mkdir()
             _write_script(tmp_dir / "log" / "run", self._render_log_run(profile))
@@ -638,6 +656,10 @@ class S6ServiceManager:
             # Mirrors container_boot._register_gateway_slot when start=False.
             if not start_now:
                 (tmp_dir / "down").touch()
+            if launch_admission:
+                from hermes_cli.service_manager_admission import enroll
+
+                enroll(tmp_dir, svc_dir, profile, launch_guard=launch_guard)
             tmp_dir.rename(svc_dir)
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)

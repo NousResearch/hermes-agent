@@ -45,6 +45,7 @@ def _branding(who: str, symbol: str, goodbye: str, prompt: str = "", help_header
     """Branding block for a "<who> Agent" persona keyed by its glyph."""
     return {
         "agent_name": f"{who} Agent",
+        "icon": symbol,
         "welcome": f"Welcome to {who} Agent! Type your message or /help for commands.",
         "goodbye": goodbye, "response_label": f" {symbol} {who} ", "prompt_symbol": prompt or symbol,
         "help_header": help_header or f"({symbol}) Available Commands"}
@@ -493,6 +494,10 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
 
 def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
     return _active_branding("goodbye", fallback)
+
+
+def get_active_response_label(fallback: str = " ☤ Hermes ") -> str:
+    return _active_branding("response_label", fallback)
 
 
 # Palette resolution order for prompt_toolkit styles: (name, skin color key, fallback). A

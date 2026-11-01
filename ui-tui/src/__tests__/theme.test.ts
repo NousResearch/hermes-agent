@@ -174,6 +174,22 @@ describe('fromSkin', () => {
     expect(fromSkin({ banner_title: '#FF0000' }, {}).color.accent).toBe(DEFAULT_THEME.color.accent)
   })
 
+  it('honors a skin-authored brand icon', async () => {
+    // `brand.icon` is the mark rendered beside the agent name on the splash and
+    // in the TUI header. Pinned to the built-in default, a skin could rebrand
+    // every other field and still be preceded by the stock caduceus.
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({}, { agent_name: 'Arkad', icon: '𒀭' }).brand.icon).toBe('𒀭')
+  })
+
+  it('falls back to the default brand icon when the skin sets none', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({}, { agent_name: 'Arkad' }).brand.icon).toBe(DEFAULT_THEME.brand.icon)
+    expect(fromSkin({}, { agent_name: 'Arkad', icon: '  ' }).brand.icon).toBe(DEFAULT_THEME.brand.icon)
+  })
+
   it('derives completion current background from resolved completion background (polarity-compatible)', async () => {
     // Light terminal + light-authored menu fill: the skin's fill is honored
     // and the current-row derivation mixes off it.

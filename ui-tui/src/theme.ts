@@ -837,6 +837,28 @@ export function skinIsLight(colors: SkinColors, env: NodeJS.ProcessEnv = process
   return authored === null ? detectLightMode(env) : authored >= LUMA_LIGHT_THRESHOLD
 }
 
+/**
+ * Brand block for a skin: every field the skin authors wins, everything else
+ * keeps the built-in default. `icon` is included — pinning it to the default
+ * let a skin rebrand the name and tagline but never the mark beside them.
+ */
+function brandFromSkin(
+  branding: SkinBranding,
+  toolPrefix: string,
+  helpHeader: string,
+  d: Theme
+): ThemeBrand {
+  return {
+    name: branding.agent_name ?? d.brand.name,
+    icon: branding.icon?.trim() || d.brand.icon,
+    prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
+    welcome: branding.welcome ?? d.brand.welcome,
+    goodbye: branding.goodbye ?? d.brand.goodbye,
+    tool: toolPrefix || d.brand.tool,
+    helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+  }
+}
+
 export function fromSkin(
   colors: SkinColors,
   branding: SkinBranding,
@@ -952,15 +974,7 @@ export function fromSkin(
       // and regress theme quality.
       color: adapted,
 
-      brand: {
-        name: branding.agent_name ?? d.brand.name,
-        icon: d.brand.icon,
-        prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
-        welcome: branding.welcome ?? d.brand.welcome,
-        goodbye: branding.goodbye ?? d.brand.goodbye,
-        tool: toolPrefix || d.brand.tool,
-        helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
-      },
+      brand: brandFromSkin(branding, toolPrefix, helpHeader, d),
 
       bannerLogo,
       bannerHero

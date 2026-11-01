@@ -33,7 +33,7 @@ def _create_subscribed_task(*, chat_id: str = SESSION_KEY, platform: str = "tui"
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="notify tui", assignee="worker")
-        kbn.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id)
+        kbn.add_notify_sub(conn, task_id=tid, platform=platform, chat_id=chat_id, delivery_mode="notify+wake")
         return tid
     finally:
         conn.close()

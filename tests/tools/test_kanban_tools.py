@@ -1164,7 +1164,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
     assert subs[0]["platform"] == "tui"
     assert subs[0]["chat_id"] == "tui-session-abc"
     assert subs[0]["chat_type"] == "dm"
-    assert subs[0]["delivery_mode"] == "notify"
+    assert subs[0]["delivery_mode"] == "notify+wake"
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):

@@ -88,7 +88,7 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'Keine Leerzeichen',
     duplicate: 'Eine andere Route verwendet diesen Namen bereits',
     turns: 'Verwenden Sie eine ganze Zahl ab 1.',
-    seconds: 'Verwenden Sie eine ganze Zahl ab 0.'
+    seconds: 'Verwenden Sie eine Zahl ab 0.'
   },
   saveRoute: 'Route speichern',
   createRoute: 'Route hinzufügen',

@@ -80,7 +80,7 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'بلا مسافات',
     duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل',
     turns: 'استخدم عددًا صحيحًا يساوي 1 أو أكثر.',
-    seconds: 'استخدم عددًا صحيحًا يساوي 0 أو أكثر.'
+    seconds: 'استخدم عددًا يساوي 0 أو أكثر.'
   },
   saveRoute: 'حفظ المسار',
   createRoute: 'إضافة مسار',

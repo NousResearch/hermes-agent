@@ -78,7 +78,7 @@ export const zhHantDelegationRouting: DelegationRoutingTranslations = {
     spaces: '不可包含空格',
     duplicate: '其他路由已使用此名稱',
     turns: '請輸入不小於 1 的整數。',
-    seconds: '請輸入不小於 0 的整數。'
+    seconds: '請輸入不小於 0 的數字。'
   },
   saveRoute: '儲存路由',
   createRoute: '新增路由',

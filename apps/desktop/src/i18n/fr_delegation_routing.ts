@@ -90,7 +90,7 @@ export const frDelegationRouting: DelegationRoutingTranslations = {
     spaces: "Pas d'espaces",
     duplicate: 'Une autre route utilise déjà ce nom',
     turns: 'Utilisez un nombre entier supérieur ou égal à 1.',
-    seconds: 'Utilisez un nombre entier supérieur ou égal à 0.'
+    seconds: 'Utilisez un nombre supérieur ou égal à 0.'
   },
   saveRoute: 'Enregistrer la route',
   createRoute: 'Ajouter une route',

@@ -91,7 +91,7 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'Sin espacios',
     duplicate: 'Otra ruta ya usa este nombre',
     turns: 'Usa un número entero de 1 o más.',
-    seconds: 'Usa un número entero de 0 o más.'
+    seconds: 'Usa un número de 0 o más.'
   },
   saveRoute: 'Guardar ruta',
   createRoute: 'Añadir ruta',

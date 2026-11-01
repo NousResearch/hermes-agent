@@ -111,11 +111,11 @@ describe('route max_iterations', () => {
 describe('route limit edge cases', () => {
   const base = { name: 'scout', description: 'd', provider: 'p', model: 'm' }
 
-  it('rejects digit strings beyond safe integers', () => {
+  it('rejects turn digit strings beyond safe integers and seconds beyond a finite number', () => {
     const draft = draftFromRoute(base)
     expect(validateRouteDraft({ ...draft, max_iterations: '99999999999999999999' }, []).max_iterations).toBe('turns')
     expect(
-      validateRouteDraft({ ...draft, child_timeout_seconds: '99999999999999999999' }, []).child_timeout_seconds
+      validateRouteDraft({ ...draft, child_timeout_seconds: '1' + '0'.repeat(400) }, []).child_timeout_seconds
     ).toBe('seconds')
   })
 
@@ -135,13 +135,29 @@ describe('route child_timeout_seconds', () => {
     expect(draftFromRoute(base).child_timeout_seconds).toBe('')
   })
 
-  it('refuses a value that is not a whole number of 0 or more', () => {
+  it('refuses a value that is not a number of 0 or more', () => {
     const draft = { ...draftFromRoute(base), child_timeout_seconds: '-5' }
     expect(validateRouteDraft(draft, []).child_timeout_seconds).toBe('seconds')
     expect(validateRouteDraft({ ...draft, child_timeout_seconds: 'soon' }, []).child_timeout_seconds).toBe('seconds')
     expect(validateRouteDraft({ ...draft, child_timeout_seconds: '0' }, []).child_timeout_seconds).toBeUndefined()
     expect(validateRouteDraft({ ...draft, child_timeout_seconds: '300' }, []).child_timeout_seconds).toBeUndefined()
     expect(validateRouteDraft({ ...draft, child_timeout_seconds: '' }, []).child_timeout_seconds).toBeUndefined()
+
+    for (const bad of ['2.', '.5', '1e3', '-0.5']) {
+      expect(validateRouteDraft({ ...draft, child_timeout_seconds: bad }, []).child_timeout_seconds).toBe('seconds')
+    }
+  })
+
+  it('accepts and saves a fractional timeout', () => {
+    const draft = { ...draftFromRoute(base), child_timeout_seconds: '30.5' }
+    expect(validateRouteDraft(draft, []).child_timeout_seconds).toBeUndefined()
+    expect(routeFromDraft(draft).child_timeout_seconds).toBe(30.5)
+  })
+
+  it('does not block saving a route loaded with a fractional timeout', () => {
+    const draft = draftFromRoute({ ...base, child_timeout_seconds: 30.5 })
+    expect(draft.child_timeout_seconds).toBe('30.5')
+    expect(validateRouteDraft(draft, [])).toEqual({})
   })
 
   it('saves a number and drops a blank value', () => {

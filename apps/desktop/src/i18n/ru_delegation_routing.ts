@@ -87,7 +87,7 @@ export const ruDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'Без пробелов',
     duplicate: 'Это название уже использует другой маршрут',
     turns: 'Введите целое число от 1.',
-    seconds: 'Введите целое число от 0.'
+    seconds: 'Введите число от 0.'
   },
   saveRoute: 'Сохранить маршрут',
   createRoute: 'Добавить маршрут',

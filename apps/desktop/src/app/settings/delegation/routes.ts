@@ -76,7 +76,7 @@ export function validateRouteDraft(
 
   const seconds = draft.child_timeout_seconds.trim()
 
-  if (seconds && !/^\d+$/.test(seconds)) {
+  if (seconds && !/^\d+(\.\d+)?$/.test(seconds)) {
     errors.child_timeout_seconds = 'seconds'
   }
 
@@ -84,7 +84,7 @@ export function validateRouteDraft(
     errors.max_iterations = 'turns'
   }
 
-  if (seconds && !errors.child_timeout_seconds && !Number.isSafeInteger(Number(seconds))) {
+  if (seconds && !errors.child_timeout_seconds && !(Number.isFinite(Number(seconds)) && Number(seconds) >= 0)) {
     errors.child_timeout_seconds = 'seconds'
   }
 

@@ -86,7 +86,7 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'スペースは使えません',
     duplicate: 'この名前は別のルートで使われています',
     turns: '1 以上の整数を入力してください。',
-    seconds: '0 以上の整数を入力してください。'
+    seconds: '0 以上の数値を入力してください。'
   },
   saveRoute: 'ルートを保存',
   createRoute: 'ルートを追加',

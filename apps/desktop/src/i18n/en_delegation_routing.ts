@@ -79,7 +79,7 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
     spaces: 'No spaces',
     duplicate: 'Another route already uses this name',
     turns: 'Use a whole number of 1 or more.',
-    seconds: 'Use a whole number of 0 or more.'
+    seconds: 'Use a number of 0 or more.'
   },
   saveRoute: 'Save route',
   createRoute: 'Add route',

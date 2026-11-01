@@ -28,7 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
-import { $liveWorkRoster, rosterLiveIds } from './live-work-roster'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
@@ -54,7 +54,7 @@ export const $delegatingSessionIds = computed(
   [$subagentsBySession, $sessionStates, $sessions, $liveWorkRoster],
   (bySession, states, sessions, roster) => {
     const ids = new Set<string>()
-    const covered = new Set<string>()
+    const eventFedAt = new Map<string, number>()
 
     for (const [runtimeId, items] of Object.entries(bySession)) {
       if (items.length === 0) {
@@ -62,19 +62,17 @@ export const $delegatingSessionIds = computed(
       }
 
       const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
-      const active = activeSubagentCount(items) > 0
+      noteEventFed(eventFedAt, aliases, Math.max(...items.map(item => item.updatedAt || 0)))
 
-      for (const alias of aliases) {
-        covered.add(alias)
-
-        if (active) {
+      if (activeSubagentCount(items) > 0) {
+        for (const alias of aliases) {
           ids.add(alias)
         }
       }
     }
 
-    // Rows no mounted tile feeds (off screen, or every row after a reload).
-    for (const alias of rosterLiveIds(roster, 'subagents', covered, sessions)) {
+    // Rows no current event feed speaks for (off screen, every row after a reload).
+    for (const alias of rosterLiveIds(roster, 'subagents', eventFedAt, sessions)) {
       ids.add(alias)
     }
 

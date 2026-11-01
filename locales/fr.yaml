@@ -731,6 +731,7 @@ gateway:
       {command}
       ```
       {reason_label} : {reason}
+    native_stream_placeholder: "⏸ En attente d'approbation..."
 
   notify:
     media_kind:

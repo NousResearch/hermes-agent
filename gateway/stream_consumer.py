@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.config import (
@@ -55,9 +56,6 @@ _FLUSH = object()
 _APPROVAL_BOUNDARY = object()
 _REOPEN_SEED = object()
 _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
-
-# Boundary finalize text when nothing has accumulated yet (overridable per boundary).
-_DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
 
 @dataclass
@@ -185,7 +183,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Boundary state from close_for_approval_prompt() (boundaries are processed
         # serially).  reopen=True (clarify) keeps native enabled so post-prompt output
         # re-opens a fresh stream; approval degrades to send().
-        self._boundary_placeholder = _DEFAULT_BOUNDARY_PLACEHOLDER
+        self._boundary_placeholder = ""
         self._boundary_reason = "Approval"
         self._boundary_reopen = False
         # Reopen requested but nothing re-seeded: got_done must not open a stream just
@@ -402,7 +400,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             boundary_future.set_result(True)
             return boundary_future
         # Instance attributes are race-free: boundaries are processed one at a time.
-        self._boundary_placeholder = placeholder or _DEFAULT_BOUNDARY_PLACEHOLDER
+        # Resolved here, on the agent thread, so it follows the turn's display language.
+        self._boundary_placeholder = placeholder or t("gateway.exec_approval.native_stream_placeholder")
         self._boundary_reason = reason or "Approval"
         self._boundary_reopen = bool(reopen)
         cancelled_flag = {"cancelled": False}

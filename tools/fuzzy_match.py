@@ -126,16 +126,20 @@ def _map_normalized_positions(original: str, normalized: str,
     orig_to_norm = []  # orig_to_norm[i] = position in normalized
     orig_idx = norm_idx = 0
     while orig_idx < len(original) and norm_idx < len(normalized):
-        if original[orig_idx] == normalized[norm_idx]:
-            orig_to_norm.append(norm_idx)
-            orig_idx += 1
-            norm_idx += 1
-        elif original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
+        # Whitespace first: a run that starts with ' ' also satisfies the equality
+        # test below, which would advance norm_idx after the run's first char and pin
+        # the rest of the run onto the NEXT character, so a match starting there
+        # would begin inside the run and swallow the preceding whitespace.
+        if original[orig_idx] in ' \t' and normalized[norm_idx] == ' ':
             # Collapsed run: advance norm_idx only once the run is consumed.
             orig_to_norm.append(norm_idx)
             orig_idx += 1
             if orig_idx < len(original) and original[orig_idx] not in ' \t':
                 norm_idx += 1
+        elif original[orig_idx] == normalized[norm_idx]:
+            orig_to_norm.append(norm_idx)
+            orig_idx += 1
+            norm_idx += 1
         else:
             # Extra whitespace in original, or a mismatch normalization should
             # never produce — either way, pin to the current norm_idx.

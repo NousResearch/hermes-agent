@@ -344,6 +344,153 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'tts.kittentts.voice': ['Jasper'],
   'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
   'tts.neutts.model': ['neuphonic/neutts-air-q4-gguf', 'neuphonic/neutts-air-q8-gguf', 'neuphonic/neutts-air'],
+  // Phonon ships one checkpoint per language (plus a multilingual one); the short tags are
+  // expanded to gradium/phonon-* Hub repos by the backend, which also accepts a full hf:// id.
+  'tts.phonon.model': [
+    '31m-en',
+    '40m-en',
+    '40m-fr',
+    '40m-de',
+    '40m-es',
+    '40m-pt',
+    '40m-multilingual'
+  ],
+  'tts.phonon.voice': [
+    // English (US) — female
+    "Zoey",
+    "Juniper",
+    "Everly",
+    "Harper",
+    "Hadley",
+    "Delia",
+    // English (US) — male
+    "Easton",
+    "Micah",
+    "Trevor",
+    "Russell",
+    "Preston",
+    "Miles",
+    // English (UK) — female
+    "Maeve",
+    "Freya",
+    "Pippa",
+    "Elodie-Rose",
+    "Imogen",
+    "Lottie",
+    "Bryony",
+    // English (UK) — male
+    "Alfie",
+    "Hugh",
+    "Edwin",
+    "Spencer",
+    "Toby",
+    "Teddy",
+    // Spanish (Spain) — female
+    "Noa",
+    "Luc\u00eda-Sol",
+    "Candela",
+    "Celia",
+    "Alba",
+    "Alicia",
+    "Nerea",
+    // Spanish (Spain) — male
+    "Marcos",
+    "Borja",
+    "Iker",
+    "Nuno",
+    "Izan",
+    "Guillermo",
+    // Spanish (Mexico) — female
+    "Rebeca",
+    "Regina",
+    "Danae",
+    "Azucena",
+    "Jimena",
+    "Ximena",
+    // Spanish (Mexico) — male
+    "Lalo",
+    "Aldo",
+    "Yael",
+    "Ulises",
+    "Leonel",
+    "Nico",
+    // German — female
+    "Nele",
+    "Jette",
+    "Annika",
+    "Jule",
+    "Lotta",
+    "Josefine",
+    "Svea",
+    // German — male
+    "Anton",
+    "Mirko",
+    "Mats",
+    "Henrik",
+    "Leon",
+    "Mika",
+    // French — female
+    "No\u00e9mie",
+    "Coralie",
+    "Tiphaine",
+    "Ma\u00eblys",
+    "Orianne",
+    "Sol\u00e8ne",
+    "Ninon",
+    "Lilou",
+    "H\u00e9l\u00e8ne",
+    // French — male
+    "Augustin",
+    "Arnaud",
+    "Jules",
+    "Baptiste",
+    "Lucien",
+    "Marius",
+    // Portuguese (Brazil) — female
+    "Manuela-Lu",
+    "Isadora",
+    "D\u00e9bora",
+    "Rafaela",
+    "Clarice",
+    "Fl\u00e1via",
+    // Portuguese (Brazil) — male
+    "Davi",
+    "Igor",
+    "Kau\u00e3",
+    "Vitor",
+    "Ot\u00e1vio",
+    "Marcelo",
+    // English — character voices
+    "Captain Silas Blackwater",
+    "Morwenna of the Deep",
+    "Old Mortlake",
+    "Azgorath",
+    "Fennick the Young Elf",
+    "The Thing Under the Stairs",
+    "Vyrmathrax the Ancient",
+    "Grub the Ogre",
+    "Master Aldric",
+    "The Snow Queen",
+    "Sir Bramwell",
+    "Fairy Godmother"
+  ],
+  // ptts weight formats. q8 (~64MB) is the shipped default; k-quants are smaller and rougher.
+  'tts.phonon.quant': ['q8', 'q8k', 'q6k', 'q5k', 'q4k', 'f32'],
+  'tts.phonon.lang': ['en', 'fr', 'de', 'es', 'pt'],
+  'tts.phonon.device': ['auto', 'cpu'],
+  // Ollama serves speech models over POST /v1/audio/speech; the daemon reports each model's
+  // voices (Phonon's packages ship `default`). Tags mirror `ollama.com/library/phonon`.
+  'tts.ollama.base_url': ['http://localhost:11434/v1'],
+  'tts.ollama.model': [
+    'phonon',
+    'phonon:40m-en',
+    'phonon:40m-fr',
+    'phonon:40m-de',
+    'phonon:40m-es',
+    'phonon:40m-pt',
+    'phonon:40m-multilingual'
+  ],
+  'tts.ollama.voice': ['default'],
   // Text-to-speech backends — kept in sync with the built-in source of truth
   // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
   // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
@@ -357,7 +504,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'gemini',
     'neutts',
     'kittentts',
-    'piper'
+    'piper',
+    'phonon',
+    'ollama'
   ],
   // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
@@ -413,6 +562,12 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.model',
   'tts.kittentts.voice',
   'tts.piper.voice',
+  'tts.phonon.model',
+  'tts.phonon.voice',
+  'tts.phonon.lang',
+  'tts.ollama.base_url',
+  'tts.ollama.model',
+  'tts.ollama.voice',
   'tts.deepinfra.model',
   'tts.deepinfra.voice'
 ])
@@ -564,6 +719,19 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     piper: {
       voice: 'Piper Voice'
     },
+    phonon: {
+      model: 'Phonon Model',
+      voice: 'Phonon Voice',
+      quant: 'Phonon Weight Format',
+      lang: 'Phonon Text Language',
+      device: 'Phonon Device',
+      threads: 'Phonon CPU Threads'
+    },
+    ollama: {
+      baseUrl: 'Ollama Base URL',
+      model: 'Ollama Speech Model',
+      voice: 'Ollama Voice'
+    },
     deepinfra: {
       model: 'DeepInfra TTS Model',
       voice: 'DeepInfra Voice'
@@ -690,6 +858,20 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     },
     neutts: {
       device: 'Local inference device for NeuTTS.'
+    },
+    phonon: {
+      model:
+        'Phonon checkpoint: 31m-en (Apache 2.0) or a 40m language/multilingual model (CC BY-NC 4.0). A full hf:// repo id also works.',
+      voice: 'Any of the 102 catalogue voices by name (e.g. Easton, Noémie) or by voice_id. "default" uses the checkpoint\'s own voice and downloads nothing extra.',
+      quant: 'Weight format for the ptts runtime. q8 (~64MB) is the shipped default.',
+      lang: 'Language used to normalize numbers, dates and currency before synthesis. Blank infers it from the selected voice.',
+      device: 'Inference backend. ptts 0.4.x ships CPU backends only.',
+      threads: 'CPU threads for tensor ops. 0 uses the runtime default.'
+    },
+    ollama: {
+      baseUrl: 'Root of the Ollama API (with or without /v1). Point it at another host to use a remote daemon.',
+      model: 'Speech-capable model tag. Phonon\'s Ollama packages currently require an Apple Silicon host and Ollama 0.40.9+.',
+      voice: 'A voice the pulled model reports via /api/show. Phonon ships "default".'
     }
   },
   stt: {
@@ -826,6 +1008,15 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.kittentts.model',
       'tts.kittentts.voice',
       'tts.piper.voice',
+      'tts.phonon.model',
+      'tts.phonon.voice',
+      'tts.phonon.quant',
+      'tts.phonon.lang',
+      'tts.phonon.device',
+      'tts.phonon.threads',
+      'tts.ollama.base_url',
+      'tts.ollama.model',
+      'tts.ollama.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
       'stt.local.model',

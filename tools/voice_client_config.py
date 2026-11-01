@@ -223,8 +223,9 @@ def _resolve_tts_client_config() -> dict[str, Any]:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
                        voice=di.get("voice") or "af_bella", speed=None, min_len=min_len)
-    # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
-    # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
+    # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper / phonon / ollama:
+    # server-host-only engines (local models, a local daemon) or wire shapes the desktop doesn't
+    # speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")
 
 

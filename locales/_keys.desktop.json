@@ -2708,6 +2708,7 @@
     "rightSidebar.terminal",
     "rightSidebar.terminalCloseAll",
     "rightSidebar.terminalCloseOthers",
+    "rightSidebar.terminalDisconnectedBody",
     "rightSidebar.terminalDropControl",
     "rightSidebar.terminalDropControlTitle",
     "rightSidebar.terminalDropTooLarge",

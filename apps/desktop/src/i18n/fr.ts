@@ -4692,6 +4692,8 @@ export const frOverrides = {
       'La passerelle sur laquelle ce terminal tournait a été supprimée ; il ne peut pas être rouvert. Fermez cet onglet.',
     terminalGatewayNoShellBody:
       'Cette passerelle n’offre pas d’accès shell ; ce terminal ne peut pas être rouvert. Fermez cet onglet.',
+    terminalDisconnectedBody:
+      'Terminal déconnecté. Appuyez sur Entrée pour démarrer un nouveau shell ; l’historique est conservé.',
     addToChat: 'Ajouter à la conversation'
   },
   preview: {

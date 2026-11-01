@@ -3091,6 +3091,8 @@ export const jaOverrides = {
       'このターミナルが動作していたゲートウェイは削除されたため、再度開けません。このタブを閉じてください。',
     terminalGatewayNoShellBody:
       'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
+    terminalDisconnectedBody:
+      'ターミナルが切断されました。Enter キーで新しいシェルを開始します。スクロールバックは保持されます。',
     addToChat: 'チャットに追加'
   },
 

@@ -214,7 +214,7 @@ export function createSessionAttemptController(
             }
 
             if (exit.signal === 'disconnected') {
-              armRetry('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.')
+              armRetry(`\r\n${translateNow('rightSidebar.terminalDisconnectedBody')}`)
 
               return
             }

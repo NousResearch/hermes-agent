@@ -18,6 +18,9 @@ from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+# GitHub's answer when a private repository's plan (GitHub Free) does not expose the endpoint.
+_PLAN_GATE = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+_SPACE = re.compile(r"\s*")
 
 
 def validate_contract(value: str | None) -> str:
@@ -34,12 +37,15 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        # No --slurp: gh < 2.48 rejects the flag; _pages() decodes the page documents instead.
+        command.append("--paginate")
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as exc:
+        if f"gh: {_PLAN_GATE} (HTTP 403)" in (exc.stderr or "").splitlines():
+            raise _PlanGatedError(f"HTTP 403 plan boundary on {endpoint.split('?')[0]}") from None
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
@@ -49,16 +55,45 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
+    if paginate:
+        return _pages(result.stdout)
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
 
 
+def _pages(stdout: str) -> list:
+    """``gh api --paginate`` output as the list of page documents. Without ``--slurp``
+    gh writes each page's JSON back to back (object pages as consecutive documents,
+    array pages merged into one array), so decode documents in sequence. No pages, a
+    non-container page or trailing garbage is incomplete evidence, never zero evidence."""
+    decoder, pages, index = json.JSONDecoder(), [], _SPACE.match(stdout).end()
+    while index < len(stdout):
+        page, index = decoder.raw_decode(stdout, index)
+        if not isinstance(page, (list, dict)):
+            raise ValueError("GitHub returned a malformed page")
+        pages.append(page)
+        index = _SPACE.match(stdout, index).end()
+    if not pages:
+        raise ValueError("GitHub returned no pages")
+    return pages
+
+
 class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+
+class _PlanGatedError(_GateAuthError):
+    """GitHub's exact private-repository plan-boundary 403. Only the branch-rules read
+    treats it as "rulesets unreadable by plan"; on any other endpoint it stays ``auth``."""
+
+
+class _PolicyError(RuntimeError):
+    """The required-check policy is unknowable: GitHub hides the rules behind the plan
+    boundary and no valid ``kanban.pr_required_checks`` declaration covers the repo."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -131,15 +166,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["head_sha"] = sha
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
-        protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
-        required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
-        for page in rules:
-            for rule in page:
-                if rule["type"] == "required_status_checks":
-                    required.update((r["context"], r.get("integration_id"))
-                                    for r in rule["parameters"]["required_status_checks"])
+        required, plan_gated = _github_required(repo, branch, pr, profile_home)
+        receipt["policy_source"] = "github"
+        if plan_gated and not required:
+            # GitHub cannot say what is required here; only an operator declaration can.
+            # Unreadable policy is never "nothing required".
+            from hermes_cli.kanban_pr_acceptance_policy import declared_required
+            required = declared_required(repo, profile_home)
+            receipt["policy_source"] = "declared"
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
@@ -178,6 +212,14 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
+    except _PolicyError as exc:
+        owner = f"assignee profile {assignee!r}'s" if assignee else "this profile's"
+        receipt.update(classification="policy",
+                       detail=f"GitHub hides this private repository's branch rules behind its plan and classic "
+                              f"protection names no required checks, so the required set is unknown: {exc}. Declare "
+                              f"them under kanban.pr_required_checks in {owner} config.yaml "
+                              "(OWNER/REPO: [check-name or {context, app_id}]), or use a local-only contract.")
+        return receipt
     except _GateAuthError as exc:
         login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"
         receipt.update(classification="auth",
@@ -188,6 +230,26 @@ def collect_acceptance(contract: str, published_pr: str | None,
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _github_required(repo: str, branch: str, pr: dict,
+                     profile_home: str | None) -> tuple[set, bool]:
+    """Required ``(context, app_id)`` pairs GitHub exposes for the base branch (classic
+    protection + active rulesets), and whether the rulesets read hit the exact private-plan
+    boundary. Any other refusal propagates: an arbitrary 403/404 is never "no rules"."""
+    protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
+    required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
+    try:
+        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                     paginate=True, profile_home=profile_home)
+    except _PlanGatedError:
+        return required, True
+    for page in rules:
+        for rule in page:
+            if rule["type"] == "required_status_checks":
+                required.update((r["context"], r.get("integration_id"))
+                                for r in rule["parameters"]["required_status_checks"])
+    return required, False
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

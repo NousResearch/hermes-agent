@@ -78,6 +78,28 @@ login. A login that cannot see the repository is rejected with
 `classification=auth`, naming the profile and repository, instead of a
 retryable infra failure.
 
+A private repository on GitHub Free keeps its PR, head and check runs readable
+but answers the branch-rules read with the exact plan-boundary 403 (`Upgrade to
+GitHub Pro or make this repository public to enable this feature.`). If classic
+protection names no required checks either, the required set is unknown and
+acceptance fails with `classification=policy`; requiring every observed check
+would wrongly veto path- or condition-gated jobs that legitimately skip. Declare
+the required set in the **assignee profile's** `config.yaml`:
+
+```yaml
+kanban:
+  pr_required_checks:
+    acme/private: [test, {context: build, app_id: 15368}]
+```
+
+An entry is a check name (any app, or a legacy status) or `{context, app_id}`
+pinned to one GitHub App. The declaration is consulted only on that exact
+boundary: any other 403/404 stays `auth`, a 5xx stays `infra`, and a required
+set GitHub does expose (classic protection or readable rulesets) always wins.
+Declarations apply only to the repository they name; a malformed declaration
+fails `policy` instead of being skipped. Receipts record `policy_source`
+(`github` or `declared`).
+
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
 instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
@@ -834,6 +856,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
+| `pr_required_checks` | `{}` | `OWNER/REPO` → list of required check names or `{context, app_id}` for PR completion contracts on repositories whose GitHub plan hides branch rules. Consulted only on the exact plan-boundary 403 when classic protection names nothing; read from the assignee profile's config. See [PR completion contracts](#pr-completion-contracts). |
 
 And the two auxiliary LLM slots:
 

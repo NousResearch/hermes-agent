@@ -1,18 +1,20 @@
 # Intake — Discovery Question Banks
 
-The discovery process is **adaptive**. Always start with three baseline
-questions to identify the broad style category, then drill into a per-style
-question bank. Ask 2-4 questions at a time, listen, then proceed. Make
-reasonable assumptions whenever the user implies an answer.
+The discovery process is **adaptive**. Resolve the three baseline answers from
+the current request, an approved brief, and relevant existing context before
+asking questions. Ask only for answers that are genuinely missing or materially
+ambiguous, then drill into a per-style question bank. Ask 2-4 questions at a
+time, listen, then proceed. Make reasonable assumptions whenever the user
+implies an answer.
 
-## Tier 0 — Baseline (always ask)
+## Tier 0 — Baseline (resolve first)
 
 1. **What is the video?** — One-sentence pitch
 2. **How long?** — Approximate duration
 3. **Aspect ratio + target platform?** — 16:9 / 9:16 / 1:1 / 4:5; X, IG, YouTube, internal, etc.
 
-From these answers, classify the style category and pick the relevant Tier 1
-follow-ups. **Do not** continue asking until you have at least these three.
+From the resolved answers, classify the style category and pick the relevant
+Tier 1 follow-ups. **Do not** continue until you have resolved all three.
 
 ## Style classification
 
@@ -132,7 +134,11 @@ texture inside the final scene.
 - **Tool preference?** — `touchdesigner-mcp` for full TD operator graphs;
   `p5js` for web-canvas; `comfyui` for generative-AI fed by audio features
 
-## Tier 2 — Always ask near the end
+## Tier 2 — Resolve before finalizing
+
+Resolve these details from the brief or context when they are supplied. Ask
+only when a missing or materially ambiguous answer affects the agreed scope,
+budget, deliverable, or schedule:
 
 - **Brand assets path?** — Where logo / color palette / fonts / music library lives
 - **Output format requirements?** — Codec preference, target file size, accepted
@@ -156,11 +162,17 @@ When the user under-specifies, fill in these defaults rather than asking:
 | Captions | On for explainer/tutorial; off for narrative/abstract unless requested |
 | Quality bar | Polished final unless user says draft |
 
-State the assumption explicitly: *"Assuming 30fps and AAC audio unless you say otherwise — proceed?"*
+State the assumption explicitly, for example: *"Assuming 30fps and AAC audio
+unless you say otherwise."* Do not turn a reversible technical default into a
+separate approval checkpoint. Ask for confirmation when the choice changes
+scope, creates spending, or requires a creative decision the user has not
+delegated.
 
 ## Anti-patterns
 
 - **Asking 10 questions at once.** Maximum 4 per turn.
 - **Asking for things the brief already implies.** If the user said "music video for my track," do not ask "is there a track?"
 - **Failing to classify before drilling in.** Tier-1 questions depend on classification; mixing them up wastes turns.
-- **Treating "make a video" as enough to proceed.** Always confirm the three baseline questions.
+- **Treating "make a video" as enough to proceed.** Resolve the three baseline
+  answers before proceeding; ask only for the answers that are still missing or
+  materially ambiguous.

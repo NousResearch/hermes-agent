@@ -51,17 +51,19 @@ DISCOVER  →  BRIEF  →  TEAM DESIGN  →  SETUP  →  EXECUTE  →  MONITOR
 
 ### Step 1 — Discover (ask the right questions)
 
-The discovery process is **adaptive**: ask only what is actually needed. Always
-start with three questions to identify the broad shape:
+The discovery process is **adaptive**: resolve the three baseline answers from
+the current request, an approved brief, and relevant existing context before
+asking questions. Ask only for answers that are genuinely missing or materially
+ambiguous. The baseline answers identify the broad shape:
 
 - **What is the video?** (one-sentence brief)
 - **How long?** (5-30s teaser / 30-90s short / 90s-3min explainer / 3-10min film / longer)
 - **What aspect ratio + target platform?** (1:1 / 9:16 / 16:9; X, IG, YouTube, internal, etc.)
 
-From the answer, classify the style category. The style determines which
-follow-up questions to ask. **Do not ask all questions at once.** Ask 2-4 at a
-time, listen, then proceed. Make reasonable assumptions whenever the user
-implies an answer.
+From the resolved answers, classify the style category. The style determines
+which follow-up questions to ask. **Do not ask all questions at once.** Ask
+2-4 at a time, listen, then proceed. Make reasonable assumptions whenever the
+user implies an answer.
 
 For complete intake patterns and per-style question banks, see
 **[references/intake.md](references/intake.md)**.
@@ -78,7 +80,9 @@ Once enough is known, produce a structured `brief.md` using the template in
 5. **Audio** — narration / music / SFX / silent (per scene if needed)
 6. **Deliverables** — file format, resolution, optional alternates (vertical cut, GIF, etc.)
 
-Show the brief to the user for confirmation before designing the team. **The
+Show a new or materially changed brief to the user for confirmation before
+designing the team. If the request explicitly authorizes using an existing
+approved brief without a scope change, reuse it rather than asking again. **The
 brief is the contract** — every downstream task references it.
 
 ### Step 3 — Team design
@@ -149,8 +153,10 @@ task graphs. See **[references/examples.md](references/examples.md)**.
 ## Critical rules
 
 1. **Discovery before action.** Never start generating a brief or team without
-   asking at least the three baseline questions. A bad brief cascades through
-   the entire pipeline.
+   resolving the three baseline answers. Extract them from the request,
+   approved brief, and relevant context first; ask only for answers that are
+   genuinely missing or materially ambiguous. A bad brief cascades through the
+   entire pipeline.
 
 2. **Match the team to the video.** Don't reuse the same 4-profile setup for
    every job. A music video that doesn't have a beat-analysis profile will

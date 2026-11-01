@@ -34,10 +34,13 @@ _HALLUCINATION_REPEAT_RE = re.compile(r'^(?:thank you|thanks|bye|you|ok|okay|the
 
 
 def is_whisper_hallucination(transcript: str) -> bool:
-    """Check if a transcript is a known Whisper hallucination on silence."""
+    """Check if a transcript is a known Whisper hallucination on silence. Anything without a single
+    letter or digit (in any script) counts too: on a click or breath Whisper emits "-", "...", "♪",
+    and those used to start a real agent turn."""
     cleaned = transcript.strip().lower()
     return (not cleaned or cleaned.rstrip('.!') in WHISPER_HALLUCINATIONS
-            or bool(_HALLUCINATION_REPEAT_RE.match(cleaned)))
+            or bool(_HALLUCINATION_REPEAT_RE.match(cleaned))
+            or not any(ch.isalnum() for ch in cleaned))
 
 
 DEFAULT_VOICE_STOP_PHRASES = ("stop",)

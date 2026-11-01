@@ -16,7 +16,12 @@ import urllib.parse
 from typing import Callable, Optional
 
 from tools.url_safety import (
+    _BLOCKED_HOSTNAMES,
+    _authority_ambiguity,
+    _is_always_blocked_ip,
     _is_declared_fake_ip,
+    _parse_ip,
+    _url_hostname,
     is_always_blocked_url,
     is_safe_url,
     normalize_url_for_request,
@@ -28,8 +33,22 @@ logger = logging.getLogger(__name__)
 _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
 # URL-shaped literals in a JS expression (http/https only). fetch/XHR to a private host never updates
-# ``location.href``, so the literals are pre-screened instead.
-_JS_URL_LITERAL_RE = re.compile(r"""https?://[^\s'"`)\]<>]+""", re.IGNORECASE)
+# ``location.href``, so the literals are pre-screened instead. A literal ends at a quote, whitespace,
+# ``)``, ``]`` or ``<>``, except that one ``[...]`` segment (a bracketed IPv6 host such as
+# ``http://[::1]:8080/``) is read whole.
+_URL_BODY = r"""(?=[^\s'"`)\]<>])(?:[^\s'"`)\[\]<>]*\[[^\s'"`)\[\]<>]*\])?[^\s'"`)\]<>]*"""
+_JS_URL_LITERAL_RE = re.compile(r"https?://" + _URL_BODY, re.IGNORECASE)
+# Plus scheme-relative ``//host``, ``///host`` or ``\\host`` (browsers fetch each with the page's scheme and
+# read ``\`` as ``/``); not ``a//b`` or ``// note``. One scan, so a ``//`` inside an http(s) literal's path or
+# query (``https://x/?next=//y``) is part of that literal, not a second target.
+_URL_OR_SCHEME_RELATIVE_RE = re.compile(r"""(?:https?://|(?<![\w:/\\])[/\\]{2,}(?=[^/\\\s]))""" + _URL_BODY,
+                                        re.IGNORECASE)
+_URL_BODY_RE = re.compile(_URL_BODY)
+# ``)``, ``]``, ``<`` and ``>`` are legal in userinfo, so a literal cut at one inside its authority may be
+# ``http://x)@host``: the rest of the authority (up to ``/ ? # \``) through its last ``@``.
+_USERINFO_TAIL_RE = re.compile(r"""[^\s'"`/?#\\]*@""")
+_LITERAL_HEAD_RE = re.compile(r"(?:https?:)?[/\\]+", re.IGNORECASE)
+_NUMERIC_HOST_RE = re.compile(r"[0-9a-fx.]+")  # _url_hostname lowercases
 
 
 def _err(error: str, **extra) -> dict:
@@ -136,9 +155,46 @@ def url_blocked(url: str) -> bool:
     return is_always_blocked_url(url) or not is_safe_url(url)
 
 
-def url_literals(text: str) -> list[str]:
-    """Every ``http(s)://`` literal in free text (a JS expression, an HTML snippet, a CDP param)."""
-    return [m.rstrip(".,;") for m in _JS_URL_LITERAL_RE.findall(text)] if isinstance(text, str) else []
+def url_literals(text: str, *, protocol_relative: bool = False) -> list[str]:
+    """Every ``http(s)://`` literal in free text (a JS expression, an HTML snippet, a CDP param); with
+    ``protocol_relative``, each scheme-relative ``//host/...`` literal too, kept scheme-less. A literal cut
+    inside its authority with an ``@`` ahead is also returned as the host a browser reads after that ``@``
+    (``http://x)@host/`` -> ``http://host/``), next to the literal as cut."""
+    if not isinstance(text, str):
+        return []
+    found = []
+    for m in (_URL_OR_SCHEME_RELATIVE_RE if protocol_relative else _JS_URL_LITERAL_RE).finditer(text):
+        found.append(m.group())
+        head = _LITERAL_HEAD_RE.match(m.group()).group()
+        if any(c in "/?#\\" for c in m.group()[len(head):]):
+            continue  # the authority ended inside the literal: its host is fixed
+        tail = _USERINFO_TAIL_RE.match(text, m.end())
+        host = tail and _URL_BODY_RE.match(text, tail.end())
+        if host:
+            found.append(head + host.group())
+    return [m.rstrip(".,;") for m in found]
+
+
+def literal_targets_metadata(literal: str) -> bool:
+    """True when a URL literal hits the cloud-metadata floor. A scheme-relative one (``//host``,
+    ``\\\\host``) is judged by its literal host only (a metadata hostname or IP, decimal/hex/octal IPv4
+    spellings included), never resolved, so a ``//TODO`` comment costs no DNS lookup."""
+    if not literal.startswith(("/", "\\")):
+        return is_always_blocked_url(literal)
+    url = "http://" + literal.lstrip("/\\").replace("\\", "/")
+    try:
+        if _authority_ambiguity(url, floor=True):  # a control character can move the host, as for http(s)
+            return True
+        host = _url_hostname(url, percent_decode=True)
+    except ValueError:
+        return False
+    ip = _parse_ip(host)
+    if ip is None and _NUMERIC_HOST_RE.fullmatch(host):
+        try:  # decimal, hex, octal or short IPv4 (``//0xa9fea9fe``), read as browsers do; still no DNS
+            ip = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            pass
+    return host in _BLOCKED_HOSTNAMES or (ip is not None and _is_always_blocked_ip(ip))
 
 
 def expression_targets_private_url(expression: str, *, blocked: Callable[[str], bool] = url_blocked) -> Optional[str]:

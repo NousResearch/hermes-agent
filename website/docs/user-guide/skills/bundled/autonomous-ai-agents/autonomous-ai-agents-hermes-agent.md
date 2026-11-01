@@ -158,14 +158,14 @@ terminal(command="hermes chat -q 'Set up CI/CD for ~/myapp'", background=true)
 
 ### Interactive PTY Mode (via tmux)
 
-Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning. Send the text and `Enter` as two `send-keys` calls: text and Enter in one call reach Hermes as one burst, and the Enter lands as a newline inside the message instead of submitting it. Both recipes wait for the `❯` input prompt (the default skin's symbol; use your skin's prompt symbol if you changed it) instead of a fixed sleep: a first start can take far longer than a few seconds, and input sent before the prompt is lost.
+Hermes uses prompt_toolkit, which requires a real terminal. Use tmux for interactive spawning. `tmux send-keys -t agent1 'text' Enter` in one call submits: Hermes treats a lone Enter that ends a fast burst of input as a submit once input has stayed quiet for a quarter second, while the Enters inside a multi-line paste stay newlines. The recipes below send `Enter` as its own call after a short pause, which submits at once and does not depend on that timing. Both recipes wait for the `❯` input prompt (the default skin's symbol; use your skin's prompt symbol if you changed it) instead of a fixed sleep: a first start can take far longer than a few seconds, and input sent before the prompt is lost.
 
 ```
 # Start
 terminal(command="tmux new-session -d -s agent1 -x 120 -y 40 'hermes'", timeout=10)
 
 # Wait for the input prompt (❯), then send a message
-terminal(command="for i in $(seq 90); do tmux capture-pane -t agent1 -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t agent1 -p | grep -q "❯" && tmux send-keys -t agent1 'Build a FastAPI auth service' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t agent1 -p | grep -q '❯' && break; sleep 1; done; tmux capture-pane -t agent1 -p | grep -q '❯' && tmux send-keys -t agent1 'Build a FastAPI auth service' && sleep 0.5 && tmux send-keys -t agent1 Enter", timeout=100)
 
 # Read output
 terminal(command="sleep 20 && tmux capture-pane -t agent1 -p", timeout=5)
@@ -177,7 +177,7 @@ terminal(command="tmux send-keys -t agent1 'Add rate limiting middleware' && sle
 terminal(command="tmux send-keys -t agent1 '/exit' && sleep 0.5 && tmux send-keys -t agent1 Enter && sleep 2 && tmux kill-session -t agent1", timeout=10)
 ```
 
-**No tmux** (`command -v tmux` prints nothing, e.g. an older Hermes Docker image): run Hermes as a PTY background process and drive it with `process_manage`. Stdin only exists with `pty=true`. Send the text, pause, then send the Enter key (`"\r"`) as its own `write`, for the same reason as with tmux: an Enter that arrives right after the text is read as part of a paste and becomes a newline. Use `write`, not `submit`, for the Enter. Wait for the input prompt before the first write: during startup Hermes queries the terminal's colours and then flushes its input, so text written before the prompt appears is silently dropped.
+**No tmux** (`command -v tmux` prints nothing, e.g. an older Hermes Docker image): run Hermes as a PTY background process and drive it with `process_manage`. Stdin only exists with `pty=true`. `submit` sends the text plus the Enter key a keyboard sends, and Hermes submits it the same way as a one-call tmux `send-keys`. The recipe below instead `write`s the text, pauses, and `write`s the Enter (`"\r"`) on its own, which does not depend on burst timing. Wait for the input prompt before the first write: during startup Hermes queries the terminal's colours and then flushes its input, so text written before the prompt appears is silently dropped.
 
 ```
 terminal(command="hermes", background=true, pty=true)   # returns session_id
@@ -196,11 +196,11 @@ process_manage(action="write", session_id="<id>", data="\r")
 ```
 # Agent A: backend
 terminal(command="tmux new-session -d -s backend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="for i in $(seq 90); do tmux capture-pane -t backend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t backend -p | grep -q "❯" && tmux send-keys -t backend 'Build REST API for user management' && sleep 0.5 && tmux send-keys -t backend Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t backend -p | grep -q '❯' && break; sleep 1; done; tmux capture-pane -t backend -p | grep -q '❯' && tmux send-keys -t backend 'Build REST API for user management' && sleep 0.5 && tmux send-keys -t backend Enter", timeout=100)
 
 # Agent B: frontend
 terminal(command="tmux new-session -d -s frontend -x 120 -y 40 'hermes -w'", timeout=10)
-terminal(command="for i in $(seq 90); do tmux capture-pane -t frontend -p | grep -q "❯" && break; sleep 1; done; tmux capture-pane -t frontend -p | grep -q "❯" && tmux send-keys -t frontend 'Build React dashboard for user management' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=100)
+terminal(command="for i in $(seq 90); do tmux capture-pane -t frontend -p | grep -q '❯' && break; sleep 1; done; tmux capture-pane -t frontend -p | grep -q '❯' && tmux send-keys -t frontend 'Build React dashboard for user management' && sleep 0.5 && tmux send-keys -t frontend Enter", timeout=100)
 
 # Check progress, relay context between them
 terminal(command="tmux capture-pane -t backend -p | tail -30", timeout=5)

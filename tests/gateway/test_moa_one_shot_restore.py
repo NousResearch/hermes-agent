@@ -26,6 +26,7 @@ def _runner_with_pending_once():
 
 def test_restore_runs_from_finally_even_when_turn_raises():
     runner, state = _runner_with_pending_once()
+    assert not hasattr(runner, "_pending_model_notes")
     gen = runner._begin_session_run_generation(KEY)
 
     with pytest.raises(RuntimeError):
@@ -36,3 +37,4 @@ def test_restore_runs_from_finally_even_when_turn_raises():
 
     assert state.conversation.model_override == PRIOR
     assert state.conversation.one_turn_restore is None
+    assert "one-turn model override has ended" in runner._pending_model_notes[KEY]

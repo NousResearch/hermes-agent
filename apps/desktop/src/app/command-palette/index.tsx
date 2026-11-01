@@ -60,6 +60,7 @@ import {
   Zap
 } from '@/lib/icons'
 import { getServers } from '@/lib/mcp-servers'
+import { SESSION_ID_RE } from '@/lib/session-ids'
 import { normalize } from '@/lib/text'
 import { rollbackSentence } from '@/lib/update-copy'
 import { cn } from '@/lib/utils'
@@ -380,10 +381,6 @@ const PaletteRow = memo(function PaletteRow({
     </CommandItem>
   )
 })
-
-// Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
-// "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
-const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
 
 // A typed/pasted folder path: absolute (`/…`) or a Windows drive (`C:\…`).
 // Deliberately NOT `~/…`: the upsert's membership check (projectIdForCwd)

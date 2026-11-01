@@ -35,12 +35,12 @@ from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
-from hermes_cli.cli_session_switch import (
-    _end_current_session, _sync_agent_to_session)
+from hermes_cli.cli_session_switch import _end_current_session, _sync_agent_to_session
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
 from hermes_cli.cli_browser_gateway import _normalize_cdp_url
+from hermes_cli.cli_handoff_desktop import handoff_to_desktop
 
 
 # Output helpers. Slash-command text is user-visible: every literal below is load-bearing.
@@ -657,15 +657,15 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return True
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
-
-        Validate target → prepare session row → mark pending → block-poll (see ``_handoff_wait``).
+        """``/handoff <platform>|desktop``: hand this CLI session to a gateway platform (validate target →
+        prepare row → mark pending → block-poll, see ``_handoff_wait``) or to the Desktop app.
         Returns False only on ``completed`` (caller exits like /quit); True keeps the session."""
         platform_name = _command_arg(cmd_original).lower()
         if not platform_name:
-            return self._handoff_keep(
-                f"  {_t('handoff.usage')}", f"  {_t('handoff.usage_detail_1')}",
-                f"  {_t('handoff.usage_detail_2')}")
+            return self._handoff_keep(f"  {_t('handoff.usage')}", f"  {_t('handoff.usage_detail_1')}",
+                                      f"  {_t('handoff.usage_detail_2')}")
+        if platform_name == "desktop":  # no gateway: the app resumes it via hermes://session/<id>
+            return handoff_to_desktop(self)
         home = self._handoff_validate_target(platform_name)
         if home is None:
             return True
@@ -723,11 +723,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 self._session_db = acquire()
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
-        # needs a row to switch_session onto; set_session_title's INSERT OR IGNORE creates it.
+        # Ensure the row exists (an empty session flushed nothing): the gateway switch_session()es onto
+        # it, Desktop resumes it. set_session_title is UPDATE-only (CAS), so upsert explicitly.
         try:
             if not self._session_db.get_session(self.session_id):
-                self._session_db.set_session_title(self.session_id, f"handoff-{self.session_id[:8]}")
+                self._session_db.ensure_session(self.session_id, source="cli", model=getattr(self, "model", None))
         except Exception as exc:
             return _cp(f"  {_t('handoff.session_row_failed', error=exc)}")
         session_title = ""

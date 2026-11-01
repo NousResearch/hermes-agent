@@ -1,3 +1,10 @@
+// Hermes stored session ids: <YYYYMMDD>_<HHMMSS>_<6 hex> — the shape the
+// gateway mints for every persisted session. Shared by the surfaces that accept
+// a raw id from outside the session list (the command palette's "Go to session
+// ‹id›" jump, the hermes://session/<id> deep link) so malformed ids are
+// rejected by one definition of "well-formed".
+export const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
+
 // The gateway tags every event — and therefore every native notification —
 // with the *runtime* session id (the key under which the session lives in the
 // gateway's in-memory `_sessions` map). The chat route, however, is keyed by

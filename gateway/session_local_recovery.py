@@ -93,7 +93,15 @@ def _with_untracked_compression(authority, sid, receipt):
 def _checked_entry(authority, receipt, source, route):
     """*receipt*'s entry, once its route, origin and stored identity are this authority's."""
     if receipt['route'] != route:
-        raise ValueError('route mismatch')
+        # Tolerate legacy standalone receipt route for multiplexed profile 'main'
+        if (getattr(source, 'profile', None) == 'main'
+                and receipt.get('route', '').startswith('agent:main:local:')
+                and route == 'agent:main~:local:' + receipt['route'][17:]):
+            receipt['route'] = route
+            if receipt.get('entry', {}).get('session_key', '').startswith('agent:main:local:'):
+                receipt['entry']['session_key'] = route
+        else:
+            raise ValueError('route mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     # Older local receipts omitted the served profile from the origin. The receipt's
     # home and route already matched this authority; fill only that absent field,

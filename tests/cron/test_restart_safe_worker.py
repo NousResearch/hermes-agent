@@ -1367,3 +1367,68 @@ def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)
+def _scoped_dispatch(sink):
+    """Fake ``restart_safe_gateway_child_argv`` that records the worker command and reports a
+    scoped dispatch (the managed-gateway topology, without a live systemd user bus)."""
+    from tools.process_registry import GatewayChildDispatch
+
+    def wrap(command, *, unit_suffix, require_restart_safe_scope=False):
+        sink.append(command)
+        return GatewayChildDispatch("scoped", ["scope", "--", *command])
+
+    return wrap
+
+
+def test_external_worker_runs_on_the_dependency_venv_interpreter_in_a_managed_install(
+    tmp_path, monkeypatch
+):
+    """A store-managed install runs the gateway on the bare store Python; its children get
+    neither the repo nor the managed site-packages on ``sys.path`` (#123044), so a worker
+    spawned from ``sys.executable`` dies importing ``cron.scheduler`` before its ownership
+    ack (e.g. ``No module named 'ruamel'``). The worker must run on the selected dependency
+    venv's interpreter -- the same choice ``cron/scheduler_script.py`` already makes.
+    """
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    wrapped: list = []
+    monkeypatch.setattr(
+        "hermes_cli._launchers.resolve_store_python", lambda repo: Path("/store/python3")
+    )
+    monkeypatch.setattr("pm.environments.project_python", lambda repo: venv_python)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv", _scoped_dispatch(wrapped)
+    )
+    _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    command = wrapped[0]
+    assert command[0] == str(venv_python)
+    assert command[1:3] == ["-m", "cron.scheduler"]
+
+
+def test_external_worker_keeps_its_own_interpreter_outside_a_managed_install(
+    tmp_path, monkeypatch
+):
+    """A packaged or developer install owns its runtime: no store Python, no re-point."""
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda repo: None)
+    monkeypatch.setattr(
+        "pm.environments.project_python",
+        lambda repo: pytest.fail("must not resolve a dependency venv for a packaged install"),
+    )
+    wrapped: list = []
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv", _scoped_dispatch(wrapped)
+    )
+    _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert wrapped[0][0] == sys.executable

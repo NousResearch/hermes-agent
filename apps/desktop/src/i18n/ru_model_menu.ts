@@ -14,6 +14,13 @@ export const ruModelMenu = {
   cacheRead: 'чтение из кэша',
   priceTitle: (input: string, output: string, cache: string) =>
     `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+  pricing: {
+    title: 'Цены',
+    titlePerMillion: 'Цены · за 1 млн токенов',
+    input: 'Вход',
+    output: 'Выход',
+    free: 'Бесплатно'
+  },
   localSetup: {
     title: 'Запуск локально · бесплатно, приватно',
     text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,

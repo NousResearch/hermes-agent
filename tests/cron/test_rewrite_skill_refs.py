@@ -237,3 +237,81 @@ class TestRewriteSkillRefsPersistence:
         assert report["jobs_updated"] == 0
         # File untouched — no pointless disk write
         assert JOBS_FILE.stat().st_mtime_ns == mtime_before
+
+
+class TestRewriteSkillRefsCategoryQualified:
+    """A job may list a skill category-qualified (``category/name``), the form
+    ``skill_view()`` and the cron tool accept. The curator's maps are keyed by
+    bare names, so qualified refs must be matched on their bare segment too —
+    otherwise the job keeps pointing at the archived skill (#135254)."""
+
+    def test_qualified_ref_mapped_to_umbrella(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            skills=["communications/messaging-operations"],
+        )
+        report = rewrite_skill_refs(
+            consolidated={"messaging-operations": "customer-communications-operations"},
+            pruned=[],
+        )
+
+        assert report["jobs_updated"] == 1
+        loaded = get_job(job["id"])
+        assert loaded["skills"] == ["customer-communications-operations"]
+        assert loaded["skill"] == "customer-communications-operations"
+        entry = report["rewrites"][0]
+        assert entry["mapped"] == {
+            "communications/messaging-operations": "customer-communications-operations"
+        }
+
+    def test_qualified_pruned_ref_dropped(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            skills=["keep", "communications/stale"],
+        )
+        report = rewrite_skill_refs(consolidated={}, pruned=["stale"])
+
+        assert report["jobs_updated"] == 1
+        loaded = get_job(job["id"])
+        assert loaded["skills"] == ["keep"]
+        assert report["rewrites"][0]["dropped"] == ["communications/stale"]
+
+    def test_qualified_ref_dedupes_against_bare_umbrella(self, cron_env):
+        from cron.jobs import create_job, get_job, rewrite_skill_refs
+
+        # Job already loads the umbrella AND the qualified legacy sub-skill
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            skills=["umbrella", "category/legacy"],
+        )
+        rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
+
+        loaded = get_job(job["id"])
+        # No duplicate — the umbrella stays exactly once
+        assert loaded["skills"] == ["umbrella"]
+
+    def test_unrelated_qualified_ref_untouched(self, cron_env):
+        from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
+
+        # A qualified ref whose bare segment is not in the maps must not be
+        # mangled or reported — categories are legitimate parts of the name.
+        create_job(
+            prompt="",
+            schedule="every 1h",
+            skills=["unrelated/category-skill"],
+        )
+        mtime_before = JOBS_FILE.stat().st_mtime_ns
+        report = rewrite_skill_refs(
+            consolidated={"other-name": "umbrella"},
+            pruned=["another"],
+        )
+
+        assert report["jobs_updated"] == 0
+        assert JOBS_FILE.stat().st_mtime_ns == mtime_before

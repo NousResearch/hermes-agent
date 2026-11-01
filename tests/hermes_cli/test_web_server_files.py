@@ -755,6 +755,8 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "webhook_subscriptions.json",
         "bws_cache.json",
         "bws_cache.enc.json",
+        "op_cache.json",
+        "photon-sidecar.json",
     ):
         p = root / name
         p.write_text("SECRET=abc123")

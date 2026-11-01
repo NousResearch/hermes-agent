@@ -196,7 +196,8 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
     """Copy *package_dir*'s desktop half to ``<app_root>/<name>/``: its ``desktop/`` folder, or the
     package root (minus :data:`ROOT_LAYOUT_SKIP`) when ``plugin.js`` sits at the root, as the
     installers publish a root-layout repository. Returns the folder when it was copied or adopted, ``None`` when it is
-    already current, absent, refused (a link or an oversized tree), or a user's own plugin."""
+    already current, absent, or a user's own plugin. Raises :class:`OSError` with the reason when the tree is refused
+    (a link or an oversized tree), as Electron's ``materializeDesktopHalf`` throws."""
     found = _desktop_entry(package_dir, name)
     if found is None:
         return None
@@ -242,13 +243,15 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
             return None
 
     ignore = root_layout_ignore(source_dir, package_dir)
-    if ignore is not None:
-        # The whole package root is published, agent payload included: hold it to the installer's
-        # plain-tree rule rather than copy a link to anywhere on the host into the served folder.
-        refused = check_desktop_tree(source_dir, package_dir, linked_root=linked, skip=ROOT_LAYOUT_SKIP)
+    if ignore is not None or not linked:
+        # An installed package's ``desktop/`` folder and any root-layout half (the whole package root,
+        # agent payload included) are held to the installer's plain-tree rule rather than copy a link to
+        # anywhere on the host into the served folder. Only a dev checkout linked into ``plugins/``
+        # publishes its ``desktop/`` folder as it stands, as Electron's reconcile does.
+        refused = check_desktop_tree(source_dir, package_dir, linked_root=linked,
+                                     skip=ROOT_LAYOUT_SKIP if ignore is not None else ())
         if refused:
-            logger.warning("desktop-plugins: not copying the desktop half of %s: %s", name, refused)
-            return None
+            raise OSError(refused)
     publish_desktop_tree(source_dir, target, marker, ignore=ignore)
     return target
 
@@ -269,8 +272,16 @@ def reconcile_desktop_halves(hermes_root: Path, app_root: Path) -> list[str]:
     """Materialize every local home's desktop halves into *app_root* (first home wins for a name in
     several profiles, the default home first) and drop copies whose package is gone. Returns the
     folders it wrote or removed."""
+    return reconcile_desktop_halves_report(hermes_root, app_root)["touched"]
+
+
+def reconcile_desktop_halves_report(hermes_root: Path, app_root: Path) -> dict:
+    """:func:`reconcile_desktop_halves`, also naming each package whose desktop half it refused or could not
+    read (``refused``: ``{"name", "reason"}``), as Electron's ``reconcileDesktopPluginsReport`` does. A refused
+    half leaves its name to a later home's half, and is not reported once that half is published."""
     with ROOT_WRITER:
         touched: list[str] = []
+        refused: list[dict[str, str]] = []
         seen: set[str] = set()
         homes = [hermes_root, *(hermes_root / "profiles" / name for name in _list_dirs(hermes_root / "profiles"))]
         for home in homes:
@@ -281,8 +292,9 @@ def reconcile_desktop_halves(hermes_root: Path, app_root: Path) -> list[str]:
                 try:
                     result = materialize_desktop_half(plugins_root / name, app_root, name)
                 except OSError as exc:
-                    # One unreadable package must not stop every other half from loading.
-                    logger.warning("desktop-plugins: skipping unreadable package %s: %s", name, exc)
+                    # One unreadable or refused package must not stop every other half from loading.
+                    logger.warning("desktop-plugins: skipping package %s: %s", name, exc)
+                    refused.append({"name": name, "reason": str(exc)})
                     continue
                 if result is not None or desktop_source(plugins_root / name) is not None:
                     seen.add(name)
@@ -300,4 +312,4 @@ def reconcile_desktop_halves(hermes_root: Path, app_root: Path) -> list[str]:
                 else:
                     shutil.rmtree(folder, ignore_errors=True)
                 touched.append(str(folder))
-        return touched
+        return {"touched": touched, "refused": [entry for entry in refused if entry["name"] not in seen]}

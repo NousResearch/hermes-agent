@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCatalog, parseCatalog } from './catalog-data'
+import { catalogLabel, fetchCatalog, parseCatalog } from './catalog-data'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -141,5 +141,25 @@ describe('public catalog data', () => {
 
   it('rejects a non-catalog response instead of treating an error payload as an empty catalog', () => {
     expect(() => parseCatalog('skills', { error: 'Service unavailable' })).toThrow('Invalid catalog response')
+  })
+})
+
+describe('catalogLabel', () => {
+  it('reads slugs as words and keeps domains verbatim', () => {
+    expect(catalogLabel('software-development')).toBe('Software Development')
+    expect(catalogLabel('web_search')).toBe('Web Search')
+    expect(catalogLabel('browse.sh')).toBe('browse.sh')
+  })
+
+  it('keeps already-cased display labels verbatim', () => {
+    expect(catalogLabel('Computer Use (macOS/Windows/Linux)')).toBe('Computer Use (macOS/Windows/Linux)')
+    expect(catalogLabel('Text-to-Speech')).toBe('Text-to-Speech')
+    expect(catalogLabel('Dosya İşlemleri')).toBe('Dosya İşlemleri')
+  })
+
+  it('treats non-ASCII letters as part of the word', () => {
+    expect(catalogLabel('kod çalıştırma')).toBe('Kod Çalıştırma')
+    expect(catalogLabel('café-crème')).toBe('Café Crème')
+    expect(catalogLabel('über-tools')).toBe('Über Tools')
   })
 })

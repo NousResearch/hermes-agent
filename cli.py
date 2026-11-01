@@ -567,7 +567,7 @@ def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
         _cprint(f"\n\033[33m{_t('cli.worktree.uncommitted_keeping', path=wt_path)}\033[0m")
         return
 
-    if _worktree_has_unpushed_commits(wt_path, timeout=10):
+    if _worktree_has_unpushed_commits(wt_path, timeout=10, branch=branch):
         if _repo_is_shallow(repo_root):
             # Shallow boundary makes the unpushed verdict unreliable; the startup pruner reaps later.
             _cprint(f"\n\033[33m{_t('cli.worktree.shallow_clone_keeping', path=wt_path)}\033[0m")

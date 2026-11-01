@@ -446,7 +446,9 @@ def _cleanup_worktree_workspace(
         repo_root = common.parent
         if _path_key(wp.resolve(strict=False)) == _path_key(repo_root.resolve(strict=False)):
             return  # never remove the main checkout
-        if _worktree_is_dirty(str(wp), str(repo_root)) or _worktree_has_unpushed_commits(str(wp)):
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        if _worktree_is_dirty(str(wp), str(repo_root)) or _worktree_has_unpushed_commits(
+                str(wp), branch=branch if branch.startswith("wt/") else None):
             _kb._log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,
@@ -489,7 +491,6 @@ def _cleanup_worktree_workspace(
             )
             return
         _kb._log.debug("Removed worktree workspace: %s", wp)
-        branch = (branch_name or "").strip() or f"wt/{task_id}"
         if branch.startswith("wt/"):
             _git(repo_root, "branch", "-D", branch, timeout=30)
     except Exception:

@@ -256,3 +256,125 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+# --- per-board overrides (kanban.boards.<slug>.*) ---------------------------
+
+def _write_config(home, text):
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+
+
+def test_load_routing_board_override(kanban_home):
+    """Invariant: a board override wins for orchestrator + default_assignee.
+    On the 1e0c7730d7 baseline ``_load_routing`` has no ``board`` kwarg and the
+    board key is invisible — red (TypeError / ignored)."""
+    _write_config(
+        kanban_home,
+        "kanban:\n  boards:\n    tsa-mgmt:\n"
+        "      orchestrator_profile: planner\n      default_assignee: worker\n",
+    )
+    patches = _patch_list_profiles(["planner", "worker", "default"])
+    for p in patches:
+        p.start()
+    try:
+        routing = decomp._load_routing(root_assignee=None, board="tsa-mgmt")
+    finally:
+        for p in patches:
+            p.stop()
+    assert routing.orchestrator == "planner"
+    assert routing.default_assignee == "worker"
+
+
+def test_load_routing_board_without_key_falls_back_to_global(kanban_home):
+    """Zero-change guard: a board with no override uses the global key."""
+    _write_config(
+        kanban_home,
+        "kanban:\n  orchestrator_profile: planner\n"
+        "  boards:\n    svs:\n      orchestrator_profile: other\n",
+    )
+    patches = _patch_list_profiles(["planner", "other"])
+    for p in patches:
+        p.start()
+    try:
+        routing = decomp._load_routing(root_assignee=None, board="tsa-mgmt")
+    finally:
+        for p in patches:
+            p.stop()
+    assert routing.orchestrator == "planner"
+
+
+def test_resolve_profile_from_cfg_board_beats_global(kanban_home):
+    cfg = {"kanban": {
+        "orchestrator_profile": "global-planner",
+        "boards": {"tsa-mgmt": {"orchestrator_profile": "board-planner"}},
+    }}
+    patches = _patch_list_profiles(["global-planner", "board-planner"])
+    for p in patches:
+        p.start()
+    try:
+        assert decomp._resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", board="tsa-mgmt",
+        ) == "board-planner"
+        assert decomp._resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", board="svs",
+        ) == "global-planner"
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_resolve_profile_from_cfg_board_unknown_profile_falls_back(kanban_home):
+    """Review #135651: a board value naming no profile is skipped and the chain
+    continues to a valid global; it must not fall straight to the root."""
+    cfg = {"kanban": {
+        "orchestrator_profile": "global-planner",
+        "boards": {"tsa-mgmt": {"orchestrator_profile": "ghost"}},
+    }}
+    patches = _patch_list_profiles(["global-planner", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        assert decomp._resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", fallback="fallback", board="tsa-mgmt",
+        ) == "global-planner"
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_resolve_profile_from_cfg_board_and_global_unknown_uses_root(kanban_home):
+    """Board invalid AND global invalid -> the root assignee is the last named
+    candidate before the active-profile backstop."""
+    cfg = {"kanban": {
+        "orchestrator_profile": "global-ghost",
+        "boards": {"tsa-mgmt": {"orchestrator_profile": "board-ghost"}},
+    }}
+    patches = _patch_list_profiles(["fallback"])
+    for p in patches:
+        p.start()
+    try:
+        assert decomp._resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", fallback="fallback", board="tsa-mgmt",
+        ) == "fallback"
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_resolve_profile_from_cfg_all_candidates_unknown_uses_active(kanban_home):
+    """Nothing named exists: the active profile backstops so a task is never
+    stranded without an owner."""
+    cfg = {"kanban": {
+        "orchestrator_profile": "global-ghost",
+        "boards": {"tsa-mgmt": {"orchestrator_profile": "board-ghost"}},
+    }}
+    patches = _patch_list_profiles(["default"])
+    for p in patches:
+        p.start()
+    try:
+        assert decomp._resolve_profile_from_cfg(
+            cfg, "orchestrator_profile", fallback="root-ghost", board="tsa-mgmt",
+        ) == "default"
+    finally:
+        for p in patches:
+            p.stop()
+
+

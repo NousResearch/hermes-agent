@@ -1,8 +1,8 @@
 name: harnmem
 repo: https://github.com/ys118/harnmem
-sha: f042fe255dd15366699d1c8246e7dd1ff73ee300
+sha: 4436bea635534eeba8fb78b0f26510388a815714
 subdir: packages/hermes-harnmem
-version: "0.1.1"
+version: "0.1.2"
 title: HarnMem
 description: >-
   Cross-harness long-term memory for Hermes: injects a byte-stable memory
@@ -19,7 +19,7 @@ maintainer: ys118
 tier: community
 category: memory
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/ys118/harnmem/blob/f042fe255dd15366699d1c8246e7dd1ff73ee300/docs/design/13-hermes-adapter.md
+docs_url: https://github.com/ys118/harnmem/blob/4436bea635534eeba8fb78b0f26510388a815714/docs/design/13-hermes-adapter.md
 readme: true
 capabilities:
   provides_tools:

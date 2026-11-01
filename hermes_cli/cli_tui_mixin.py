@@ -19,6 +19,7 @@ from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
+from utils import file_signature
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings

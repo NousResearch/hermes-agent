@@ -611,10 +611,10 @@ export function useVoiceConversation({
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       thresholdMultiplier: $bargeInThresholdMultiplier.get(),
-      onSpeech: () => {
-        // Snapshot before playback is cut: the reply may be consumed by the
-        // time the capture is transcribed.
-        bargeEchoTextRef.current = $voicePlayback.get().status === 'speaking' ? (pendingResponse()?.text ?? '') : ''
+      onSpeech: duringPlayback => {
+        // Capture-time provenance survives a sentence gap before queued audio
+        // is delivered; snapshot the reply before playback is cut or consumed.
+        bargeEchoTextRef.current = duringPlayback ? (pendingResponse()?.text ?? '') : ''
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()

@@ -1,7 +1,7 @@
 import { randomUuid } from '@hermes/shared'
 import type { WebglAddon } from '@xterm/addon-webgl'
 import type { Terminal } from '@xterm/xterm'
-import { atom, computed } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { readKey, writeKey } from '@/lib/storage'
 import { notifyError } from '@/store/notifications'
@@ -280,12 +280,21 @@ export const $activeTerminal = computed(
 
 const newId = () => randomUuid()
 
+// The gateway picked in Sessions, as a shell host. terminal-gateway.ts binds the
+// registry-backed store on load; this module stays free of the connection
+// stores. Unbound (or with no registry, like the Webapp) there is one host.
+let $defaultGateway: ReadableAtom<TerminalGateway | undefined> = atom(undefined)
+
+let unbindDefaultGateway = () => {}
+
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
- *  tie to session/project state). Without an explicit gateway the tab takes the
- *  one picked in Sessions when its shell first starts. Returns the id. */
+ *  tie to session/project state) and the gateway: an explicit one, else the one
+ *  picked in Sessions now, so a failed first start can never retry elsewhere.
+ *  Returns the id. */
 export function createTerminal(cwd: string = $currentCwd.get(), gateway?: TerminalGateway): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user', ...gateway }])
+  const owner = gateway ?? $defaultGateway.get()
+  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user', ...owner }])
   $activeTerminalId.set(id)
 
   return id
@@ -387,25 +396,20 @@ const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || te
 // A path names a directory on one host: `/repo` on the NAS is not `/repo` here,
 // so only tabs on the session's gateway (or a fresh tab that has not recorded
 // one yet) can match.
-type SessionShellHost = () => string | undefined
-
-// The registry-backed resolver lives in terminal-gateway.ts, which binds it on
-// load; this module stays free of the connection stores. Until then (or with no
-// registry, like the Webapp) there is one host and the path alone decides.
-let sessionShellHost: SessionShellHost = () => undefined
-
-export function bindTerminalSessionHost(resolve: SessionShellHost): void {
-  sessionShellHost = resolve
+export function bindTerminalDefaultGateway(source: ReadableAtom<TerminalGateway | undefined>): void {
+  unbindDefaultGateway()
+  $defaultGateway = source
+  unbindDefaultGateway = () => {}
 }
 
-$currentCwd.listen(cwd => {
+function followSessionCwd(cwd: string) {
   const target = normalizePath(cwd)
 
   if (!target) {
     return
   }
 
-  const host = sessionShellHost()
+  const host = $defaultGateway.get()?.connectionId
 
   const linked = (term: TerminalEntry | undefined) =>
     term?.kind === 'user' &&
@@ -423,7 +427,9 @@ $currentCwd.listen(cwd => {
   if (match) {
     $activeTerminalId.set(match.id)
   }
-})
+}
+
+$currentCwd.listen(followSessionCwd)
 
 /** Move the active tab by `direction` (+1 next / -1 prev), wrapping around. */
 export function cycleTerminal(direction: 1 | -1): void {

@@ -1,0 +1,106 @@
+import { waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Real terminal, connection and session stores; only the native terminal IPC
+// is stubbed. Every test loads fresh modules so a "relaunch" re-reads storage.
+async function loadStores() {
+  vi.resetModules()
+  const terminals = await import('./terminals')
+  const gateway = await import('./terminal-gateway')
+  const attempt = await import('./terminal-session-attempt')
+  const { $connectionsRegistry } = await import('@/store/connections')
+  const { $connection, $currentCwd } = await import('@/store/session')
+
+  return { ...terminals, ...gateway, ...attempt, $connection, $connectionsRegistry, $currentCwd }
+}
+
+type Stores = Awaited<ReturnType<typeof loadStores>>
+
+const registryWith = (...ssh: Array<{ host: string; id: string }>) =>
+  ({
+    version: 2,
+    primary: 'local',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      ...ssh.map(entry => ({ ...entry, kind: 'ssh', label: entry.id.toUpperCase() }))
+    ]
+  }) as never
+
+function controllerFor(stores: Stores, id: string, start: ReturnType<typeof vi.fn>) {
+  const write = vi.fn()
+
+  const controller = stores.createSessionAttemptController(id, {
+    isDisposed: () => false,
+    isReplayingHistory: () => false,
+    onStarted: () => {},
+    resolveCwd: () => '/repo',
+    restoreHistory: () => {},
+    sessionIdRef: { current: null },
+    setStatus: () => {},
+    term: { clearSelection: () => {}, cols: 80, rows: 24, write } as never,
+    terminalApi: {
+      attach: vi.fn(async () => true),
+      dispose: vi.fn(async () => true),
+      onData: () => () => {},
+      onExit: () => () => {},
+      start,
+      write: vi.fn()
+    } as never,
+    writeOutput: () => {}
+  })
+
+  return { controller, write }
+}
+
+const session = (connectionId: string) => ({ connectionId, cwd: '/repo', id: `pty-${connectionId}`, shell: 'bash' })
+
+beforeEach(() => {
+  window.localStorage.clear()
+  delete window.document.documentElement.dataset.hermesDesktopHost
+})
+
+describe('a terminal tab owns the gateway it was opened on', () => {
+  it('a failed first start retries on the same gateway after a Sessions pick', async () => {
+    const stores = await loadStores()
+    stores.$connectionsRegistry.set(registryWith({ host: 'nas.example', id: 'nas' }))
+    stores.$connection.set({ connectionId: 'nas' } as never)
+
+    // The plain + button: no explicit gateway.
+    const id = stores.createTerminal('/repo')
+    expect(stores.$terminals.get().find(term => term.id === id)).toMatchObject({ connectionId: 'nas' })
+    const start = vi.fn().mockRejectedValueOnce(new Error('NAS offline')).mockResolvedValue(session('nas'))
+    const { controller, write } = controllerFor(stores, id, start)
+
+    controller.start()
+    await waitFor(() => expect(write).toHaveBeenCalled())
+    expect(start.mock.calls[0]![0].connectionId).toBe('nas')
+
+    stores.$connection.set({ connectionId: 'local' } as never)
+    controller.input('\r')
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+    controller.release()
+
+    expect(start.mock.calls[1]![0].connectionId).toBe('nas')
+    expect(stores.$terminals.get().find(term => term.id === id)?.connectionId).toBe('nas')
+  })
+
+  it('a restored tab with no gateway pins the one it first tried, even when that start fails', async () => {
+    const stores = await loadStores()
+    const id = stores.createTerminal('/repo') // no registry yet: nothing to record
+
+    stores.$connectionsRegistry.set(registryWith({ host: 'nas.example', id: 'nas' }))
+    stores.$connection.set({ connectionId: 'nas' } as never)
+    const start = vi.fn().mockRejectedValueOnce(new Error('NAS offline')).mockResolvedValue(session('nas'))
+    const { controller, write } = controllerFor(stores, id, start)
+
+    controller.start()
+    await waitFor(() => expect(write).toHaveBeenCalled())
+    stores.$connection.set({ connectionId: 'local' } as never)
+    controller.input('\r')
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+    controller.release()
+
+    expect(start.mock.calls[1]![0].connectionId).toBe('nas')
+  })
+
+})

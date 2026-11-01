@@ -5,7 +5,7 @@ import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/gl
 import { $activeConnectionId, $connectionsRegistry } from '@/store/connections'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
-import { bindTerminalSessionHost, type TerminalEntry } from './terminals'
+import { bindTerminalDefaultGateway, type TerminalEntry } from './terminals'
 
 /** The gateway a terminal tab was opened on. Only This device and SSH gateways
  *  carry a shell; the SSH tunnel is keyed by (connection, profile). */
@@ -35,16 +35,21 @@ export function shellGatewayFor(
 }
 
 /** A new terminal opens on the gateway picked in Sessions. */
-export const defaultTerminalGateway = () =>
-  shellGatewayFor($activeConnectionId.get(), $activeGatewayProfile.get(), $connectionsRegistry.get())
+const $defaultTerminalGateway = computed(
+  [$activeConnectionId, $activeGatewayProfile, $connectionsRegistry],
+  shellGatewayFor
+)
+
+export const defaultTerminalGateway = () => $defaultTerminalGateway.get()
 
 /** The tab's shell rides an SSH gateway's tunnel (only SSH gateways keep a
  *  connection id other than This device on a tab). */
 export const runsOverSsh = (gateway: TerminalGateway | undefined): boolean =>
   Boolean(gateway && gateway.connectionId !== LOCAL_CONNECTION_ID)
 
-// Entering a session re-selects a tab in its cwd only on the session's host.
-bindTerminalSessionHost(() => defaultTerminalGateway()?.connectionId)
+// New tabs record this gateway, and entering a session re-selects a tab in its
+// cwd only on the session's host.
+bindTerminalDefaultGateway($defaultTerminalGateway)
 
 export const terminalGatewayOf = (term: TerminalEntry | undefined): TerminalGateway | undefined =>
   term?.connectionId ? { connectionId: term.connectionId, ...(term.profile ? { profile: term.profile } : {}) } : undefined

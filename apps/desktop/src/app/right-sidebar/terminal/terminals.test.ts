@@ -247,9 +247,9 @@ describe('session cwd → terminal tab linking', () => {
   })
 
   it("selects the session's own host's tab when two hosts share the path", async () => {
-    const { $activeTerminalId, $currentCwd, bindTerminalSessionHost, createTerminal } = await loadTerminalStore()
-    let host = 'nas'
-    bindTerminalSessionHost(() => host)
+    const { $activeTerminalId, $currentCwd, bindTerminalDefaultGateway, createTerminal } = await loadTerminalStore()
+    const $host = atom<{ connectionId: string } | undefined>({ connectionId: 'nas' })
+    bindTerminalDefaultGateway($host)
 
     const nasTab = createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
     const localTab = createTerminal('/repo', { connectionId: 'local' })
@@ -260,11 +260,11 @@ describe('session cwd → terminal tab linking', () => {
     expect($activeTerminalId.get()).toBe(nasTab)
 
     // An active tab on the wrong host with the same path does not keep focus.
-    host = 'local'
+    $host.set({ connectionId: 'local' })
     $currentCwd.set('/repo/')
     expect($activeTerminalId.get()).toBe(localTab)
 
-    host = 'nas'
+    $host.set({ connectionId: 'nas' })
     $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(nasTab)
   })

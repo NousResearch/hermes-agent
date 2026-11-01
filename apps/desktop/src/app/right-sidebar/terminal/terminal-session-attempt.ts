@@ -135,28 +135,37 @@ export function createSessionAttemptController(
       term.write(`${message}\r\n`)
     }
 
+    const showUnavailable = (reason: keyof typeof TERMINAL_UNAVAILABLE_KEYS) => {
+      restoreHistory()
+      setStatus('closed')
+      term.write(`\r\n${translateNow(TERMINAL_UNAVAILABLE_KEYS[reason])}\r\n`)
+    }
+
     // The tab's own gateway; a tab from an older Desktop takes the one picked
-    // in Sessions (never the window-backend route, which a pick doesn't move).
+    // in Sessions (never the window-backend route, which a pick doesn't move)
+    // and records it BEFORE the start, so a failed start retries on it too.
     const tab = $terminals.get().find(entry => entry.id === id)
+
     const gateway = terminalGatewayOf(tab) ?? defaultTerminalGateway()
+
+    if (gateway) {
+      adoptTerminalGateway(id, gateway)
+    }
 
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
       .start({ cols: term.cols, cwd: resolveCwd(), restoreKey: id, resumeOnly, rows: term.rows, ...gateway })
       .then(async session => {
-        const ranOn = gateway ?? (session.connectionId ? { connectionId: session.connectionId } : undefined)
-
-        if (ranOn) {
-          adoptTerminalGateway(id, ranOn)
+        // No registry to pick from (Webapp, early boot): main routed it.
+        if (!gateway && session.connectionId) {
+          adoptTerminalGateway(id, { connectionId: session.connectionId })
         }
 
         if (session.unavailable) {
           // The gateway is gone or has no shell: an exited tab, never a
           // local shell under the remote's name.
           if (!isDisposed() && current) {
-            restoreHistory()
-            setStatus('closed')
-            term.write(`\r\n${translateNow(TERMINAL_UNAVAILABLE_KEYS[session.unavailable])}\r\n`)
+            showUnavailable(session.unavailable)
           }
 
           return

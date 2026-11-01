@@ -20,8 +20,8 @@ from tools.session_search_tool import (
     _is_compacted_message,
     _resolve_to_parent,
     _session_link,
-    session_search,
-)
+    _shape_message,
+    session_search,)
 
 
 @pytest.fixture
@@ -1208,3 +1208,76 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+# =========================================================================
+# display_metadata emit — read-path for per-message attribution
+# =========================================================================
+
+class TestDisplayMetadataEmit:
+    """`_shape_message` must surface stored per-message attribution.
+
+    The persist path (agent/turn_context.py) writes ``display_metadata`` onto
+    every user message when pre_llm_call metadata is available. Without the
+    emit below, session_search returns the words but not who/where — the
+    attribution blindness post-compaction. Complements PR #96081 (write path).
+    """
+
+    def test_emits_dict_metadata_when_present(self):
+        meta = {
+            "platform": "telegram",
+            "chat_id": "-1001234567890",
+            "chat_type": "group",
+            "user_id": "555000111",
+            "user_name": "synthetic_user",
+            "chat_name": "Synthetic Room",
+            "origin": "text",
+        }
+        shaped = _shape_message(
+            {"id": 1, "role": "user", "content": "hello", "display_metadata": meta}
+        )
+        assert shaped["display_metadata"] == meta
+        # Core shape unchanged
+        assert shaped["id"] == 1
+        assert shaped["role"] == "user"
+        assert shaped["content"] == "hello"
+
+    def test_emits_str_metadata_when_present(self):
+        # Stored form can be a JSON string (e.g. sqlite TEXT column).
+        meta = '{"platform": "discord", "chat_id": "111222", "origin": "voice"}'
+        shaped = _shape_message(
+            {"id": 2, "role": "user", "content": "hi", "display_metadata": meta}
+        )
+        assert shaped["display_metadata"] == meta
+
+    def test_omits_metadata_when_absent(self):
+        shaped = _shape_message({"id": 3, "role": "assistant", "content": "reply"})
+        assert "display_metadata" not in shaped
+
+    def test_search_round_trips_metadata_in_result(self, db):
+        db.create_session("s_meta", source="telegram")
+        meta = {
+            "platform": "telegram",
+            "chat_id": "-100999888777",
+            "chat_type": "group",
+            "user_id": "777666555",
+            "user_name": "synthetic_user",
+            "chat_name": "Synthetic Room",
+            "origin": "text",
+        }
+        db.append_message(
+            "s_meta", role="user", content="attributed needle",
+            display_metadata=meta,
+        )
+        db._conn.commit()
+        result = json.loads(session_search(query="attributed", db=db, limit=1))
+        assert result["success"] is True
+        assert result["results"]
+        hit = result["results"][0]
+        # Discovery wraps messages in bookend/messages; find the attributed one.
+        found = False
+        for m in hit.get("messages", []):
+            if m.get("content") == "attributed needle":
+                assert m.get("display_metadata") == meta
+                found = True
+        assert found, "attributed message not present in discovery output"

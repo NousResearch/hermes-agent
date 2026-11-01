@@ -95,6 +95,9 @@ def _make_adapter():
         extra={"url": "https://mm.example.com"},
     )
     adapter = MattermostAdapter(config)
+    # Default _api_get stub for _handle_ws_event paths: an empty user lookup fails open
+    # (treated as human), so existing parsing/gating tests need no per-test session mock.
+    adapter._api_get = AsyncMock(return_value={})
     return adapter
 
 
@@ -392,6 +395,78 @@ class TestMattermostMentionBehavior:
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
+
+
+# ---------------------------------------------------------------------------
+# Bot-author ingress filter (#136946)
+# ---------------------------------------------------------------------------
+
+class TestMattermostBotAuthorFilter:
+    """Other bots' posts must be dropped at ingress: DMs reach the agent ungated,
+    so two auto-reply bots on one server ignite a self-sustaining reply loop (#136946)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, *, user_id="other_bot", props=None, post_id="post_bot"):
+        post_data = {
+            "id": post_id,
+            "user_id": user_id,
+            "channel_id": "chan_dm",
+            "message": "automated status notice",
+        }
+        if props is not None:
+            post_data["props"] = props
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",  # DMs are ungated by design — the loop's ignition path
+                "sender_name": "@otherbot",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_from_bot_props_post_is_dropped_without_user_lookup(self):
+        """Fast path: props.from_bot == "true" drops before any user lookup."""
+        self.adapter._api_get = AsyncMock(return_value={"id": "other_bot", "is_bot": False})
+        await self.adapter._handle_ws_event(self._make_event(props={"from_bot": "true"}))
+        assert not self.adapter.handle_message.called
+        self.adapter._api_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_is_bot_fallback_drops_and_caches_per_sender(self):
+        """Fallback (not every bot-posting path sets from_bot): cached GET /users/{id}."""
+        self.adapter._api_get = AsyncMock(return_value={"id": "other_bot", "is_bot": True})
+        await self.adapter._handle_ws_event(self._make_event(post_id="post_bot_1"))
+        await self.adapter._handle_ws_event(self._make_event(post_id="post_bot_2"))
+        assert not self.adapter.handle_message.called
+        assert self.adapter._api_get.call_count == 1  # second post served from the cache
+
+    @pytest.mark.asyncio
+    async def test_human_sender_is_accepted(self):
+        self.adapter._api_get = AsyncMock(return_value={"id": "alice", "is_bot": False})
+        await self.adapter._handle_ws_event(self._make_event(user_id="alice", post_id="post_human"))
+        assert self.adapter.handle_message.called
+        assert self.adapter._bot_author_cache == {"alice": False}
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_fails_open(self):
+        """A failed user lookup must never drop a real user's message."""
+        await self.adapter._handle_ws_event(self._make_event(user_id="alice", post_id="post_human"))
+        assert self.adapter.handle_message.called
+        assert self.adapter._bot_author_cache == {}  # failures are not cached
+
+    @pytest.mark.asyncio
+    async def test_accept_bot_messages_escape_hatch_accepts_bot_posts(self):
+        """accept_bot_messages=true keeps intentional bot-to-bot flows working."""
+        self.adapter._accept_bot_messages = True
+        self.adapter._api_get = AsyncMock(return_value={"id": "other_bot", "is_bot": True})
+        await self.adapter._handle_ws_event(self._make_event(props={"from_bot": "true"}))
+        assert self.adapter.handle_message.called
 
 
 # ---------------------------------------------------------------------------

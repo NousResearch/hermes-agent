@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_ACCEPT_BOT_MESSAGES
+    description: "Accept messages authored by other bot accounts (default false; dropped to prevent bot-to-bot reply loops)."
+    prompt: "Accept bot-authored messages? (true/false)"
+    password: false

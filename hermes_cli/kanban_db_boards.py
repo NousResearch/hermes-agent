@@ -66,7 +66,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
-def write_board_metadata(
+def _write_board_metadata_unlocked(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
@@ -100,7 +100,21 @@ def write_board_metadata(
     return meta
 
 
-def create_board(
+def write_board_metadata(
+    board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
+    icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
+    default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+) -> dict:
+    from hermes_cli.kanban_board_topology import board_topology_lock
+
+    with board_topology_lock(_kb.kanban_home(), purpose="mutation"):
+        return _write_board_metadata_unlocked(
+            board, name=name, description=description, icon=icon, color=color,
+            archived=archived, default_workdir=default_workdir, project_id=project_id,
+        )
+
+
+def _create_board_unlocked(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -110,13 +124,27 @@ def create_board(
     # Explicit creation clears any archived tombstone at this slug (left by
     # remove_board(archive=True)) — otherwise _kb.init_db() below would rightly
     # refuse to recreate the archived board's DB (#43243).
-    meta = write_board_metadata(
+    meta = _write_board_metadata_unlocked(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id, archived=False,
     )
     # Touch the DB so list_boards() sees it immediately.
     _kb.init_db(board=normed)
     return meta
+
+
+def create_board(
+    slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
+    icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> dict:
+    from hermes_cli.kanban_board_topology import board_topology_lock
+
+    with board_topology_lock(_kb.kanban_home(), purpose="mutation"):
+        return _create_board_unlocked(
+            slug, name=name, description=description, icon=icon, color=color,
+            default_workdir=default_workdir, project_id=project_id,
+        )
 
 
 def list_boards(*, include_archived: bool = True) -> list[dict]:
@@ -143,7 +171,7 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
-def remove_board(slug: str, *, archive: bool = True) -> dict:
+def _remove_board_unlocked(slug: str, *, archive: bool = True) -> dict:
     """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
     ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
     _kb._assert_not_delegated_child_mutation()
@@ -179,7 +207,7 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         # tabs / gateway pollers can keep calling connect(board=slug) after the
         # archive; without a marker the resurrect-guard cannot tell an archived
         # slug from a brand-new one and an empty board would reappear (#43243).
-        write_board_metadata(
+        _write_board_metadata_unlocked(
             normed,
             name=prior_meta.get("name"),
             description=prior_meta.get("description"),
@@ -193,6 +221,13 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     import shutil
     shutil.rmtree(d)
     return {"slug": normed, "action": "deleted", "new_path": ""}
+
+
+def remove_board(slug: str, *, archive: bool = True) -> dict:
+    from hermes_cli.kanban_board_topology import board_topology_lock
+
+    with board_topology_lock(_kb.kanban_home(), purpose="mutation"):
+        return _remove_board_unlocked(slug, archive=archive)
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

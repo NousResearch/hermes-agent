@@ -10,6 +10,7 @@ in ``kanban_watchers_common``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -279,6 +280,7 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
+        pr_maintenance_task: Optional[asyncio.Task] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
@@ -299,6 +301,21 @@ class GatewayKanbanWatchersMixin:
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
                 else:
+                    # PR reconciliation is intentionally not awaited: it gets
+                    # one board and one candidate, in the process-service
+                    # thread context, while dispatch proceeds on schedule.
+                    if pr_maintenance_task is None or pr_maintenance_task.done():
+                        if pr_maintenance_task is not None:
+                            with contextlib.suppress(Exception):
+                                pr_maintenance_task.result()
+                        maintenance_board = dispatcher.next_pr_maintenance_board()
+                        if maintenance_board is not None:
+                            pr_maintenance_task = asyncio.create_task(
+                                _to_thread_process_service(
+                                    dispatcher._reconcile_pr_worktrees_for_board,
+                                    maintenance_board,
+                                )
+                            )
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
                     _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
@@ -322,6 +339,8 @@ class GatewayKanbanWatchersMixin:
                     last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                if pr_maintenance_task is not None and not pr_maintenance_task.done():
+                    pr_maintenance_task.cancel()
                 self._release_kanban_dispatcher_lock()
                 raise
             except Exception:

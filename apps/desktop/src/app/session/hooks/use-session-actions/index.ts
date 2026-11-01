@@ -206,6 +206,7 @@ import {
   dropListedSession,
   findListedSession,
   goneSessionVerdict,
+  isNoRuntimeToStopError,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   patchSessionWorkspace,
@@ -3116,7 +3117,7 @@ export function useSessionActions({
             // A missing runtime has no turn left to stop. Any other failure means
             // deletion cannot safely continue: restore the live state and let the
             // outer rollback put the conversation back in the sidebar.
-            if (!isSessionGoneError(error)) {
+            if (!isNoRuntimeToStopError(error)) {
               updateSessionState(closingRuntimeId, state =>
                 previousInterruptState ? { ...state, ...previousInterruptState } : state
               )

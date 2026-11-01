@@ -384,6 +384,41 @@ as_hermes mkdir -p \
     "$HERMES_HOME/pairing" \
     "$HERMES_HOME/platforms/pairing"
 
+# --- File-tool scratch directory ---
+# HERMES_WRITE_SAFE_ROOT permits this narrow /tmp subtree for disposable
+# write_file/patch artifacts. Keep the XDG runtime directory separate: it
+# holds a cross-profile display-allocation lock and is a security boundary.
+file_scratch_dir=/tmp/hermes-files
+file_scratch_owner=""
+if [ -e "$file_scratch_dir" ]; then file_scratch_owner=$(stat -c %u "$file_scratch_dir" 2>/dev/null || echo unknown); fi
+if path_has_symlink_component "$file_scratch_dir" /tmp; then
+    echo "[stage2] ERROR: refusing file scratch directory through symlinked path $file_scratch_dir"
+    exit 1
+elif [ -e "$file_scratch_dir" ] && [ ! -d "$file_scratch_dir" ]; then
+    echo "[stage2] ERROR: file scratch path $file_scratch_dir is not a directory"
+    exit 1
+elif [ -n "$file_scratch_owner" ] && [ "$file_scratch_owner" != "0" ] && [ "$file_scratch_owner" != "$actual_hermes_uid" ]; then
+    echo "[stage2] ERROR: file scratch directory $file_scratch_dir is owned by uid $file_scratch_owner (not root or hermes)"
+    exit 1
+fi
+mkdir -p "$file_scratch_dir" || {
+    echo "[stage2] ERROR: could not create file scratch directory $file_scratch_dir"
+    exit 1
+}
+# Rootless Podman maps root to an unprivileged UID, so chown can fail. The dir
+# then stays root owned and 0700: hermes cannot write it, and the boot goes on.
+chown hermes:hermes "$file_scratch_dir" 2>/dev/null || \
+    echo "[stage2] Warning: chown $file_scratch_dir failed (rootless container?), continuing"
+chmod 0700 "$file_scratch_dir" 2>/dev/null || \
+    echo "[stage2] Warning: chmod $file_scratch_dir failed (rootless container?), continuing"
+file_scratch_owner=$(stat -c %u "$file_scratch_dir" 2>/dev/null || echo unknown)
+if [ ! -d "$file_scratch_dir" ] || [ -L "$file_scratch_dir" ] || \
+   { [ "$file_scratch_owner" != "$actual_hermes_uid" ] && [ "$file_scratch_owner" != "0" ]; } || \
+   [ "$(stat -c %a "$file_scratch_dir" 2>/dev/null || echo unknown)" != "700" ]; then
+    echo "[stage2] ERROR: file scratch directory validation failed for $file_scratch_dir"
+    exit 1
+fi
+
 # --- XDG_RUNTIME_DIR ---
 # 0700 as dbus requires. It lives in world-writable /tmp under a predictable name
 # and holds the display-allocation lock, so it is a security boundary: refuse a

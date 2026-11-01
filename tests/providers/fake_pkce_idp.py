@@ -107,6 +107,24 @@ class FakeIdP:
         self.server.shutdown()
         self.server.server_close()
 
+    def landing_address(self, authorize_url: str) -> str:
+        """The address a browser ends on after consent: this IdP's 302 ``Location``, not followed. A user
+        copies it from the address bar when the redirect cannot reach Hermes."""
+        import http.client
+        import ssl
+
+        parsed = urlparse(authorize_url)
+        conn = (http.client.HTTPSConnection(parsed.hostname, parsed.port, timeout=5,
+                                            context=ssl.create_default_context(cafile=str(self.ca_pem)))
+                if parsed.scheme == "https" else http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5))
+        try:
+            conn.request("GET", f"{parsed.path}?{parsed.query}")
+            response = conn.getresponse()
+            assert response.status == 302, response.status
+            return response.getheader("Location")
+        finally:
+            conn.close()
+
 
 PLUGIN_TEMPLATE = '''
 from providers import register_provider

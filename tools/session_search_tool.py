@@ -681,10 +681,10 @@ SESSION_SEARCH_SCHEMA = {
             "query": {
                 "type": "string",
                 "description": (
-                    "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
+                    "Search query (discovery shape): 3-8 distinctive keywords (names, "
+                    "paths, errors, numbers) joined with OR rank the right session first "
+                    "more often than a whole sentence. Omit to browse recent sessions. "
+                    "Ignored when session_id + around_message_id are set (scroll shape)."
                 ),
             },
             "limit": {

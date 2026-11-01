@@ -84,8 +84,7 @@ delegate_task(
     - Existing models in src/models/
     - Tests use pytest, run from project root
     - bcrypt already in requirements.txt
-    """,
-    toolsets=['terminal', 'file']
+    """
 )
 ```
 
@@ -111,8 +110,7 @@ delegate_task(
     - [ ] Nothing extra added (no scope creep)?
 
     OUTPUT: PASS or list of specific spec gaps to fix.
-    """,
-    toolsets=['file']
+    """
 )
 ```
 
@@ -143,8 +141,7 @@ delegate_task(
     - Important Issues: [should fix]
     - Minor Issues: [optional]
     - Verdict: APPROVED or REQUEST_CHANGES
-    """,
-    toolsets=['file']
+    """
 )
 ```
 
@@ -169,8 +166,7 @@ delegate_task(
     - Any inconsistencies between tasks?
     - All tests passing?
     - Ready for merge?
-    """,
-    toolsets=['terminal', 'file']
+    """
 )
 ```
 

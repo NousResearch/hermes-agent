@@ -2029,6 +2029,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        exclude_ids: frozenset = frozenset(),
     ) -> tuple[list[PooledCredential], list[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2046,6 +2047,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         pending_refresh: list[PooledCredential] = []
         sole_credential = self._is_sole_credential()
         for entry in self._entries:
+            if entry.id in exclude_ids:
+                continue
             # Borrowed credentials persist as metadata-only references and are
             # hydrated from their live source on load; never lease an
             # unhydrated duplicate as an empty key.
@@ -2124,13 +2127,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        exclude_ids: frozenset = frozenset(),
     ) -> tuple[Optional[PooledCredential], list[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
         ``count=False`` skips the ``request_count`` bump for selections that are
         not going to serve a request (a forced-refresh target lookup).
         """
-        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model,
+                                                             exclude_ids=exclude_ids)
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2291,6 +2296,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # the depleted key, and rotation never converges (~2.5 min hang).
             # Mark every entry sharing the failed key.
             failed_runtime_key = entry.runtime_api_key
+            siblings: list[PooledCredential] = []
             if identity_supplied and failed_runtime_key:
                 siblings = [
                     s for s in self._entries if s.id != entry.id and s.runtime_api_key == failed_runtime_key
@@ -2311,21 +2317,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 )
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
+                if self.provider == "openai-codex":  # a 429 outranks a cached early-reopen probe verdict
+                    from hermes_cli.auth_codex import _record_codex_quota_exhausted
+                    _record_codex_quota_exhausted(updated_entry)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
-            if next_entry is not None and next_entry.id == entry.id:
-                # No-recovery guard (#97315): selection handed back the very entry that was
-                # just marked (the auth-store sync adopted fresher tokens, or a quota probe
-                # false-positive lifted the bench mid-selection). Returning it reports a
-                # successful rotation without changing the credential, so the caller retries
-                # the same 429 forever (~2 req/s for hours). Mirror the single-entry guard on
-                # the unmatched-identity branch: surface the failure instead.
-                logger.warning(
-                    "credential pool: rotation returned the just-marked entry %s — "
-                    "treating as no-recovery so the failure surfaces", _label,
-                )
-                self._current_id = None
-                return None
+            # Never re-admit the just-failed key (#97315): a token sync or stale probe would lift its bench
+            # mid-selection and either spin on the 429 or strand a healthy lower-priority sibling.
+            failed_ids = frozenset({entry.id, *(s.id for s in siblings)})
+            next_entry, _pending = self._select_unlocked(refresh=False, model=model, exclude_ids=failed_ids)
             if next_entry:
                 logger.info("credential pool: rotated to %s", next_entry.label or next_entry.id[:8])
             return next_entry

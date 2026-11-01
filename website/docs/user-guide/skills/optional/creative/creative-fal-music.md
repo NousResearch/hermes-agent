@@ -21,7 +21,7 @@ Generate music and sound effects via fal.ai hosted models.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `music`, `audio`, `sound-effects`, `fal`, `elevenlabs`, `minimax`, `lyria`, `stable-audio`, `ace-step`, `generation` |
-| Related skills | [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md), [`heartmula`](../../optional/creative/creative-heartmula.md), `audiocraft-audio-generation` |
+| Related skills | [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md), [`heartmula`](../../optional/creative/creative-heartmula.md) |
 
 ## Reference: full SKILL.md
 
@@ -31,9 +31,9 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # fal-music — hosted music and sound-effect generation
 
-One script, one key, eight hosted models. Use this when the user wants an actual
+One script, one key, twelve hosted models. Use this when the user wants an actual
 audio file (a track, a jingle, a full song with lyrics, a sound effect) and has no
-GPU for `heartmula` / `audiocraft-audio-generation`. Cloud generation takes
+GPU for `heartmula`. Cloud generation takes
 15–120 s and costs cents; no local model download.
 
 ## When to Use
@@ -45,7 +45,7 @@ GPU for `heartmula` / `audiocraft-audio-generation`. Cloud generation takes
   and `video_generate` FAL backends use
 
 Do NOT use for text-to-speech (use the `text_to_speech` tool) or for local/offline
-generation (use `heartmula` or `audiocraft-audio-generation`).
+generation (use `heartmula`).
 
 ## Models
 

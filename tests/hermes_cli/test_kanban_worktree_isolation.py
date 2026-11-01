@@ -93,13 +93,14 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
 
         for cid in child_ids:
             row = conn.execute(
-                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
                 (cid,),
             ).fetchone()
             assert row["workspace_kind"] == "worktree"
-            # Each child resolves its own <repo>/.worktrees/<child-id> at
-            # dispatch; the root's literal path must never be shared.
-            assert row["workspace_path"] is None
+            # Each child receives its own explicit sibling worktree and branch;
+            # the root's literal path must never be shared.
+            assert row["workspace_path"] == f"/repo/.worktrees/{cid}"
+            assert row["branch_name"] == f"wt/{cid}"
 
 
 

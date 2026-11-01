@@ -3348,12 +3348,12 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
-    """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary.
-    The mtime map is kept: the first read of each unchanged key returns full content compaction may have
-    omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
-    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
-    """
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", agent: Any = None) -> None:
+    """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary. The mtime
+    map is kept: the first read of each unchanged key returns full content compaction may have omitted, later
+    reads stubs, stub-hit counters restart there (#84857). Screenshot dedup and agent subdirectory hints re-arm."""
+    with contextlib.suppress(Exception):
+        agent._subdirectory_hints.reset_delivered()
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
@@ -3456,7 +3456,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", agent=agent)
     return _compressed_est
 
 

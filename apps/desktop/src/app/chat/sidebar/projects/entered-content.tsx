@@ -12,12 +12,14 @@ import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { removeWorktreePath } from '@/store/projects'
+import { $showEmptyWorktreeLanes } from '@/store/sidebar-project-display'
 
 import { SidebarRowStack } from '../chrome'
 
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
+  filterWorktreeLanes,
   mergeRepoWorktreeGroups,
   overlayRepoLanes,
   type SidebarProjectTree,
@@ -123,6 +125,7 @@ function RepoFlatSection({
   const [open, toggleOpen] = useWorkspaceNodeOpen(repo.id)
   const dismissedWorktrees = useStore($dismissedWorktreeIds)
   const removedWorktrees = useStore($removedWorktreeIds)
+  const showEmptyWorktreeLanes = useStore($showEmptyWorktreeLanes)
 
   // The repo's session lanes already come fully built from the backend; this
   // only injects empty VISUAL lanes from a live `git worktree list`.
@@ -154,11 +157,14 @@ function RepoFlatSection({
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
   // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
-  const ordered = overlaidGroups.filter(
-    group =>
-      group.isMain ||
-      !dismissedWorktrees.includes(group.id) ||
-      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
+  const ordered = filterWorktreeLanes(
+    overlaidGroups.filter(
+      group =>
+        group.isMain ||
+        !dismissedWorktrees.includes(group.id) ||
+        (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
+    ),
+    showEmptyWorktreeLanes
   )
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane

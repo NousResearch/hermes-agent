@@ -24,6 +24,13 @@ function renderPage(subpage?: string) {
 }
 
 describe('AppearanceSettings extra slot', () => {
+  it('offers project-label and empty-worktree preferences in window layout', () => {
+    renderPage('window-layout')
+
+    expect(screen.getByText('Project Labels')).toBeTruthy()
+    expect(screen.getByText('Show empty worktree lanes')).toBeTruthy()
+  })
+
   it('mounts plugin extras on the top-level page only, not on deep-link subpages', () => {
     act(() => {
       disposers.push(

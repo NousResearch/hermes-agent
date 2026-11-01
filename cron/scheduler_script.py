@@ -406,8 +406,10 @@ def _script_argv(
     / ``_windows_cron_python_invocation``. Interpreter selection reads PM's install records and
     may raise; callers run this inside their ``try``."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        # Same resolver as the terminal tool. A bare which("bash") on Windows can hit the WSL
+        # stub (System32\bash.exe), which strips backslashes from the path → rc 127.
+        import pm.shell
+        _bash = pm.shell.bash()
         if _bash is None:
             return None, {}, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "

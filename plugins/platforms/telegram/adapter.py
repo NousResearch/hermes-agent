@@ -6656,6 +6656,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         existing.absorb_reply_expected(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
+        # Native admission (gateway.session_envelope._validate_native) requires
+        # media_text_inlined to be empty or exactly one flag per URL. Document
+        # events carry one flag per URL, photo events carry none; a merged album
+        # mixing them must not keep a partial flag list — pad the flagless side
+        # with None so the merged event is not rejected as invalid_params.
+        prior_urls = len(existing.media_urls) - len(event.media_urls)
+        merged_flags = (
+            list(existing.media_text_inlined)
+            + [None] * max(0, prior_urls - len(existing.media_text_inlined))
+            + list(event.media_text_inlined)
+            + [None] * max(0, len(event.media_urls) - len(event.media_text_inlined))
+        )[:len(existing.media_urls)]
+        existing.media_text_inlined = merged_flags if any(f is not None for f in merged_flags) else []
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
 

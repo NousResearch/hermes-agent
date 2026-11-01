@@ -16,6 +16,44 @@ from tools.process_registry import process_registry
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("end_reason", ["session_reset", "user_exit", "session_switch", "new_session"])
+async def test_compression_tip_closed_at_user_boundary_drops_pinned_completion(
+    tmp_path, end_reason, private_db_probe_cleanup,
+):
+    """A /new-style closure of a compression continuation is terminal, never retryable (#137046)."""
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        try:
+            source = SessionSource(
+                platform=Platform.TELEGRAM, chat_id="closed-compression-tip", chat_type="dm",
+            )
+            entry = store.get_or_create_session(source)
+            db = cast(Any, store._db)
+            pinned = entry.session_id
+            db.create_session("continuation", source="telegram", parent_session_id=pinned)
+            db.end_session(pinned, end_reason="compression")
+            assert store.advance_compression_session(entry.session_key, pinned, "continuation") is not None
+            db.end_session("continuation", end_reason=end_reason)
+            assert store.get_or_create_session(source, force_new=True).session_id != "continuation"
+
+            event = {
+                "type": "async_delegation", "delegation_id": f"closed-tip-{end_reason}",
+                "session_key": entry.session_key, "parent_session_id": pinned,
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            assert await runner._deliver_completion_notification("completed result", event) is None
+            row = ad.get_durable_delegation(event["delegation_id"])
+            assert row is not None and row["delivery_state"] == "dropped"
+        finally:
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["readiness", "claimed"])
 @pytest.mark.parametrize("failed_ancestor", ["worker", "owner"])
 async def test_transient_ownership_ancestor_failure_retries_durable_delivery_once(

@@ -706,6 +706,21 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.info("Plugin '%s' registered context engine: %s", self.manifest.name, engine.name)
         return handle
 
+    @_serialized_replacement
+    def register_worker_policy(self, policy_id: str, policy) -> Optional[PluginRegistration]:
+        """Register the delegation worker policy (see ``tools.worker_policy``).
+
+        At most one policy may be loaded; zero, several or a broken one mean default-worker-only
+        admission. Registration is load-owned: a failed or abandoned load and unload remove it.
+        """
+        from tools.worker_policy import REQUIRED_METHODS
+        if not policy_id or any(not callable(getattr(policy, name, None)) for name in REQUIRED_METHODS):
+            raise self._refuse("an invalid worker policy")
+        if policy_id in self._manager._worker_policies:
+            raise self._refuse("a duplicate worker policy %r" % (policy_id,))
+        return self._track_mapping_entry(
+            "worker_policy", policy_id, self._manager._worker_policies, (self.manifest.name, policy))
+
     def register_context_reference(self, provider) -> None:
         """Register a :class:`agent.context_references.ContextReferenceProvider`; ``provider.prefix``
         defines ``@<prefix>:``. Built-in prefixes (diff, staged, file, folder, git, url) are
@@ -1096,6 +1111,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
+        self._worker_policies: dict[str, tuple[str, Any]] = {}  # delegation worker policy
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
         # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
         # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers

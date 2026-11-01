@@ -383,7 +383,8 @@ _MEMORY_ROUTING_BLOCK = (
     "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
     "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
     "tools used, and never turn a one-off request into a standing preference (in either store) "
-    "unless the user marked it general ('always', 'from now on', 'remember'). If unsure, leave it "
+    "unless the user marked it general ('always', 'from now on', 'remember') or stated a standing "
+    "like/dislike ('I hate X', 'stop doing Y'). If unsure, leave it "
     "out — a wrong fact misleads every future session.\n\n"
 )
 

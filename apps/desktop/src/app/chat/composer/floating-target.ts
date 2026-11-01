@@ -15,6 +15,7 @@ const carets = new WeakMap<HTMLElement, Range>()
 let pointer: { x: number; y: number } | null = null
 let pointerDownTarget: Element | null = null
 let keyboardNavigation = false
+let floatingLayerFocused = false
 let reconcileQueued = false
 
 /** The inline message edit lives in the transcript, outside every composer
@@ -204,6 +205,13 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
+  // A closing portal can detach its focused node before restoring its opener,
+  // leaving relatedTarget null. Keep the last focus origin across that teardown.
+  const fromFloatingLayer =
+    floatingLayerFocused || inFloatingLayer(event.relatedTarget instanceof Element ? event.relatedTarget : null)
+
+  floatingLayerFocused = inFloatingLayer(target)
+
   const hostId = target.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
   if (hostId === $floatingComposerOwner.get()?.id) {
@@ -222,6 +230,7 @@ function trackFocus(event: FocusEvent) {
     target.closest('[role="tab"]') ||
     isTouchInteraction() ||
     keyboardNavigation ||
+    fromFloatingLayer ||
     keepsOwnFocus(target) ||
     (pointerDownTarget && target.contains(pointerDownTarget))
   ) {
@@ -263,6 +272,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
   surfaces.set(id, surface)
 
   if (surfaces.size === 1) {
+    floatingLayerFocused = inFloatingLayer(document.activeElement)
     window.addEventListener('pointermove', trackPointer, true)
     window.addEventListener('pointerdown', trackPointer, true)
     window.addEventListener('focusin', trackFocus, true)
@@ -298,6 +308,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
       pointer = null
       pointerDownTarget = null
       keyboardNavigation = false
+      floatingLayerFocused = false
     }
   }
 }

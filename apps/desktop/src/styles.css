@@ -1571,7 +1571,8 @@ code {
 @media (forced-colors: active) {
   .desktop-input-chrome:focus-visible,
   .desktop-input-chrome:has(> input:focus-visible),
-  [data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible) {
+  [data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible),
+  .ui-prompt-input__container:has(> .ui-prompt-input-editor__input:focus-visible) {
     outline: 2px solid Highlight;
     outline-offset: 2px;
   }
@@ -2158,7 +2159,8 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* The editor delegates focus chrome to its existing surface border. Restrict
    this to editor focus so a focused toolbar button does not get two indicators. */
-[data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible) {
+[data-slot='composer-surface']:has([data-slot='composer-rich-input']:focus-visible),
+.ui-prompt-input__container:has(> .ui-prompt-input-editor__input:focus-visible) {
   border-color: var(--dt-composer-ring) !important;
 }
 
@@ -2504,7 +2506,6 @@ button[data-slot='aui_msg-reactions'] {
   border: 0;
   border-radius: 0;
   background: transparent;
-  box-shadow: none;
   padding: 0;
   gap: 0;
   height: auto;
@@ -2515,6 +2516,11 @@ button[data-slot='aui_msg-reactions'] {
   cursor: pointer;
   color: var(--color-muted-foreground);
   opacity: 0.5;
+}
+
+[data-slot='aui_msg-actions'] button:not(:focus-visible),
+button[data-slot='aui_msg-reactions']:not(:focus-visible) {
+  box-shadow: none;
 }
 
 /* A landed reaction is content, not a dimmed affordance — emoji render at

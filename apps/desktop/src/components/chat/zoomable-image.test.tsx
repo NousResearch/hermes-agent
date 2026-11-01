@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { registerFloatingComposer } from '@/app/chat/composer/floating-target'
 import { I18nProvider } from '@/i18n/context'
 import { resetTranscriptLightbox } from '@/store/transcript-lightbox'
 
@@ -56,7 +57,11 @@ function percentageText(): string {
 }
 
 describe('ZoomableImage lightbox', () => {
+  let unregisterComposer: (() => void) | undefined
+
   afterEach(() => {
+    unregisterComposer?.()
+    unregisterComposer = undefined
     cleanup()
     resetTranscriptLightbox()
   })
@@ -69,25 +74,42 @@ describe('ZoomableImage lightbox', () => {
     expect(lightboxImg()).toBeTruthy()
   })
 
-  it.each(['Escape', 'image click'] as const)('returns focus to the opener after closing via %s', async closeWith => {
-    await renderImage()
-    const trigger = screen.getByRole('button', { name: /open image/i })
-    trigger.focus()
-    await openLightbox()
+  it.each(['Escape', 'image click'] as const)(
+    'returns focus to the transcript opener after closing via %s',
+    async closeWith => {
+      const { container } = await renderImage()
+      container.dataset.chatSurface = ''
+      container.dataset.composerSurfaceId = 'image-chat'
+      const host = globalThis.document.createElement('div')
+      host.dataset.composerOwner = 'image-chat'
+      const editor = globalThis.document.createElement('div')
+      editor.dataset.slot = 'composer-rich-input'
+      editor.tabIndex = -1
+      host.append(editor)
+      container.append(host)
+      unregisterComposer = registerFloatingComposer('image-chat', { groupId: 'image-zone', target: 'main' })
 
-    await act(async () => {
-      if (closeWith === 'Escape') {
-        fireEvent.keyDown(globalThis.document, { key: 'Escape' })
-      } else {
-        fireEvent.click(lightboxImg())
-      }
-    })
+      const trigger = screen.getByRole('button', { name: /open image/i })
+      fireEvent.keyDown(globalThis.document, { key: 'Tab' })
+      trigger.focus()
+      fireEvent.keyUp(trigger, { key: 'Tab' })
+      fireEvent.keyDown(trigger, { key: 'Enter' })
+      await openLightbox()
 
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).toBeNull()
-      expect(globalThis.document.activeElement).toBe(trigger)
-    })
-  })
+      await act(async () => {
+        if (closeWith === 'Escape') {
+          fireEvent.keyDown(globalThis.document, { key: 'Escape' })
+        } else {
+          fireEvent.click(lightboxImg())
+        }
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(globalThis.document.activeElement).toBe(trigger)
+      })
+    }
+  )
 
   it('wheel zooms toward the cursor and prevents the page from scrolling', async () => {
     await renderImage()

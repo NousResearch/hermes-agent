@@ -584,7 +584,8 @@ The detailed state contract lives in the scoped
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
 - Keep keyboard focus visible through existing control primitives and theme
-  tokens; never globally suppress outlines or focus rings. Titlebar actions
+  tokens; never globally suppress outlines or focus rings. Preserve native
+  focus indicators on controls without a themed replacement. Titlebar actions
   have no active-background state.
 - Each control has one focus treatment: its existing ring, outline, or field
   border. Suppress the native outline only when that replacement is visible.
@@ -592,8 +593,11 @@ The detailed state contract lives in the scoped
   (or its field wrapper); don't outline unfocused menu rows or containers.
   Keep command-picker input and selected-row fallback outlines inset so scroll
   and group clipping cannot cut off their edges.
+  Inline message editors delegate focus chrome to their card border, just like
+  the main composer; their inner contenteditable must not add a second outline.
 - Keyboard users can activate image viewers and return to their available
-  opener when the viewer closes.
+  opener when the viewer closes. Composer focus-follow must preserve focus
+  returning from a floating layer while updating the owning chat surface.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".
 

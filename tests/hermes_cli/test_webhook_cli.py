@@ -247,6 +247,20 @@ class TestPersistence:
         path.write_text("broken{{{")
         assert _load_subscriptions() == {}
 
+    def test_non_object_route_does_not_break_the_other_routes(self, capsys):
+        """`webhook list`, `subscribe` and the dashboard read every route as a mapping; one
+        hand-edited non-object entry must not crash them for the healthy ones."""
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"keep": {"secret": "x", "prompt": "p"}, "half-edited": "TODO"}))
+
+        webhook_command(_make_args(webhook_action="list"))
+        assert "keep" in capsys.readouterr().out
+        webhook_command(_make_args(webhook_action="subscribe", name="half-edited"))
+
+        assert set(_load_subscriptions()) == {"keep", "half-edited"}
+        assert isinstance(_load_subscriptions()["half-edited"], dict)
+
     @pytest.mark.platforms("posix")  # POSIX mode bits are platform-specific
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):
         old_umask = os.umask(0o022)

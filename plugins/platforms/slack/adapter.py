@@ -291,13 +291,38 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
+def _uses_agent_sessions(client: Any) -> bool:
+    """Whether ``_session_status_method`` will pick the Agent Sessions setter for *client*."""
+    return _sdk_supports_agent_sessions() and getattr(
+        client, "agents_sessions_setStatus", None) is not None
+
+
 def _session_status_method(client: Any):
     """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    if _uses_agent_sessions(client):
+        return getattr(client, "agents_sessions_setStatus")
     return client.assistant_threads_setStatus
+
+
+# The Agent Sessions lifecycle enum. The legacy ``assistant.threads.setStatus`` takes free text
+# and is bridged onto the sessions system, but ``agents.sessions.setStatus`` itself accepts ONLY
+# these four values — anything else is rejected with ``invalid_arguments``.
+_AGENT_SESSION_STATUSES = frozenset({"active", "processing", "suspended", "closed"})
+
+
+def _agent_session_status(status: Any) -> str:
+    """Map the adapter's rendered status text onto the Agent Sessions lifecycle enum.
+
+    The status the adapter renders is human-facing free text ("is thinking...", "still working…
+    (2m03s)"), which the legacy API takes as-is and Slack bridges to a session state. Sending
+    that text to ``agents.sessions.setStatus`` fails validation, so the loading indicator never
+    appears (and, since the failure is debug-logged, it fails silently). A non-empty status means
+    a turn is running → ``processing``; an empty status is a clear → ``active``.
+    """
+    text = str(status or "").strip()
+    if not text:
+        return "active"
+    return text if text in _AGENT_SESSION_STATUSES else "processing"
 
 
 def _session_title_method(client: Any):
@@ -2766,9 +2791,15 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged.
+
+        The rendered status is free text, so it is mapped onto the Agent Sessions lifecycle enum
+        when that API is the one being called (see ``_agent_session_status``)."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
+            client = self._get_client(chat_id, team_id=team_id)
+            if _uses_agent_sessions(client):
+                status = _agent_session_status(status)
+            _set_status = _session_status_method(client)
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)

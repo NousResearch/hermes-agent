@@ -20,6 +20,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  contentTracing,
   crashReporter,
   dialog,
   net as electronNet,
@@ -419,6 +420,7 @@ import {
   payloadTicketRuntime,
   requireBundledPayload
 } from './payload-backend'
+import { captureTraceOnce, traceDurationMs } from './perf-capture'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -14035,7 +14037,49 @@ function createWindow() {
     // windows); no need to reapply it here.
     broadcastBootProgress()
     sendWindowStateChanged()
+    installPerfCaptureHooks(mainWindow)
   })
+}
+
+// Diagnostic hooks (see electron/perf-capture.ts). Both are inert unless
+// their env var is set, so a normal launch pays no tracer, no extra CSS and no
+// timers. They exist because the packaged app has no devtools port: this is the
+// only way to ask a live install where its renderer/GPU time actually goes.
+function installPerfCaptureHooks(window: BrowserWindow): void {
+  if (process.env.HERMES_DESKTOP_ABLATE_ANIMATIONS === '1') {
+    void window.webContents
+      .insertCSS('*, *::before, *::after { animation: none !important; transition: none !important; }')
+      .then(() => rememberLog('[perf] animations ablated (HERMES_DESKTOP_ABLATE_ANIMATIONS)'))
+      .catch(error => rememberLog(`[perf] animation ablation failed: ${error?.message ?? error}`))
+  }
+
+  const durationMs = traceDurationMs(process.env.HERMES_DESKTOP_TRACE_MS)
+
+  if (durationMs === null) {
+    return
+  }
+
+  const outFile = process.env.HERMES_DESKTOP_TRACE_OUT
+
+  // No default destination on purpose: a trace is 50-120MB of one session's
+  // URLs and script symbols, and an env var that quietly writes that into the
+  // user's profile is worse than a refused capture.
+  if (!outFile) {
+    rememberLog('[perf] HERMES_DESKTOP_TRACE_MS is set but HERMES_DESKTOP_TRACE_OUT is not; no capture')
+
+    return
+  }
+
+  void captureTraceOnce({
+    tracer: contentTracing,
+    durationMs,
+    outFile,
+    write: (file, data) => fs.promises.writeFile(file, data, { encoding: 'utf8', mode: 0o600 }),
+    read: file => fs.promises.readFile(file, 'utf8'),
+    remove: file => fs.promises.rm(file, { force: true })
+  }).then(result =>
+    rememberLog(result.ok ? `[perf] trace written to ${result.path}` : `[perf] trace capture failed: ${result.reason}`)
+  )
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {

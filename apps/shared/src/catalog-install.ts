@@ -13,10 +13,10 @@ export function skillCatalogInstallIdentifier(skill: SkillCatalogTarget): string
 
   const identifier = skill.identifier
 
-  // Older snapshots omit identifiers for local skills. Optional skills have a
-  // source-qualified name lookup; bundled skills are not in that source.
+  // Optional skills have a source-qualified name lookup. Other snapshots
+  // without an identifier cannot name one exact community package.
   if (!identifier) {
-    return skill.source === 'built-in' ? null : skill.source === 'optional' ? `official/${skill.name}` : skill.name
+    return skill.source === 'optional' ? `official/${skill.name}` : null
   }
 
   return skill.source.toLowerCase() === 'clawhub' && !identifier.startsWith('clawhub/')

@@ -146,12 +146,12 @@ def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monke
     assert owning_home_root(root) == default
 
 
-def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checkout(
+def test_a_plugin_free_borrowing_launch_reuses_the_owners_dependencies(
     tmp_path, monkeypatch, completion_tail
 ):
-    """The first launch under a temporary home: its own dependency generation, but no tail (products,
-    maintenance, install stamp), no launcher publication and no owner marker touched."""
+    """A temporary task home must not rebuild the checkout owner's current venv."""
     import pm
+    import pm.environments
     from hermes_cli import _launchers
 
     root = _checkout(tmp_path, monkeypatch)
@@ -163,6 +163,42 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     stamp = (root / "install-stamp.json").read_bytes()
     owner_marker = root / ".update-incomplete"
     owner_marker.write_text("owner's update\n", encoding="utf-8")
+    syncs = []
+
+    def sync(extras=None, **kwargs):
+        syncs.append(extras)
+
+    python = tmp_path / ".hermes" / "tools" / "python" / "bin" / "python3"
+    monkeypatch.setattr(
+        pm, "venv_is_current",
+        lambda **kw: pm.environments.dependency_home_root() == tmp_path / ".hermes",
+    )
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: python)
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda *a, **kw: pytest.fail("published the owner's launchers"))
+
+    assert venv_sync.prepare_launch(root, ["kanban", "init"]) == python
+    assert syncs == []
+    assert completion_tail == [], "a borrowing launch ran the checkout's update tail"
+    assert not venv_sync.completion_pending_path(root).exists(), "a tail was armed for a borrowing root"
+    assert owner_marker.is_file(), "the owner's update marker was removed"
+    assert (root / "install-stamp.json").read_bytes() == stamp
+
+    # Its relaunch still uses the owner's selection and does nothing further.
+    monkeypatch.setattr(sys, "executable", str(python))
+    assert venv_sync.prepare_launch(root, ["kanban", "init"]) is None
+    assert syncs == [] and completion_tail == []
+
+
+def test_a_borrowing_launch_with_plugins_keeps_its_own_dependencies(tmp_path, monkeypatch, completion_tail):
+    """A task-local plugin must not silently run from its checkout owner's venv."""
+    import pm
+    from hermes_cli import _launchers
+
+    root = _checkout(tmp_path, monkeypatch)
+    _state(tmp_path / ".hermes", root)
+    borrower = _home(monkeypatch, tmp_path / "tmp" / "task-home")
+    (borrower / "plugins").mkdir()
     borrowed_facts = install_state_dir(root) / "facts.json"
     syncs = []
 
@@ -175,19 +211,10 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: borrowed_facts.is_file())
     monkeypatch.setattr(pm, "sync_venv", sync)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: python)
-    monkeypatch.setattr(venv_sync, "publish_launchers", lambda *a, **kw: pytest.fail("published the owner's launchers"))
 
-    assert venv_sync.prepare_launch(root, ["kanban", "init"]) == python  # relaunch into the synced env
+    assert venv_sync.prepare_launch(root, []) == python
     assert len(syncs) == 1
-    assert completion_tail == [], "a borrowing launch ran the checkout's update tail"
-    assert not venv_sync.completion_pending_path(root).exists(), "a tail was armed for a borrowing root"
-    assert owner_marker.is_file(), "the owner's update marker was removed"
-    assert (root / "install-stamp.json").read_bytes() == stamp
-
-    # Its relaunch finds everything current and does nothing further.
-    monkeypatch.setattr(sys, "executable", str(python))
-    assert venv_sync.prepare_launch(root, ["kanban", "init"]) is None
-    assert len(syncs) == 1 and completion_tail == []
+    assert completion_tail == []
 
 
 def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completion_tail):

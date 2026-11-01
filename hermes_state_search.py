@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
+from agent.message_metadata import display_kinds_where
 from agent.skill_commands import describe_skill_invocation
 from hermes_state_errors import is_malformed_db_error
 from hermes_state_common import (
@@ -978,9 +979,10 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
-        # with the in-memory user_originated_turn_view count.
-        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
+        # The display kinds the table marks user_originated are human input (a /steer row is): keep them so
+        # the DB pick agrees with the in-memory user_originated_turn_view count.
+        named = ", ".join(f"'{kind}'" for kind in sorted(display_kinds_where("user_originated")))
+        display_clause = f" AND (display_kind IS NULL OR display_kind = '' OR display_kind IN ({named}))"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"

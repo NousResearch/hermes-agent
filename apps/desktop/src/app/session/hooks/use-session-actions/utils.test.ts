@@ -786,13 +786,13 @@ describe('preserveLocalPendingTurnMessages', () => {
     // boundary and never enters the newly committed window, so widening
     // the acknowledged-prompt compare must not swallow it.
     const previous = [
-      msg('1-user', 'user', 'what time is it?', { rowId: 100 }),
+      msg('1-user', 'user', 'what time is it?', { rowId: 100, timestamp: 10 }),
       msg('2-assistant', 'assistant', 'noon', { rowId: 101 }),
-      msg('user-optimistic', 'user', 'what time is it?')
+      msg('user-optimistic', 'user', 'what time is it?', { timestamp: 20 })
     ]
 
     const next = [
-      msg('1-user-stored', 'user', 'what time is it?', { rowId: 100 }),
+      msg('1-user-stored', 'user', 'what time is it?', { rowId: 100, timestamp: 10 }),
       msg('2-assistant-stored', 'assistant', 'noon', { rowId: 101 }),
       msg('3-system-user', 'user', 'Preserved task notice')
     ]
@@ -803,6 +803,30 @@ describe('preserveLocalPendingTurnMessages', () => {
       '3-system-user',
       'user-optimistic'
     ])
+  })
+
+  it('drops an old optimistic prompt when its delayed committed twin precedes newer history', () => {
+    // #137750: a transport-lost mid-turn prompt remains as the trailing local
+    // row while its later acceptance hydrates at the durable position. The
+    // newest shared row is after that committed twin, so the normal newly-
+    // committed window starts too late to see it.
+    const previous = [
+      msg('1-user', 'user', 'first', { rowId: 100, timestamp: 1 }),
+      msg('2-assistant', 'assistant', 'first answer', { rowId: 101, timestamp: 2 }),
+      msg('3-user', 'user', 'newer prompt', { rowId: 300, timestamp: 30 }),
+      msg('4-assistant', 'assistant', 'newer answer', { rowId: 301, timestamp: 31 }),
+      msg('user-optimistic', 'user', 'delayed prompt', { timestamp: 10 })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 100, timestamp: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 101, timestamp: 2 }),
+      msg('delayed-user-stored', 'user', 'delayed prompt', { rowId: 200, timestamp: 20 }),
+      msg('3-user-stored', 'user', 'newer prompt', { rowId: 300, timestamp: 30 }),
+      msg('4-assistant-stored', 'assistant', 'newer answer', { rowId: 301, timestamp: 31 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
 
   it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {

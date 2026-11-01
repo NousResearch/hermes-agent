@@ -940,8 +940,15 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        # Skip root, home, scratch/cache dirs, and umbrella workspace parents
+        home_p = Path.home().resolve()
+        hermes_p = get_hermes_home().resolve()
+        broad_dirs = {
+            "/", str(home_p), str(hermes_p),
+            str(home_p / "workspace"), str(home_p / "workspace" / "research"),
+            str(hermes_p / "cache"), str(hermes_p / "cache" / "scratch"),
+        }
+        if abs_dir in broad_dirs or abs_dir.startswith(str(hermes_p / "cache" / "scratch") + os.sep):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
@@ -1436,12 +1443,12 @@ class CheckpointManager:
             logger.debug("Checkpoint store init failed: %s", err)
             return False
 
-        _touch_project(store, working_dir)
-
         # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
+
+        _touch_project(store, working_dir)
 
         dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)

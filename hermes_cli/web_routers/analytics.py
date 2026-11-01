@@ -81,8 +81,37 @@ def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
-def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+import threading
+
+_USAGE_BREAKDOWN_CACHE: dict[tuple[str, int], tuple[float, int, dict[str, Any]]] = {}
+_USAGE_BREAKDOWN_LOCK = threading.Lock()
+_USAGE_BREAKDOWN_TTL_S = 60.0
+
+
+def _cached_usage_breakdown(db, days: int) -> dict[str, Any]:
     from agent.insights import InsightsEngine
+
+    db_key = str(getattr(db, "db_path", "") or "")
+    try:
+        max_id = int(db._conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0] or 0)
+    except Exception:
+        max_id = 0
+    key = (db_key, int(days))
+    now = time.monotonic()
+    hit = _USAGE_BREAKDOWN_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _USAGE_BREAKDOWN_TTL_S and (max_id > 1000 or hit[1] == max_id):
+        return hit[2]
+    with _USAGE_BREAKDOWN_LOCK:
+        now = time.monotonic()
+        hit = _USAGE_BREAKDOWN_CACHE.get(key)
+        if hit is not None and (now - hit[0]) < _USAGE_BREAKDOWN_TTL_S and (max_id > 1000 or hit[1] == max_id):
+            return hit[2]
+        res = InsightsEngine(db).get_usage_breakdown(days=days)
+        _USAGE_BREAKDOWN_CACHE[key] = (time.monotonic(), max_id, res)
+        return res
+
+
+def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
 
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
@@ -131,7 +160,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
         """, cutoff)[0]
-        usage = InsightsEngine(db).get_usage_breakdown(days=days)
+        usage = _cached_usage_breakdown(db, days=days)
 
         return {
             "daily": daily,

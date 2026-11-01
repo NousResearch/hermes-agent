@@ -414,7 +414,12 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
             data = json.loads(stripped)
             if isinstance(data, dict):
                 if isinstance(data.get("error"), str) and data["error"].strip():
-                    text = data["error"]
+                    err_lines = [
+                        ln.strip()
+                        for ln in data["error"].splitlines()
+                        if ln.strip() and not (set(ln.strip()) <= {"^", "~"})
+                    ]
+                    text = f"{err_lines[0]} ... {err_lines[-2]} | {err_lines[-1]}" if len(err_lines) > 3 else " | ".join(err_lines)
                 elif isinstance(data.get("output"), str):
                     out_lines = [
                         ln.strip()
@@ -424,7 +429,12 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
                     exit_code = data.get("exit_code")
                     ec_tag = f" [exit_code={exit_code}]" if exit_code is not None else ""
                     if len(out_lines) > 3:
-                        text = f"{out_lines[0]} ... {out_lines[-2]} | {out_lines[-1]}{ec_tag}"
+                        fail_ln = next(
+                            (ln for ln in out_lines[1:-2] if any(t in ln for t in ("[FAIL]", "FAIL:", "ERROR:", "Error:", "AssertionError"))),
+                            None,
+                        )
+                        mid = f" ... {fail_ln} ... " if fail_ln else " ... "
+                        text = f"{out_lines[0]}{mid}{out_lines[-2]} | {out_lines[-1]}{ec_tag}"
                     elif out_lines:
                         text = " | ".join(out_lines) + ec_tag
                     else:
@@ -439,7 +449,8 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
             budget = max(32, max_len - len(ec_suffix) - 1)
             text = head_part[: budget // 2] + "…" + head_part[-(budget - budget // 2) :] + ec_suffix
         else:
-            text = text[: max_len - 1] + "…"
+            budget = max(32, max_len - 1)
+            text = text[: budget // 2] + "…" + text[-(budget - budget // 2) :]
     return text
 
 

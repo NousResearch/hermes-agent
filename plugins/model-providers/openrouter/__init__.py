@@ -205,7 +205,7 @@ class OpenRouterProfile(ProviderProfile):
 
 
 openrouter = OpenRouterProfile(
-    name="openrouter", aliases=("or",), env_vars=("OPENROUTER_API_KEY",), display_name="OpenRouter",
+    name="openrouter", aliases=("or",), env_vars=("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"), display_name="OpenRouter",
     description="OpenRouter — unified API for 200+ models", signup_url="https://openrouter.ai/keys",
     base_url="https://openrouter.ai/api/v1", models_url="https://openrouter.ai/api/v1/models",
     fallback_models=(

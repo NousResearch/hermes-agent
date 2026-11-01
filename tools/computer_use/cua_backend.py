@@ -15,7 +15,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import PureWindowsPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
@@ -358,11 +358,21 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: dict[int, str] = {}
+        # Screen-space element frames, the window rectangle they were measured
+        # in, and the delivered screenshot size. Drag turns the frames into
+        # window-local screenshot pixels; without the window rectangle it refuses.
+        self._snapshot_bounds: dict[int, tuple[int, int, int, int]] = {}
+        self._snapshot_window_frame: Optional[tuple[int, int, int, int]] = None
+        self._snapshot_screenshot_size: Optional[tuple[int, int]] = None
 
     def _set_active_target(self, target: dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_bounds = {}
+        frame = target.get("bounds")
+        self._snapshot_window_frame = frame if isinstance(frame, tuple) and len(frame) == 4 else None
+        self._snapshot_screenshot_size = None
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,

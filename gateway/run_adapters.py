@@ -1352,6 +1352,7 @@ class GatewayAdapterLifecycleMixin:
                 if claim is not None:
                     claimed[claim] = profile_name
             connected += 1
+            self._publish_secondary_platform_status(profile_name, platform, adapter)
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 
@@ -1427,6 +1428,23 @@ class GatewayAdapterLifecycleMixin:
                 and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
             adapter._shared_listener_profile = profile_name
 
+    def _publish_secondary_platform_status(
+        self, profile_name: str, platform: Platform, adapter: BasePlatformAdapter
+    ) -> None:
+        """Stamp ``<profile>:<platform>`` after a secondary connects — the only writer of that key.
+
+        A one-shot fatal (email's IMAP timeout) otherwise survived in gateway_state.json for the
+        process lifetime (#132953); degraded handling mirrors ``_install_reconnected_adapter``.
+        """
+        degraded = adapter.send_path_degraded
+        self._update_platform_runtime_status(
+            f"{profile_name}:{platform.value}",
+            platform_state="retrying" if degraded else "connected",
+            error_code=None,
+            error_message=adapter.DEGRADED_STATUS_MESSAGE if degraded else None,
+            needs_attention=False, retrying_since=None,
+        )
+
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, predecessor=None):
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
         ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
@@ -1494,6 +1512,7 @@ class GatewayAdapterLifecycleMixin:
                             profile_map[platform] = adapter
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
+                            self._publish_secondary_platform_status(profile_name, platform, adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name

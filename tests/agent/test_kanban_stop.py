@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.kanban_stop import (
@@ -160,3 +162,56 @@ def test_nudge_still_fires_for_non_terminal_kanban_tool(clear_kanban_env):
     # The nudge offers every worker exit, not just close-out; a card that must go
     # through review must never be steered to ``kanban_complete`` alone.
     assert "kanban_request_review" in nudge and "kanban_block" in nudge
+
+
+def _terminal_exchange(tool_name, content, *, call_id="1", result_id="1"):
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": tool_name, "tool_call_id": result_id, "content": content},
+    ]
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes"],
+)
+def test_failed_terminal_call_does_not_count_as_handoff(clear_kanban_env, tool_name):
+    """A refused terminal call (tool_error JSON) is an attempt, not a handoff."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _terminal_exchange(tool_name, json.dumps({"error": "stale claim"}))
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages, attempts=0) is not None
+
+
+def test_retry_after_failed_terminal_call_counts(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _terminal_exchange("kanban_complete", json.dumps({"error": "bad args"}))
+    messages += _terminal_exchange(
+        "kanban_complete", json.dumps({"ok": True}), call_id="2", result_id="2"
+    )
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
+def test_unanswered_terminal_call_does_not_count(clear_kanban_env):
+    """An assistant tool call with no result never proved the transition landed."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _terminal_exchange("kanban_complete", "ok")[:1]
+    assert session_called_kanban_terminal(messages) is False
+    assert build_kanban_stop_nudge(messages=messages, attempts=0) is not None
+
+
+def test_result_for_unrelated_call_id_is_ignored(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = _terminal_exchange("kanban_complete", "ok", call_id="1", result_id="other")
+    assert session_called_kanban_terminal(messages) is False

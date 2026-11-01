@@ -15,7 +15,7 @@ def build_infer_parser(subparsers, *, cmd_infer: Callable) -> None:
     parser.add_argument("--provider", help="Configured provider to use (requires --model)")
     parser.add_argument("--model", help="Model ID or Hermes model alias (default: selected model)")
     parser.add_argument("--schema", metavar="PATH", help="JSON Schema file for structured output")
-    parser.add_argument("--json", action="store_true", help="Print text and route/usage metadata as JSON")
+    parser.add_argument("--json", action="store_true", help="Print success or failure, text, and route/usage as JSON")
     parser.add_argument("--max-tokens", type=int, default=None, help="Maximum output tokens")
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
     parser.set_defaults(func=cmd_infer)

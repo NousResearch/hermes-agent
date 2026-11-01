@@ -1,0 +1,89 @@
+{
+  "skill": "content-recycling",
+  "version": "1.0.0",
+  "description": "The evergreen-reuse-over-time engine: resurface proven content and recycle it on a deliberate cadence, refreshed so it's a new asset not a stale duplicate. Distinct from same-moment cross-platform-repurposing and long->short captions-and-clipping. Uses the REUSE framework. The agent drafts the refresh; a human reviews; WoopSocial schedules/publishes (delete+recreate, no update); analytics are read natively; nothing is fabricated.",
+  "evals": [
+    {
+      "name": "recycles_the_insight_not_the_artifact",
+      "input": "How do I get more mileage out of my old posts?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains most of the audience never saw the original (only ~5-10% of a network sees a given post; 80%+ miss it) and new followers never saw it",
+        "Recycles the idea refreshed with a new hook/angle/format, not an identical repost",
+        "Introduces the REUSE framework (Resurface, Earn it again, Update, Schedule, Evaluate)",
+        "Reads brand-profile and voice-builder first"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Recycle some of our best content.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before refreshing anything",
+        "Keeps the refreshed version in the brand voice and pillars",
+        "Proposes specific refreshed angles, not vague 'repost more'",
+        "Flags that recycled drafts are reviewed by a human before publishing"
+      ]
+    },
+    {
+      "name": "picks_evergreen_winners",
+      "input": "Which posts should I actually recycle?",
+      "expect": [
+        "Recommends evergreen + proven content (practical tips, frameworks, timeless case studies, core messaging) — or strong-but-underseen pieces",
+        "Excludes time-bound content: events, seasonal promos, outdated news, trend pieces",
+        "Picks winners from native analytics by goal (engagement -> saves/shares/comments; traffic -> CTR; growth -> follows)",
+        "Suggests building a recycling library/vault of proven assets"
+      ]
+    },
+    {
+      "name": "refresh_not_duplicate",
+      "input": "Can I just repost my top posts exactly as they were?",
+      "expect": [
+        "Warns Meta's 2026 Original Content rules throttle and demonetize duplicate/unoriginal reposts and redirect viewers to the original (verify-quarterly)",
+        "Advises refreshing instead: rewrite the first line, swap the opening visual, update data, change one major variable (hook/proof/CTA) — never repeat the same opening line",
+        "Frames recycling as editing, not duplication, and quality over volume",
+        "Keeps the refresh on-brand"
+      ]
+    },
+    {
+      "name": "pushback_on_auto_repost_spam",
+      "input": "Set it to auto-repost all my top posts identically every week to every platform.",
+      "expect": [
+        "Refuses identical high-frequency reposting: it triggers duplicate-content penalties and fatigues the core audience",
+        "Requires refresh + deliberate spacing (~90-120 days per asset) + platform-native adaptation instead",
+        "Will not promise a post will go viral again or fabricate expected results",
+        "Offers the disciplined alternative: a recycling queue of refreshed, proven assets on cadence"
+      ]
+    },
+    {
+      "name": "edge_case_update_stale_content",
+      "input": "Recycle this two-year-old post about a tool's pricing and the platform's algorithm.",
+      "expect": [
+        "Applies the Update step: verify facts, stats, dates, prices, and links are still current before recycling (these change)",
+        "Refreshes outdated claims (e.g. current pricing/algorithm features) and re-checks compliance/endorsement language",
+        "Refuses to recycle stale or now-incorrect information as-is",
+        "Notes any AI-refreshed media must be disclosed"
+      ]
+    },
+    {
+      "name": "honest_scope_draft_review_schedule",
+      "input": "Recycle them and post through WoopSocial.",
+      "expect": [
+        "States the agent drafts the refreshed versions; a human reviews; WoopSocial schedules/publishes (and edits are delete+recreate, since it has no update)",
+        "Picks winners by reading native platform analytics (WoopSocial has no analytics surface) and never fabricates a metric",
+        "Routes publishing through scheduling-and-queue -> WoopSocial",
+        "Spaces the cycle deliberately rather than dumping everything at once"
+      ]
+    },
+    {
+      "name": "distinct_from_repurposing_and_clipping",
+      "input": "Isn't this just the same as repurposing my content?",
+      "expect": [
+        "Distinguishes content-recycling (reuse proven content over time, refreshed) from cross-platform-repurposing (same moment, adapted across platforms) and captions-and-clipping (long-form -> short clips)",
+        "Notes planning/scheduling structure lives in content-calendar and batch-content-plan",
+        "Routes the user to the right sibling skill for their actual goal",
+        "Frames recycling as the time-axis discipline specifically"
+      ]
+    }
+  ]
+}

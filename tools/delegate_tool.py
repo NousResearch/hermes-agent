@@ -479,6 +479,9 @@ def _build_children(
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
         pin_child_service_tier(child, route.creds)
+        if route.child_timeout_seconds is not None:
+            # _ChildRun.run reads this before the global delegation.child_timeout_seconds.
+            child._delegate_child_timeout = route.child_timeout_seconds
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema

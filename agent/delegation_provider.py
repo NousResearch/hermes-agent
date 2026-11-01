@@ -30,6 +30,9 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
 * ``max_iterations`` - a whole number of 1 or more: the turn limit for this child. It replaces
   ``delegation.max_iterations`` for this task only. Any other value refuses the task. A profile
   route ignores it.
+* ``child_timeout_seconds`` - a number of 0 or more: the idle timeout for this child, with the same
+  meaning as ``delegation.child_timeout_seconds`` (0 disables, floor 30 s). It replaces the global
+  value for this task only. Any other value refuses the task. A profile route ignores it.
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
 never beside the core ``delegation`` keys.
@@ -54,7 +57,7 @@ RESERVED_TASK_PARAMETERS = frozenset({
 ROUTE_KEYS = frozenset({
     "model", "provider", "base_url", "api_key", "api_mode", "request_overrides",
     "reasoning_effort", "service_tier", "fallback_providers", "profile", "label",
-    "max_iterations",
+    "max_iterations", "child_timeout_seconds",
 })
 
 

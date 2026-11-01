@@ -265,6 +265,17 @@ _LIVENESS_POLL_SECONDS = 5.0
 # closing, so a child that is merely slow can wrap up and return instead of losing its whole context (#116001).
 _BUDGET_WARNING_FRACTION = 0.8
 
+def _effective_child_timeout(child: Any) -> Optional[float]:
+    """The route's pinned idle cap (``child._delegate_child_timeout``, validated at routing as a number >= 0)
+    through the same parse as the global knob; otherwise the global ``delegation.child_timeout_seconds``."""
+    from tools.delegate_tool import _get_child_timeout
+    from tools.delegate_tool_config import _parse_timeout
+    pinned = getattr(child, "_delegate_child_timeout", None)
+    if isinstance(pinned, (int, float)) and not isinstance(pinned, bool):
+        return _parse_timeout(pinned)
+    return _get_child_timeout()
+
+
 def _budget_warning_text(idle_seconds: float, child_timeout: float) -> str:
     return (
         f"[delegation budget warning] No progress signal for {idle_seconds:.0f}s of your {child_timeout:.0f}s "
@@ -890,11 +901,11 @@ class _ChildRun:
         path.
         """
         from tools.delegate_tool import (
-            _STALE_RESULT_GRACE_SECONDS, _get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb,
+            _STALE_RESULT_GRACE_SECONDS, _get_subagent_approval_callback, _set_subagent_approval_cb,
         )
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
-        child_timeout = _get_child_timeout()
+        child_timeout = _effective_child_timeout(child)
         executor = DaemonThreadPoolExecutor(
             max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
         )

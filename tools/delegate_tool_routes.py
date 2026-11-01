@@ -40,6 +40,7 @@ class TaskRoute:
     backend: str = "default"
     error: Optional[str] = None
     max_iterations: Optional[int] = None
+    child_timeout_seconds: Optional[float] = None
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -240,14 +241,22 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
         from tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
     turns = route.get("max_iterations")
+    seconds = route.get("child_timeout_seconds")
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
-                     max_iterations=turns if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 1 else None)
+                     max_iterations=turns if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 1 else None,
+                     child_timeout_seconds=seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+                     and seconds >= 0 else None)
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
                          config: Optional[Mapping[str, Any]] = None, backend: str = "default") -> TaskRoute:
     label = route.get("label") if isinstance(route.get("label"), str) else None
     route = _with_inherited_fallback(route, config or {})
+    own = (config or {}).get("child_timeout_seconds")
+    seconds = route.get("child_timeout_seconds")
+    if seconds is not None and type(seconds) is type(own) and seconds == own:
+        # The config's own value (a dict(config) fallback route): the child run reads the global knob itself.
+        route = {k: v for k, v in route.items() if k != "child_timeout_seconds"}
     # The label is display-only: two labels on one route (or one profile) resolve once.
     key = json.dumps({k: v for k, v in route.items() if k != "label"}, sort_keys=True, default=str)
     if key not in cache:
@@ -282,6 +291,23 @@ def _check_route_max_iterations(index: int, route: Mapping[str, Any], config: Ma
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise DelegationRouteError(
             f"Task {index}: max_iterations on this route must be a whole number of 1 or more (got {value!r})."
+        )
+
+
+def _check_route_child_timeout(index: int, route: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    """A backend's ``child_timeout_seconds`` must be a number of 0 or more: a bad value refuses this task,
+    never falls back to the global timeout. A profile route ignores the field, so it is not checked.
+    The ``delegation`` section's own value (the default route, ``dict(config)``) is not checked here: the child run
+    reads it directly."""
+    value = route.get("child_timeout_seconds")
+    if value is None or route.get("profile"):
+        return
+    cfg_value = config.get("child_timeout_seconds")
+    if type(value) is type(cfg_value) and value == cfg_value:
+        return  # the config's own value, carried by a dict(config) fallback route
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise DelegationRouteError(
+            f"Task {index}: child_timeout_seconds on this route must be a number of 0 or more (got {value!r})."
         )
 
 
@@ -347,6 +373,7 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
             route = _route_one(provider, declared, i, task, config)
             _check_backend_effort(i, route, config)
             _check_route_max_iterations(i, route, config)
+            _check_route_child_timeout(i, route, config)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))

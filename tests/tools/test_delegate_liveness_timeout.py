@@ -16,6 +16,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from tools import delegate_tool
 
 _CAP_SECONDS = 0.4
@@ -108,3 +110,33 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     assert entry["timeout_seconds"] == _CAP_SECONDS
     assert entry["last_event_age"] is not None and entry["last_event_age"] > 0.3, entry
     assert child.interrupted.is_set()
+
+
+@pytest.mark.parametrize("pinned, global_cap, expected", [
+    (45, 1400.0, 45.0), (10, 1400.0, 30.0), (0, 1400.0, None), (2.5, 1400.0, 30.0),
+    (None, 1400.0, 1400.0), (True, 1400.0, 1400.0), ("45", 1400.0, 1400.0),
+])
+def test_effective_child_timeout_prefers_a_valid_pinned_route_value(monkeypatch, pinned, global_cap, expected):
+    from tools.delegate_tool_child_run import _effective_child_timeout
+    monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: global_cap)
+    child = SimpleNamespace() if pinned is None else SimpleNamespace(_delegate_child_timeout=pinned)
+    assert _effective_child_timeout(child) == expected
+
+
+def test_child_run_waits_with_the_routes_pinned_timeout_not_the_global(monkeypatch):
+    from tools.delegate_tool_child_run import _ChildRun
+    seen = []
+    original = _ChildRun.wait_liveness_aware
+
+    def spy(self, settled, child_future, child_timeout):
+        seen.append(child_timeout)
+        return original(self, settled, child_future, child_timeout)
+
+    monkeypatch.setattr(_ChildRun, "wait_liveness_aware", spy)
+    child = _SlowButLiveChild(total_seconds=0.1, advance=True)
+    child._delegate_child_timeout = 45
+
+    entry = _run(child, monkeypatch, cap=1400)
+
+    assert entry["status"] == "completed", entry
+    assert seen == [45.0]

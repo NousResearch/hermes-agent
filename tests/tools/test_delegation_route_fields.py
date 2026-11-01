@@ -230,3 +230,38 @@ def test_a_profile_route_is_not_checked_for_max_iterations():
     _check_route_max_iterations(0, {"profile": "work", "max_iterations": 0}, {"max_iterations": 40})  # no raise
     with pytest.raises(ValueError, match="max_iterations"):
         _check_route_max_iterations(0, {"max_iterations": 0}, {"max_iterations": 40})
+
+
+def test_route_child_timeout_is_pinned_on_the_child_and_a_sibling_is_not():
+    result, _, (capped, plain) = _spawn([{**LOCAL, "child_timeout_seconds": 300}, None],
+                                        cfg={"child_timeout_seconds": 1400})
+    assert result == {"status": "built"}
+    assert capped._delegate_child_timeout == 300
+    assert "_delegate_child_timeout" not in vars(plain)
+
+
+def test_a_route_child_timeout_of_zero_is_pinned_as_zero():
+    _result, _, (child,) = _spawn([{**LOCAL, "child_timeout_seconds": 0}], cfg={"child_timeout_seconds": 1400})
+    assert child._delegate_child_timeout == 0
+
+
+@pytest.mark.parametrize("bad", [-1, "300", True, [300]])
+def test_a_bad_route_child_timeout_refuses_that_task_and_its_sibling_runs(bad):
+    result, built, _ = _spawn([{**LOCAL, "child_timeout_seconds": bad}, None], cfg={"child_timeout_seconds": 1400})
+    (refused,) = result["refused"]
+    assert refused["task_index"] == 0
+    assert "child_timeout_seconds" in refused["error"]
+    assert len(built) == 1
+
+
+def test_the_delegation_sections_own_child_timeout_is_not_a_route_error():
+    result, _, (child,) = _spawn([None], cfg={"child_timeout_seconds": "1400"})
+    assert result == {"status": "built"}
+    assert "_delegate_child_timeout" not in vars(child)
+
+
+def test_a_profile_route_is_not_checked_for_child_timeout():
+    from tools.delegate_tool_routes import _check_route_child_timeout
+    _check_route_child_timeout(0, {"profile": "work", "child_timeout_seconds": -1}, {"child_timeout_seconds": 1400})
+    with pytest.raises(ValueError, match="child_timeout_seconds"):
+        _check_route_child_timeout(0, {"child_timeout_seconds": -1}, {"child_timeout_seconds": 1400})

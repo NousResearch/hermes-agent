@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import type { ExternalOpenFailedPayload } from '@/global.d'
 import { useI18n } from '@/i18n'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isHudWindow, isPopoutWindow } from '@/store/windows'
 
 // Global fallback for a failed external URL open. main's openExternalUrl
 // reports every `shell.openExternal` rejection over a dedicated IPC event
@@ -30,7 +30,7 @@ export function ExternalOpenFailedDialog() {
     return window.hermesDesktop.onExternalOpenFailed(setFailure)
   }, [])
 
-  if (isHudWindow() || isBrowserWindow()) {
+  if (isHudWindow() || isPopoutWindow()) {
     return null
   }
 

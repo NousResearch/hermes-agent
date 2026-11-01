@@ -2316,6 +2316,15 @@ export const en: Translations = {
     tokens: value => `${value} tok`
   },
 
+  penLibrary: {
+    title: 'Canvases',
+    searchPlaceholder: 'Search canvases…',
+    empty: 'No canvases yet',
+    delete: 'Delete canvas',
+    confirmDelete: 'Delete',
+    cancelDelete: 'Keep'
+  },
+
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',
@@ -3109,6 +3118,9 @@ export const en: Translations = {
     kindImage: 'image',
     kindFile: 'file',
     kindLink: 'link',
+    kindCanvas: 'Pen',
+    tabCanvases: 'Pens',
+    openCanvas: 'Open canvas',
     chat: 'Chat',
     copyUrl: 'Copy URL',
     copyPath: 'Copy path'
@@ -4254,6 +4266,26 @@ export const en: Translations = {
     terminalDropControl: paths => `These names hold control characters the shell would act on as keys: ${paths}`,
     terminalDropUnquotable: (shell, paths) => `No safe way to type these names in ${shell}: ${paths}`,
     addToChat: 'Add to chat'
+  },
+
+  pen: {
+    openFailed: 'Could not open the canvas',
+    import: 'Import to canvas',
+    importFromWeb: 'Import from web…',
+    importPickElement: 'Pick an element',
+    importPicking: 'Stop picking',
+    importPickHint: 'Click an element · Enter imports · Esc stops',
+    importPage: 'Whole page',
+    importSelection: 'Import',
+    importCancel: 'Cancel',
+    importing: 'Importing to the canvas…',
+    importProgress: percent => `Capturing… ${percent}%`,
+    imported: 'Page imported to the canvas',
+    importedElement: label => `Imported ${label} to the canvas`,
+    importFailed: 'Could not import to the canvas',
+    importUndo: 'Undo',
+    importUndoFailed: 'Could not undo the import',
+    showCanvas: 'Show canvas'
   },
 
   preview: {

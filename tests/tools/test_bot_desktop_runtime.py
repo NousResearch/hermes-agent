@@ -481,3 +481,50 @@ def test_a_comfortable_start_is_not_logged(tmp_path, monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="tools.bot_desktop.runtime"):
         runtime.start()
     assert not [m for m in (r.getMessage() for r in caplog.records) if "available" in m]
+
+
+def _windows_lock_shape(monkeypatch):
+    """The Windows gateway-host shape of #132759: no fcntl, a recording msvcrt stand-in."""
+    from types import SimpleNamespace
+
+    calls: list = []
+    fake = SimpleNamespace(LK_LOCK=0, LK_UNLCK=4, locking=lambda fd, mode, n: calls.append(mode))
+    monkeypatch.setattr(runtime, "fcntl", None)
+    monkeypatch.setattr(runtime, "msvcrt", fake)
+    return fake, calls
+
+
+def test_host_lock_falls_back_to_msvcrt_where_fcntl_is_missing(tmp_path, monkeypatch):
+    """The host-side locks must not assume fcntl exists: the sandbox branch runs on Windows hosts too."""
+    fake, calls = _windows_lock_shape(monkeypatch)
+    lock = tmp_path / "start.lock"
+    with runtime._flocked(lock):
+        # seeded by the lock itself: msvcrt needs a non-empty byte range to lock
+        assert lock.read_text(encoding="utf-8") == " "
+        assert calls == [fake.LK_LOCK]
+    assert calls == [fake.LK_LOCK, fake.LK_UNLCK]
+
+
+def test_sandbox_start_takes_the_host_lock_without_fcntl(tmp_path, monkeypatch):
+    """#132759: placement 'auto' + a docker backend resolves TERMINAL without looking at the host OS,
+    so start()'s sandbox branch takes the host-side start lock on a Windows gateway host — where the
+    old function-local ``import fcntl`` died with ModuleNotFoundError before reaching the backend."""
+    from types import SimpleNamespace
+
+    from tools.bot_desktop import placement as placement_mod
+    from tools.bot_desktop import sandbox_host
+
+    fake, calls = _windows_lock_shape(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(placement_mod, "resolve",
+                        lambda: placement_mod.Placement(placement_mod.TERMINAL, "docker"))
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create=True: object())
+    monkeypatch.setattr(sandbox_host, "chromium_executable", lambda env: None)
+    monkeypatch.setattr(sandbox_host, "start",
+                        lambda env, profile, geometry, wait_seconds, browser_exec, browser_exec_line:
+                        {"DISPLAY": ":42"})
+    sentinel = SimpleNamespace(sentinel=True)
+    monkeypatch.setattr(runtime, "status", lambda: sentinel)
+
+    assert runtime.start(wait_seconds=0.1) is sentinel
+    assert fake.LK_LOCK in calls and fake.LK_UNLCK in calls

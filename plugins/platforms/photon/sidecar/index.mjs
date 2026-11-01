@@ -61,11 +61,16 @@
 //                          detection so a dead gateway can't orphan us)
 //   PHOTON_TELEMETRY       enable Spectrum SDK telemetry ("true"/"1"/"on"/"yes";
 //                          default off — toggle with `hermes photon telemetry`)
+//   PHOTON_CATCHUP_STATE_FILE  where the inbound resume cursor is kept across
+//                          restarts (set by the adapter; unset = live-only)
+//   PHOTON_CATCHUP         "off" = live-only, as before (see catchup.mjs)
 
 import http from "node:http";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
+import { patchSpectrumResumeCursor } from "./patch-spectrum-resume-cursor.mjs";
+import { RESUME_HOOK, catchUpDisabled, createCatchUp } from "./catchup.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
@@ -297,6 +302,29 @@ try {
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
+}
+// Keep the inbound resume cursor across sidecar restarts (catchup.mjs). The
+// hook must be in place before spectrum-ts is imported and subscribed.
+const catchUp = createCatchUp({
+  statePath: catchUpDisabled(process.env.PHOTON_CATCHUP)
+    ? ""
+    : (process.env.PHOTON_CATCHUP_STATE_FILE || "").trim(),
+  projectId,
+  onGap: ({ since, until }) =>
+    void deliver(JSON.stringify({ control: "inbound_gap", since, until })),
+});
+if (catchUp.enabled) {
+  catchUp.load();
+  globalThis[RESUME_HOOK] = catchUp.hook;
+  try {
+    catchUp.setPatch(patchSpectrumResumeCursor().patched ? "applied" : "present");
+  } catch (e) {
+    catchUp.setPatch("failed");
+    console.error(
+      "photon-sidecar: catch-up hook not installed; messages sent while the " +
+        "sidecar restarts can be lost: " + (e?.message || String(e))
+    );
+  }
 }
 let Spectrum,
   imessage,
@@ -704,14 +732,23 @@ function inboundStreamErrorMessage(e) {
         // Every yield — any direction — proves the inbound stream is live.
         noteInboundYield();
         // Only forward inbound messages (ignore our own outbound echoes).
-        if (message && message.direction && message.direction !== "inbound") {
+        // A catch-up replay of a message delivered before a restart is skipped too.
+        if (
+          (message && message.direction && message.direction !== "inbound") ||
+          catchUp.isReplay(message)
+        ) {
+          catchUp.settle(message, { delivered: false });
           continue;
         }
         rememberInboundSpace(space, message);
         rememberKnownMessage(message);
         const event = await normalizeEvent(space, message);
-        if (!event) continue;
+        if (!event) {
+          catchUp.settle(message, { delivered: false });
+          continue;
+        }
         await deliver(JSON.stringify(event));
+        catchUp.settle(message, { delivered: true });
         await acknowledgeInboundRead(message);
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
@@ -1035,7 +1072,7 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     if (req.url === "/healthz") {
-      return ok(res, { stream: streamHealthSnapshot() });
+      return ok(res, { stream: streamHealthSnapshot(), catchUp: catchUp.snapshot() });
     }
     if (req.url === "/probe") {
       // Upstream liveness probe. Drives a cheap unary read over the SAME gRPC

@@ -391,6 +391,12 @@ DEFAULT_CONFIG = {
         # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
         # keyless_fallback is false.
         "keyless_rescue": True,
+        # Ring rotation under a pinned backend: a configured backend (web.backend /
+        # web.search_backend / web.extract_backend) or a "free" provider_tier pins its vendor, and
+        # a pinned vendor starts EVERY keyless request — so the round-robin is off and the other
+        # rungs only ever run as rate-limit failover. false = let the ring rotate regardless of the
+        # pin (the pinned vendor stays the active provider; only the walk order changes).
+        "keyless_ring_pin": True,
         # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
         # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
         # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a

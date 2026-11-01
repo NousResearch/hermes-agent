@@ -339,8 +339,9 @@ def skill_pending_diff(
             new = folded
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
+    label = str(target_label).lstrip('/')  # keep the a//b// join single-slashed (#134718)
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
-                                fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
+                                fromfile=f"a/{label}", tofile=f"b/{label}")
     return "".join(diff) or "(no textual change)"
 
 

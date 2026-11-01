@@ -13,6 +13,56 @@ import json
 import pytest
 
 
+@pytest.fixture
+def implicit_board_home(tmp_path, monkeypatch):
+    from pathlib import Path
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for var in ("HERMES_KANBAN_BOARD", "HERMES_KANBAN_DB", "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_HOME", "HERMES_SESSION_ID", "HERMES_SESSION_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    kb.create_board("other")
+    kb.set_current_board("other")
+    return home
+
+
+@pytest.mark.parametrize("mode,pin,refused", [
+    ("strict", None, True),
+    ("strict", "   ", True),  # a blank board is not explicit
+    ("strict", "argument", False),
+    ("strict", "env", False),
+    ("false", None, False),
+    ("absent", None, False),
+])
+def test_create_implicit_board_policy(implicit_board_home, monkeypatch, mode, pin, refused):
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools  # registers the real handler
+    from tools.registry import registry
+
+    if mode != "absent":
+        (implicit_board_home / "config.yaml").write_text(
+            f"kanban:\n  require_explicit_board: {str(mode == 'strict').lower()}\n", encoding="utf-8")
+    args = {"title": "new work", "assignee": "dev"}
+    if pin == "env":
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "other")
+    elif pin:
+        args["board"] = "other" if pin == "argument" else pin
+    result = json.loads(registry.dispatch("kanban_create", args))
+    if refused:
+        assert "board 'other'" in result["error"]
+        assert "kanban.require_explicit_board: false" in result["error"]
+    else:
+        assert result["ok"] is True, result
+    with kbc.connect_closing(board="other") as conn:
+        assert [t.title for t in kb.list_tasks(conn)] == ([] if refused else ["new work"])
+    with kbc.connect_closing(board="default") as conn:
+        assert kb.list_tasks(conn) == []
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------

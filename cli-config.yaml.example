@@ -411,6 +411,9 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Board-less create/dispatch/swarm/init/gc/repair, specify/decompose --all and daemon --force
+  # warn on implicit non-default routing via kanban/current. True refuses; pins bypass.
+  require_explicit_board: false
 
 # =============================================================================
 # Terminal Tool Configuration

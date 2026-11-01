@@ -1144,10 +1144,12 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_named_custom_child_pool_follows_requested_provider_not_endpoint_order(self):
         """#45763 (salvage #89021): two named custom providers on one gateway URL keep separate pools; the child
         leases the pool of the identity it inherited, not the first entry registered for that URL."""
-        from hermes_constants import get_hermes_home
+        from tests.safe_home import guarded_home
 
         url = "https://gateway.invalid/v1"
-        get_hermes_home().joinpath("config.yaml").write_text(
+        # Never the operator's live home. pytest's conftest sandboxes HERMES_HOME;
+        # a unittest/direct run does not — on 2026-10-10 that overwrote the live config.
+        guarded_home().joinpath("config.yaml").write_text(
             f"providers:\n  claude-ai:\n    api: {url}\n  open-ai:\n    api: {url}\n", encoding="utf-8",
         )
         parent = _make_mock_parent()

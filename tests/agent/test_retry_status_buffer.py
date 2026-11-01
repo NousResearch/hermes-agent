@@ -152,6 +152,33 @@ def test_pending_fallback_notice_emitted_once_on_success():
     assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
 
 
+def test_pending_fallback_notice_is_dropped_for_silent_machinery_turn():
+    """Regression for #137738: internal silent turns must not send fallback status to chat."""
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent._turn_user_display_kind = "internal_notification"
+    agent._pending_fallback_notice = "⚠️ Model fallback: primary unavailable"
+
+    agent._emit_pending_fallback_notice("[SILENT]")
+
+    assert emitted == []
+    assert agent._pending_fallback_notice is None
+
+
+def test_pending_fallback_notice_still_emits_for_delivered_machinery_turn():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent._turn_user_display_kind = "internal_notification"
+    agent._pending_fallback_notice = "⚠️ Model fallback: primary unavailable"
+
+    agent._emit_pending_fallback_notice("There is a new item to report.")
+
+    assert emitted == ["⚠️ Model fallback: primary unavailable"]
+    assert agent._pending_fallback_notice is None
+
+
 def test_pending_fallback_notice_emits_all_switches_in_order():
     agent = _make_bare_agent()
     emitted = []

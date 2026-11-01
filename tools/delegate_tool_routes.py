@@ -24,6 +24,16 @@ from agent.delegation_provider import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+
+def _is_finite_number(value: Any) -> bool:
+    """A real, finite int/float (not bool). A Python int too large for a float is not representable as seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
 _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
@@ -245,8 +255,7 @@ def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> Ta
     seconds = route.get("child_timeout_seconds")
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend,
                      max_iterations=turns if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 1 else None,
-                     child_timeout_seconds=seconds if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
-                     and math.isfinite(seconds) and seconds >= 0 else None)
+                     child_timeout_seconds=seconds if _is_finite_number(seconds) and seconds >= 0 else None)
 
 
 def _route_to_task_route(route: dict[str, Any], parent_agent: Any, cache: dict[str, TaskRoute],
@@ -306,7 +315,7 @@ def _check_route_child_timeout(index: int, route: Mapping[str, Any], config: Map
     cfg_value = config.get("child_timeout_seconds")
     if type(value) is type(cfg_value) and value == cfg_value:
         return  # the config's own value, carried by a dict(config) fallback route
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+    if not _is_finite_number(value) or value < 0:
         raise DelegationRouteError(
             f"Task {index}: child_timeout_seconds on this route must be a number of 0 or more (got {value!r})."
         )

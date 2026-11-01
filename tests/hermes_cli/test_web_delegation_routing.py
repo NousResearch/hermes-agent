@@ -141,6 +141,7 @@ def test_a_managed_install_refuses_every_routing_write_with_the_reason(client, h
     ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": "nan"}], "child_timeout_seconds"),
     ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": "inf"}], "child_timeout_seconds"),
     ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": True}], "child_timeout_seconds"),
+    ([{"name": "a", "description": "x", "provider": "p", "model": "m", "child_timeout_seconds": 10**400}], "child_timeout_seconds"),
 ])
 def test_invalid_model_routes_are_refused_before_anything_is_written(client, homes, options, problem):
     _root, work = homes

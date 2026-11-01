@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import asdict
 from typing import Any, Callable, Mapping, Optional
 
@@ -22,6 +21,7 @@ from hermes_cli.web_models import DelegationBackendSelect, DelegationModelMapUpd
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, is_redacted_credential_preview, redacted_credential_preview,
 )
+from tools.delegate_tool_routes import _is_finite_number
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
@@ -203,8 +203,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
                 seconds = float(seconds)
             except ValueError:
                 seconds = None
-        if (seconds is None or isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-                or not math.isfinite(seconds) or seconds < 0):
+        if seconds is None or not _is_finite_number(seconds) or seconds < 0:
             raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
                                f"(got {entry.get('child_timeout_seconds')!r}).")
         if isinstance(seconds, float) and seconds.is_integer():

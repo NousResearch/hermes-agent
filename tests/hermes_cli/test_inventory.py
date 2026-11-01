@@ -29,6 +29,29 @@ from hermes_cli.inventory import (
 )
 
 
+def test_capabilities_forward_only_declared_reasoning_efforts(monkeypatch):
+    """Only an explicit provider declaration narrows the picker vocabulary."""
+    from hermes_cli import inventory
+    from providers.base import ProviderProfile
+
+    monkeypatch.setattr(inventory, "_reasoning_catalog_reader", lambda _slug: None)
+
+    class DeclaredProfile(ProviderProfile):
+        def supported_reasoning_efforts(self, model):
+            return {"none": (), "known": ("low", "high")}.get(model)
+
+    profile = DeclaredProfile(name="declared")
+    monkeypatch.setattr("providers.get_provider_profile", lambda slug: profile if slug == "declared" else None)
+    rows = [{"slug": "declared", "models": ["none", "known", "unknown"]}]
+
+    inventory._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]
+    assert caps["none"]["reasoning_efforts"] == []
+    assert caps["known"]["reasoning_efforts"] == ["low", "high"]
+    assert "reasoning_efforts" not in caps["unknown"]
+
+
 # ─── load_picker_context ───────────────────────────────────────────────
 
 

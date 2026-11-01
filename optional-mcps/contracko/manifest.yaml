@@ -1,0 +1,31 @@
+manifest_version: 1
+
+name: contracko
+description: Search and review contracts, track renewal dates, and import agreements with Contracko.
+source: https://contracko.com/mcp/contract-management
+
+transport:
+  type: http
+  url: https://app.contracko.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - contracko
+  hosts:
+    - contracko.com
+
+post_install: |
+  A Contracko account and workspace with MCP access are required.
+  On first connection, authenticate in the browser and choose your workspace.
+  Start with read-only access for contract searches and reviews. Importing or
+  changing records requires separate write permission and user confirmation.
+
+  Contract data used by Hermes is sent to the AI provider running the session.
+  Review that provider's data settings before working with confidential contracts.
+
+  Restart your Hermes session after authentication so the tools are loaded.
+  To change which tools Hermes exposes, run:
+    hermes mcp configure contracko

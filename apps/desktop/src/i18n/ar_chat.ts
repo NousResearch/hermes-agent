@@ -12,6 +12,7 @@ export const arChat = {
     startVoice: 'بدء الصوت',
     openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
+    compactingNotice: 'جارٍ ضغط السياق — ستُدرج الرسائل المرسلة في الطابور',
     steer: 'توجيه',
     stop: 'إيقاف',
     send: 'إرسال',

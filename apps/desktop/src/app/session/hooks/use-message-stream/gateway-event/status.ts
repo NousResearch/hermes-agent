@@ -7,7 +7,7 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorCode, isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearSettledClarifyRequest } from '@/store/clarify'
-import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
+import { reconcileSessionCompacting, setSessionCompacting, setSessionCompactionProgress, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -85,6 +85,10 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // without `compressing` the desktop showed no progress for /compress.
     if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
       setSessionCompacting(sessionId, true)
+      // The payload's text is live progress (`compressing 42 messages
+      // (~120,000 tok)…`); keep it so the status row can narrate the wait
+      // instead of sitting on a fixed label for the whole compression.
+      setSessionCompactionProgress(sessionId, coerceGatewayText(payload?.text).trim() || undefined)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
       reconcileSessionCompacting(sessionId, 'terminal')

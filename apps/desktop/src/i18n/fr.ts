@@ -3753,6 +3753,7 @@ export const frOverrides = {
     startVoice: 'Démarrer la conversation vocale',
     openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
+    compactingNotice: 'Compression du contexte — les messages envoyés seront mis en file',
     steer: "Diriger l'exécution en cours",
     redirect: "Rediriger l'exécution en cours",
     stop: 'Arrêter',
@@ -4844,6 +4845,7 @@ export const frOverrides = {
       loadingSession: 'Chargement de la session',
       showEarlier: 'Afficher les messages précédents',
       loadingResponse: 'Hermes charge une réponse',
+      compacting: 'Compression du contexte en cours',
       loadingLocalModel: model => `Chargement de ${model} en mémoire`,
       processingPrompt: "Traitement de l'invite",
       resumeWhenBackgroundDone: count =>

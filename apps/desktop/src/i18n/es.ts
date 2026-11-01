@@ -3734,6 +3734,7 @@ export const esOverrides = {
     startVoice: 'Iniciar conversación de voz',
     openDirective: 'Abrir',
     queueMessage: 'Poner mensaje en cola',
+    compactingNotice: 'Comprimiendo el contexto: los mensajes enviados se pondrán en cola',
     steer: 'Guiar la ejecución actual',
     redirect: 'Redirigir la ejecución actual',
     stop: 'Detener',
@@ -4818,6 +4819,7 @@ export const esOverrides = {
       loadingSession: 'Cargando sesión',
       showEarlier: 'Mostrar mensajes anteriores',
       loadingResponse: 'Hermes está cargando una respuesta',
+      compacting: 'Comprimiendo el contexto',
       loadingLocalModel: (model: string) => `Cargando ${model} en memoria`,
       processingPrompt: 'Procesando el prompt',
       resumeWhenBackgroundDone: count =>

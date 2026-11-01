@@ -53,6 +53,7 @@ export function ComposerControls({
   canSubmit,
   cardWaiting = false,
   compactModelPill = false,
+  compacting = false,
   conversation,
   disabled,
   foldVoice = false,
@@ -73,6 +74,8 @@ export function ComposerControls({
   /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
   cardWaiting?: boolean
   compactModelPill?: boolean
+  /** A standalone compression runs without `busy`: sends still queue at the gateway, so the label must say so. */
+  compacting?: boolean
   conversation: ConversationProps
   disabled: boolean
   foldVoice?: boolean
@@ -102,7 +105,9 @@ export function ComposerControls({
   const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
 
   // A waiting card takes the draft as its answer through Send, whatever the busy action.
-  const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
+  // A standalone compression is not `busy` but still queues sends (busyAction 'queue'),
+  // so its label must come from the same map, not from the idle "Send".
+  const sendLabel = composerSendLabel((busy || compacting) && !cardWaiting, busyAction, c)
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A

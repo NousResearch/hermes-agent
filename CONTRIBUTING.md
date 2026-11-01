@@ -816,13 +816,17 @@ that touches the OS, assume *any* platform can hit your code path.
    not inside Python logic.
 
 7. **Symlinks need elevated privileges on Windows** (unless Developer Mode is
-   on). Tests that create symlinks need `@pytest.mark.skipif(sys.platform ==
-   "win32", reason="Symlinks require elevated privileges on Windows")`.
+   on). Use `@pytest.mark.require_symlinks` for tests that need symlinks:
+   the existing conftest probes whether the environment can create them and
+   skips only when it cannot. Do not exclude all Windows hosts with `skipif`.
+   Add a `platforms(...)` marker only if the behavior under test is itself
+   host-specific.
 
 8. **POSIX file modes (0o600, 0o644, etc.) are NOT enforced on NTFS** by
-   default. Tests that assert on `stat().st_mode & 0o777` must skip on
-   Windows — the concept doesn't translate. Use ACLs (`icacls`, `pywin32`)
-   for Windows secret-file protection if needed.
+   default. Mark tests that assert on `stat().st_mode & 0o777` with
+   `@pytest.mark.platforms("posix")` so they run on Linux and macOS, not
+   Windows. Use ACLs (`icacls`, `pywin32`) for Windows secret-file protection
+   if needed.
 
 9. **Detached background daemons on Windows need `pythonw.exe`, NOT
     `python.exe`.** `python.exe` always allocates or attaches to a console,
@@ -886,7 +890,10 @@ def test_native_windows_arm64_behavior():
 For several supported hosts, use one marker with multiple arguments, such as
 `@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
 Tests of pure functions that accept a platform as data need no host marker.
-See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
+Use `platforms(...)` rather than a bare OS `skipif`: the OS CI lanes discover
+marked files and select tests with `-m platforms`, so a bare `skipif` does not
+route a test to its host's lane. See
+[tests/AGENTS.md](tests/AGENTS.md#dont-fake-the-host-os) for the complete contract.
 
 ---
 

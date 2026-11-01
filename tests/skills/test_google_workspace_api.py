@@ -1,6 +1,7 @@
 """Tests for Google Workspace gws bridge and CLI wrapper."""
 
 import importlib.util
+import base64
 import json
 import subprocess
 import sys
@@ -240,6 +241,45 @@ def _tabbed_doc():
             },
         ],
     }
+
+
+def test_gmail_reply_carries_the_full_references_chain(api_module, monkeypatch, capsys):
+    """RFC 5322 3.6.4: References is the parent's own References followed by its
+    Message-ID. Reading only the Message-ID and echoing it back truncates the chain,
+    so clients that thread on References (and any later thread reconstruction) see a
+    one-hop thread instead of the real one."""
+    original = {
+        "id": "original-1",
+        "threadId": "thread-1",
+        "payload": {"headers": [
+            {"name": "From", "value": "Vet <vet@example.com>"},
+            {"name": "Subject", "value": "Question"},
+            {"name": "Message-ID", "value": "<original@example.com>"},
+            {"name": "References", "value": "<earlier@example.com>"},
+        ]},
+    }
+    calls = []
+
+    def fake_run_gws(parts, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts[-1] == "get":
+            return original
+        return {"id": "sent-1", "threadId": "thread-1"}
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_run_gws)
+    api_module.gmail_reply(
+        types.SimpleNamespace(
+            message_id="original-1", body="Thanks", from_header="", draft=False,
+        )
+    )
+
+    # The parent's References header has to be fetched, or the chain is unreadable.
+    assert "References" in calls[0]["params"]["metadataHeaders"]
+
+    headers = base64.urlsafe_b64decode(calls[1]["body"]["raw"]).decode()
+    assert "In-Reply-To: <original@example.com>" in headers
+    assert "References: <earlier@example.com> <original@example.com>" in headers
+    capsys.readouterr()
 
 
 def test_docs_get_returns_every_tab_of_a_tabbed_doc(api_module, monkeypatch, capsys):

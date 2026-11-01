@@ -1,0 +1,22 @@
+name: withhuman
+title: withHuman
+repo: https://github.com/withHumanAI/withHuman
+sha: 3fcc9dd3787e4941aaf4657e808c78c3f98d49a9
+subdir: plugins/hermes/withhuman
+description: >-
+  Human approval for Hermes tool calls, with human in the loop guardrails. Set rules for what runs automatically,
+  and send the rest to your team to approve or deny from Slack, Discord or your phone. Keep an audit log of every
+  call.
+maintainer: withHumanAI
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://withhuman.ai/docs
+version: "1.5.4"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

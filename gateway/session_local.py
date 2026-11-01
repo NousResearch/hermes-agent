@@ -245,6 +245,32 @@ def staged_creation_follows(authority, actor, request_id):
     return isinstance(request, dict) and request.get('follow_profile_config') is True
 
 
+def _require_creator(authority, actor):
+    if actor.profile_id != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    if 'session:create' not in actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+
+
+def _require_request_id(request_id):
+    if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
+        raise RuntimeStoreError('invalid_params', field='request_id',
+                                detail='must be a non-empty string of at most 256 characters')
+
+
+def creates_new_session(authority, actor, request_id):
+    """Whether ``session.create`` under *request_id* mints a new chat; False for a retry of a staged
+    one, which resumes that frozen request. Raises first what ``stage_local_session`` refuses before
+    any route is read, so work done ahead of staging (saving a picked server) never runs for it."""
+    _require_creator(authority, actor)
+    if request_id is None:
+        return True
+    _require_request_id(request_id)
+    authority._require_admission_open()
+    from gateway.session_local_recovery import local_identity
+    return authority.db.get_session(local_identity(authority.profile_id, actor.subject, request_id)) is None
+
+
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
                         client_local=False, desktop_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
@@ -253,10 +279,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     ticket minted over the private control socket), never a value the client sends. ``desktop_local``:
     that client is also the Desktop app (``process_identity.local_desktop_client``); a Desktop chat
     records it so its turns run as work for the local Desktop (``session_policy.local_desktop_turn``)."""
-    if actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
-    if 'session:create' not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+    _require_creator(authority, actor)
     from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace
@@ -295,9 +318,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             import json
             policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
     request_id = params.get('request_id', uuid.uuid4().hex)
-    if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
-        raise RuntimeStoreError('invalid_params', field='request_id',
-                                detail='must be a non-empty string of at most 256 characters')
+    _require_request_id(request_id)
     from dataclasses import asdict
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now

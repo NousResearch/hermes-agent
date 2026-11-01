@@ -498,6 +498,13 @@ class AuthorityConnection:
             # retry of a creation staged without the flag keeps that frozen request.
             params.setdefault('follow_profile_config', True)
         if not ref:
+            # A composer pick of a ``Detected:`` local server row is saved before the policy below
+            # freezes the profile's route; any other provider returns at once. A refused request or
+            # a retry (which resumes its frozen route) saves nothing.
+            from gateway.session_local import creates_new_session
+            from gateway.session_mutation_model import adopt_detected_pick
+            if creates_new_session(self.authority, self.actor, params.get('request_id')):
+                await asyncio.to_thread(adopt_detected_pick, self.authority, params.get('provider', ''))
             skills_prompt = None
             if 'skills' in params:
                 # Skill files are read off the owner loop, once per NEW session (a retried

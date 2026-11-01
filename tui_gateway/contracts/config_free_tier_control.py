@@ -453,6 +453,8 @@ class ModelOptionsParams(ProfileParams):
     explicit_only: bool = False
     include_unconfigured: bool = False
     refresh: bool = False
+    # An opened picker: also scan this machine for local model servers (``Detected:`` rows).
+    detect_local: bool = False
 
 
 # TODO(common): ModelPricing / ModelCapabilities / ModelOptionProvider are also the row shape of

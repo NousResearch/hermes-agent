@@ -149,7 +149,10 @@ export function ModelPicker({
       // affordances ("paste KEY to activate"), so opt into unconfigured
       // rows — the backend now defaults to the configured subset for
       // desktop chat pickers (#56974).
-      include_unconfigured: true
+      include_unconfigured: true,
+      // An opened picker also offers Ollama / LM Studio / vLLM servers
+      // already running on this machine as `Detected:` rows.
+      detect_local: true
     })
       .then(raw => {
         const r = asRpcResult<ModelOptionsResult>(raw)

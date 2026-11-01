@@ -100,7 +100,11 @@ export function customDefaultSupersedesPick(pickProvider: string, defaultProvide
   return key.length > 0 && pick === key
 }
 
-interface ModelOptionsRequest {
+export interface ModelOptionsRequest {
+  /** An opened picker: the backend also scans this machine for local model
+   *  servers (Ollama, LM Studio, vLLM) and lists them as `Detected:` rows.
+   *  Other reads reuse that scan's rows without probing. */
+  detectLocal?: boolean
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured
    *  providers are listed (#56974). */
@@ -143,7 +147,39 @@ function restModelOptions(
   return profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)
 }
 
+type ModelOptionsDispatch = NonNullable<ModelOptionsRequest['request']>
+
+/** A backend older than the local-server scan rejects the unknown `detect_local`
+ *  flag. Desktop and its runtime update separately, so the picker retries
+ *  through the same dispatcher without it and shows the catalog it always had. */
+async function dispatchModelOptions(
+  dispatch: ModelOptionsDispatch,
+  params: Record<string, unknown>
+): Promise<ModelOptionsResult> {
+  try {
+    return await dispatch<ModelOptionsResult>('model.options', params)
+  } catch (error) {
+    if (!params.detect_local || !/invalid.?params/i.test(String(error))) {
+      throw error
+    }
+
+    const { detect_local: _scan, ...older } = params
+
+    return dispatch<ModelOptionsResult>('model.options', older)
+  }
+}
+
+/** `{name: true}` for each set flag; unset flags are omitted from the RPC params. */
+function onFlags(flags: Record<string, boolean>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(flags)
+      .filter(([, on]) => on)
+      .map(([name]) => [name, true])
+  )
+}
+
 export async function requestModelOptions({
+  detectLocal = false,
   explicitOnly = true,
   gateway,
   profile,
@@ -154,18 +190,10 @@ export async function requestModelOptions({
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
-    const params: Record<string, unknown> = {}
+    const params = onFlags({ detect_local: detectLocal, explicit_only: explicitOnly, refresh })
 
     if (sessionId) {
       params.session_id = sessionId
-    }
-
-    if (refresh) {
-      params.refresh = true
-    }
-
-    if (explicitOnly) {
-      params.explicit_only = true
     }
 
     const profileKey = (profile ?? '').trim()
@@ -182,7 +210,7 @@ export async function requestModelOptions({
     let gatewayOptions: ModelOptionsResult | undefined
 
     try {
-      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
+      gatewayOptions = await dispatchModelOptions(dispatch, params)
     } catch (error) {
       gatewayError = error
     }

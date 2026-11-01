@@ -904,6 +904,27 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
     return custom_provider_map
 
 
+DETECTED_PICK_PREFIX = "detected:"
+
+
+def _adopt_detected_pick(selected_key: str) -> str | None:
+    """A picked ``Detected:`` row becomes a saved ``providers.<key>`` entry; returns its
+    ``custom:<key>`` slug so the saved-custom-provider flow picks the model. Any other key passes."""
+    if not str(selected_key).startswith(DETECTED_PICK_PREFIX):
+        return selected_key
+    from hermes_cli.models_local_detect import find_detected, save_detected_server
+    server = find_detected(selected_key[len(DETECTED_PICK_PREFIX):])
+    if server is None:
+        print("  That local server stopped answering; start it again or pick another provider.")
+        return None
+    if save_detected_server(server) is None:
+        print(f'  Provider "{server.provider_key}" already points elsewhere; add this server as a custom endpoint.')
+        return None
+    print(f'  💾 Saved {server.label} at {server.base_url} as provider "{server.provider_key}"')
+    from hermes_cli.providers import custom_provider_slug
+    return custom_provider_slug(server.display_name, server.provider_key)
+
+
 def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict[str, str],
                                 custom_provider_map: dict[str, dict[str, str]]) -> tuple[list[tuple[str, str, list[str]]], int]:
     """Rows for the ``hermes model`` provider picker plus the pre-selected index. Canonical providers
@@ -966,6 +987,12 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         model_hint = f" — {saved_model}" if saved_model else ""
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],
              bool(active) and key == active)
+
+    from hermes_cli.models_local_detect import unsaved_servers
+    for server in unsaved_servers(config):
+        if not {server.slug, server.provider_key, server.kind} & _cli_excluded:
+            ordered.append((f"{DETECTED_PICK_PREFIX}{server.provider_key}",
+                            f"{server.row_label} — {_short_url(server.base_url)}", []))
 
     from hermes_cli.model_setup_flows_local import local_models_available
     from hermes_cli.providers import LLAMACPP_ALIASES

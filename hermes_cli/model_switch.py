@@ -1766,7 +1766,9 @@ def switch_model(
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each
     step returns a failure :class:`ModelSwitchResult` to stop the chain, or ``None`` to continue.
     ``user_providers`` / ``custom_providers`` are the config.yaml ``providers:`` dict and
-    ``custom_providers:`` list."""
+    ``custom_providers:`` list. A picked ``Detected:`` local server is saved as a provider first."""
+    from hermes_cli.models_local_detect import adopt_detected_provider
+    user_providers = adopt_detected_provider(explicit_provider, user_providers)
     st = _Switch(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,

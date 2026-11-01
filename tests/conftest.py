@@ -1250,6 +1250,11 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "real_local_model_probe: let the local model server scan probe loopback ports "
+        "(the test points them at its own servers).",
+    )
+    config.addinivalue_line(
+        "markers",
         "real_memory_guard: bypass the autouse fixture that pins the kanban "
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
@@ -1430,6 +1435,25 @@ def _no_live_nous_services(request, monkeypatch):
         return real_getaddrinfo(host, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+
+# ── Local model server fence ─────────────────────────────────────────────────
+# An opened picker (``hermes model``, ``/model``, ``model.options``
+# ``detect_local``) scans 127.0.0.1:11434/1234/8000 for running model servers.
+# Under tests those ports belong to whatever the developer has running, so a
+# picker test would grow a ``Detected:`` row (or not) depending on the host,
+# and the scan cache would leak rows from one test into the next. The probe
+# answers "nothing there" unless the test opts in with
+# ``@pytest.mark.real_local_model_probe`` (and points the ports at its own
+# loopback servers).
+@pytest.fixture(autouse=True)
+def _no_host_local_model_probe(request, monkeypatch):
+    from hermes_cli import models_local_detect
+
+    monkeypatch.setattr(models_local_detect, "_cache", None)
+    if request.node.get_closest_marker("real_local_model_probe"):
+        return
+    monkeypatch.setattr(models_local_detect, "probe_port", lambda *_a, **_kw: None)
 
 
 @pytest.fixture(autouse=True)

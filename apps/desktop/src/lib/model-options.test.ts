@@ -22,6 +22,21 @@ describe('requestModelOptions', () => {
     vi.clearAllMocks()
   })
 
+  it('retries an owner-routed catalog read without the scan flag when an older backend rejects it', async () => {
+    const payload = { model: 'm', provider: 'p', providers: [{ models: ['m'], name: 'P', slug: 'p' }] }
+
+    const request = vi.fn((_method: string, params?: Record<string, unknown>) =>
+      params?.detect_local ? Promise.reject(new Error('invalid_params')) : Promise.resolve(payload)
+    )
+
+    await expect(
+      requestModelOptions({ detectLocal: true, request: request as never, sessionId: 'session-1' })
+    ).resolves.toBe(payload)
+
+    expect(request).toHaveBeenLastCalledWith('model.options', { explicit_only: true, session_id: 'session-1' })
+    expect(getGlobalModelOptions).not.toHaveBeenCalled()
+  })
+
   it('uses the connected gateway even before a session exists', async () => {
     const gatewayPayload = {
       model: 'BeastMode',

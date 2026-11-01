@@ -70,6 +70,24 @@ def _without_slug(rows: list[dict], slug: str) -> list[dict]:
     return [r for r in rows if _slug(r) != slug]
 
 
+def _detected_local_rows(
+    ctx: ConfigContext, rows: list[dict], max_models: int | None, *, cached_only: bool,
+) -> list[dict]:
+    """``Detected:`` rows for local servers not already saved or shown (an ``lmstudio`` row already
+    covers LM Studio). Honors ``excluded_providers`` by detected slug or kind."""
+    from hermes_cli.models_local_detect import picker_row, unsaved_servers
+
+    shown = {_slug(r) for r in rows}
+    # Only a row listing models covers a server of its kind: an ``lmstudio`` row built from config
+    # alone (never probed) is empty, and hiding the detected row would hide the running models.
+    covered = {_slug(r) for r in rows if r.get("models")}
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    config = {"providers": ctx.user_providers, "custom_providers": ctx.custom_providers,
+              "model": {"base_url": ctx.current_base_url}}
+    return [picker_row(s, max_models=max_models) for s in unsaved_servers(config, cached_only=cached_only)
+            if s.slug not in shown and s.kind not in covered and not {s.slug, s.provider_key, s.kind} & excluded]
+
+
 # ─── Public: payload builder ────────────────────────────────────────────
 
 
@@ -80,7 +98,7 @@ def build_models_payload(
     capabilities: bool = False, featured: bool = False, force_fresh_nous_tier: bool = False,
     refresh: bool = False, probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, max_models: int | None = None, non_blocking_catalogs: bool = False,
-    fast_custom_probe: bool | None = None,
+    fast_custom_probe: bool | None = None, local_detection: str = "off",
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer needs. ``explicit_only`` keeps
     only providers the user explicitly configured — hides ambient/auto-seeded credentials from
@@ -89,7 +107,10 @@ def build_models_payload(
     ``non_blocking_catalogs``: provider catalogs come from the disk cache only — a degraded provider
     cannot stall the response (GUI picker opens). ``fast_custom_probe`` overrides the
     custom-endpoint discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps
-    the coupling, ``False`` retains the full 5s budget (#103843)."""
+    the coupling, ``False`` retains the full 5s budget (#103843). ``local_detection`` adds a
+    ``Detected:`` row per unsaved local model server (Ollama, LM Studio, vLLM): ``"probe"`` scans
+    localhost (only an opened picker asks for that), ``"cached"`` reuses the last scan without
+    touching the network, ``"off"`` adds none."""
     from hermes_cli.model_switch import list_authenticated_providers
 
     rows = list_authenticated_providers(
@@ -119,6 +140,9 @@ def build_models_payload(
                 return _slug(row) == "custom" and bool(models) and models <= staged
 
             rows = [r for r in rows if not _is_managed_custom(r)]
+
+    if local_detection in ("probe", "cached"):
+        rows = list(rows) + _detected_local_rows(ctx, rows, max_models, cached_only=local_detection == "cached")
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -226,7 +250,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
 
 def build_model_options_payload(
     ctx: ConfigContext, *, explicit_only: bool = False, include_unconfigured: bool = False,
-    refresh: bool = False,
+    refresh: bool = False, detect_local: bool = False,
 ) -> dict:
     """Shared API-server/dashboard/TUI payload. Normal open probes only the current custom provider so
     offline saved endpoints don't block the picker; explicit refresh probes all and busts the cache.
@@ -239,14 +263,17 @@ def build_model_options_payload(
     these are human-facing pickers, and hiding a temporarily exhausted pool makes providers vanish
     mid-session even though another model under the same provider may still work (same contract
     as ``/model`` and the aux pickers, #66584 / #66624). Visibility only: ``fast_custom_probe=False``
-    keeps the live probe of the current custom endpoint on its full 5s discovery budget."""
+    keeps the live probe of the current custom endpoint on its full 5s discovery budget.
+
+    ``detect_local`` (set by an opened picker) scans for local model servers; every other read
+    reuses that scan's rows so a background refetch neither probes nor drops them."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
         capabilities=True, featured=True, for_picker=True, fast_custom_probe=False,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
-        non_blocking_catalogs=not refresh,
+        non_blocking_catalogs=not refresh, local_detection="probe" if detect_local else "cached",
     )
     _apply_limits(payload["providers"])
     _apply_usage(payload["providers"])
@@ -782,7 +809,7 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         # machine-scoped dir); there is deliberately no config credential, so without the source clause
         # the row would only survive on the profile where Use was last clicked.
         if (row.get("is_user_defined") or (current_slug and slug == current_slug)
-                or row.get("source") == "local-runtime"):
+                or row.get("source") in ("local-runtime", "detected")):
             return True
         if slug == "moa":
             # Virtual routing mode, not a configured provider: hide unless current (above) or the user

@@ -390,6 +390,7 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
             # Visibility only, not a faster probe: this call live-probes the current custom
             # endpoint, which historically enjoyed the full 5s discovery budget (#103843).
             fast_custom_probe=False,
+            local_detection="probe",  # an opened picker offers local Ollama / LM Studio / vLLM servers
         )["providers"]
     except Exception:
         providers = []

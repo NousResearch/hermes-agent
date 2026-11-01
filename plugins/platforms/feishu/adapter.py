@@ -3904,6 +3904,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
 
     async def _connect_websocket(self) -> None:
+        from plugins.platforms.feishu.ws_client import create_websocket_client
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
         domain = self._prepare_client()
@@ -3911,15 +3912,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
-        self._ws_client = FeishuWSClient(
-            app_id=self._app_id,
-            app_secret=self._app_secret,
-            log_level=lark.LogLevel.INFO,
-            event_handler=self._event_handler,
-            domain=domain,
-            # Without the "channel" UA tag Feishu won't push group @mention events over WS.
-            extra_ua_tags=["channel"],
-        )
+        self._ws_client = create_websocket_client(FeishuWSClient, {
+            "app_id": self._app_id,
+            "app_secret": self._app_secret,
+            "log_level": lark.LogLevel.INFO,
+            "event_handler": self._event_handler,
+            "domain": domain,
+        })
         # The lark SDK owns this thread and fires every event/card callback on it; those hop back
         # to the adapter loop via run_coroutine_threadsafe, which copies the CALLER's context — so
         # whatever scope the WS thread carries is what pre-handler work (inbound media caching,

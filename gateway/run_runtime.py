@@ -677,8 +677,12 @@ async def recover_profile_native_sessions(runner, authority):
     with owner_scope(authority):
         pending = {row['target_session_id'] for row in authority.db._read_all(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-        bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+        # The origin is read through ``_restored_source`` like every other revival from durable state, so
+        # the persisted receiving bot decides the adapter; a bare origin has no provenance and resolves
+        # to no adapter for a profile that owns a bot of its own (``gateway/AGENTS.md`` § Profile scope).
+        bindings = [(owner, source, runner._adapter_for_source(source))
                     for entry in runner.session_store.list_sessions() if entry.origin is not None
+                    for source in [runner._restored_source(entry)]
                     for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
         outcome = await authority.recover_native_sessions(bindings)
         from gateway.session_detached import recover_detached_sessions

@@ -310,3 +310,47 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+
+
+def test_new_with_title_before_first_message_keeps_user_title(tmp_path, monkeypatch, capsys):
+    """/new <title> as the first command (no agent yet) queues the title; agent setup persists it
+    as a user title on the lazily created row, so the auto-titler cannot replace it (#124033)."""
+    import types
+    from hermes_cli import gateway_agent
+
+    cli = _make_cli()
+    cli._session_db = db = SessionDB(db_path=tmp_path / "state.db")
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
+    assert cli.agent is None
+
+    cli.process_command("/new  my experiment ")
+
+    assert cli._pending_title == "my experiment"
+    assert db.get_session(cli.session_id) is None  # the row is still created lazily
+    assert "my experiment" in capsys.readouterr().out
+
+    def _ensure_db_session():
+        db.create_session(session_id=cli.session_id, source="cli", model=cli.model)
+
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace(
+        _ensure_db_session=_ensure_db_session, _session_db_created=True))
+    cli._install_tool_callbacks = lambda: None
+    cli._ensure_runtime_credentials = lambda: True
+    cli._ensure_gateway_session = lambda: None
+    assert cli._init_agent() is True
+
+    assert cli._pending_title is None
+    assert db.get_session_title(cli.session_id) == "my experiment"
+    assert db.get_session_title_source(cli.session_id) == "user"
+    assert db.set_auto_title(cli.session_id, "Derived from message", source="llm") is False
+
+
+def test_new_with_rejected_title_before_first_message_starts_untitled(tmp_path, capsys):
+    cli = _make_cli()
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    assert cli.agent is None
+
+    cli.new_session(title="   ")
+
+    assert cli._pending_title is None
+    assert "New session started:" not in capsys.readouterr().out

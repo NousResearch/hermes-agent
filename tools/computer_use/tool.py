@@ -98,6 +98,7 @@ _escalation_warned: set = set()               # sids already warned that a bypas
 # message is rewritten, so prompt-cache prefixes stay intact. Staleness is bounded by a consecutive-omission streak
 # cap: full pixels are re-delivered before compaction (which keeps only the newest image-bearing tool results)
 # could evict the image the note refers to. State is per session; sessionless calls never dedup.
+# A frame counts as seen only after its image or analysis is delivered.
 _screenshot_dedup_lock = threading.Lock()
 _last_screenshot_state: dict[str, dict[str, Any]] = {}  # session_id -> {"digest", "target": (app, window), "streak"}
 _SCREENSHOT_DEDUP_MAX_STREAK = 2
@@ -105,15 +106,19 @@ _SCREENSHOT_DEDUP_MAX_STREAK = 2
 def _screenshot_dedup_check(session_id: str, digest: str, target: tuple[str, str]) -> bool:
     """True when this capture should be delivered WITHOUT its image: the previous frame for this session had identical
     bytes for the same target and the omission streak is below _SCREENSHOT_DEDUP_MAX_STREAK. Any miss (new pixels,
-    new target, streak exhausted, first capture) resets the stored state to this digest so the image goes out."""
+    new target, streak exhausted, first capture) drops the stored state until delivery is confirmed."""
     with _screenshot_dedup_lock:
         state = _last_screenshot_state.get(session_id)
         if (state is not None and state.get("digest") == digest and state.get("target") == target
                 and int(state.get("streak", 0)) < _SCREENSHOT_DEDUP_MAX_STREAK):
             state["streak"] = int(state.get("streak", 0)) + 1
             return True
-        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0}
+        _last_screenshot_state.pop(session_id, None)
         return False
+
+def _screenshot_dedup_record(session_id: str, digest: str, target: tuple[str, str]) -> None:
+    with _screenshot_dedup_lock:
+        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0}
 
 def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
     """Forget dedup state (all sessions, or one scoped key)."""
@@ -374,6 +379,8 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
             _fence()
             return result
     except _bd_lease.HumanHasControl as e:
+        if session_id:
+            _reset_screenshot_dedup(_scoped_sid(session_id))
         return _refused(e)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
@@ -700,8 +707,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
-    if v.has_image and session_id and _screenshot_dedup_check(
-            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
+    dedup = (_scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))) \
+        if v.has_image and session_id else None
+    if dedup and _screenshot_dedup_check(*dedup):
         # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
         # the text metadata is fresh and the note says which earlier result still applies.
         lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
@@ -712,6 +720,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
         if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
+            if dedup:
+                _screenshot_dedup_record(*dedup)
             return {
                 "_multimodal": True,
                 "content": [{"type": "text", "text": summary},
@@ -728,6 +738,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             cap, summary, visible_elements=v.visible, truncated_elements=v.truncated,
             elements_file=v.elements_file, screenshot_path=v.screenshot_path)
         if routed is not None:
+            if dedup:
+                _screenshot_dedup_record(*dedup)
             return routed
         # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could
         # now break with a provider error, so degrade to text.

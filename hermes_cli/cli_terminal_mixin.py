@@ -602,7 +602,8 @@ class CLITerminalMixin:
         """Best-effort reset when leaked mouse reports indicate mode drift."""
         from cli import (
             CLI_CONFIG, _DIM, _RST, _TERMINAL_INPUT_MODE_RESET_SEQ,
-            _cli_multiline_shortcuts_enabled, _cprint, _enable_extended_enter_keys, logger)
+            _cli_multiline_shortcuts_enabled, _cprint, _enable_extended_enter_keys,
+            _enable_focus_reporting, logger)
         now = time.monotonic()
         # Rate-limit to avoid thrashing if a terminal floods reports. None = never
         # (monotonic epoch is arbitrary, see _invalidate).
@@ -617,9 +618,10 @@ class CLITerminalMixin:
         except Exception:
             return
 
-        # The reset pops kitty keyboard mode and resets modifyOtherKeys too — re-request
-        # extended keys so Shift+Enter isn't silently dead for the rest of the session.
+        # The reset also disables focus reporting. Restore it before the optional
+        # extended-key modes so focus-regain recovery remains live for this session.
         try:
+            _enable_focus_reporting(output)
             if _cli_multiline_shortcuts_enabled(self.config or CLI_CONFIG):
                 _enable_extended_enter_keys(output)
         except Exception:

@@ -93,7 +93,7 @@ class CLIModalMixin:
 
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
-        from cli import _DIM, _RST, _cprint
+        from cli import _DIM, _RST, _cprint, _disable_focus_reporting, _enable_focus_reporting
         app = getattr(self, "_app", None)
         if not app:
             _cprint(f"{_DIM}{t('cli.editor.only_interactive')}{_RST}")
@@ -110,6 +110,7 @@ class CLIModalMixin:
         if target_buffer is None:
             _cprint(f"{_DIM}{t('cli.editor.no_input_buffer')}{_RST}")
             return False
+        output = getattr(app, "output", None)
         try:
             # Inline pastes so the editor sees real content; set the skip flag unconditionally so
             # the editor-close text-change doesn't re-collapse it.
@@ -118,11 +119,21 @@ class CLIModalMixin:
             # Submission here is driven by the custom `enter` keybinding, NOT the buffer's
             # accept_handler, so validate_and_handle can't route through it; chain a done-callback
             # that re-uses the real submit pipeline (TUI Ctrl+G parity: save == send).
+            _disable_focus_reporting(output)
             task = target_buffer.open_in_editor(validate_and_handle=False)
             if task is not None and hasattr(task, "add_done_callback"):
-                task.add_done_callback(lambda _t, b=target_buffer: self._submit_editor_buffer(b))
+                def _editor_done(_t, b=target_buffer, out=output):
+                    # A cancelled editor task can finish during shutdown; never
+                    # re-arm DEC 1004 after the app/cleanup gave the TTY back.
+                    if getattr(app, "is_running", False):
+                        _enable_focus_reporting(out)
+                    self._submit_editor_buffer(b)
+                task.add_done_callback(_editor_done)
+            else:
+                _enable_focus_reporting(output)
             return True
         except Exception as exc:
+            _enable_focus_reporting(output)
             _cprint(f"{_DIM}{t('cli.editor.open_failed', error=exc)}{_RST}")
             return False
 
@@ -256,17 +267,28 @@ class CLIModalMixin:
             return None
 
         if self._app and in_main_thread:
+            from cli import _disable_focus_reporting, _enable_focus_reporting
             from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False
             self._app.invalidate()
+            output = getattr(self._app, "output", None)
+
+            def _ask_with_terminal_ownership():
+                _disable_focus_reporting(output)
+                try:
+                    _ask()
+                finally:
+                    if getattr(self._app, "is_running", False):
+                        _enable_focus_reporting(output)
+
             try:
-                run_in_terminal(_ask)
+                run_in_terminal(_ask_with_terminal_ownership)
             except Exception:
                 # WSL / Warp / some emulators silently drop the scheduled coroutine — fall back to
                 # a direct input() so keystrokes don't leak into the agent buffer.
                 try:
-                    _ask()
+                    _ask_with_terminal_ownership()
                 except Exception:
                     pass
             finally:

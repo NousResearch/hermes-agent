@@ -164,6 +164,40 @@ class TestSweep:
 class TestRuntimeFailedSweep:
     """A live gateway may reclaim only its own transient reconnect failures."""
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "QQ Bot API error [429] /v2/groups/G1/messages: rate limited",
+            "iLink sendmessage rate limited; cooldown active for 30.0s",
+        ],
+    )
+    def test_known_platform_rate_limits_use_the_flood_marker(self, error):
+        """Regression for #137608: known QQ and Weixin rate limits are not generic retries."""
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", error)
+
+        claimed = dl.sweep_failed_for_runtime("telegram", now=time.time() + 61)
+
+        assert len(claimed) == 1
+        assert claimed[0]["marker"] == dl.FLOOD_MARKER
+
+    def test_other_runtime_rejection_uses_neutral_marker(self):
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "503 Service Unavailable")
+
+        claimed = dl.sweep_failed_for_runtime("telegram", now=time.time() + 31)
+
+        assert len(claimed) == 1
+        assert claimed[0]["marker"] == dl.RETRIED_MARKER
+
+    def test_delivery_markers_allow_per_cause_overrides(self):
+        markers = dl.delivery_ledger_markers({
+            "gateway": {"delivery_ledger_markers": {"retry": "Retry notice\\n\\n"}}
+        })
+
+        assert markers["retry"] == "Retry notice\\n\\n"
+        assert markers["flood"] == dl.FLOOD_MARKER
+
     def test_claims_current_process_send_path_degraded_row(self):
         _record(platform="telegram")
         dl.mark_failed("ob-1", "send_path_degraded")

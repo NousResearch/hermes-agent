@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.archive_safe import (
     archive_root_dirs,
     copy_regular_files,
@@ -62,9 +63,8 @@ def _placeholders(items) -> str:
 def _snapshot_db(source: Path, target: Path) -> None:
     """Consistent copy of ``source`` via the online-backup API (a file copy
     would miss pages still in the ``-wal`` sidecar and could tear)."""
-    with contextlib.closing(sqlite3.connect(str(source))) as src, \
-            contextlib.closing(sqlite3.connect(str(target))) as dst:
-        src.backup(dst)
+    if not _safe_copy_db(source, target):
+        raise RuntimeError("Could not create a consistent SQLite snapshot for board export")
 
 
 def _scrub_local_state(conn: sqlite3.Connection) -> None:

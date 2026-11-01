@@ -325,7 +325,7 @@ def _clock_key(platform: Any, chat_id: Any) -> tuple[str, str] | None:
     return (value, str(chat_id)) if value and chat_id not in (None, "") else None
 
 
-def start_reply_clock(source: Any, *, internal: bool = False) -> None:
+def start_reply_clock(source: Any, *, internal: bool = False) -> float | None:
     """An inbound user message was accepted as a new agent turn (internal events never are)."""
     key = None if internal else _clock_key(getattr(source, "platform", None), getattr(source, "chat_id", None))
     if key is None:
@@ -333,12 +333,14 @@ def start_reply_clock(source: Any, *, internal: bool = False) -> None:
     from hermes_constants import get_hermes_home
 
     home = str(get_hermes_home())
+    started = time.monotonic()
     with _reply_lock:
-        for table, value in ((_reply_clocks, (time.monotonic(), home)), (_chat_homes, home)):
+        for table, value in ((_reply_clocks, (started, home)), (_chat_homes, home)):
             table.pop(key, None)
             table[key] = value
             while len(table) > _REPLY_CLOCK_MAX:
                 table.popitem(last=False)
+    return started
 
 
 def _chat_home(adapter: Any, chat_id: Any) -> str | None:
@@ -374,6 +376,63 @@ def stop_reply_clock(adapter: Any, chat_id: Any, result: Any = None) -> None:
         # Labelled by the platform the message came in on, not the connector that carried the reply.
         platform = started_key[0] if started_key[0] not in _FRONTING_PLATFORMS else None
         _submit(_in_home, started[1], _emit_reply_latency, adapter, chat_id, platform, time.monotonic() - started[0])
+
+
+def no_reply_fields(*, platform: Any, reason: str) -> dict[str, str]:
+    from .shared_metrics_contract import NO_REPLY_REASONS
+
+    return {"platform": _platform(platform), "reason": reason if reason in NO_REPLY_REASONS else "empty"}
+
+
+def _emit_no_reply(platform: Any, reason: str) -> None:
+    _emit("NO_REPLY_MARK", no_reply_fields, platform=platform, reason=reason)
+
+
+def end_reply_clock(adapter_or_source: Any, chat_id: Any, reason: str, *, token=None, session_key="") -> bool:
+    """Finish only this event's clock; missing/swapped FIFO events conservatively count nothing."""
+    try:
+        key = _clock_key(getattr(adapter_or_source, "platform", None), chat_id)
+        with _reply_lock:
+            if key and key[0] in _FRONTING_PLATFORMS and key not in _reply_clocks:
+                fronted = [k for k in _reply_clocks if k[1] == key[1]]
+                key = fronted[0] if len(fronted) == 1 else key
+            started = _reply_clocks.get(key)
+            if token is None or started is None or started[0] != token:
+                return False
+            _reply_clocks.pop(key)
+        if reason != "replied":
+            from .shared_metrics_contract import NO_REPLY_REASONS
+
+            platform = key[0] if key[0] not in _FRONTING_PLATFORMS else _source_platform(adapter_or_source, chat_id)
+            platform = getattr(platform, "platform", platform)
+            reason = reason if reason in NO_REPLY_REASONS else "empty"
+            level = logging.INFO if reason in {"silent", "interrupted"} else logging.WARNING
+            logger.log(level, "turn ended without a reply: platform=%s session=%s reason=%s",
+                       getattr(platform, "value", platform), session_key, reason)
+            _submit(_in_home, started[1], _emit_no_reply, platform=platform, reason=reason)
+        return True
+    except Exception:
+        logger.debug("Gateway no-reply metric not recorded", exc_info=True)
+        return False
+
+
+def finish_reply_clock(adapter, event, session_key, interrupt_event, response, attempted, succeeded, *, error=False):
+    """Classify the completed adapter lifecycle without claiming another turn's clock."""
+    try:
+        if succeeded or getattr(event, "_voice_reply_delivered", False) or getattr(event, "_turn_reply_delivered", False):
+            reason = "replied"
+        elif error:
+            reason = "error"
+        elif interrupt_event.is_set() and session_key in adapter._pending_messages:
+            reason = "interrupted"
+        elif attempted:
+            reason = "delivery_failed"
+        else:
+            reason = "dropped" if response else "empty"
+        end_reply_clock(event.source, event.source.chat_id, reason,
+                        token=getattr(event, "_reply_clock_token", None), session_key=session_key)
+    except Exception:
+        logger.debug("Gateway no-reply metric not recorded", exc_info=True)
 
 
 def _emit_reply_latency(adapter: Any, chat_id: Any, platform: Any, seconds: float) -> None:

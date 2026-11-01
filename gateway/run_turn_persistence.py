@@ -619,6 +619,10 @@ class GatewayTurnPersistenceMixin:
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
+        if _intentional_silence or (agent_result.get("interrupted") and not response):
+            from hermes_cli.observability.shared_metrics_gateway import end_reply_clock
+            end_reply_clock(source, source.chat_id, "silent" if _intentional_silence else "interrupted",
+                            token=getattr(event, "_reply_clock_token", None), session_key=session_key)
 
         adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -629,10 +633,13 @@ class GatewayTurnPersistenceMixin:
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
             await self._send_voice_reply(event, response)
+        if getattr(event, "_voice_reply_delivered", False):
+            event._turn_reply_delivered = True
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
+            event._turn_reply_delivered = True
             # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
             # would upload every file a second time.
             if response and adapter and not agent_result.get("media_already_delivered"):

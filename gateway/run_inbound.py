@@ -1337,7 +1337,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
-        start_reply_clock(source, internal=is_internal)
+        event._reply_clock_token = start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
@@ -1346,6 +1346,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             if not is_internal:
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
+                    from hermes_cli.observability.shared_metrics_gateway import end_reply_clock
+                    end_reply_clock(source, source.chat_id, "silent", session_key=_quick_key,
+                                    token=None if _consumer_reply else getattr(event, "_reply_clock_token", None))
                     return _consumer_reply
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)

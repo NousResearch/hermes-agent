@@ -377,6 +377,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
     // The main-process arbiter within its speech TTL: first claim of a key wins.
     const claimed = new Set<string>()
     const { promise: turnAccepted, resolve: acceptTurn } = Promise.withResolvers<void>()
+
     const claimAmbientCue = async (key: string) => {
       const won = !claimed.has(key) && Boolean(claimed.add(key))
 
@@ -442,6 +443,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
       () => {
         const busyRef = useRef(false)
         const queryClient = useRef(new QueryClient())
+
         const cache = useSessionStateCache({
           activeSessionId: SESSION_ID,
           busyRef,
@@ -450,6 +452,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
           setBusy: () => undefined,
           setMessages: messages => $messages.set(messages)
         })
+
         const stream = useMessageStream({
           activeSessionIdRef: cache.activeSessionIdRef,
           hydrateFromStoredSession: vi.fn(async () => undefined),
@@ -459,6 +462,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
           sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
           updateSessionState: cache.updateSessionState
         })
+
         useAutoSpeakReplies({
           conversationActive: false,
           failureLabel: 'read-aloud failed',
@@ -481,20 +485,24 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
         result.current.stream.handleGatewayEvent({ type, payload, session_id: SESSION_ID })
       })
     }
+
     act(() => {
       result.current.cache.updateSessionState(SESSION_ID, state => ({ ...state, messages: [user] }), SESSION_ID)
     })
     await send('message.start')
+
     if (mode === 'streamed') {
       await send('message.delta', { text: 'Looking into it.' })
       act(() => flushStreamDeltas(SESSION_ID))
     }
+
     expect($messages.get()).toEqual([user])
     expect(playSpeechText).not.toHaveBeenCalled()
 
     await send('message.interim', { text: 'Looking into it.' })
     expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(SESSION_ID)?.busy).toBe(true)
     expect($messages.get().at(-1)).toMatchObject({ interim: true, pending: false })
+
     if (mode === 'deferred-claim') {
       expect(playSpeechText).not.toHaveBeenCalled()
     } else {
@@ -512,6 +520,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
     await send('message.complete', { text: 'Here is the final report.' })
     expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(SESSION_ID)?.busy).toBe(false)
     expect(chatMessageText($messages.get().at(-1)!)).toBe('Here is the final report.')
+
     if (mode === 'deferred-claim') {
       expect(playSpeechText).not.toHaveBeenCalled()
       await act(async () => acceptTurn())
@@ -520,6 +529,7 @@ describe('useAutoSpeakReplies — final reply after tool calls', () => {
         expect.objectContaining({ source: 'read-aloud' })
       )
     }
+
     expect(playSpeechText).toHaveBeenCalledTimes(1)
 
     // Playback ending must not re-speak the reply or resurrect the superseded interim.

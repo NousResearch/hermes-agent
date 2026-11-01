@@ -140,6 +140,9 @@ def _sanitize_single_tool(tool: dict) -> dict:
     fn = out.get("function") if isinstance(out, dict) else None
     if not isinstance(fn, dict):
         return out
+    # Output validation metadata is local, not an OpenAI function-definition field.
+    # Strip only this envelope key; parameters may legitimately use the same name.
+    fn.pop("outputSchema", None)
     params = fn.get("parameters")
     if not isinstance(params, dict):  # missing / non-dict → minimal valid shape
         fn["parameters"] = _empty_object()

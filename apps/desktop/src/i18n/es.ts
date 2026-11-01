@@ -1617,7 +1617,7 @@ export const esOverrides = {
       intro:
         'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Cambia de gateway desde Sesiones. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway; el trabajo en otros gateways sigue ejecutándose.',
+        'Todos los gateways permanecen conectados. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway, y Sesiones puede mostrarlos todos a la vez.',
       launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
       launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
       searchPlaceholder: 'Buscar gateways…',
@@ -3221,14 +3221,10 @@ export const esOverrides = {
       gateway: (gateway: string) => `Perfiles en ${gateway}`,
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-      switchTo: (name: string, gateway: string) => `Cambiar a ${name} en ${gateway}`,
+      switchTo: (name: string, gateway: string) => `Abrir ${name} en ${gateway}`,
       deleteOn: (gateway: string) => ` en ${gateway}`,
       localDevice: 'Este dispositivo (backend local: instala Hermes si falta; si no, abre una sesión nueva)',
-      switchDeviceTitle: '¿Cambiar a este dispositivo?',
-      switchDeviceDesc:
-        'Esto abre una sesión nueva en este equipo. La conversación actual permanece en el otro gateway.',
-      switchDeviceConfirm: 'Cambiar',
-      installDeviceTitle: '¿Cambiar a este dispositivo?',
+      installDeviceTitle: '¿Instalar Hermes en este dispositivo?',
       installDeviceDesc:
         'Esto instalará Hermes localmente y luego abrirá una sesión nueva en este equipo. No se instala nada hasta que confirmes.',
       installDeviceConfirm: 'Instalar localmente',

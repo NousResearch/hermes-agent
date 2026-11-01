@@ -1618,7 +1618,7 @@ export const deOverrides = {
       intro:
         'Verwalten Sie dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
       stagedNote:
-        'Wechseln Sie Gateways über Sessions. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway; Arbeit auf anderen Gateways läuft weiter.',
+        'Jedes Gateway bleibt verbunden. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway, und Sessions kann alle gleichzeitig anzeigen.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Gateway zurückkehren',
       launchModeDesc: 'Wenn deaktiviert, öffnet Sessions auf dem primären Gateway.',
       searchPlaceholder: 'Gateways durchsuchen…',
@@ -3232,15 +3232,11 @@ export const deOverrides = {
       gateway: gateway => `Profile auf ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
+      switchTo: (name, gateway) => `${name} auf ${gateway} öffnen`,
       deleteOn: gateway => ` auf ${gateway}`,
       localDevice:
         'Dieses Gerät (lokales Backend — installiert Hermes, falls es fehlt, sonst öffnet es eine neue Sitzung)',
-      switchDeviceTitle: 'Zu diesem Gerät wechseln?',
-      switchDeviceDesc:
-        'Das öffnet eine neue Sitzung auf diesem Computer. Das aktuelle Gespräch bleibt auf dem anderen Gateway.',
-      switchDeviceConfirm: 'Wechseln',
-      installDeviceTitle: 'Zu diesem Gerät wechseln?',
+      installDeviceTitle: 'Hermes auf diesem Gerät installieren?',
       installDeviceDesc:
         'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
       installDeviceConfirm: 'Lokal installieren',

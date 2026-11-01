@@ -408,10 +408,7 @@ export const arCommandCenter = {
     manageProfiles: 'إدارة الملفات الشخصية',
     fleet: {
       localDevice: 'هذا الجهاز (خلفية محلية — تثبّت Hermes إن كان مفقودًا، وإلا تفتح جلسة جديدة)',
-      switchDeviceTitle: 'التبديل إلى هذا الجهاز؟',
-      switchDeviceDesc: 'يفتح هذا جلسة جديدة على هذا الحاسوب. تبقى المحادثة الحالية على البوابة الأخرى.',
-      switchDeviceConfirm: 'تبديل',
-      installDeviceTitle: 'التبديل إلى هذا الجهاز؟',
+      installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
       installDeviceDesc: 'سيُثبَّت Hermes محليًا ثم تُفتح جلسة جديدة على هذا الحاسوب. لا يبدأ التثبيت قبل التأكيد.',
       installDeviceConfirm: 'تثبيت محليًا',
       connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك'

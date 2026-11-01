@@ -23,25 +23,17 @@ async function probeLocalBackend(): Promise<boolean> {
 export interface LocalDeviceTarget {
   connectionId: string
   label: string
-  profile?: string
-  /** The switch replaces the center with a fresh session, even when Hermes is already installed. */
-  replaceCenter?: boolean
-}
-
-interface LocalDevicePrompt extends LocalDeviceTarget {
-  kind: 'install' | 'switch'
 }
 
 /**
- * Gate a re-home onto This device. Bootstrap-needed always confirms, and offers
- * Connect to existing inline so the click cannot fall through into runBootstrap.
- * An already-installed runtime still confirms before a fresh session replaces
- * the center. Named profiles on an installed local runtime keep the existing
- * spinner path — they are not the Home-looking misclick.
+ * Gate picking This device on Hermes actually being installed here. Only a
+ * click that would start the installer confirms, and it offers Connect to
+ * existing inline so the click cannot fall through into runBootstrap. An
+ * installed runtime is just another connected gateway: no prompt.
  */
 export function useLocalDeviceSwitch() {
   const { t } = useI18n()
-  const [prompt, setPrompt] = useState<LocalDevicePrompt | null>(null)
+  const [prompt, setPrompt] = useState<LocalDeviceTarget | null>(null)
   const [connectOpen, setConnectOpen] = useState(false)
   const waiter = useRef<((accepted: boolean) => void) | null>(null)
 
@@ -71,43 +63,36 @@ export function useLocalDeviceSwitch() {
       return false
     }
 
-    const freshSession = target.replaceCenter === true || target.profile == null || target.profile === 'default'
-
-    if (!bootstrapNeeded && !freshSession) {
+    if (!bootstrapNeeded) {
       return true
     }
 
     return new Promise(resolve => {
       waiter.current = resolve
-      setPrompt({ ...target, kind: bootstrapNeeded ? 'install' : 'switch' })
+      setPrompt(target)
     })
   }
 
   const fleet = t.profiles.fleet
-  const install = prompt?.kind === 'install'
 
   const dialog = (
     <>
       {prompt ? (
         <ConfirmDialog
-          confirmLabel={install ? fleet.installDeviceConfirm : fleet.switchDeviceConfirm}
-          description={install ? fleet.installDeviceDesc : fleet.switchDeviceDesc}
+          confirmLabel={fleet.installDeviceConfirm}
+          description={fleet.installDeviceDesc}
           dismissOnConfirm
           onClose={() => settle(false)}
           onConfirm={() => settle(true)}
           open
-          secondaryAction={
-            install
-              ? {
-                  label: fleet.connectExistingInstead,
-                  onClick: () => {
-                    settle(false)
-                    setConnectOpen(true)
-                  }
-                }
-              : undefined
-          }
-          title={install ? fleet.installDeviceTitle : fleet.switchDeviceTitle}
+          secondaryAction={{
+            label: fleet.connectExistingInstead,
+            onClick: () => {
+              settle(false)
+              setConnectOpen(true)
+            }
+          }}
+          title={fleet.installDeviceTitle}
         />
       ) : null}
       {connectOpen ? <FirstRunRemoteSetup onBack={() => setConnectOpen(false)} /> : null}

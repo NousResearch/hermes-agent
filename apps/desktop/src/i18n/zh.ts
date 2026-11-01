@@ -1322,8 +1322,7 @@ export const zhOverrides = {
     connections: {
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
-      stagedNote:
-        '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
+      stagedNote: '所有网关都保持连接。配置档案、聊天、消息和定时任务归属于各自网关，“会话”可以同时显示全部网关。',
       launchModeTitle: '启动时返回上次使用网关的会话视图',
       launchModeDesc: '关闭时，会话将在主网关上打开。',
       searchPlaceholder: '搜索网关…',
@@ -2712,13 +2711,10 @@ export const zhOverrides = {
       gateway: gateway => `${gateway} 上的配置档案`,
       gatewayUnreachable: gateway => `${gateway} · 无法连接`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,
+      switchTo: (name, gateway) => `打开 ${gateway} 上的 ${name}`,
       deleteOn: gateway => `（位于 ${gateway}）`,
       localDevice: '此设备（本地后端——若未安装 Hermes 则会安装，否则打开一个新会话）',
-      switchDeviceTitle: '切换到此设备？',
-      switchDeviceDesc: '这会在这台电脑上打开一个新会话。当前对话仍留在另一个网关上。',
-      switchDeviceConfirm: '切换',
-      installDeviceTitle: '切换到此设备？',
+      installDeviceTitle: '在此设备上安装 Hermes？',
       installDeviceDesc: '这将在本地安装 Hermes，然后在这台电脑上打开一个新会话。确认之前不会开始安装。',
       installDeviceConfirm: '本地安装',
       connectExistingInstead: '改为连接现有环境'

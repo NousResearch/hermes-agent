@@ -2464,9 +2464,6 @@ export interface Translations extends NoticeTranslations {
       deleteOn: (gateway: string) => string
       /** At-rest local default pill: device, not Home, and the click's consequence. */
       localDevice: string
-      switchDeviceTitle: string
-      switchDeviceDesc: string
-      switchDeviceConfirm: string
       installDeviceTitle: string
       installDeviceDesc: string
       installDeviceConfirm: string

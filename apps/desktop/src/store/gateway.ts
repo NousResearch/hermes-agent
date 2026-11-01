@@ -1424,19 +1424,19 @@ function reopenAfterRedial(entry: Secondary, wasActive: boolean): void {
 }
 
 /**
- * Pin the pooled socket for one relay route open across drain ticks. Returns
- * a once-only release. Local routes (null/empty or explicit `local` source)
- * are deliberately EXEMPT and get a no-op release: a relay pin would keep a
- * local socket open past the point where retireLocalProfileGateways means to
- * drop it (see that note). Local relay traffic is
- * either the primary socket (no churn) or a short-lived local dial — never
- * the remote reconnect flood this retention exists to stop.
+ * Pin one route's socket open across drain ticks (bot relay; each gateway's home socket, gateway-persistence).
+ * Returns a once-only release. Null, and `local` unless `includeLocal`, get a no-op: a relay pin would outlive
+ * retireLocalProfileGateways' drop, and local relay traffic never floods reconnects.
  */
-export function retainGatewayForRelay(connectionId: null | string, profile: string): () => void {
+export function retainGatewayForRelay(
+  connectionId: null | string,
+  profile: string,
+  { includeLocal = false }: { includeLocal?: boolean } = {}
+): () => void {
   const key = normKey(profile)
   const connection = String(connectionId ?? '').trim()
 
-  if (!connection || connection === 'local') {
+  if (!connection || (connection === 'local' && !includeLocal)) {
     return () => undefined
   }
 

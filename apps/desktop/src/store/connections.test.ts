@@ -211,6 +211,42 @@ describe('connection registry cache', () => {
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
 
+  it('#130944: a remembered profile the remote primary does not serve lands on a profile it does', async () => {
+    // Electron's global legacy profile names a profile that only exists on
+    // this device; the primary is a remote that never had it.
+    list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'windows-only', registryScoped: true })
+    $activeGatewayProfile.set('windows-only')
+    $showAllProfiles.set(true)
+    api.mockResolvedValueOnce({ profiles: [{ name: 'default' }, { name: 'marina' }] } as never)
+
+    await initializeConnectionsRegistry()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/profiles' }))
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
+  it('#130944: a remote profile that exists there, or a roster read that fails, keeps the live route', async () => {
+    for (const roster of [
+      Promise.resolve({ profiles: [{ name: 'default' }, { name: 'marina' }] }),
+      Promise.reject(new Error('503'))
+    ]) {
+      _resetConnectionsForTests()
+      ensureGatewayAgent.mockClear()
+      list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+      $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'marina', registryScoped: true })
+      $activeGatewayProfile.set('marina')
+      api.mockReturnValueOnce(roster as never)
+
+      await initializeConnectionsRegistry()
+
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+      expect($activeGatewayProfile.get()).toBe('marina')
+    }
+  })
+
   it('boot restore yields to a source the user already picked while boot was settling', async () => {
     // Primary is local, launch mode is primary. The user clicks a fleet-rail
     // square on the homelab gateway before the boot-time restore runs. The

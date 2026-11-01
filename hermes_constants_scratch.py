@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import time
 from logging.handlers import RotatingFileHandler
@@ -110,7 +111,10 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     a failed scan is not activity and is never reported as such), or ``idle``.
     Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
     (``st_nlink > 1``) does not count either: its mtime is the inode's, and
-    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
+    ``git clone --local`` hardlinks packs that git freshens from the source repo.
+    Regular .DS_Store rewrites do not count as task activity either. Directory
+    mtimes still count, including metadata creation/removal: those changes cannot
+    safely be distinguished from genuine directory activity at any depth."""
     return _scan_subtree(path, cutoff)[0]
 
 
@@ -118,7 +122,9 @@ def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
     """``(state, denied_dir)``: *denied_dir* is the directory below *path* that refused
     listing with EACCES/EPERM when that is why the scan failed (else None)."""
     try:
-        if os.lstat(path).st_mtime >= cutoff:
+        entry_stat = os.lstat(path)
+        incidental = path.name == ".DS_Store" and stat.S_ISREG(entry_stat.st_mode)
+        if entry_stat.st_mtime >= cutoff and not incidental:
             return _TOUCHED, None
         if not path.is_dir() or path.is_symlink():
             return _IDLE, None
@@ -134,6 +140,8 @@ def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
                         st = child.stat(follow_symlinks=False)
                     except OSError as exc:
                         return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+                    if child.name == ".DS_Store" and stat.S_ISREG(st.st_mode):
+                        continue
                     if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
                         return _TOUCHED, None
                     if child.is_dir(follow_symlinks=False):

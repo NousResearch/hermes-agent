@@ -1051,6 +1051,112 @@ def test_create_with_parents_inherits_delivery_metadata(kanban_home):
     _assert_full_inherited_sub(subs)
 
 # ---------------------------------------------------------------------------
+# A card BORN blocked never delivered its ping. ``create_task`` with
+# ``initial_status="blocked"`` writes the ``blocked`` event BEFORE the origin
+# subscribes, and a new subscription seeded its cursor at
+# ``MAX(task_events.id)`` — landing exactly ON that event, so the one event
+# that asks for a human was the one event nothing ever claimed.
+# ``kanban_db._seed_notify_cursor`` now starts such a subscription one event
+# earlier, at both seeding sites: ``add_notify_sub`` and
+# ``_inherit_notify_subs`` (the latter is how a blocked child born with a
+# ``creator_task_id`` got its subscription in the field). Every other status
+# still seeds caught up — subscribing must not replay history.
+# ---------------------------------------------------------------------------
+
+_NOTIFY_TERMINAL_KINDS = (
+    "completed", "blocked", "gave_up", "crashed", "timed_out", "status",
+    "archived", "unblocked", "block_loop_detected", "review_requested",
+    "changes_requested",
+)
+
+def _last_event_id_of_kind(conn, tid, kind):
+    row = conn.execute(
+        "SELECT MAX(id) AS id FROM task_events WHERE task_id = ? AND kind = ?",
+        (tid, kind),
+    ).fetchone()
+    return int(row["id"])
+
+def _last_event_id(conn, tid):
+    row = conn.execute(
+        "SELECT MAX(id) AS id FROM task_events WHERE task_id = ?", (tid,),
+    ).fetchone()
+    return int(row["id"])
+
+def _sub_cursor(conn, tid, chat_id, thread_id=""):
+    row = conn.execute(
+        "SELECT last_event_id FROM kanban_notify_subs "
+        "WHERE task_id = ? AND platform = 'telegram' AND chat_id = ? AND thread_id = ?",
+        (tid, chat_id, thread_id),
+    ).fetchone()
+    assert row is not None, "subscription row missing"
+    return int(row["last_event_id"])
+
+def _claimed_kinds(conn, tid, chat_id, thread_id=""):
+    _old, _new, events = kbn.claim_unseen_events_for_sub(
+        conn, task_id=tid, platform="telegram", chat_id=chat_id, thread_id=thread_id,
+        kinds=_NOTIFY_TERMINAL_KINDS,
+    )
+    return [e.kind for e in events]
+
+def test_born_blocked_sub_starts_before_its_blocked_event(kanban_home):
+    """A card created blocked, subscribed explicitly: the seeding must leave
+    its ``blocked`` event in front of the cursor, or the ping is swallowed."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="born blocked", assignee="w1", initial_status="blocked",
+        )
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="born-blocked")
+        blocked_id = _last_event_id_of_kind(conn, tid, "blocked")
+        assert _sub_cursor(conn, tid, "born-blocked") < blocked_id, (
+            "a subscription on a card that is blocked right now seeded ON its "
+            "``blocked`` event — the origin is never told the card needs it"
+        )
+        assert _claimed_kinds(conn, tid, "born-blocked") == ["blocked"]
+        # Claimed once, and only once: the next tick has nothing left.
+        assert _claimed_kinds(conn, tid, "born-blocked") == []
+    finally:
+        conn.close()
+
+def test_born_blocked_child_with_inherited_sub_claims_its_blocked_event(kanban_home):
+    """Same hole through the inheritance path (``creator_task_id``), which is
+    where the field case came from: a blocked child inherits the parent's sub."""
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee=None)
+        _add_full_parent_sub(kb, conn, parent)
+        child = kb.create_task(
+            conn, title="born blocked child", assignee="w1",
+            initial_status="blocked", creator_task_id=parent,
+        )
+        blocked_id = _last_event_id_of_kind(conn, child, "blocked")
+        assert _sub_cursor(conn, child, "chat1", "topic1") < blocked_id, (
+            "the inherited subscription started on the child's own ``blocked`` "
+            "event, so the origin never learned the child needs a human"
+        )
+        assert _claimed_kinds(conn, child, "chat1", "topic1") == ["blocked"]
+    finally:
+        conn.close()
+
+def test_new_sub_on_a_running_card_still_starts_caught_up(kanban_home):
+    """The other half of the contract: subscribing to a card that is NOT
+    blocked replays no history."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="running card", assignee="w1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="caught-up")
+        assert _sub_cursor(conn, tid, "caught-up") == _last_event_id(conn, tid), (
+            "a new subscription on a live card must seed caught up, not replay "
+            "the card's history"
+        )
+        assert _claimed_kinds(conn, tid, "caught-up") == []
+        # And it still gets the completion that happens afterwards.
+        assert kb.complete_task(conn, tid, summary="done")
+        assert _claimed_kinds(conn, tid, "caught-up") == ["completed"]
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------------------------
 # Stale done-subscription GC (purge_stale_done_notify_subs)
 # ---------------------------------------------------------------------------
 

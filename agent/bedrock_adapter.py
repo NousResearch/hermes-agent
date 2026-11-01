@@ -635,6 +635,13 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: dict[str, Any
     return retry_kwargs
 
 
+def recover_converse_retry(exc: BaseException, kwargs: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Kwargs for the one resend shared by every Converse call site (a rejected cachePoint placement, or a
+    thinking prefix-binding rejection), or None. Callers send it once and let its failure propagate."""
+    from agent.bedrock_thinking_binding import recover_from_thinking_binding_rejection
+    return recover_from_cache_point_rejection(exc, kwargs) or recover_from_thinking_binding_rejection(exc, kwargs)
+
+
 # --- Encrypted-content redacted-reasoning suppression ---
 # Redacted thinking blobs are sealed to the issuing model/flow; replaying them after a model switch or
 # across regions fails with an encrypted-content ValidationException. Drop the redacted blocks and
@@ -896,7 +903,9 @@ def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False
 
 # Per-model reasoning replay on Converse: (turns before the in-flight tool loop, turns inside it).
 #   signed   — Claude: everything verbatim, signatures and redactedContent included (AWS: "You must include
-#              the signature and all previous messages"; Bedrock ignores older turns server-side for free).
+#              the signature and all previous messages"). Older signed blocks are still validated against
+#              the conversation prefix; a prefix-binding rejection resends once with drop_block
+#              (agent/bedrock_thinking_binding.py).
 #   strip    — DeepSeek-R1 (AWS's multi-turn sample removes reasoningContent) and Kimi K3 (Converse raises
 #              InternalServerException "when reasoning content from earlier turns is included"): prior turns
 #              lose reasoning, the in-flight loop replays the model's own blocks as captured.
@@ -1359,7 +1368,7 @@ def call_converse(
     stop_sequences: Optional[list[str]] = None, guardrail_config: Optional[dict] = None,
 ) -> SimpleNamespace:
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
-    placement; evicts the cached client on stale-connection errors."""
+    placement or with the thinking prefix-binding opt-in; evicts the cached client on stale-connection errors."""
     from agent.prompt_caching import is_one_shot_request
     client = _get_bedrock_runtime_client(region, model)
     # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
@@ -1368,7 +1377,7 @@ def call_converse(
     try:
         response = client.converse(**kwargs)
     except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+        retry_kwargs = recover_converse_retry(exc, kwargs)
         if retry_kwargs is not None:
             return normalize_converse_response(client.converse(**retry_kwargs))
         redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)

@@ -30,6 +30,22 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+_EMAIL_LEASE_WAIT_STATUS_RE = re.compile(
+    r"⏳ (?:Another Hermes process is using this session; "
+    r"waiting for it to finish before starting your turn\.\.\."
+    r"|Still waiting for the other Hermes process on this session \(\d+s\)\.\.\.)"
+)
+
+
+def _email_lease_wait_status(platform, event_type: str, message: str) -> bool:
+    """Email has no editable status bubble; each routine wait becomes another email."""
+    return (
+        platform == Platform.EMAIL
+        and event_type == "lifecycle"
+        and _EMAIL_LEASE_WAIT_STATUS_RE.fullmatch(str(message or "").strip()) is not None
+    )
+
+
 def _append_progress_repeat_count(message: str, occurrences: int) -> str:
     """Put a repeat counter after a closing code fence on its own line: ```` ``` (×N) ```` is not a
     valid closing fence, so Telegram/Markdown renderers would leave the block open."""
@@ -983,6 +999,8 @@ class GatewayTurnProgressMixin:
         from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
         if ctx.mute_notification_reply or not self._status_live():
+            return
+        if _email_lease_wait_status(ctx.source.platform, event_type, message):
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:

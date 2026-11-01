@@ -355,7 +355,7 @@ method("pet.info.meta", params=ProfileParams, result=PetInfoMetaResult,
 
 
 class PetCellsParams(ProfileParams):
-    """``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width."""
+    """``graphics`` opts into kitty or explicitly configured sixel payloads; ``cols`` overrides the width."""
 
     state: str | None = None
     cols: int | None = None
@@ -363,8 +363,8 @@ class PetCellsParams(ProfileParams):
 
 
 class PetCellsResult(Result):
-    """Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``
-    set): ``frames`` are transmit escapes and ``placeholder`` the text grid."""
+    """Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty and sixel
+    (``graphics`` set): ``frames`` are terminal-protocol escapes (kitty also has a text ``placeholder``)."""
 
     enabled: bool
     slug: str | None = None

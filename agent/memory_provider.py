@@ -174,6 +174,26 @@ class MemoryProvider(ABC):
         author_is_bot. The author trio names who wrote THIS turn (None, None, False without one): a shared session
         carries several participants, so a provider keying durable state on identity must read it per turn."""
 
+    def feature_capabilities(self) -> dict[str, Any]:
+        """Optional default-on feature bundle advertised to the host."""
+        return {}
+
+    def on_turn_timing_start(self, turn_number: int, **kwargs) -> None:
+        """Open privacy-safe timing before normal turn setup."""
+
+    def on_turn_progress(self, turn_number: int, **kwargs) -> None:
+        """Observe a privacy-safe active/wait/rework phase transition."""
+
+    def on_turn_finish(self, turn_number: int, **kwargs) -> None:
+        """Close timing with a completed/failed/interrupted/incomplete outcome."""
+
+    def estimate_turn(self, **kwargs) -> dict[str, Any] | None:
+        """Return a structured aggregate estimate, or ``None`` when unavailable."""
+        return None
+
+    def abort_open_turns(self) -> None:
+        """Best-effort close of timing state during shutdown/session rotation."""
+
     def identity_signature(self) -> dict[str, Any]:
         """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
         tables, session-name prefixing). Provider-namespaced keys, JSON-serializable values. The gateway calls this

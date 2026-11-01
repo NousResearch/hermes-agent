@@ -1,0 +1,19 @@
+# Default dreaming plugin settings.
+# Copied to $HERMES_HOME/dreaming/config.yaml on first enable when missing.
+#
+# Behavioral settings live here (not in .env). Secrets-only env vars are
+# unchanged — this plugin uses local Ollama by default and has no API keys.
+
+enabled: false
+
+schedule:
+  min_hours: 24
+  min_sessions: 5
+  poll_seconds: 300
+
+rem:
+  model: mistral:7b
+  base_url: http://localhost:11434
+
+scoring:
+  promote_threshold: 0.55

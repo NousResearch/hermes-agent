@@ -72,6 +72,8 @@ For the keys a managed layer specifies, the order is (highest wins):
 | 2 | `~/.hermes/config.yaml` (user) | `~/.hermes/.env` (user) |
 | 3 | built-in defaults | pre-existing shell environment |
 
+A non-empty `SOUL.md` in the managed directory wins over `~/.hermes/SOUL.md` and each profile's `SOUL.md`. A missing, empty, or unreadable managed file falls through to the profile persona.
+
 Merging is **leaf-level**: pinning `model.default` does not freeze the rest of
 `model.*`. A managed `config.yaml` of:
 

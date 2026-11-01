@@ -56,6 +56,26 @@ class TestGenerateTitle:
             assert "---" not in title_input and "@file:" not in title_input
             assert derive_title(ref + footer, preview).startswith("Quarterly incident analysis")
 
+    @pytest.mark.parametrize(("raw", "line_range"), [
+        ("/home/u/Downloads/report (1).pdf", ""),           # parentheses are quoted too, not just spaces
+        ("C:/Users/me/My Documents/pasted_content.txt", ""),
+        ("/home/u/notes/my paste.txt", ":3-9"),             # quoted value carrying a line range
+    ])
+    def test_quoted_paste_ref_still_leads_with_the_preview(self, raw, line_range):
+        """The composer writes a space/paren-bearing path backtick-quoted (``formatRefValue`` ->
+        ``format_reference_value``), and the paste-only shortcut asked a second, ``\\S+``-only local
+        matcher that stopped at the first space. The residual path fragment read as prose, so the
+        session was titled after the raw reference instead of the pasted topic (#92068)."""
+        from agent.context_references import format_reference_value
+        ref = f"@file:{format_reference_value(raw)}{line_range}"
+        preview = "Quarterly incident analysis for the database cluster"
+
+        title_input = build_title_input(ref, preview)
+
+        assert title_input.startswith(preview)
+        assert "@file:" not in title_input
+        assert derive_title(ref, preview).startswith("Quarterly incident analysis")
+
     def test_manual_attachment_only_opener_yields_no_path_title(self):
         """#92068: the manual-attach path (composer attach chip / hand-typed
         ``@file:``) sends NO Desktop paste preview, so the build_title_input

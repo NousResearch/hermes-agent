@@ -195,6 +195,51 @@ def test_include_unconfigured_appends_canonical_skeletons():
     assert all(r["total_models"] == 0 for r in skeletons)
 
 
+def test_excluded_providers_filters_rows_injected_by_inventory():
+    """``excluded_providers`` must also cover the rows build_models_payload
+    injects ITSELF, after list_authenticated_providers has returned.
+
+    list_authenticated_providers filters its own output, but it never sees the
+    virtual ``moa`` row or the unconfigured canonical skeletons added here —
+    both re-leaked an excluded provider into every consumer of this payload
+    (the dashboard /api/model/options, the ACP adapter, tui_gateway, moa_cmd).
+    Both injectors are asserted, plus a positive control.
+    """
+    from hermes_cli.models import CANONICAL_PROVIDERS
+
+    # Pick a real canonical slug other than the current one so it can only
+    # arrive via the unconfigured-skeleton injector.
+    skeleton_slug = next(e.slug for e in CANONICAL_PROVIDERS if e.slug != "openrouter")
+    rows = [
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+
+    def _ctx(excluded: list) -> ConfigContext:
+        return ConfigContext(
+            current_provider="openrouter", current_model="m1", current_base_url="",
+            user_providers={}, custom_providers=[], excluded_providers=excluded,
+        )
+
+    # Sanity: without exclusions both injected rows are present, so the
+    # assertions below cannot pass vacuously.
+    with _list_auth_returning(rows):
+        baseline = {r["slug"] for r in build_models_payload(
+            _ctx([]), include_unconfigured=True)["providers"]}
+    assert "moa" in baseline, "sanity: virtual moa row must be injected"
+    assert skeleton_slug in baseline, f"sanity: {skeleton_slug} skeleton must be injected"
+
+    with _list_auth_returning(rows):
+        filtered = {r["slug"] for r in build_models_payload(
+            _ctx(["moa", skeleton_slug]), include_unconfigured=True)["providers"]}
+    leaked = sorted({"moa", skeleton_slug} & filtered)
+    assert not leaked, f"excluded_providers must hide inventory-injected rows, leaked: {leaked}"
+    # Positive control: the non-excluded rows survive.
+    assert "openrouter" in filtered
+    assert len(filtered) > 1
+
+
 def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
     rows = [
         {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"],

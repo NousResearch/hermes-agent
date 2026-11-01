@@ -1613,13 +1613,13 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
-    # crash is different: its persisted error includes the worker's last
-    # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
+    # 2. Quota / auth blocker: retrying immediately will not help.  Two
+    # outcomes carry no current diagnosis, so their persisted error is context,
+    # not a verdict: ``crashed`` mixes in worker output (``claude auth status``,
+    # #117097), ``reclaimed`` was superseded by the watchdog (older stamp).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    if err and latest_outcome not in ("crashed", "reclaimed") and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

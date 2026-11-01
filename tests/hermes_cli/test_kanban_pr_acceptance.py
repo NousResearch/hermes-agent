@@ -13,15 +13,19 @@ from hermes_cli.kanban_db_connect import connect
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [],
+             "pr_state": "OPEN", "final_pr_state": "open", "merged": False}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                if state.get("api_failure"):
+                    self.send_error(500)
+                    return
                 value = {"data": {"repository": {"pullRequest": {
-                    "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
+                    "headRefOid": sha, "baseRefName": "main", "state": state["pr_state"],
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
             elif "/rules/branches/" in self.path:
@@ -43,7 +47,8 @@ def github(tmp_path, monkeypatch):
             elif "/statuses" in self.path:
                 value = [[]]
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": sha}, "base": {"ref": "main"},
+                         "state": state["final_pr_state"], "merged": state["merged"]}
             else:
                 self.send_error(404)
                 return
@@ -107,6 +112,32 @@ def test_pr_completion_requires_current_required_evidence(github):
         local = kb.create_task(conn, title="local", completion_contract="local-only")
         assert kb.complete_task(conn, local, summary="https://github.com/acme/repo/pull/7 is background context")
         assert len(github["requests"]) == before
+
+
+@pytest.mark.platforms("linux")
+def test_closed_unmerged_contract_is_terminal(github):
+    from hermes_cli.kanban_pr_acceptance import collect_acceptance
+
+    url = "https://github.com/acme/repo/pull/7"
+    github.update(pr_state="CLOSED", final_pr_state="closed", merged=False)
+    receipt = collect_acceptance("acme/repo", url)
+    assert receipt["classification"] == "closed"
+    assert url in receipt["detail"]
+    assert "retry" not in receipt["recovery"].lower()
+
+    github.update(pr_state="OPEN", final_pr_state="closed", merged=False)
+    receipt = collect_acceptance("acme/repo", url)
+    assert receipt["classification"] == "closed"
+    assert "while collecting evidence" in receipt["detail"]
+    assert "retry" not in receipt["recovery"].lower()
+
+    github.update(pr_state="MERGED", final_pr_state="closed", merged=True)
+    assert collect_acceptance("acme/repo", url)["classification"] == "success"
+
+    github.update(pr_state="OPEN", final_pr_state="open", merged=False, api_failure=True)
+    receipt = collect_acceptance("acme/repo", url)
+    assert receipt["classification"] == "infra"
+    assert "retry" in receipt["recovery"].lower()
 
 
 @pytest.mark.platforms("linux")

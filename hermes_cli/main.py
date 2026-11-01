@@ -357,6 +357,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.pause import build_pause_parser
+from hermes_cli.subcommands.recipe import build_recipe_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -2765,15 +2766,13 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "resume",
+        "project", "proxy", "recipe",
+        "prompt-size", "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "tools", "uninstall", "update",
         "usage", "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
-        "browser",
-        "verify",
+        "browser", "verify",
         # Plugin commands missing from top-level --help is an accepted trade-off.
         "help",
     }
@@ -3327,6 +3326,7 @@ def _build_cli_parser():
     build_auth_parser(subparsers, cmd_auth=cmd_auth)
     build_status_parser(subparsers, cmd_status=cmd_status)
     build_pause_parser(subparsers)
+    build_recipe_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 

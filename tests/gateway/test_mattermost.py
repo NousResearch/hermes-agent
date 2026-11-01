@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
+from gateway.session import SessionSource
+from gateway.slash_commands_branch_thread import branch_thread_parent
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -260,6 +262,23 @@ class TestMattermostSend:
         assert self.adapter._api_post.call_count == 1
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
+
+
+class TestMattermostBranchThread:
+    @pytest.mark.asyncio
+    async def test_create_handoff_thread_posts_new_root_and_returns_post_id(self):
+        """A Mattermost /branch target is a new top-level post in the same channel."""
+        adapter = _make_adapter()
+        adapter._api_post = AsyncMock(return_value={"id": "branch_root_123"})
+
+        thread_id = await adapter.create_handoff_thread("channel_1", "Side quest")
+
+        assert thread_id == "branch_root_123"
+        adapter._api_post.assert_awaited_once_with(
+            "posts", {"channel_id": "channel_1", "message": "Side quest", "props": {"disable_mentions": True}})
+        assert branch_thread_parent(SessionSource(
+            platform=Platform.MATTERMOST, chat_id="channel_1", chat_type="channel",
+        )) == "channel_1"
 
 
 # ---------------------------------------------------------------------------

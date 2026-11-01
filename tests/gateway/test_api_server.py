@@ -15,6 +15,7 @@ Tests cover:
 import asyncio
 import hashlib
 import json
+import logging
 import time
 import types
 import uuid
@@ -1948,6 +1949,43 @@ class TestConfigIntegration:
         )
         connected = config.get_connected_platforms()
         assert Platform.API_SERVER in connected
+
+    def test_short_api_server_key_not_enrolled_and_warned(self, monkeypatch, caplog):
+        # A key below the 16-char strength bar must fail closed WITHOUT enrolling, but
+        # never silently — an API-only gateway otherwise loses its sole surface with zero
+        # log lines (#135298). The docs' old "minimum 8 characters" made 8-15-char keys
+        # a supported-looking configuration that dropped the platform outright.
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "twelvechars1")
+        from gateway.config import load_gateway_config
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+        assert any(
+            "API_SERVER_KEY" in record.message and "will NOT start" in record.message
+            for record in caplog.records
+        )
+
+    def test_placeholder_api_server_key_not_enrolled_and_warned(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "sk-xxxxxxxxxxxxxxxx")
+        from gateway.config import load_gateway_config
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+        assert any("API_SERVER_KEY" in record.message for record in caplog.records)
+
+    def test_unset_api_server_key_stays_silent(self, monkeypatch, caplog):
+        # No key configured at all is a legitimate API-server-off deployment: no warning.
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        from gateway.config import load_gateway_config
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+        assert Platform.API_SERVER not in config.platforms
+        assert not any("API_SERVER_KEY" in record.message for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

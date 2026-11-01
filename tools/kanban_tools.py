@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_json, redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -354,10 +354,15 @@ def _redact_opt(value: Any) -> Any:
 
 
 def _redact_metadata(metadata: dict) -> Optional[dict]:
-    """Redact via a JSON round-trip; None if the result can't be re-parsed."""
+    """Redact by walking the structure; None if it is not a redactable mapping.
+
+    The old serialize-then-redact round trip returned None whenever a string leaf ended in an
+    ENV-style secret (``DB_PASSWORD=abc`` swallowed the closing quote), and callers then fell
+    back to the UNREDACTED dict (#123688).
+    """
     try:
-        return json.loads(redact_sensitive_text(json.dumps(metadata), force=True))
-    except json.JSONDecodeError:
+        return redact_sensitive_json(metadata, force=True)
+    except Exception:
         return None
 
 

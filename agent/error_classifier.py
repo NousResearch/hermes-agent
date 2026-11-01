@@ -1071,12 +1071,38 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# A 403 whose structured ``error.type`` names a permission refusal was refused for access, not for
+# money. Relays reuse a billing-shaped ``code`` for their default 403 — OmniRoute 3.8.49 answers a
+# combo allow-list denial with ``type: permission_error, code: insufficient_quota``, which is that
+# release's default 403 code rather than a claim about a balance (#146649). The serialized body
+# lands in ``c.msg``, so the word alone benched credentials that were healthy and told the user to
+# top up an account with no billing relationship to the gateway.
+_PERMISSION_REFUSAL_TYPES = frozenset({"permission_error", "permission_denied"})
+
+
+def _permission_refusal_403(c: _Ctx) -> bool:
+    """Whether the body self-identifies as a permission refusal whose own prose does not name money.
+
+    Only ``error.message`` is scanned for billing prose: ``c.msg`` also carries the reused ``code``,
+    which is exactly the signal this rule exists to distrust. A relay that writes a real quota wall
+    into a permission-typed body still means money, so the prose keeps winning.
+    """
+    err = _error_obj(c.body)
+    if str(err.get("type") or "").strip().lower() not in _PERMISSION_REFUSAL_TYPES:
+        return False
+    return not any(p in str(err.get("message") or "").lower() for p in _BILLING_PATTERNS)
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
         return _V_OVERLOADED
-    # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
+    # A provider's own structured spending-limit code outranks its type label; anything else that
+    # calls itself a permission refusal is an access-control block — a different provider or a key
+    # with the right allowance can serve it, the credential in hand never did anything wrong.
+    if not xai_spend and _permission_refusal_403(c):
+        return _V_POLICY_BLOCKED
+    # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
     if billing:
         return _V_BILLING

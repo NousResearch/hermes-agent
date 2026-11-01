@@ -802,7 +802,7 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
         message_type=MessageType.TEXT,
         source=source,
     )
-    assert await runner._handle_message(inbound) is None
+    assert not await runner._handle_message(inbound)
     assert scheduled == 1
     assert seen == ["resume-start"]
     assert runner._startup_restore_queue == [inbound]
@@ -916,7 +916,7 @@ async def test_fresh_boot_gate_stays_closed_until_warmup_completes(monkeypatch):
         text="early-bird", message_type=MessageType.TEXT, source=source
     )
     # Inbound during the warm-up window queues instead of dispatching.
-    assert await runner._handle_message(inbound) is None
+    assert not await runner._handle_message(inbound)
     assert runner._startup_restore_queue == [inbound]
 
     finish_task = asyncio.create_task(runner._finish_startup_restore())
@@ -1265,7 +1265,7 @@ async def test_startup_restore_gate_releases_when_resume_turn_outlives_timeout(
         message_type=MessageType.TEXT,
         source=make_restart_source(chat_id="restore-chat"),
     )
-    assert await runner._handle_message(inbound) is None
+    assert not await runner._handle_message(inbound)
     assert runner._startup_restore_queue == [inbound]
 
     # The gate must release on the bound even though the resume turn is
@@ -1324,7 +1324,7 @@ async def test_startup_restore_gate_releases_when_boot_path_send_hangs(
         message_type=MessageType.TEXT,
         source=make_restart_source(chat_id="restore-chat"),
     )
-    assert await runner._handle_message(inbound) is None
+    assert not await runner._handle_message(inbound)
     assert runner._startup_restore_queue == [inbound]
 
     await asyncio.wait_for(

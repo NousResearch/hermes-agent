@@ -306,23 +306,7 @@ def _reverse_alias_for_display(model_name: str) -> str:
     return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
 
 
-def format_token_count_compact(*args, **kwargs):
-    value = int(args[0] if args else kwargs.get("value", 0))
-    abs_value = abs(value)
-    if abs_value < 1_000:
-        return str(value)
-
-    sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
-    for threshold, suffix in units:
-        if abs_value >= threshold:
-            scaled = abs_value / threshold
-            text = f"{scaled:.{2 if scaled < 10 else 1 if scaled < 100 else 0}f}"
-            if "." in text:
-                text = text.rstrip("0").rstrip(".")
-            return f"{sign}{text}{suffix}"
-
-    return f"{value:,}"
+format_token_count_compact = _lazy_shim("agent.usage_pricing", "format_token_count_compact")
 
 
 realign_markdown_tables = _lazy_shim("agent.markdown_tables", "realign_markdown_tables")

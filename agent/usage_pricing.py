@@ -777,9 +777,18 @@ def format_token_count_compact(value: int) -> str:
         return str(int(value))
 
     sign = "-" if value < 0 else ""
-    threshold, suffix = next((t, sfx) for t, sfx in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")) if abs_value >= t)
-    scaled = abs_value / threshold
-    text = f"{scaled:.2f}" if scaled < 10 else f"{scaled:.1f}" if scaled < 100 else f"{scaled:.0f}"
+    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
+    i = next(i for i, (t, _) in enumerate(units) if abs_value >= t)
+
+    def _mantissa(scaled: float) -> str:
+        return f"{scaled:.2f}" if scaled < 10 else f"{scaled:.1f}" if scaled < 100 else f"{scaled:.0f}"
+
+    text = _mantissa(abs_value / units[i][0])
+    # Rounding to display precision can reach 1000 (999_500 -> "1000K");
+    # promote so the mantissa stays within [1, 1000) when a larger unit exists.
+    if float(text) >= 1_000 and i > 0:
+        i -= 1
+        text = _mantissa(abs_value / units[i][0])
     if "." in text:
         text = text.rstrip("0").rstrip(".")
-    return f"{sign}{text}{suffix}"
+    return f"{sign}{text}{units[i][1]}"

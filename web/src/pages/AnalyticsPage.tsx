@@ -35,7 +35,8 @@ const PERIODS = [
 const CHART_HEIGHT_PX = 160;
 
 function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  // 999_950 would round to "1000.0K"; promote it to the M rung.
+  if (n >= 999_950) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }

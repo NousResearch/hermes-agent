@@ -580,6 +580,9 @@ export const jaOverrides = {
       toursDesc:
         '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
+      focusFollowsMouseTitle: 'マウスに合わせてフォーカスを切り替える',
+      focusFollowsMouseDesc:
+        '別のチャットにマウスを移動すると、入力フォーカスとファイルのワークスペースを切り替えます。オフの場合はクリックまたはキーボードで切り替えます。固定・フローティング両方の入力欄に適用されます。',
       composerPopoutDesc:
         '入力欄をドックからドラッグして外せるようにします。オフの間は画面下部にドッキングされたままです。',
       fileBrowserTitle: 'ファイルブラウザ',

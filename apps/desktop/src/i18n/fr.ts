@@ -1076,6 +1076,9 @@ export const frOverrides = {
       toursDesc:
         "Laissez Hermes vous guider dans l'application en assombrissant l'écran et en mettant chaque étape en évidence.",
       composerPopoutTitle: 'Détacher la zone de saisie',
+      focusFollowsMouseTitle: 'Le focus suit la souris',
+      focusFollowsMouseDesc:
+        'Survoler une autre conversation change le focus de saisie et l’espace de travail des fichiers. Si désactivé, cliquez ou utilisez le clavier pour changer. S’applique aux zones de saisie ancrées et flottantes.',
       composerPopoutDesc:
         'Permet de faire glisser la zone de saisie hors de son emplacement. Désactivé, elle reste ancrée en bas.',
       fileBrowserTitle: 'Navigateur de fichiers',

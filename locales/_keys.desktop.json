@@ -2819,6 +2819,8 @@
     "settings.appearance.embedsTitle",
     "settings.appearance.fileBrowserDesc",
     "settings.appearance.fileBrowserTitle",
+    "settings.appearance.focusFollowsMouseDesc",
+    "settings.appearance.focusFollowsMouseTitle",
     "settings.appearance.hideCodeDiffsDesc",
     "settings.appearance.hideCodeDiffsTitle",
     "settings.appearance.hideThreadTimelineDesc",

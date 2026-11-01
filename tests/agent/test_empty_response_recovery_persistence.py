@@ -270,6 +270,31 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     assert result["messages"][-1]["content"] == result["final_response"]
 
 
+def test_empty_first_reply_after_a_previous_turns_tool_call_gets_no_post_tool_nudge(real_loop):
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+    history = [
+        {"role": "user", "content": "list files"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "a.txt"},
+        {"role": "assistant", "content": "There is a.txt."},
+    ]
+    requests = []
+    replies = [_response(""), _response("You're welcome.")]
+
+    def create(**kw):
+        requests.append([m.get("content") for m in kw["messages"]])
+        return replies.pop(0)
+
+    real_loop.agent.client = MagicMock()
+    real_loop.agent.client.chat.completions.create.side_effect = create
+    with patch("agent.turn_empty_response.interruptible_backoff_sleep", return_value=None):
+        real_loop.agent.run_conversation("thanks", conversation_history=history)
+
+    assert len(requests) >= 2
+    assert _EMPTY_TOOL_RESPONSE_NUDGE not in requests[1]
+
+
 def test_housekeeping_fallback_names_its_final_a_reused_response(real_loop):
     """The empty follow-up after a housekeeping tool ends the turn on the answer the model sent
     BEFORE that tool. The result says so, so a client settles the answer it already shows
@@ -303,3 +328,51 @@ def test_same_words_in_a_second_response_are_not_a_reused_response(real_loop):
 
     assert result["final_response"] == "Done."
     assert result["response_reused"] is False
+
+
+def _requests_after(real_loop, script, user_message):
+    requests = []
+    pending = list(script)
+
+    def create(**kw):
+        requests.append([m.get("content") for m in kw["messages"]])
+        return pending.pop(0)
+
+    real_loop.agent.client = MagicMock()
+    real_loop.agent.client.chat.completions.create.side_effect = create
+    with patch("agent.turn_empty_response.interruptible_backoff_sleep", return_value=None):
+        result = real_loop.agent.run_conversation(user_message)
+    return requests, result
+
+
+def test_empty_reply_after_an_unknown_tool_error_still_gets_the_post_tool_nudge(real_loop):
+    """An unknown tool name never reaches stage_tool_call_message, but its error row is this
+    turn's tool round, so an empty reply to it is nudged rather than left to run out."""
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+    requests, result = _requests_after(real_loop, [
+        _response("", finish_reason="tool_calls", tool_calls=[_call("no_such_tool", {}, "call_x")]),
+        _response(""),
+        _response("Here is the answer."),
+    ], "do it")
+
+    assert any(_EMPTY_TOOL_RESPONSE_NUDGE in contents for contents in requests)
+    assert result["final_response"] == "Here is the answer."
+
+
+def test_empty_reply_after_invalid_json_args_still_gets_the_post_tool_nudge(real_loop):
+    """Invalid JSON args get error rows on the third strike; an empty reply to those is nudged."""
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+
+    def bad():
+        call = _call("read_file", {}, "call_bad")
+        call.function.arguments = '{"path": }'
+        return _response("", finish_reason="tool_calls", tool_calls=[call])
+
+    requests, result = _requests_after(real_loop, [
+        bad(), bad(), bad(),
+        _response(""),
+        _response("Here is the answer."),
+    ], "read it")
+
+    assert any(_EMPTY_TOOL_RESPONSE_NUDGE in contents for contents in requests)
+    assert result["final_response"] == "Here is the answer."

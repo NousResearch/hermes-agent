@@ -67,7 +67,13 @@ export function SidebarBlankState({ onNewProject }: { onNewProject: () => void }
   )
 }
 
-export function SidebarPinnedEmptyState() {
+// Pinned resolves against the filtered list, so a filter can hide every pin.
+// Say so, like the Sessions section does: the shift-click hint reads as "you
+// have no pins" to someone whose pins are all still there (#146510).
+// `filtered` is whether a filter actually narrows the list, not whether any
+// selection is persisted: a stale project id narrows nothing. `archived` is the
+// Archived view, which swaps the pool Pinned resolves from.
+export function SidebarPinnedEmptyState({ archived, filtered }: { archived: boolean; filtered: boolean }) {
   const { t } = useI18n()
 
   return (
@@ -75,7 +81,7 @@ export function SidebarPinnedEmptyState() {
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>{t.sidebar.shiftClickHint}</span>
+      <span>{filtered || archived ? t.sidebar.noFilterMatches : t.sidebar.shiftClickHint}</span>
     </div>
   )
 }

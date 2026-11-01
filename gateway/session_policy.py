@@ -573,6 +573,64 @@ def _with_entry_pick(params, config):
     return {**params, 'provider': identity}
 
 
+def _provider_declares_endpoint(provider, value):
+    """True when the picked provider itself declares *value* as its endpoint.
+
+    A provider's own transport can be a local sentinel rather than a URL to dial
+    (``moa://local`` for the MoA aggregator, ``acp://copilot`` for the ACP bridge,
+    ``process://...`` for an external-process plugin). A session that ran on one
+    persists that endpoint as its route, and resuming that session hands the stored
+    value back as a launch override -- so the http(s)-only guard would refuse a route
+    the runtime itself accepts, and the store could not round-trip its own state
+    (#142779).
+
+    Only the endpoint the picked provider itself declares is accepted, and only from
+    the built-in overlay table or a registered plugin profile: a user-configured
+    ``custom:`` entry is the client-supplied surface this guard exists for, so it
+    stays refused. A provider that cannot be resolved stays refused too
+    (fail-closed): a plugin that is uninstalled can no longer declare its endpoint,
+    and its sessions are then refused rather than silently rerouted elsewhere.
+    """
+    if not isinstance(provider, str) or not provider.strip():
+        return False
+    name = provider.strip()
+    # A ``custom:`` entry is the client-supplied surface this guard exists for: its
+    # endpoint is whatever the user typed into config.yaml, never an endpoint the
+    # provider itself declares. So a custom entry named ``custom:moa`` does not get
+    # to borrow the ``moa`` overlay's facade.
+    if name.lower().startswith('custom:'):
+        return False
+    text = str(value or '').strip()
+    if not text:
+        return False
+    from urllib.parse import urlsplit
+    url = urlsplit(text)
+    # The guard is about a client-supplied endpoint carrying credentials, a query or
+    # a fragment; a provider's declared endpoint carries none of those, so such a
+    # value never matches what the provider declares.
+    if url.username or url.password or url.query or url.fragment:
+        return False
+    try:
+        from hermes_cli.providers import get_provider, normalize_provider
+        from hermes_cli.route_identity import normalize_route_base_url
+    except Exception as exc:  # health: allow BLE001 -- a provider lookup must never break a launch
+        logger.warning('provider lookup unavailable; a declared endpoint stays refused: %s',
+                       exc, exc_info=True)
+        return False
+    try:
+        pdef = get_provider(normalize_provider(provider.strip()), allow_network=False)
+    except Exception as exc:  # health: allow BLE001 -- a provider lookup must never break a launch
+        logger.warning('provider %r could not be resolved; its endpoint stays refused: %s',
+                       provider, exc, exc_info=True)
+        return False
+    if pdef is None or pdef.source not in ('hermes', 'plugin-profile'):
+        return False
+    declared = str(pdef.base_url or '').strip()
+    if not declared:
+        return False
+    return normalize_route_base_url(declared) == normalize_route_base_url(text)
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
@@ -602,7 +660,8 @@ def _apply_launch_overrides(params, config):
                 url = urlsplit(value)
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
-                    _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
+                    if not _provider_declares_endpoint(params.get('provider'), value):
+                        _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
     bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
                                       'follow_profile_config', 'cwd_explicit', 'verbose')

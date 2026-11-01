@@ -67,6 +67,34 @@ def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
         "sudo true", None)
 
 
+def test_sudo_prompt_skipped_when_backend_has_no_sudo(monkeypatch):
+    """A password cannot help on a backend without a sudo executable: never prompt for one."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool_sudo, "_get_cached_sudo_password", lambda: "")
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("must not prompt when sudo is not installed in the backend")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+
+    assert terminal_tool_sudo._transform_sudo_command(
+        "sudo true", sudo_nopasswd_check=lambda: False, sudo_installed_check=lambda: False) == ("sudo true", None)
+
+
+def test_sudo_prompt_still_fires_when_backend_has_sudo(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(terminal_tool_sudo, "_get_cached_sudo_password", lambda: "")
+    monkeypatch.setattr(terminal_tool_sudo, "_set_cached_sudo_password", lambda _pw: None)
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", lambda **_kw: "pw")
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo true", sudo_nopasswd_check=lambda: False, sudo_installed_check=lambda: True)
+
+    assert transformed == "sudo -S -p '' true" and sudo_stdin == "pw\n"
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

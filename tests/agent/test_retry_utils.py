@@ -165,3 +165,14 @@ class TestParseRetryAfterSeconds:
                 raise RuntimeError("boom")
 
         assert parse_retry_after_seconds(Explosive()) is None
+
+    def test_retry_after_ms_header_wins_and_bad_value_falls_back(self):
+        import httpx
+
+        from agent.retry_utils import parse_retry_after_seconds, provider_retry_after_seconds
+
+        # Azure / OpenAI-style: only the millisecond header (the SDK's own retries read it; Hermes disables those).
+        only_ms = httpx.Response(429, headers={"retry-after-ms": "7500"})
+        assert provider_retry_after_seconds(SimpleNamespace(response=only_ms)) == 7.5
+        assert parse_retry_after_seconds(httpx.Headers({"retry-after-ms": "1500", "retry-after": "2"})) == 1.5
+        assert parse_retry_after_seconds({"retry-after-ms": "soon", "Retry-After": "3"}) == 3.0

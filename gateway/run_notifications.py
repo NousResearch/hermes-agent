@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, cast
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, SendResult, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -86,6 +86,28 @@ _DURABLE_CLAIM_OPS = {
     "defer": ("defer_completion_delivery", "Could not defer unadmitted completion claim"),
     "complete": ("complete_completion_delivery", "Could not acknowledge durable completion claim"),
 }
+
+
+async def _notify_post_stream_upload_failure(
+    adapter, chat_id: str, media_path: str, metadata: Optional[dict[str, Any]], result, *,
+    is_voice: bool = False,
+) -> None:
+    """Tell the user when a post-stream ``MEDIA:`` upload did not land (#141585).
+
+    ``_deliver_media_from_response`` uploads after streaming already delivered the text that
+    announced the file, so a failed upload (``SendResult(success=False)``) or an exception is an
+    otherwise silent drop — the adapter's own log line is the only trace. Mirrors the
+    non-streaming ``BasePlatformAdapter._deliver_media_attachments`` contract (#66797). The batch
+    image API reports one result for the whole batch, so its notice names the first image.
+    """
+    if getattr(result, "success", True):
+        return
+    logger.warning(
+        "[%s] Post-stream media delivery failed (%s): %s",
+        getattr(adapter, "name", "?"), Path(media_path).name, getattr(result, "error", ""))
+    notify = cast(Any, getattr(adapter, "_notify_media_delivery_failure", None))
+    if callable(notify):
+        await notify(chat_id, media_path, is_voice=is_voice, metadata=metadata)
 
 
 INTERNAL_NOTIFICATION_FOOTER = (
@@ -275,22 +297,29 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     images.extend(url_images)
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    batch = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    batch = SendResult(success=False, error=str(e))
+                # Plain string split: urlsplit raises on a malformed host and would end the scan.
+                batch_path = image_paths[0] if image_paths else url_images[0][0].split("?", 1)[0].rsplit("/", 1)[-1]
+                await _notify_post_stream_upload_failure(adapter, chat_id, batch_path, _thread_meta, batch)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        sent = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        sent = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        sent = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    sent = SendResult(success=False, error=str(e))
+                await _notify_post_stream_upload_failure(
+                    adapter, chat_id, media_path, _thread_meta, sent, is_voice=is_voice)
 
 
     async def _deliver_queued_first_response(

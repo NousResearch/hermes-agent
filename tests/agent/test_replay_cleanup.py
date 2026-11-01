@@ -215,3 +215,27 @@ def test_untrustworthy_confirmation_stamp_fails_closed():
         out = canonicalize_replay_history(row, now=10_000.0)
         assert "EXPIRED" in out[0]["content"] and "api_content" not in out[0], untrusted
     assert canonicalize_replay_history([{"role": "user", "content": "confirm reboot"}], now=1e9)[0]["content"] == "confirm reboot"
+
+
+def test_interrupted_skill_view_block_is_kept_as_unknown_effect():
+    from agent.replay_cleanup import strip_interrupted_tool_tails
+
+    history = [
+        _user("load the skill"),
+        _assistant_tc("skill_view"),
+        _tool("partial\n[Command interrupted]"),
+    ]
+    out = strip_interrupted_tool_tails(history)
+
+    # skill_view bumps persistent usage counters, so the block is kept (not
+    # dropped as read-only) and flagged so a replay does not silently re-count.
+    assert len(out) == 3
+    assert out[-1]["effect_disposition"] == "unknown"
+    assert "UNKNOWN" in out[-1]["content"]
+
+
+def test_dangling_skill_view_tail_is_marked_unknown_effect():
+    out = strip_dangling_tool_call_tail([_user("hi"), _assistant_tc("skill_view")])
+
+    assert out[-1]["effect_disposition"] == "unknown"
+    assert "unknown" in out[-1]["content"].lower()

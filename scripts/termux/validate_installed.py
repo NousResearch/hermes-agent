@@ -90,6 +90,28 @@ def validate_update_refusal(project_root: Path, result: subprocess.CompletedProc
     print("COMMIT_BUILD_UPDATE_REFUSAL_OK" if commit_build else "APT_UPDATE_REFUSAL_OK", flush=True)
 
 
+def assert_no_macos_metadata(root: Path) -> None:
+    """Fail when a macOS build host leaked xattr sidecars into the installed payload.
+
+    Binary `._*` AppleDouble files crash the on-device text walkers that read
+    them as UTF-8 (#126097), and `.DS_Store` entries are Finder noise. Any
+    `._*`-named file in a Termux payload is build-host leakage by definition
+    (the Finder/xattr naming convention has no legitimate use there), which
+    keeps this gate symmetric with the name-based build-side purge in
+    purge_macos_metadata.sh.
+    """
+    strays = [
+        str(path.relative_to(root)) for path in root.rglob("._*") if path.is_file()
+    ]
+    strays.extend(
+        str(path.relative_to(root))
+        for path in root.rglob(".DS_Store")
+        if path.is_file()
+    )
+    assert not strays, f"macOS metadata files shipped in the deb: {strays[:10]}"
+    print("NO_MACOS_METADATA_OK", flush=True)
+
+
 def main() -> None:
     prefix = Path(os.environ["PREFIX"])
     root = prefix / "lib/hermes-agent"
@@ -109,6 +131,7 @@ def main() -> None:
             "PYTHONPYCACHEPREFIX": str(home / "pycache"),
         }
         launcher = prefix / "bin/hermes"
+        assert_no_macos_metadata(root)
         run([str(launcher), "--version"], env, home)
         run([str(launcher), "chat", "--help"], env, home)
         run([str(prefix / "bin/hermes-acp"), "--check"], env, home)

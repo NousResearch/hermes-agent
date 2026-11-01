@@ -162,3 +162,12 @@ class CredentialPoolAdminMixin:
                     f"is writable, then run the command again."
                 )
             return entry
+
+
+def retain_sources_not_in(entries: list[PooledCredential], drop: set[str]) -> bool:
+    """Remove entries whose source is in *drop*; True if anything was removed."""
+    retained = [entry for entry in entries if entry.source not in drop]
+    if len(retained) == len(entries):
+        return False
+    entries[:] = retained
+    return True

@@ -10,6 +10,13 @@ from tui_gateway import entry
 
 
 def _stub_startup(monkeypatch, opened):
+    from agent import codex_auth_policy
+
+    def bind_default_policy(*, read_only):
+        # This repeated-start harness tests ownership, not process-authority binding.
+        assert read_only is False
+
+    monkeypatch.setattr(codex_auth_policy, "bind_codex_auth_policy", bind_default_policy)
     monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
     monkeypatch.setattr(entry.server, "_stdio_is_rpc_channel", False, raising=False)
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)

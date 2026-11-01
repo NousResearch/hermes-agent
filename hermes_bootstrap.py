@@ -593,9 +593,10 @@ if not _pm_repair:
                 getattr(_main_spec, "name", None),
             )
             if os.name == "nt":
-                import subprocess
+                # Not a bare subprocess.call: the child must keep the launcher's job (see helper).
+                from hermes_cli.venv_sync import call_relaunched
 
-                raise RelaunchExit(subprocess.call(_command))
+                raise RelaunchExit(call_relaunched(_command))
             os.execv(str(_launch_python), _command)
     except Exception as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):

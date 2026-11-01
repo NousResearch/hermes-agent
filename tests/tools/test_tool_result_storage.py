@@ -252,7 +252,8 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
 
     def test_persists_full_content_as_is(self):
-        """Content is persisted verbatim — no JSON extraction."""
+        """Terminal-envelope content is unwrapped: the RAW output text is persisted
+        (lab F1 patch); sibling fields ride inline in the <result-fields> block."""
         import json
         env = MagicMock()
         # Readability probe fails -> falls back to the in-sandbox write,
@@ -265,6 +266,7 @@ class TestMaybePersistToolResult:
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
         content = json.dumps({"output": raw, "exit_code": 0, "error": None})
+        expected_persisted = raw
         result = maybe_persist_tool_result(
             content=content,
             tool_name="terminal",
@@ -275,7 +277,8 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args_list[1][1]["stdin_data"] == content
+        assert env.execute.call_args_list[1][1]["stdin_data"] == expected_persisted
+        assert "<result-fields>" in result
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
         env = MagicMock()
@@ -702,11 +705,63 @@ class TestMcpEnvelopeSpillover:
         assert json.loads(tail.split("\n</mcp-result-metadata>")[0]) == {"structuredContent": {"count": 5_000}}
 
     def test_non_envelope_json_still_verbatim(self):
-        content = json.dumps({"output": "line\n" * 8_000, "exit_code": 0})
+        # "stdout" is outside the terminal envelope key set -> arbitrary JSON, kept verbatim.
+        content = json.dumps({"stdout": "line\n" * 8_000, "code": 0})
         maybe_persist_tool_result(
             content=content, tool_name="terminal", tool_use_id="tc_json_verbatim",
             env=None, threshold=30_000)
         assert (get_spillover_dir() / "tc_json_verbatim.txt").read_text(encoding="utf-8") == content
+
+    def test_terminal_envelope_spills_raw_output(self):
+        """Lab F1: the archive holds only the raw output text, byte-faithful, so wc/tail
+        on it are exact; exit_code and friends appear inline in <result-fields>."""
+        raw = "line\n" * 8_000
+        content = json.dumps({"output": raw, "exit_code": 1, "error": None,
+                              "exit_code_meaning": "failed"})
+        msg = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_term_envelope",
+            env=None, threshold=30_000)
+        assert (get_spillover_dir() / "tc_term_envelope.txt").read_text(encoding="utf-8") == raw
+        assert "<result-fields>" in msg and '"exit_code": 1' in msg
+
+    def test_result_fields_cap_oversized_siblings(self):
+        """A pathological sibling field must not ride into the context unbounded: it is
+        truncated per-field in <result-fields>, while the archive stays byte-faithful."""
+        raw = "line\n" * 8_000
+        content = json.dumps({"output": raw, "exit_code": 1, "error": None,
+                              "hint": "h" * 200_000})
+        msg = maybe_persist_tool_result(
+            content=content, tool_name="terminal", tool_use_id="tc_cap_fields",
+            env=None, threshold=30_000)
+        assert (get_spillover_dir() / "tc_cap_fields.txt").read_text(encoding="utf-8") == raw
+        assert "[field truncated; 200002 chars total]" in msg
+        assert len(msg) < 10_000
+
+    def test_envelope_key_sets_are_the_emitters(self):
+        """Contract: the recognizer and the emitter share ONE key-set declaration, so a
+        new envelope key cannot silently downgrade spilled results back to verbatim JSON
+        without the emitter-side declaration (and its comment) being in the same diff."""
+        from tools import terminal_tool_result, tool_result_storage
+        assert tool_result_storage._TERMINAL_ENVELOPE_KEYS is terminal_tool_result.RESULT_ENVELOPE_KEYS
+        assert tool_result_storage._TERMINAL_ENVELOPE_REQUIRED is terminal_tool_result.RESULT_ENVELOPE_REQUIRED
+
+    def test_emitter_envelope_stays_within_declared_keys(self):
+        """Behavior contract on the emitter itself: a real finalize_foreground_result
+        envelope, with the spill/approval/hint fields exercised, never emits a key the
+        declared vocabulary (and therefore the spillover recognizer) does not know."""
+        from unittest.mock import MagicMock
+        from tools.terminal_tool_result import RESULT_ENVELOPE_KEYS, finalize_foreground_result
+        env = MagicMock()
+        env.cwd = "/tmp"
+        rendered = finalize_foreground_result(
+            command="make build", env=env, env_type="local", effective_task_id="t",
+            task_id=None, session_id=None, session_key="contract-test", workdir=None,
+            command_cwd="/tmp", approval_note="Approved by test",
+            result={"output": "error: no rule to make target\n", "returncode": 2,
+                    "cwd": "/tmp/elsewhere", "cwd_observed": True,
+                    "environment_recreated": True,
+                    "full_output_path": "/tmp/spill.txt", "output_total_chars": 123456})
+        assert set(json.loads(rendered)) <= RESULT_ENVELOPE_KEYS
 
     def test_structured_content_only_result_still_verbatim(self):
         content = json.dumps({"result": {"blob": "z" * 40_000}})

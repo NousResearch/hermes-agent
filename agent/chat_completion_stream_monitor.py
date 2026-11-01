@@ -33,6 +33,7 @@ class StreamingWaitMonitor:
     _liveness_withheld_at = None
     _lifetime = StreamLifetime(0.0)  # opt-in agent.stream_max_lifetime; real clock set when the monitor starts
     _lifetime_kill = None  # (attempt id, elapsed s) of the latest cap kill
+    _released_attempt = 0  # the attempt the worker's except path last caught (it let go of it)
 
     def _claims_liveness(self) -> bool:
         since = self._liveness_withheld_at
@@ -41,8 +42,9 @@ class StreamingWaitMonitor:
     def _rearm_or_abandon_after_kill(self, elapsed: float) -> None:
         """After a stale kill: re-arm the stale timer and announce the reconnect, unless the
         kill bookkeeping gave up on a wedged attempt (see ``_note_attempt_kill``)."""
-        # Reset the timer so we don't kill repeatedly while the worker unwinds.
-        self.last_chunk_time["t"] = time.time()
+        # Reset the timer so we don't kill repeatedly while the worker unwinds; the cap clock
+        # too, so a cap at the stale timeout does not cut (and count) the same window again.
+        self.last_chunk_time["t"] = self._lifetime.started = time.time()
         if self._note_attempt_kill(elapsed, "stale"):
             return
         if self._claims_liveness():  # the reconnect notice touches activity too (_emit_wait_notice)
@@ -58,6 +60,8 @@ class StreamingWaitMonitor:
         the monitor stops touching activity and the owner's inactivity watchdog ends it."""
         with self.stream_attempt_lock:
             attempt = int(self.stream_attempt_state["current"])
+        if attempt == self._released_attempt:  # retry backoff: the worker is not stuck in it
+            return False
         rekill = bool(attempt) and attempt == self._last_killed_attempt
         self._last_killed_attempt = attempt
         self._same_attempt_kills = self._same_attempt_kills + 1 if rekill else 1
@@ -207,11 +211,12 @@ class StreamingWaitMonitor:
         abort the request-local client) so the retry loop or the partial-delivery continuation
         takes over. Never counted in the cross-turn stale breaker: the provider WAS responding,
         and a streak of cap kills would refuse the next healthy request with nothing sent."""
-        if not self._lifetime.cap:  # off (the default): no per-tick work
+        if not self._lifetime.cap or self._call_done.is_set():  # off (the default) or call over
             return
         with self.stream_attempt_lock:
             attempt = int(self.stream_attempt_state["current"])
-        elapsed = self._lifetime.exceeded(attempt) if attempt else None
+        # A released attempt (retry backoff) has no stream left to cut.
+        elapsed = self._lifetime.exceeded(attempt) if attempt and attempt != self._released_attempt else None
         if elapsed is None:
             return
         model = self.api_kwargs.get("model", "unknown")

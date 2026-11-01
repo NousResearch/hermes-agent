@@ -106,6 +106,25 @@ class TestSearXNGSearchProviderSearch:
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
 
+    def test_request_uses_browser_user_agent_and_json_accept_header(self, monkeypatch):
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response({"results": []})
+        calls = []
+
+        def capture_get(url, **kwargs):
+            calls.append((url, kwargs))
+            return mock_resp
+
+        with patch("httpx.get", side_effect=capture_get):
+            SearXNGWebSearchProvider().search("query", limit=5)
+
+        assert calls[0][1]["headers"] == {
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"
 # ---------------------------------------------------------------------------

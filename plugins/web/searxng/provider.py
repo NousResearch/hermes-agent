@@ -27,7 +27,11 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
             return search_fail("SEARXNG_URL is not set")
         data, failure = http_get_json(
             "SearXNG", f"{base_url}/search", params={"q": query, "format": "json", "pageno": 1},
-            headers={"Accept": "application/json"}, timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=15, logger=logger, reach_target=f"SearXNG at {base_url}",
         )
         if failure is not None:
             return failure

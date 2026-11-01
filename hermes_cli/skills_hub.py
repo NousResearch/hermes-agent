@@ -648,6 +648,24 @@ def _hub_rejected_credentials(sources) -> list:
                  if isinstance(r := getattr(getattr(src, "auth", None), "rejected", None), list) and r), [])
 
 
+def _suggest_live_alternatives(c: Console, sources, identifier: str) -> None:
+    """After a stale-entry verdict, list same-named skills the registries still serve (#140557).
+    The stale identifier itself is excluded: the index that mis-served it still lists it."""
+    from tools.skills_hub_search import unified_search
+    results = _try(unified_search, identifier.rsplit("/", 1)[-1], sources) or []
+    alternatives, seen = [], {identifier}
+    for r in results:
+        if r.identifier not in seen:
+            seen.add(r.identifier)
+            alternatives.append(r)
+    if not alternatives:
+        return
+    c.print("[yellow]Closest live entries with that name:[/]")
+    for r in alternatives[:5]:
+        c.print(f"  [cyan]{r.name}[/] — {r.identifier}")
+    c.print()
+
+
 def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> str:
     """Explain a resolved identifier no adapter served; returns the extension-install failure class."""
     rate_limited = _hub_rate_limited(sources)
@@ -662,6 +680,7 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
                 f"but its files no longer exist upstream.")
         c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
                 "its author. Try `hermes skills search` for an alternative.[/]\n")
+        _suggest_live_alternatives(c, sources, identifier)
         return "stale_index"
     c.print(f"[bold red]Error:[/] Could not download '{identifier}'.")
     if rejected:

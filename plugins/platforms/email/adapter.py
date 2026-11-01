@@ -258,10 +258,17 @@ def _decode_header_value(raw: str) -> str:
     return " ".join(_safe_decode(part, charset) if isinstance(part, bytes) else part for part, charset in parts)
 
 
+def _is_attached_file(part: email_lib.message.Message) -> bool:
+    """An attachment, or an inline part with a filename: Apple Mail / iOS Mail send attached
+    files as ``inline; filename=...``, so an inline ``text/plain`` file is a file, not the body."""
+    disposition = str(part.get("Content-Disposition", ""))
+    return "attachment" in disposition or ("inline" in disposition and bool(part.get_filename()))
+
+
 def _first_body_part(msg: email_lib.message.Message, content_type: str) -> str:
     """Decoded text of the first non-attachment part of *content_type*, or ''."""
     for part in msg.walk():
-        if "attachment" in str(part.get("Content-Disposition", "")) or part.get_content_type() != content_type:
+        if _is_attached_file(part) or part.get_content_type() != content_type:
             continue
         if payload := part.get_payload(decode=True):
             return _safe_decode(payload, part.get_content_charset())
@@ -419,8 +426,8 @@ def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool 
         return attachments
     for part in msg.walk():
         disposition, content_type = str(part.get("Content-Disposition", "")), part.get_content_type()
-        if skip_attachments or ("attachment" not in disposition and (
-                "inline" not in disposition or content_type in {"text/plain", "text/html"})):
+        if skip_attachments or not (_is_attached_file(part) or (
+                "inline" in disposition and content_type not in {"text/plain", "text/html"})):
             continue  # not an attachment, or an inline text/html body part
         filename = _decode_header_value(fn) if (fn := part.get_filename()) else f"attachment.{part.get_content_subtype() or 'bin'}"
         if not (payload := part.get_payload(decode=True)):

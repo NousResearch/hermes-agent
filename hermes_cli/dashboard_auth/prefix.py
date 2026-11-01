@@ -21,7 +21,8 @@ _log = logging.getLogger(__name__)
 _MAX_PREFIX_LENGTH = 256
 # Any of these in a public_url / prefix means a typo or a header-injection attempt: reject the
 # whole value, never sanitise.
-_REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
+# Backslash too: browsers read ``/\host`` as ``//host``, a scheme-relative redirect off-origin.
+_REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t", "\\"))
 # ``resolve_public_url`` runs on every authenticated request, so warnings are de-duplicated per
 # distinct (source, value) — a changed value warns afresh.
 _warned_malformed_public_urls: set = set()

@@ -1788,6 +1788,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
+                extra_state={"body": prompt.text.replace(self._ea_deadline_line(), "")},  # deadline is moot once resolved
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -1795,9 +1796,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _send_interactive_card(
         self, chat_id: str, card: dict[str, Any], metadata: Optional[dict[str, Any]], failure_message: str, *,
-        state_map: dict[int, dict[str, str]], state_id: int, session_key: str,
+        state_map: dict[int, dict[str, str]], state_id: int, session_key: str, extra_state: Optional[dict[str, str]] = None,
     ) -> SendResult:
-        """Send a button card and, on success, remember where it went so a click can be validated."""
+        """Send a button card and, on success, remember where it went (plus *extra_state*) so a click can be validated."""
         response = await self._feishu_send_with_retry(
             chat_id=chat_id, msg_type="interactive", payload=json.dumps(card, ensure_ascii=False),
             reply_to=None, metadata=metadata,
@@ -1808,7 +1809,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "message_id": result.message_id or "",
                 "chat_id": chat_id,
-                "body": card["elements"][0]["content"].replace(self._ea_deadline_line(), ""),  # kept; deadline is moot
+                **(extra_state or {}),
             }
         return result
 

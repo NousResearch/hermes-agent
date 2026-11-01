@@ -28,11 +28,14 @@ function itemOf(types, getType) {
 
 test('readClipboardImagePng returns PNG bytes from an image/png clipboard item', async () => {
   const png = fakePngBuffer()
-  const clipboard = clipboardWith([itemOf(['text/plain', 'image/png'], (type) => {
-    assert.equal(type, 'image/png')
 
-    return Promise.resolve(blobOf(png))
-  })])
+  const clipboard = clipboardWith([
+    itemOf(['text/plain', 'image/png'], type => {
+      assert.equal(type, 'image/png')
+
+      return Promise.resolve(blobOf(png))
+    })
+  ])
 
   const result = await readClipboardImagePng(clipboard)
 
@@ -41,13 +44,14 @@ test('readClipboardImagePng returns PNG bytes from an image/png clipboard item',
 })
 
 test('readClipboardImagePng skips items without an image/png type', async () => {
-  const clipboard = clipboardWith([itemOf(['text/plain'], (type) => Promise.reject(new Error(`unexpected ${type}`)))])
+  const clipboard = clipboardWith([itemOf(['text/plain'], type => Promise.reject(new Error(`unexpected ${type}`)))])
 
   assert.equal(await readClipboardImagePng(clipboard), null)
 })
 
 test('readClipboardImagePng keeps scanning when getType rejects for a vanished type', async () => {
   const png = fakePngBuffer()
+
   const clipboard = clipboardWith([
     itemOf(['image/png'], () => Promise.reject(new Error('type vanished'))),
     itemOf(['image/png'], () => Promise.resolve(blobOf(png)))
@@ -73,7 +77,11 @@ test('readClipboardImagePng returns null when clipboard.read() rejects', async (
 })
 
 test('readClipboardImagePng tolerates malformed items in the read result', async () => {
-  const clipboard = clipboardWith([null, { types: 'not-an-array' }, itemOf([], () => Promise.resolve(blobOf(fakePngBuffer())))])
+  const clipboard = clipboardWith([
+    null,
+    { types: 'not-an-array' },
+    itemOf([], () => Promise.resolve(blobOf(fakePngBuffer())))
+  ])
 
   assert.equal(await readClipboardImagePng(clipboard), null)
 })

@@ -235,7 +235,10 @@ export function useComposerVoice({
     pendingResponse: pendingTurnResponse,
     // Before the conversation opens the mic, wait for any in-flight wake.pause
     // to finish releasing the capture device (see wakePauseBarrierRef).
-    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    // Stamp each spoken clip with THIS composer's session so a tile's pill and
+    // message buttons only light up for the chat actually speaking.
+    sessionId
   })
 
   const liveConversation = useVoiceLiveConversation({

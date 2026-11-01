@@ -377,7 +377,7 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden and 1Password caches (`bws_cache.json`, `bws_cache.enc.json`, `op_cache.json`), the Photon sidecar token (`photon-sidecar.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
 | Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
 
 Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
@@ -804,15 +804,17 @@ not stop every route to a private host. With it `false`:
 | `web_extract` | Refused before any backend is called. With it `true`, hosted extract backends still fetch from their own servers and cannot reach your LAN. |
 | `vision_analyze` URL fetches, image/video result downloads, gateway media downloads | Refused |
 | `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: false`, on a `/browser connect` (CDP) endpoint, or with a Docker/SSH/Modal terminal backend | Refused (`Blocked: URL targets a private or internal address`) |
-| `browser_cdp` raw CDP calls on those same backends | Refused for private page URLs |
+| `browser_cdp` raw CDP calls on those same backends | Refused while a private page is open, and when an absolute `http(s)://` URL the call fetches (a `url` param, a script, injected HTML) is private. A scheme-relative `//host` URL is checked for cloud metadata only |
 | `browser_exec` on a cloud provider with `browser.auto_local_for_private_urls: true` (the default) | **Opens**, in a local Chromium sidecar on the Hermes host ([hybrid routing](./features/browser.md#hybrid-routing-cloud-for-public-urls-local-for-lanlocalhost)) |
 | `browser_exec` on the local Chromium with a local terminal backend | **Opens**: the browser reaches nothing the terminal can't |
 | `terminal` (`curl http://localhost`, ...) | **Opens**: no URL guard |
 
 Cloud-metadata endpoints are refused on every row except `terminal`, sidecar and
-local Chromium included: a metadata URL written in `browser_exec` code, in a raw CDP call's
-params, or in a script it injects is refused before the browser sees it. The check reads the URLs
-the agent writes; it does not watch the browser afterwards, so a public page that redirects to, or
+local Chromium included: a metadata URL written in `browser_exec` code, in a URL a raw CDP call
+fetches, or in a script or HTML it injects is refused before the browser sees it. Raw CDP params the
+call never fetches are not checked: typed text (`Input.*`), dialog answers, cookie scope URLs and
+request blocking or interception patterns. The check reads the URL literals the agent writes, not a
+URL assembled at run time (string concatenation, escapes) or split by a tab or newline the browser drops; it does not watch the browser afterwards, so a public page that redirects to, or
 fetches from, a metadata address is not stopped by it. On a cloud VM, block the metadata service at
 the network too (IMDSv2 with hop limit 1, a firewall rule). To keep the agent's browser off private hosts while a cloud provider is
 configured, set `browser.auto_local_for_private_urls: false`; that matters most on

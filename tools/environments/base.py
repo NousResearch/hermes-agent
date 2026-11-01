@@ -360,6 +360,8 @@ class BaseEnvironment(ABC):
         result = self.execute(
             f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
             timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+        from tools.environments.capture import require_complete_output
+        require_complete_output(result)
         output = result.get("output") or ""
         first, last = output.find(marker), output.rfind(marker)
         if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
@@ -375,7 +377,7 @@ class BaseEnvironment(ABC):
     def fetch_realpath(self, remote_path: str) -> str | None:
         """``readlink -f`` inside the backend, or None when it cannot be resolved."""
         result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
-        if int(result.get("returncode") or 0) != 0:
+        if result.get("output_incomplete") or int(result.get("returncode") or 0) != 0:
             return None
         return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
 
@@ -532,6 +534,7 @@ class BaseEnvironment(ABC):
             output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
         drain_thread = _start_drain_thread(proc, output, drain_stop)
+        restart_drain = False
         _now = time.monotonic()
         deadline = _now + timeout
         _activity_state = {"last_touch": _now, "start": _now}
@@ -541,12 +544,18 @@ class BaseEnvironment(ABC):
         def _kill_and_join():
             self._kill_process(proc)
             drain_thread.join(timeout=2)
+            if drain_thread.is_alive():
+                output.capture_failed("reader finalization timeout")
 
         try:
             # Adaptive poll: start at 5ms so fast commands return in ~6ms, back
             # off exponentially toward 200ms so long builds don't pay poll CPU.
             _poll_sleep = 0.005
             while proc.poll() is None:
+                if restart_drain and not drain_thread.is_alive():
+                    drain_stop.clear()
+                    drain_thread = _start_drain_thread(proc, output, drain_stop)
+                    restart_drain = False
                 trace.iterations += 1
                 if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                     trace.interrupted()
@@ -556,13 +565,18 @@ class BaseEnvironment(ABC):
                 if yield_handler is not None and consume_yield(watch_interrupt_tid):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
+                    if drain_thread.is_alive():
+                        # Restart only after the old reader acknowledges stop.
+                        restart_drain = True
+                        continue
+                    proc._hermes_capture_collector = output
                     try:
                         handed = yield_handler(proc, output.render())
                     except Exception:
                         logger.warning("yield-to-background handoff failed; continuing to wait", exc_info=True)
                         handed = None
                     if handed is not None:
-                        output.close_spill()
+                        handed.update(output.capture_fields())
                         return handed
                     drain_stop.clear()
                     drain_thread = _start_drain_thread(proc, output, drain_stop)
@@ -590,6 +604,12 @@ class BaseEnvironment(ABC):
         # The drain thread exits promptly after bash does (~300ms idle check);
         # a long join here would itself indicate a bug in the drain loop.
         drain_thread.join(timeout=2)
+        if restart_drain and not drain_thread.is_alive():
+            drain_stop.clear()
+            drain_thread = _start_drain_thread(proc, output, drain_stop)
+            drain_thread.join(timeout=2)
+        if drain_thread.is_alive():
+            output.capture_failed("reader finalization timeout")
         try:
             proc.stdout.close()
         except Exception:

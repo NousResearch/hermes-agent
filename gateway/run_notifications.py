@@ -1351,6 +1351,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if len(output) > 800:
                 output = f"[… truncated …]\n{output[-800:]}"
             lines.append(f"\n- {session_id}: exit_code={exit_code}, reason={reason}")
+            if evt.get("output_incomplete"):
+                lines.append("Output capture failed; retained output may be incomplete.")
             if output:
                 lines.append(output)
         omitted = len(entries) - len(shown)
@@ -1734,6 +1736,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         from tools.process_registry import transform_process_output
+        from tools.environments.capture import capture_fields
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
@@ -1763,6 +1766,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             "exit_code": session.exit_code,
             "completion_reason": getattr(session, "completion_reason", "exited"),
             "termination_source": getattr(session, "termination_source", ""),
+            **capture_fields(_redact_gateway_user_facing_secrets(getattr(session, "capture_error", ""))),
             "output": _redact_gateway_user_facing_secrets(_out),
             # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
             "parent_session_id": (
@@ -1779,10 +1783,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
         command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
+        warning = " Output capture failed; output may be incomplete." if getattr(session, "capture_error", "") else ""
         if notify_mode == "concise":
             return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
-                                                        duration_seconds=_dur)
-        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
+                                                        duration_seconds=_dur) + warning
+        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur) + warning
         return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def _format_process_running_message(self, session) -> str:
@@ -1881,7 +1886,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         # follow-up, and the chat would stay mute for as long as that turn lasts
                         # (#112033): send the concise receipt now.
                         if turn_busy and (notify_mode in {"concise", "all", "result"} or (
-                            notify_mode == "error" and session.exit_code not in {0, None}
+                            notify_mode == "error" and (session.exit_code not in {0, None} or getattr(session, "capture_error", ""))
                         )):
                             message_text = self._format_process_final_message(session_id, session, "concise")
                             await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
@@ -1921,7 +1926,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     )
                     break
                 if notify_mode in {"concise", "all", "result"} or (
-                    notify_mode == "error" and session.exit_code not in {0, None}
+                    notify_mode == "error" and (session.exit_code not in {0, None} or getattr(session, "capture_error", ""))
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
                     from gateway.warning_notifications import present_notification

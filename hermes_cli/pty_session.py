@@ -139,8 +139,14 @@ class PtySession:
         while self.alive:
             try:
                 chunk = await loop.run_in_executor(self._drain_executor, self.bridge.read, self._read_timeout)
-            except OSError:
-                chunk = None
+            except (OSError, ValueError):
+                self.alive = False
+                ws = self._ws
+                async with self._output_lock:
+                    if self._ws is ws:
+                        await _close_ws(ws, 1011, "PTY output capture failed")
+                await asyncio.to_thread(self.bridge.close)
+                return
             if chunk is None:                       # EOF — the agent process exited
                 self.alive = False
                 ws = self._ws

@@ -213,7 +213,7 @@ def test_a_failed_handoff_leaves_the_foreground_owner_its_group(monkeypatch, tmp
     def no_reader(*_a, **_kw):
         raise RuntimeError("can't start new thread")
 
-    monkeypatch.setattr(registry, "_track_started", no_reader)
+    monkeypatch.setattr("threading.Thread.start", no_reader)
     proc = types.SimpleNamespace(pid=4242, _hermes_owned_pgid=4242, poll=lambda: None)
     with pytest.raises(RuntimeError):
         registry.adopt_local(proc, command="sleep 60", cwd=str(tmp_path))

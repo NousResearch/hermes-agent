@@ -72,6 +72,7 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
     loop = asyncio.get_running_loop()
 
     async def pump_pty_to_ws() -> None:
+        close_code = 1000
         try:
             while True:
                 chunk = await loop.run_in_executor(None, bridge.read, _PTY_READ_CHUNK_TIMEOUT)
@@ -84,6 +85,8 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
                     await ws.send_bytes(chunk)
                 except Exception:
                     return
+        except (OSError, ValueError):
+            close_code = 1011
         finally:
             # Close the WS so the writer's ``ws.receive()`` returns instead of
             # blocking forever on a half-open browser socket (fds would leak and
@@ -95,7 +98,10 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
                 # reap independent of that cancellation race (#54028).
                 await asyncio.to_thread(bridge.close)
             with contextlib.suppress(Exception):
-                await ws.close()
+                if close_code == 1011:
+                    await ws.close(code=close_code, reason="PTY output capture failed")
+                else:
+                    await ws.close()
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 

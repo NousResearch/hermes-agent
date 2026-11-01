@@ -24,6 +24,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools.environments.capture import OutputCaptureError
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
 
@@ -539,6 +540,10 @@ def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int)
     duration = round(time.monotonic() - exec_start, 2)
     logger.error("execute_code remote failed after %ss with %d tool calls: %s: %s",
                  duration, tool_calls_made, type(exc).__name__, exc, exc_info=True)
+    if isinstance(exc, OutputCaptureError):
+        from tools.environments.capture import capture_fields
+        return json.dumps({"status": "error", "error": str(exc), **capture_fields(str(exc)),
+                           "tool_calls_made": tool_calls_made, "duration_seconds": duration})
     return _error_result(str(exc), tool_calls_made=tool_calls_made, duration=duration)
 
 
@@ -577,6 +582,9 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}))
+    from tools.environments.capture import capture_fields
+    result.update(capture_fields(kernel_result.get("capture_error", ""),
+                                 bool(kernel_result.get("output_incomplete"))))
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
@@ -654,6 +662,13 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     elif exit_code != 0:
         result["status"] = "error"
         result["error"] = f"Script exited with code {exit_code}"
+    if script_result.get("output_incomplete") or script_result.get("capture_error"):
+        from tools.environments.capture import CaptureStatus
+        integrity = CaptureStatus()
+        integrity.capture_failed("remote script output")
+        result.update(integrity.capture_fields())
+        result["status"] = "error" if status == "success" else status
+        result["error"] = integrity.capture_error
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -675,23 +690,15 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
             if "OK" not in py_check.get("output", ""):
                 return _error_result(f"Python 3 is not available in the {env_type} terminal "
                                      "environment. Install Python to use execute_code with remote backends.")
-            # Session-kernel path: one persistent kernel per owner on the
-            # run-to-completion transport. Spawn failure falls OPEN to the per-call
-            # path below so a degraded remote host never blocks execution.
-            try:
-                # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
-                # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
-                # runner + file cell protocol).
-                from tools.code_kernel_remote import execute_in_remote_kernel
-                kernel_result = execute_in_remote_kernel(
-                    code, env=env, env_type=env_type, task_env_id=effective_task_id,
-                    sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                    max_tool_calls=max_tool_calls, reset=bool(reset),
-                    idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
-                )
-            except Exception:
-                logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
-                kernel_result = None
+            # Only kernel acquisition may return None to authorize fallback. Publication,
+            # response handling and cleanup uncertainty must never replay user code.
+            from tools.code_kernel_remote import execute_in_remote_kernel
+            kernel_result = execute_in_remote_kernel(
+                code, env=env, env_type=env_type, task_env_id=effective_task_id,
+                sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
+                max_tool_calls=max_tool_calls, reset=bool(reset),
+                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+            )
             if kernel_result is not None:
                 return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
             logger.info("remote session kernel unavailable on %s; using per-call path", env_type)

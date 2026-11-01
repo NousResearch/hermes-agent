@@ -35,15 +35,15 @@ import {
   setCronSessions,
   setCurrentBranch,
   setCurrentCwdTransient,
-  setCurrentFastMode,
+  setCurrentFastModeTransient,
   setCurrentModel,
   setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentProviderTransient,
-  setCurrentReasoningEffort,
+  setCurrentReasoningEffortTransient,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
+  setCurrentServiceTierTransient,
   setCurrentUsage,
   setMessagingSessions,
   setSessionOwnerHint,
@@ -2209,7 +2209,7 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   }
 
   if (state.reasoningEffort !== undefined) {
-    setCurrentReasoningEffort(state.reasoningEffort)
+    setCurrentReasoningEffortTransient(state.reasoningEffort)
   }
 
   if (state.reasoningEffortWire !== undefined) {
@@ -2217,11 +2217,11 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   }
 
   if (state.serviceTier !== undefined) {
-    setCurrentServiceTier(state.serviceTier)
+    setCurrentServiceTierTransient(state.serviceTier)
   }
 
   if (state.fast !== undefined) {
-    setCurrentFastMode(state.fast)
+    setCurrentFastModeTransient(state.fast)
   }
 
   if (state.yolo !== undefined) {
@@ -2351,9 +2351,9 @@ export function applyStoredSessionPreviewRuntimeInfo(
   // the coherence gate (#125336).
   setCurrentModelTransient(stored?.model || '')
   setCurrentProviderTransient('')
-  setCurrentReasoningEffort('')
-  setCurrentServiceTier('')
-  setCurrentFastMode(false)
+  setCurrentReasoningEffortTransient('')
+  setCurrentServiceTierTransient('')
+  setCurrentFastModeTransient(false)
   setYoloActive(false)
   setCurrentPersonality('')
 

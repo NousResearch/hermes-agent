@@ -6589,6 +6589,35 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
     return _get_named_custom_provider(name) is not None
 
 
+def _aux_provider_preferences(model: Optional[str] = None) -> dict[str, Any]:
+    """OpenRouter provider-routing for auxiliary calls, mirroring the main-turn
+    ``_provider_preferences_for_agent`` (chat_completion_helpers).
+
+    Aux requests used to ship without any ``provider`` routing object, leaving provider choice to
+    OpenRouter's default load balancing - which happily serves from providers the operator excluded
+    via ``provider_routing.only`` (e.g. DeepSeek served by wafer while InferenceNet was configured),
+    at a higher unit price than the chosen provider. Read at call time so config edits take effect
+    without a restart. Failures degrade to ``{}`` (no routing, i.e. the old behavior).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        pr = load_config_readonly().get("provider_routing")
+        if not isinstance(pr, dict):
+            return {}
+        prefs = {key: pr.get(key) for key in ("only", "ignore", "order", "sort", "data_collection")}
+        if pr.get("require_parameters"):
+            prefs["require_parameters"] = True
+        if model:
+            from hermes_constants import resolve_per_model_provider_routing
+            models_table = pr.get("models")
+            per_model = resolve_per_model_provider_routing(model, models_table if isinstance(models_table, dict) else None)
+            prefs.update({key: value for key, value in per_model.items() if key in prefs})
+        return {key: value for key, value in prefs.items() if value}
+    except Exception:
+        logger.debug("aux provider routing resolution failed", exc_info=True)
+        return {}
+
+
 def _project_provider_profile(
     provider: str, provider_norm: str, model: str, effective_base: str, reasoning_config: Optional[dict], data_use: frozenset[str],
 ) -> _ProfileProjection:
@@ -6611,7 +6640,23 @@ def _project_provider_profile(
             profile = get_provider_profile("custom")
         if profile is not None:
             messages_wire = profile.api_mode == "anthropic_messages"
-            body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config, data_use=data_use) or {}
+            _openrouter_route = (
+                provider_norm == "openrouter"
+                or base_url_host_matches(str(effective_base or ""), "openrouter.ai"))
+            _aux_prefs = _aux_provider_preferences(model=model) if _openrouter_route else {}
+            _eb_kwargs: dict[str, Any] = dict(
+                model=model, base_url=effective_base, reasoning_config=reasoning_config,
+                data_use=data_use)
+            if _aux_prefs:
+                _eb_kwargs["provider_preferences"] = _aux_prefs
+            body = profile.build_extra_body(**_eb_kwargs) or {}
+            if _aux_prefs and "provider" not in body:
+                # ``provider`` is part of OpenRouter's REQUEST contract, not the profile's: a
+                # custom-named entry at openrouter.ai projects through CustomProfile, which
+                # ignores provider_preferences. Without this the operator's provider_routing.only
+                # is silently dropped and OpenRouter default-balances to excluded providers
+                # (#89384). Only fills the key when no profile projected one (pins win).
+                body["provider"] = _aux_prefs
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
                 model=model, base_url=effective_base,
@@ -6729,6 +6774,12 @@ def _build_call_kwargs(
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    if isinstance(extra_body, dict) and "provider" in extra_body:
+        # Profile projections supply route DEFAULTS and must never clobber a task/caller-level
+        # explicit ``provider`` (auxiliary.<task>.extra_body.provider): the configured routing we
+        # inject in _project_provider_profile merges over the caller dict, so restore the override
+        # here - same contract #89425 guards with its ``"provider" not in extra_body`` check.
+        merged_extra["provider"] = extra_body["provider"]
     if "response_format" in merged_extra:
         from agent.auxiliary_structured_output import without_unsupported_response_format
         merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)

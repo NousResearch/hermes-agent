@@ -97,6 +97,25 @@ platforms:
    - **OpenAI Whisper**：设置 `QQ_STT_BASE_URL` 和 `QQ_STT_MODEL`
    - 任何兼容 OpenAI 的 STT 端点
 
+## 菜单与面板管理
+
+内置 QQ 平台提供纯 REST 命令，不要求网关正在运行，使用当前 profile 的 QQ 配置凭据。QQ 侧仍需开通对应权限。
+
+```sh
+hermes -p PROFILE qqbot --help
+hermes -p PROFILE qqbot menu-get
+hermes -p PROFILE qqbot panel-list --scope c2c
+hermes -p PROFILE qqbot panel-get PANEL_ID
+hermes -p PROFILE qqbot menu-put --file menu.json          # 离线预览
+hermes -p PROFILE qqbot menu-put --file menu.json --apply  # 替换整个全局菜单
+hermes -p PROFILE qqbot panel-create --file panel.json --apply
+hermes -p PROFILE qqbot panel-update PANEL_ID --file panel.json --apply
+hermes -p PROFILE qqbot panel-targets PANEL_ID --file targets.json --apply
+hermes -p PROFILE qqbot panel-delete PANEL_ID --apply
+```
+
+写操作默认仅输出离线 JSON 请求计划，不加载凭据、不建立网络连接；只有 `--apply` 才真正写入。读取命令会执行真实认证请求。JSON 文件应包含符合 [QQ 菜单/面板 API](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/menu-panel/) 的完整请求对象，不自动补默认值或合并部分菜单。面板列表只返回一页并保留服务端游标和字段，可显式传入 `--cursor` / `--limit` 获取其他页面，不自动重试或翻页。认证及远端请求失败会以非零状态退出，不输出可能包含凭据的原始响应。
+
 ## 故障排查
 
 ### 机器人立即断开连接（快速断连）

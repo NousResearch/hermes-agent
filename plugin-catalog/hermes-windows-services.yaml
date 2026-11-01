@@ -1,0 +1,43 @@
+name: hermes-windows-services
+repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
+sha: e278adf4c2f78e10f34e0c0b6277bc8792e86474
+subdir: windows-services
+description: >-
+  Answer "what runs as a service on this machine, why did one fail, and what does it depend on"
+  on Windows: win_service_table lists every service with its state (Running, Stopped, Paused),
+  its start mode (Auto, Manual, Disabled, with the delayed flag folded in as "Auto, delayed"),
+  the pid it runs under, the account and binary it runs as, the dependency edges both ways, and
+  what its exit code means - 1077 is one that has not tried to start since the last boot, 1053
+  one that did not answer in time, 1075 one whose dependency failed first, 2 one whose binary
+  is gone. win_service_detail takes one service and gives what Windows does when it fails (the
+  FailureActions blob decoded: restart the service, restart the computer, run a command, after
+  how many seconds, and when the count resets), whether the registered binary is still on
+  disk, and the Service Control Manager's own event-log record behind the failure - 7000
+  failed to start, 7009 a start request that timed out, 7024 a service-specific error, 7031 an
+  unexpected end, 7045 an install. Use it for what died after the last update, for finding
+  what an uninstalled program left registered, and for the dependency order before a restart.
+  Read-only: nothing is started, stopped, reconfigured or deleted. The listing comes from one
+  Get-CimInstance Win32_Service call because its property names and enum values do not change
+  with the display language while sc.exe localizes both; dependencies and failure actions are
+  read from the registry, because CIM's DependOnService property is never populated and the
+  failure policy exists nowhere in CIM at all. The plugin declares no Python dependencies;
+  there is no network call and no file write. Windows only. Disclosure - the tools report
+  service names, display names, command lines, logon accounts and the event-log history to the
+  model, and those reveal what the person has installed, what runs as their machine's system
+  accounts, and the paths under C:\Program Files and C:\Users\<name>; treat the output like a
+  Services window opened on their machine.
+maintainer: Yicheng-Mark
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Yicheng-Mark/hermes-windows-plugins/tree/main/windows-services
+version: "0.1.0"
+platforms:
+- windows
+capabilities:
+  provides_tools:
+  - win_service_table
+  - win_service_detail
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

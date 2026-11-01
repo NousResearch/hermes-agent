@@ -84,7 +84,9 @@ listener keeps working.
 ## Deliberately limited compatibility
 
 - `source` accepts `cli` (default), `tui`, `gui`, `acp`, `tool` and `oneshot`
-  (`gateway.session_policy.SURFACES`). They select the agent platforms `cli`, `tui`,
+  (`gateway.session_policy.SURFACES`), plus `desktop`, the label the gateway itself stores for
+  `gui` (`gateway.session_policy.SURFACE_ALIASES`), so a client may send back the label it read
+  off a session row. They select the agent platforms `cli`, `tui`,
   `desktop`, `acp`, `cli` and `cli`; `tool` (third-party integrations) and `oneshot`
   (finite `chat -q` / `-z` runs) keep their own stored label so human pickers hide them.
   The native local routing identity remains server-owned `Platform.LOCAL`; source never

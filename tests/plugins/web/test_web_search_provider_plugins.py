@@ -45,6 +45,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_SEARCH_BASE_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 

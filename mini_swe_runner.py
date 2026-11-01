@@ -10,12 +10,18 @@ Usage:
     python mini_swe_runner.py --task "Create a hello world Python script" --env local
     python mini_swe_runner.py --task "List files in the working directory" --env docker --image python:3.11-slim
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
+
+Exit codes:
+    0  task completed, or the batch finished
+    1  a task ran but did not complete, a batch row failed, or the prompts file held no prompts
+    2  usage error (neither --task nor --prompts_file given)
 """
 
 import importlib
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -376,6 +382,21 @@ def main(
         timeout: Command timeout in seconds (default: 60)
         verbose: Enable verbose logging
     """
+    # Reject an invocation we cannot run before building anything: a malformed call must not
+    # reach the provider router, and a wrapper shelling out to this script must see a failure.
+    # 2 is the code fire itself exits with for a bad invocation.
+    if not task and not prompts_file:
+        print("❌ Please provide either --task or --prompts_file", file=sys.stderr)
+        print("   Example: python mini_swe_runner.py --task 'Create a hello world script'", file=sys.stderr)
+        raise SystemExit(2)
+
+    prompts = None
+    if prompts_file and not task:
+        prompts = _load_prompts(prompts_file)
+        if not prompts:
+            print(f"❌ No prompts found in {prompts_file}", file=sys.stderr)
+            raise SystemExit(1)
+
     print("🚀 Mini-SWE Runner with Hermes Trajectory Format")
     print("=" * 60)
     # Configure root logging at the entry point (not in library __init__).
@@ -391,15 +412,17 @@ def main(
         print(f"✅ Completed: {result['completed']}")
         print(f"📞 API calls: {result['api_calls']}")
         print(f"💬 Turns: {len(result['conversations'])}")
-    elif prompts_file:
-        prompts = _load_prompts(prompts_file)
-        if not prompts:
-            print(f"❌ No prompts found in {prompts_file}")
-            return
-        runner.run_batch(prompts, output_file)
+        # A task that stopped on the iteration ceiling leaves a trajectory that says
+        # completed=False; a CI step or wrapper driving this must not read that as success.
+        raise SystemExit(0 if result["completed"] else 1)
     else:
-        print("❌ Please provide either --task or --prompts_file")
-        print("   Example: python mini_swe_runner.py --task 'Create a hello world script'")
+        results = runner.run_batch(prompts, output_file)
+        # A batch row carries the same completed=False the single-task arm reports on, so a
+        # wrapper driving this must see a failing task as a failing run too.
+        failed = sum(1 for row in results if not row.get("completed"))
+        if failed:
+            print(f"❌ {failed} of {len(results)} task(s) did not complete", file=sys.stderr)
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

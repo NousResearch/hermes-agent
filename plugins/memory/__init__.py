@@ -78,8 +78,17 @@ def _is_memory_provider_dir(path: Path) -> bool:
 
 def _defines_memory_provider(path: Path) -> bool:
     """Parse (never import) the package's top-level modules for what ``_load_provider_from_dir`` can load:
-    a ``register_memory_provider(...)`` call or a ``MemoryProvider`` subclass. Unlike the discovery
-    heuristic, a docstring or comment naming the contract does not count."""
+    a ``register_memory_provider(...)`` call, a ``MemoryProvider`` subclass, or a re-export of the
+    provider contract. Unlike the discovery heuristic, a docstring or comment naming the contract does
+    not count.
+
+    A catalog wrapper carries no implementation of its own: it imports ``register`` and
+    ``register_memory_provider`` from the implementation package and re-exports them, so the loader
+    calls the imported ``register`` which calls ``register_memory_provider`` with the collector. That
+    is the same runtime contract as a direct call, so it counts here too — otherwise such a wrapper
+    loads as a provider at runtime but is never recognised as one when it is installed, and the
+    install leaves it inactive.
+    """
     for module in sorted(path.glob("*.py")):
         try:
             tree = ast.parse(module.read_text(errors="replace", encoding="utf-8-sig"))
@@ -87,6 +96,8 @@ def _defines_memory_provider(path: Path) -> bool:
             continue
         bases = {"MemoryProvider"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
                                       for a in n.names if a.name == "MemoryProvider" and a.asname}
+        re_exports_provider = False
+        exposes_register = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and "register_memory_provider" in (
                     getattr(node.func, "attr", None), getattr(node.func, "id", None)):
@@ -94,6 +105,18 @@ def _defines_memory_provider(path: Path) -> bool:
             if isinstance(node, ast.ClassDef) and any(
                     (getattr(b, "attr", None) or getattr(b, "id", None)) in bases for b in node.bases):
                 return True
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "register_memory_provider":
+                        re_exports_provider = True
+                    elif alias.name == "register":
+                        exposes_register = True
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "register":
+                exposes_register = True
+        # The wrapper's contract: the loader calls `register`, and that call is what reaches
+        # `register_memory_provider`. Both halves must be present to mirror the runtime path.
+        if re_exports_provider and exposes_register:
+            return True
     return False
 
 

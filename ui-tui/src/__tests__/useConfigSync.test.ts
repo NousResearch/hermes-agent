@@ -47,6 +47,17 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('maps display.submit_key to submitKey, falling back to enter', () => {
+    applyDisplay({ config: { display: { submit_key: 'cmd_enter' } } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('cmd_enter')
+
+    applyDisplay({ config: { display: { submit_key: 'something_else' } } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('enter')
+
+    applyDisplay({ config: { display: {} } }, vi.fn())
+    expect($uiState.get().submitKey).toBe('enter')
+  })
+
   it('hydrates the destructive slash confirmation policy from approvals', () => {
     const setBell = vi.fn()
 

@@ -151,9 +151,10 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 
 | Key                             | Behavior                                                                                                                                                |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Enter`                         | Submit the current draft                                                                                                                                |
+| `Enter`                         | Submit the current draft; inserts a newline instead with `display.submit_key: cmd_enter`                                                                |
 | empty `Enter` twice             | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
-| `Shift+Enter` / `Alt+Enter`     | Insert a newline in the current draft                                                                                                                   |
+| `Shift+Enter`                   | Insert a newline in the current draft (both `display.submit_key` modes)                                                                                 |
+| `Cmd/Ctrl+Enter` / `Alt+Enter`  | Insert a newline in the current draft; submits instead with `display.submit_key: cmd_enter`                                                             |
 | `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
 | `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
 | `Ctrl+D`                        | Exit                                                                                                                                                    |

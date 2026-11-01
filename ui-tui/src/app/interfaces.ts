@@ -43,6 +43,9 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+/** `display.submit_key`: which Enter submits the composer (the other inserts a newline). */
+export type SubmitKey = 'cmd_enter' | 'enter'
+
 export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
 
 // A single battery reading pushed from the Python gateway (`system.battery`).
@@ -372,6 +375,7 @@ export interface UiState {
   // the default set).
   statusBarFields: null | ReadonlySet<string>
   streaming: boolean
+  submitKey: SubmitKey
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).

@@ -3,6 +3,7 @@ import * as Ink from '@hermes/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
+import type { SubmitKey } from '../app/interfaces.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
@@ -295,9 +296,27 @@ type ReturnDecisionKey = {
  * Ghostty, WSL), and macOS terminals (Terminal.app, iTerm2 defaults) do it too
  * but aren't env-detectable, so a bare LF is treated as a newline there as well.
  * Plain Enter (CR) stays submit everywhere.
+ *
+ * `display.submit_key: cmd_enter` swaps the two: Ctrl/Cmd+Enter submits and
+ * every unmodified Enter (CR or a collapsed LF) inserts a newline. Shift+Enter
+ * is a newline in both modes.
  */
-export function shouldInsertNewlineOnReturn(key: ReturnDecisionKey, sequence = ''): boolean {
-  if (key.shift || key.ctrl || (isMac ? isActionMod(key) : key.meta)) {
+export function shouldInsertNewlineOnReturn(
+  key: ReturnDecisionKey,
+  sequence = '',
+  submitKey: SubmitKey = 'enter'
+): boolean {
+  if (key.shift) {
+    return true
+  }
+
+  const submitMod = key.ctrl || (isMac ? isActionMod(key) : key.meta)
+
+  if (submitKey === 'cmd_enter') {
+    return !submitMod
+  }
+
+  if (submitMod) {
     return true
   }
 
@@ -786,6 +805,7 @@ export function TextInput({
   mouseApiRef,
   cursorSnapshotRef,
   ignoreVerticalArrows = false,
+  submitKey = 'enter',
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -1481,7 +1501,7 @@ export function TextInput({
         const range = selRange()
         const pending = valueForReturnSubmit(vRef.current, curRef.current, inp, range)
         const sequence = (event.keypress as { sequence?: string }).sequence
-        const insertNewline = shouldInsertNewlineOnReturn(k, sequence ?? '')
+        const insertNewline = shouldInsertNewlineOnReturn(k, sequence ?? '', submitKey)
 
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
@@ -1872,6 +1892,8 @@ interface TextInputProps {
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
   placeholderColor?: string
+  /** `display.submit_key`: 'cmd_enter' makes Enter a newline and Ctrl/Cmd+Enter submit. */
+  submitKey?: SubmitKey
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

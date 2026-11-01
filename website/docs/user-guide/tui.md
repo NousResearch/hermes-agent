@@ -190,6 +190,23 @@ display:
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
+## Submit key
+
+By default `Enter` sends the draft and `Cmd+Enter` (macOS) / `Ctrl+Enter` (Linux, Windows) inserts a newline. Set `display.submit_key` to swap them:
+
+```yaml
+display:
+  submit_key: cmd_enter   # enter (default) | cmd_enter
+```
+
+| Key | `enter` (default) | `cmd_enter` |
+|---|---|---|
+| `Enter` | submit | newline |
+| `Cmd/Ctrl+Enter`, `Alt+Enter` | newline | submit |
+| `Shift+Enter` | newline | newline |
+
+`Shift+Enter` inserts a newline in both modes. Any other value falls back to `enter`. The key applies to the TUI composer only; the classic CLI keeps its own bindings. In `cmd_enter` mode the terminal has to report the modifier on `Enter` (kitty keyboard protocol, or a binding such as the ones `/terminal-setup` installs); a terminal that sends a bare `Enter` for `Cmd+Enter` gives a newline. Edits to `config.yaml` take effect in a running TUI on its next config poll.
+
 ## Auto-resume
 
 By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:

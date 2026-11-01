@@ -274,6 +274,10 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     _install_paired(5, {9: Keys.ControlI, 127: alt_backspace})  # Ctrl+Tab degrades to Tab
     _install_paired(1, {9: Keys.ControlI, 13: Keys.ControlM, 32: " ", 127: Keys.ControlH})
 
+    # Legacy Windows ConsoleHost reports Shift+Insert as a modified Insert key, but does not
+    # include clipboard content in that sequence. Consume it instead of self-inserting ``[2;2~``.
+    _put("\x1b[2;2~", Keys.Ignore)
+
     # Lock twins for the legacy CSI-letter / CSI-tilde forms kitty keeps using under the
     # disambiguate push (Down with NumLock on = ESC[1;129B; Alt+Left = ESC[1;131D). Derived from
     # whatever the table already maps for the base modifier, stock entries included.

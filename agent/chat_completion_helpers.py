@@ -2050,6 +2050,38 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def _fallback_context_allows_request(agent, fallback: Dict[str, Any]) -> bool:
+    """Reject only a fallback proven too small for the assembled wire request."""
+    request_tokens = getattr(agent, "_active_request_tokens", None)
+    if not isinstance(request_tokens, int) or isinstance(request_tokens, bool) or request_tokens <= 0:
+        return True
+    model = str(fallback.get("model") or "").strip()
+    provider = str(fallback.get("provider") or "").strip()
+    if not model or not provider:
+        return True
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        context_length = get_model_context_length(
+            model,
+            base_url=str(fallback.get("base_url") or ""),
+            provider=provider,
+            custom_providers=getattr(agent, "_custom_providers", None),
+        )
+    except Exception:
+        logger.debug("Fallback %s context lookup failed; leaving it eligible", model, exc_info=True)
+        return True
+    if not isinstance(context_length, int) or isinstance(context_length, bool) or context_length <= 0:
+        return True
+    if request_tokens < context_length:
+        return True
+    logger.warning(
+        "Skipping fallback %s (%s): current request is %d tokens, context is %d",
+        model, provider, request_tokens, context_length,
+    )
+    return False
+
+
 def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
@@ -2070,6 +2102,8 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+            continue
+        if not _fallback_context_allows_request(agent, fb):
             continue
 
         try:

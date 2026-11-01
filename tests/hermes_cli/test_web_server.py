@@ -3390,6 +3390,35 @@ class TestDesktopHostRendezvousIsolation:
         assert published[0][1]["host"] == "0.0.0.0"
         assert published[0][1]["port"] == 9119
 
+    def test_isolated_standalone_backend_does_not_claim_host_serve_record(self, monkeypatch):
+        """A standalone ``--isolated`` backend (e.g. ``hermes dashboard --port 9120 --isolated``)
+        must not claim ``ROLE_SERVE`` and block the canonical ``hermes serve --port 9119`` owner,
+        while a Desktop-owned ``--isolated`` child still publishes ``ROLE_DESKTOP_SERVE``."""
+        from gateway import host_rendezvous as hr
+        from hermes_cli import web_server
+
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        claimed = []
+        published = []
+        monkeypatch.setattr(
+            hr,
+            "claim_host_lock",
+            lambda role: (claimed.append(role) or (hr.HostLockOutcome.ACQUIRED, None)),
+        )
+        monkeypatch.setattr(hr, "publish_record", lambda *args, **kwargs: published.append((args, kwargs)))
+        monkeypatch.setattr(hr, "cleanup_on_exit", lambda role: None)
+
+        web_server._publish_host_rendezvous("127.0.0.1", 9120, isolated=True)
+        assert claimed == []
+        assert published == []
+
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+        web_server._publish_host_rendezvous("127.0.0.1", 9231, isolated=True)
+        assert claimed == [hr.ROLE_DESKTOP_SERVE]
+        assert published[0][0] == (hr.ROLE_DESKTOP_SERVE,)
+
 
 class TestOrphanedOwnerReclaim:
     """HELD_BY_OTHER against a dead session's orphan must re-claim, not loop observe-only (#121964).

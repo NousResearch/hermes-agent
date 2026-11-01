@@ -402,8 +402,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
-        with self._profile_scope_for_source(source):
-            return self._format_session_info()
+        from gateway.session_info import reset_notice_session_info
+        return reset_notice_session_info(self, source)
 
     def _format_session_info(self) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""

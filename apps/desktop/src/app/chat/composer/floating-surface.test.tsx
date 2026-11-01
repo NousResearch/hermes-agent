@@ -43,7 +43,7 @@ afterEach(async () => {
   $composerPopout.set({ poppedOut: false, position: { bottom: 24, right: 24 } })
 })
 
-it('shares one visible composer while preserving each editor and draft across hover, focus and docking', () => {
+it('shares one visible composer while preserving each editor and draft across clicks, focus and docking', () => {
   render(
     <>
       <Surface id="a" />
@@ -64,6 +64,10 @@ it('shares one visible composer while preserving each editor and draft across ho
   expect(hostA.style.display).toBe('contents')
   expect(hostB.style.display).toBe('none')
   fireEvent.pointerMove(screen.getByTestId('pane-b'), { clientX: 500, clientY: 100 })
+  expect(hostA.style.display).toBe('contents')
+  expect(hostB.style.display).toBe('none')
+  fireEvent.pointerDown(screen.getByTestId('pane-b'))
+  fireEvent.pointerUp(screen.getByTestId('pane-b'))
   expect(hostA.style.display).toBe('none')
   expect(hostB.style.display).toBe('contents')
   fireEvent.pointerOver(b)
@@ -74,6 +78,9 @@ it('shares one visible composer while preserving each editor and draft across ho
   })
   fireEvent.pointerMove(screen.getByTestId('pane-a'), { clientX: 100, clientY: 100 })
   expect(hostB.style.display).toBe('contents')
+  expect(getActiveComposer()).toBe('b')
+  fireEvent.pointerDown(screen.getByTestId('pane-a'))
+  fireEvent.pointerUp(screen.getByTestId('pane-a'))
   expect(getActiveComposer()).toBe('b')
   act(() => releaseCapture())
   fireEvent.keyDown(globalThis.document.body, { key: 'Tab' })
@@ -90,40 +97,58 @@ it('shares one visible composer while preserving each editor and draft across ho
   expect(hostB.closest('[data-chat-surface]')).toBe(screen.getByTestId('pane-b'))
 })
 
-it.each([false, true])('keeps pointer-selected ownership through delayed events (floating=%s)', floating => {
-  render(
-    <>
-      <Surface id="a" />
-      <Surface id="b" />
-    </>
-  )
-  act(() => setComposerPoppedOut(floating))
-  const paneB = screen.getByTestId('pane-b')
-  fireEvent.pointerOver(paneB, { clientX: 500, clientY: 100 })
-  fireEvent.pointerMove(paneB, { clientX: 500, clientY: 100 })
-  expect(getActiveComposer()).toBe('b')
-
-  fireEvent.pointerOver(screen.getByTestId('pane-a'), { clientX: 500, clientY: 100 })
-  fireEvent.focusIn(screen.getByRole('button', { name: 'Focus a' }))
-  expect(getActiveComposer()).toBe('b')
-})
-
-it('hands the floating recipient to a visible tab when its old tab hides or closes', async () => {
-  function Tabs() {
-    const [first, setFirst] = useState(true)
-
-    return (
+it.each([false, true])(
+  'keeps click-selected ownership through pointer transit and delayed events (floating=%s)',
+  floating => {
+    render(
       <>
-        <button onClick={() => setFirst(false)}>Switch</button>
-        <Surface groupId="tabs" id="a" visible={first} />
-        <Surface groupId="tabs" id="b" visible={!first} />
+        <Surface id="a" />
+        <Surface id="b" />
       </>
     )
-  }
+    act(() => setComposerPoppedOut(floating))
+    const paneB = screen.getByTestId('pane-b')
+    fireEvent.pointerOver(paneB, { clientX: 500, clientY: 100 })
+    fireEvent.pointerMove(paneB, { clientX: 500, clientY: 100 })
+    expect(getActiveComposer()).toBe('a')
+    fireEvent.pointerDown(paneB)
+    fireEvent.pointerUp(paneB)
+    expect(getActiveComposer()).toBe('b')
 
-  render(<Tabs />)
-  act(() => setComposerPoppedOut(true))
-  await act(async () => fireEvent.click(screen.getByText('Switch')))
-  expect(screen.getByLabelText('Draft b').closest<HTMLElement>('[data-composer-owner]')!.style.display).toBe('contents')
-  expect(screen.queryByLabelText('Draft a')).not.toBeNull()
-})
+    fireEvent.pointerOver(screen.getByTestId('pane-a'), { clientX: 500, clientY: 100 })
+    fireEvent.focusIn(screen.getByRole('button', { name: 'Focus a' }))
+    expect(getActiveComposer()).toBe('b')
+  }
+)
+
+it.each(['click', 'keyboard'])(
+  'hands the floating recipient to a visible tab on an explicit %s switch',
+  async method => {
+    function Tabs() {
+      const [first, setFirst] = useState(true)
+
+      return (
+        <>
+          <button onClick={() => setFirst(false)}>Switch</button>
+          <Surface groupId="tabs" id="a" visible={first} />
+          <Surface groupId="tabs" id="b" visible={!first} />
+        </>
+      )
+    }
+
+    render(<Tabs />)
+    act(() => setComposerPoppedOut(true))
+
+    if (method === 'keyboard') {
+      screen.getByText('Switch').focus()
+      fireEvent.keyDown(screen.getByText('Switch'), { key: 'Enter' })
+      // jsdom does not implement a native button's Enter-to-click default action.
+    }
+
+    await act(async () => fireEvent.click(screen.getByText('Switch')))
+    expect(screen.getByLabelText('Draft b').closest<HTMLElement>('[data-composer-owner]')!.style.display).toBe(
+      'contents'
+    )
+    expect(screen.queryByLabelText('Draft a')).not.toBeNull()
+  }
+)

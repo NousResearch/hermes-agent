@@ -61,7 +61,7 @@ describe('floating composer focus-follow vs a focused transcript text field', ()
     expect(document.activeElement).not.toBe(editor)
   })
 
-  it('still moves the caret to the hovered pane composer when it sits in another pane composer', () => {
+  it('keeps the caret in the selected pane while the pointer crosses another composer surface', () => {
     const a = mountPane('surface-a')
     const b = mountPane('surface-b')
     unregister.push(registerFloatingComposer('surface-a', { groupId: 'ga', target: 'main' }))
@@ -71,6 +71,6 @@ describe('floating composer focus-follow vs a focused transcript text field', ()
     expect(document.activeElement).toBe(a.editor)
 
     movePointerOver(b.surface, 200)
-    expect(document.activeElement).toBe(b.editor)
+    expect(document.activeElement).toBe(a.editor)
   })
 })

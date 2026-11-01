@@ -49,7 +49,7 @@ describe('floating composer focus-follow vs an open floating layer', () => {
     document.body.innerHTML = ''
   })
 
-  it('leaves focus inside a floating layer, but still follows the pointer otherwise', () => {
+  it('leaves focus with an open layer or explicitly selected control when the pointer moves', () => {
     const { editor, layerButton, plainButton, surface } = mount()
     unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
 
@@ -57,10 +57,12 @@ describe('floating composer focus-follow vs an open floating layer', () => {
     movePointerOver(surface, 10)
     expect(document.activeElement).toBe(layerButton)
 
-    // Control: focus on an ordinary control in the surface is not "owned" —
-    // hovering the transcript hands the caret to the composer as before.
+    // An intentional control click also keeps its focus when the pointer leaves.
+    plainButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     plainButton.focus()
+    plainButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
     movePointerOver(surface, 20)
-    expect(document.activeElement).toBe(editor)
+    expect(document.activeElement).toBe(plainButton)
+    expect(document.activeElement).not.toBe(editor)
   })
 })

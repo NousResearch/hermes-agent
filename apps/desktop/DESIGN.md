@@ -407,19 +407,22 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   persists per conversation and owner, not globally. Hidden sections stay
   mounted but inert so their disclosure choices survive; reduced motion is instant.
 - Popping out a composer makes it the window's only visible composer. It keeps
-  its viewport placement while hover or keyboard focus selects a chat pane;
+  its viewport placement while a click or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and
   queues stay session-owned. Docking restores the individual pane composers.
-  In either placement, moving into a chat pane gives its editor typing focus
-  immediately and preserves its caret. Layout-only hover events and delayed
-  focus callbacks cannot replace that choice, and a live transcript selection
-  is never cleared by focus-follow. Movement within the same pane
-  must not flush React; deliberate Tab navigation and clicked controls still work.
+  In either placement, pointer movement never changes the recipient, typing
+  focus or Files workspace. Crossing another chat on the way to Files preserves
+  the last explicit selection. Clicks and keyboard navigation select a pane;
+  clicked controls and live transcript selections retain their normal focus.
+  Delayed focus callbacks cannot replace that choice, and pointer movement must
+  not flush React. Each editor keeps its draft and caret across explicit switches.
   An inline message edit is a typing target of its own: opening one keeps focus
   in the edit editor, and neither its mount-time focus nor mouse movement while
   it is open hands the caret back to the pane composer.
-  Active dictation or voice conversation pins the recipient until capture ends,
-  keeping the microphone's stop controls and shortcut attached to its owner.
+  While floating, active dictation or voice conversation pins the recipient
+  until capture ends, keeping the microphone's stop controls and shortcut
+  attached to its owner. A clicked control may focus another pane during that
+  capture; Files follows that pane while microphone actions remain pinned.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
   icon and optional trailing actions. `StatusDismissButton` owns the Codicon
   close button for previews, background tasks and queued prompts; do not swap

@@ -1079,6 +1079,11 @@ export interface Translations extends NoticeTranslations {
       currentPill: string
       primaryPill: string
       managedPill: string
+      railVisibilityNote: string
+      railVisibilityLabel: (label: string) => string
+      railShownDesc: string
+      railHiddenDesc: string
+      railHiddenPill: string
       addConnection: string
       editConnection: string
       removeConnection: string

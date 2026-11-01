@@ -1,0 +1,25 @@
+name: feishu-new-topic
+repo: https://github.com/kaigregliu/hermes-feishu-new-topic
+sha: "d8da4b34f3e0354e01f88f42ec1ddc36e74398c5"
+version: "0.3.5"
+title: Feishu New Topic
+description: "Feishu/Lark only: a message starting with `#new ` (or the spoken phrase 开启一个新话题) opens a new Feishu topic on that message, which Hermes turns into a new session — a second lane, while the session that was already running keeps running with its turn untouched. That is the difference from `/new`, which interrupts the running turn and clears the conversation. Inside a topic the trigger is stripped, because Feishu topics do not nest; if topic creation fails the message is dispatched normally with a note. Disclosure — normally two Feishu OpenAPI calls (messages/{id}/reply with reply_in_thread, then messages/{id}/delete for a one-character placeholder reply), with reply retried up to three times on network errors or Feishu 2200, and no calls at all for cached duplicates, in-topic messages or unauthorised senders; calls go through the Feishu client of the bot that received the message (`_delivery_adapter_for`), and no credentials are handled; a dedupe map keyed by Feishu message id, holding {thread_id, timestamp}, persists through the plugin state file; the notes it appends are Chinese-only; nothing is rewritten unless the gateway's own authorization probe approves the sender. Requires plugins.isolation: in_process. README is bilingual (English + 中文)."
+maintainer: kaigregliu
+tier: community
+category: platform
+requires_hermes: ">=0.22"
+docs_url: https://github.com/kaigregliu/hermes-feishu-new-topic/blob/d8da4b34f3e0354e01f88f42ec1ddc36e74398c5/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_gateway_dispatch]
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Feishu only: the plugin is a no-op on every other platform."
+  - "Requires plugins.isolation: in_process (the default). Under host isolation the hook receives a placeholder gateway, so the plugin cannot resolve the receiving bot or the sender's authorization and does nothing."
+  - "Topics do not nest: sent inside a topic, the trigger is stripped and the message stays in the current session."
+  - "In a group, @-mentioning someone else alongside the bot makes the adapter prepend a [Mentioned: …] hint, so the trigger no longer starts the text and does not fire."
+  - "The notes the plugin appends (empty-body placeholder, in-topic note, failure notes) are Chinese-only, whatever language the user writes in."
+  - "If Feishu processes the reply but every response is lost, the plugin never learns the thread_id: the message falls back to the current session and the server-side topic can be left orphaned. Retries reuse one request UUID, which makes a duplicate topic unlikely but cannot resolve that ambiguity."
+  - "Reads gateway/adapter internals (_delivery_adapter_for, the adapter's _client and _run_blocking). They exist in Hermes 0.22 and are used by bundled plugins, but a Feishu-adapter refactor can break topic creation — the message is then dispatched normally with a note, never dropped."

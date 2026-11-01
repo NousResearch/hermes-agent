@@ -796,6 +796,9 @@ export const zhOverrides = {
       toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭时，输入框停靠在底部。',
+      focusFollowsMouseTitle: '鼠标经过时自动切换会话',
+      focusFollowsMouseDesc:
+        '鼠标移入另一会话时，切换输入焦点和文件工作区。关闭后，需点击或使用键盘切换。适用于停靠和悬浮输入框。',
       fileBrowserTitle: '文件浏览器',
       fileBrowserDesc: '打开工作区时，在聊天旁显示文件浏览器。标题栏的切换按钮也会更改此设置。',
       vibeHeartsTitle: '心情爱心',

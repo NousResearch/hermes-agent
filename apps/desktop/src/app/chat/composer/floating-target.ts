@@ -10,6 +10,7 @@ import {
 import { isEditableTarget, OVERLAY_SURFACE } from '@/lib/keybinds/combo'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import { $composerPopout } from '@/store/composer-popout'
+import { $focusFollowsMouse } from '@/store/focus-follows-mouse'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
 import { EDIT_COMPOSER_ROOT, markActiveComposer } from './focus'
@@ -23,6 +24,12 @@ let keyboardNavigation = false
 let reconcileQueued = false
 let pendingPaneFocus: string | null = null
 let stopPaneFocus: (() => void) | undefined
+let pointer: { x: number; y: number } | null = null
+let composing: Element | null = null
+
+function trackComposition(event: CompositionEvent) {
+  composing = event.type === 'compositionstart' && event.target instanceof Element ? event.target : null
+}
 
 /** The inline message edit lives in the transcript, outside every composer
  * host, and takes focus programmatically when a bubble is clicked. That focus
@@ -68,7 +75,13 @@ function rememberCaret(editor: EventTarget | null) {
   }
 }
 
-const trackBlur = (event: FocusEvent) => rememberCaret(event.target)
+const trackBlur = (event: FocusEvent) => {
+  rememberCaret(event.target)
+
+  if (event.target instanceof Node && composing?.contains(event.target)) {
+    composing = null
+  }
+}
 
 const releasePointer = () => {
   pointerDownTarget = null
@@ -191,6 +204,49 @@ function trackPointerDown(event: PointerEvent) {
   }
 }
 
+function trackPointerMove(event: PointerEvent) {
+  if (pointer?.x === event.clientX && pointer.y === event.clientY) {
+    return
+  }
+
+  pointer = { x: event.clientX, y: event.clientY }
+
+  if (
+    !$focusFollowsMouse.get() ||
+    event.buttons !== 0 ||
+    (event.pointerType && event.pointerType !== 'mouse') ||
+    isTouchInteraction(event) ||
+    composing?.contains(document.activeElement) ||
+    selectionOutsideComposer() ||
+    keepsOwnFocus(document.activeElement) ||
+    inFloatingLayer(document.activeElement) ||
+    document.activeElement?.matches(
+      'button, a[href], select, [role="button"], [tabindex]:not([data-slot="composer-rich-input"])'
+    )
+  ) {
+    return
+  }
+
+  const target = event.target instanceof Element ? event.target : null
+  const id = target && surfaceAt(target)
+
+  if (!id) {
+    return
+  }
+
+  pointerDownTarget = null
+  keyboardNavigation = false
+  pendingPaneFocus = null
+
+  if ($floatingComposerOwner.get()?.id !== id) {
+    flushSync(() => selectSurface(id))
+  }
+
+  if ($floatingComposerOwner.get()?.id === id) {
+    focusSelectedComposer()
+  }
+}
+
 function fulfillPaneFocus() {
   const paneId = pendingPaneFocus
 
@@ -214,6 +270,16 @@ function fulfillPaneFocus() {
 }
 
 function trackKey(event: KeyboardEvent) {
+  // Match the editor's recovery when an IME abort omits compositionend.
+  if (
+    event.type === 'keydown' &&
+    !event.isComposing &&
+    event.target instanceof Node &&
+    composing?.contains(event.target)
+  ) {
+    composing = null
+  }
+
   keyboardNavigation = event.type === 'keydown' && event.key === 'Tab' && !event.ctrlKey && !event.metaKey
 
   if (keyboardNavigation) {
@@ -294,11 +360,14 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
       queueMicrotask(fulfillPaneFocus)
     })
     window.addEventListener('pointerdown', trackPointerDown, true)
+    window.addEventListener('pointermove', trackPointerMove, true)
     window.addEventListener('focusin', trackFocus, true)
     window.addEventListener('focusout', trackBlur, true)
     window.addEventListener('pointerup', releasePointer, true)
     window.addEventListener('keydown', trackKey, true)
     window.addEventListener('keyup', trackKey, true)
+    window.addEventListener('compositionstart', trackComposition, true)
+    window.addEventListener('compositionend', trackComposition, true)
   }
 
   if (!$floatingComposerOwner.get() || $floatingComposerOwner.get()?.groupId === surface.groupId) {
@@ -324,13 +393,18 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
       stopPaneFocus?.()
       stopPaneFocus = undefined
       window.removeEventListener('pointerdown', trackPointerDown, true)
+      window.removeEventListener('pointermove', trackPointerMove, true)
       window.removeEventListener('focusin', trackFocus, true)
       window.removeEventListener('focusout', trackBlur, true)
       window.removeEventListener('pointerup', releasePointer, true)
       window.removeEventListener('keydown', trackKey, true)
       window.removeEventListener('keyup', trackKey, true)
+      window.removeEventListener('compositionstart', trackComposition, true)
+      window.removeEventListener('compositionend', trackComposition, true)
       pointerDownTarget = null
       keyboardNavigation = false
+      pointer = null
+      composing = null
     }
   }
 }

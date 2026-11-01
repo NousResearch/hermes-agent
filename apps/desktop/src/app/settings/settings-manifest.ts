@@ -115,6 +115,11 @@ export const SETTINGS_MANIFEST = {
       ['composer', 'floating', 'drag', 'popout', 'pop out', 'dock', 'lock', 'peel', 'input'],
       'composerPopout'
     ),
+    focusFollowsMouse: appearanceSetting(
+      'window-layout',
+      ['focus', 'mouse', 'hover', 'session', 'pane', 'workspace', 'files', 'click'],
+      'focusFollowsMouse'
+    ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),
     textDirection: appearanceSetting(
       'chat-display',

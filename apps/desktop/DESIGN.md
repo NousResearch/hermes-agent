@@ -410,12 +410,16 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   its viewport placement while a click or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and
   queues stay session-owned. Docking restores the individual pane composers.
-  In either placement, pointer movement never changes the recipient, typing
-  focus or Files workspace. Crossing another chat on the way to Files preserves
-  the last explicit selection. Clicks and keyboard navigation select a pane;
-  clicked controls and live transcript selections retain their normal focus.
-  Delayed focus callbacks cannot replace that choice, and pointer movement must
-  not flush React. Each editor keeps its draft and caret across explicit switches.
+  In either placement, **Focus follows mouse** (Settings → Appearance → Window &
+  layout, beside Floating Composer) defaults off: pointer transit never changes
+  the recipient, typing focus or Files workspace. Crossing another chat on the
+  way to Files preserves the last explicit selection. When enabled, actual mouse
+  movement selects the chat and its input; clicks and keyboard navigation work
+  in either mode. The choice persists as a machine UI preference and takes effect
+  without restarting. Changing the setting itself does not redirect focus.
+  Clicked controls, live transcript selections and IME composition retain their
+  normal focus, even with mouse focus enabled. Delayed focus callbacks cannot
+  replace a newer choice. Each editor keeps its draft and caret across switches.
   An inline message edit is a typing target of its own: opening one keeps focus
   in the edit editor, and neither its mount-time focus nor mouse movement while
   it is open hands the caret back to the pane composer.

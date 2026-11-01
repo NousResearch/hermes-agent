@@ -3484,11 +3484,24 @@ class BasePlatformAdapter(ABC):
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
         """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
+        ephemeral deletion — no session lifecycle (active-session bypass paths).
+
+        When the event came from a native platform interaction the adapter has
+        already DEFERRED and will answer itself (``_suppress_public_echo``), the
+        reply is handed back on the event instead of published: publishing here
+        would be a SECOND delivery of the same text (the duplicate ``/queue``
+        ack). Every other event is unaffected.
+        """
         thread_meta = _thread_metadata_for_event(event)
         response = await self._message_handler(event)
         text, eph_ttl = self._unwrap_ephemeral(response)
         if not text:
+            return
+        if event._suppress_public_echo:
+            event._deferred_reply_text = text
+            if log_cmd is not None:
+                logger.info("[%s] Handing command '/%s' response (%d chars) to the deferred "
+                            "interaction for %s", self.name, log_cmd, len(text), event.source.chat_id)
             return
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,

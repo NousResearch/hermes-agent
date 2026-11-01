@@ -38,6 +38,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------
@@ -998,6 +999,25 @@ class TestSkillsEndpoint:
                 assert names == ["ascii-art", "github"]
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
+
+    @pytest.mark.asyncio
+    async def test_skills_survives_the_real_discovery_path(self, adapter):
+        """GET /v1/skills must enumerate through the unmocked _find_all_skills: the
+        Collective Wisdom revert removed its ``include_editorial`` parameter but left
+        this call site passing it, turning every request into a 500."""
+        skills_dir = get_hermes_home() / "skills" / "probe"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: endpoint-probe\ndescription: Real-path probe skill.\n---\n\nBody line.\n",
+            encoding="utf-8",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            assert "endpoint-probe" in {s["name"] for s in data["data"]}
 
 
 class TestToolsetsEndpoint:

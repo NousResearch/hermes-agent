@@ -6,6 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
+
+
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
@@ -75,6 +82,10 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
     assert receipt['admissions'] == 1 and receipt['retry_same_session']
     assert receipt['goal_continuation'] and receipt['stable_prefix']
+    # The adopted execution is the trusted OWNER of this attempt, and a terminal child
+    # it spawned carries none of the dispatcher's pins (ownership is not shell credentials).
+    assert receipt['owner_role'] == 'OWNER' and receipt['claim_match'] is True
+    assert receipt['terminal_scrubbed'] is True
     print(json.dumps(receipt))
 
 

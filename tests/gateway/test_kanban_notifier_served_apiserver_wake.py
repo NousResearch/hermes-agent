@@ -30,6 +30,13 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 
+
+# This suite drives the board's own kernel from the seat that advances cards
+# (dispatcher-side mechanics), so it declares that seat explicitly. The fixture
+# is never autouse: a write from a scope that did not ask for it still fails
+# closed with KanbanAuthorizationError.
+pytestmark = pytest.mark.usefixtures("kanban_maintenance_authority")
+
 SESSION = "20260918_033413_0665eb"      # the originating (Relay/web-UI) session id
 WORKER_SESSION = "20260918_034333_945a5a"  # the dispatcher-spawned worker's own session
 

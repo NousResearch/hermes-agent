@@ -236,6 +236,13 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     try:
         text = mod.to_markdown_bytes(data)
     except Exception as exc:
+        # A scanned PDF raises NeedsOcrError; retry through hosted OCR exactly
+        # as the path-based _extract_anydoc() does. Without this branch the
+        # bytes route (the one read_file uses) fails outright on scans, even
+        # with a Firecrawl key configured.
+        needs_ocr = getattr(mod, "NeedsOcrError", None)
+        if needs_ocr is not None and isinstance(exc, needs_ocr):
+            return _ocr_scanned_pdf(mod, path, exc)
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     return _finalize_anydoc_text(text, path, lambda: _pdf_coverage_note_from_bytes(data, path))
 

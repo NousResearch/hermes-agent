@@ -414,4 +414,74 @@ describe('annotateInPage overlay', () => {
     expect(scroller.scrollTop).toBe(30)
     api.teardown()
   })
+
+  // A stroke drawn on the page is what the crop carries to the agent: it must
+  // land in the shadow root, not in the pick path.
+  it('draws a markup stroke instead of picking while a tool is armed', () => {
+    const word = document.createElement('span')
+    word.textContent = 'hello'
+    document.body.appendChild(word)
+    document.elementFromPoint = () => word
+
+    const api = annotateInPage(document)
+    api.install()
+    api.beginMarkup('ellipse')
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    const stroke = (tool: string) =>
+      document.querySelector('hermes-annotate')!.shadowRoot!.querySelector(`[data-annotate-stroke="${tool}"]`)
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 30 }))
+    host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 80, clientY: 90 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 80, clientY: 90 }))
+
+    expect(stroke('ellipse')?.querySelector('ellipse')).toBeTruthy()
+    expect(api.getMarkup()).toHaveLength(1)
+    expect(api.getMarkup()[0].tool).toBe('ellipse')
+    api.teardown()
+  })
+
+  it('undoes the last stroke and clears them all', () => {
+    const api = annotateInPage(document)
+    api.install()
+    api.beginMarkup('draw')
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    for (const y of [40, 60]) {
+      host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 10, clientY: y }))
+      host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 40, clientY: y + 10 }))
+      host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 90, clientY: y + 20 }))
+      host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 90, clientY: y + 20 }))
+    }
+
+    expect(api.getMarkup()).toHaveLength(2)
+
+    api.undoMarkup()
+    expect(api.getMarkup()).toHaveLength(1)
+
+    api.clearMarkup()
+    expect(api.getMarkup()).toHaveLength(0)
+    expect(document.querySelector('hermes-annotate')!.shadowRoot!.querySelectorAll('[data-annotate-stroke]')).toHaveLength(0)
+    api.teardown()
+  })
+
+  it('leaves markup visible for the crop and hides saved pins', async () => {
+    const api = annotateInPage(document)
+    api.install()
+    api.showPins([{ kind: 'area', number: 1, rect: { height: 20, width: 20, x: 0, y: 0 } }])
+    api.beginMarkup('rect')
+    const host = document.querySelector('hermes-annotate') as HTMLElement
+
+    host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 10, clientY: 10 }))
+    host.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 60, clientY: 50 }))
+    host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 60, clientY: 50 }))
+    await api.beginCapture()
+
+    const root = document.querySelector('hermes-annotate')!.shadowRoot!
+    const layer = root.querySelector('[data-annotate-markup]') as unknown as SVGSVGElement
+
+    expect(layer.style.display).not.toBe('none')
+    expect(root.querySelector('[data-annotate-stroke="rect"] rect')).toBeTruthy()
+    api.teardown()
+  })
 })

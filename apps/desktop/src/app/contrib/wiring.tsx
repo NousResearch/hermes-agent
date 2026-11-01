@@ -13,6 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { BrowserFloat } from '@/app/chat/browser-float'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -1320,6 +1321,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <McpInstallDeepLinkDialog />
       <RemoteFolderPicker />
       <FindBar />
+      <BrowserFloat />
 
       {settingsOpen && (
         <Suspense fallback={null}>

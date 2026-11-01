@@ -90,16 +90,33 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
           size="0.8rem"
         />
       }
-      // Plain click opens the link in the browser, except remote files which
-      // only the in-app gateway-backed preview can read. ⌘/Ctrl-click always
-      // uses the in-app preview pane. (isOpen still toggles the pane closed.)
+      // Plain click opens the in-app preview pane (and toggles it closed when
+      // open). ⌘/Ctrl-click, or the trailing glyph, hands the link to the
+      // system browser, except remote files which only the in-app
+      // gateway-backed preview can read.
       onActivate={event => {
         if (event.metaKey || event.ctrlKey) {
-          void togglePreview()
-        } else {
           void openDefaultTarget()
+        } else {
+          void togglePreview()
         }
       }}
+      trailing={
+        <Tip label={t.preview.openInBrowser}>
+          <button
+            aria-label={t.preview.openInBrowser}
+            className="flex size-4 items-center justify-center rounded-sm text-muted-foreground/70 hover:bg-(--ui-control-hover-background) hover:text-foreground"
+            data-preview-open-external=""
+            onClick={event => {
+              event.stopPropagation()
+              void openDefaultTarget()
+            }}
+            type="button"
+          >
+            <Codicon name="link-external" size="0.7rem" />
+          </button>
+        </Tip>
+      }
     >
       <Tip
         label={

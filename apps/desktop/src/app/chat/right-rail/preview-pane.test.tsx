@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
@@ -162,8 +162,11 @@ describe('PreviewPane console state', () => {
     expect(frame?.getAttribute('allow')).toBe('fullscreen')
     expect(frame?.getAttribute('allow')).not.toMatch(/camera|clipboard|microphone/)
     expect(rendered.container.querySelector('[data-preview-browser]')).toBeNull()
-    expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
-    expect(rendered.queryByRole('button', { name: 'Back' })).toBeNull()
+    // The address bar is here (it can navigate and reload the frame); history
+    // and the guest tools are not, because an opaque frame has neither.
+    expect((rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).disabled).toBe(false)
+    expect((rendered.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(true)
     expect(rendered.queryByRole('button', { name: /DevTools/i })).toBeNull()
     expect(rendered.queryByRole('button', { name: /console/i })).toBeNull()
     expect(activePreviewNav()).toBeNull()
@@ -173,6 +176,37 @@ describe('PreviewPane console state', () => {
       text: '',
       url: 'https://example.com'
     })
+  })
+
+  // The web build could frame a page but not move it: no address, no reload,
+  // nothing but whatever the site itself offered. It gets the desktop bar now,
+  // minus the parts an opaque frame can't support.
+  it('gives browser-hosted Desktop the address bar, without history', async () => {
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    const target = {
+      kind: 'url' as const,
+      label: 'Browser',
+      source: 'about:blank',
+      url: 'about:blank'
+    }
+
+    const rendered = render(<PreviewPane target={target} />)
+
+    // Disabled, not hidden: the bar is the same bar, so the controls keep their
+    // place — an iframe's history is its own and this side can't walk it.
+    expect((rendered.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((rendered.getByRole('button', { name: 'Forward' }) as HTMLButtonElement).disabled).toBe(true)
+
+    const address = rendered.getByRole('textbox', { name: 'Address' })
+
+    await act(async () => {
+      fireEvent.focus(address)
+      fireEvent.change(address, { target: { value: 'example.com' } })
+      fireEvent.keyDown(address, { key: 'Enter' })
+    })
+
+    await waitFor(() => expect(rendered.container.querySelector('iframe')?.getAttribute('src')).toBe('https://example.com'))
   })
 
   it('reuses the browser iframe when a tab navigates to another target URL', () => {
@@ -706,6 +740,50 @@ describe('PreviewPane console state', () => {
     })
   })
 
+  // A guest that is attached but has not reached dom-ready THROWS from
+  // loadURL rather than rejecting. A float opens a second pane for the tab it
+  // lifts, which lands exactly in that window: uncaught, the throw escaped the
+  // sync effect into the error boundary and blanked the whole view.
+  it('keeps the pane alive when the guest refuses loadURL until dom-ready', async () => {
+    const target = { kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' } as const
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane tabId="loadurl-race" target={target} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const notAttached = new Error('The WebView must be attached to the DOM and the dom-ready event emitted')
+
+    const loadURL = vi.fn<(_url: string) => Promise<void>>(() => {
+      throw notAttached
+    })
+
+    Object.assign(webview, { loadURL })
+
+    // The session opens a new URL while the guest still refuses to load.
+    await act(async () => {
+      rendered.rerender(
+        <PreviewPane
+          tabId="loadurl-race"
+          target={{ ...target, source: 'https://example.com/next', url: 'https://example.com/next' }}
+        />
+      )
+    })
+
+    expect(loadURL).toHaveBeenCalledWith('https://example.com/next')
+    // The refusal is a "not yet", not a failed page: nothing was reported.
+    expect(rendered.container.textContent).not.toContain('Preview failed to load')
+
+    loadURL.mockImplementation(async () => {})
+    await act(async () => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(loadURL).toHaveBeenCalledTimes(2)
+    expect(loadURL).toHaveBeenLastCalledWith('https://example.com/next')
+  })
+
   // `about:blank` in a webview is a white void that reads as broken against
   // the app's chrome — the pane should say it's empty on purpose.
   it('shows the blank-page empty state instead of a white void', async () => {
@@ -717,6 +795,7 @@ describe('PreviewPane console state', () => {
     })
 
     expect(rendered.container.textContent).toContain('Type an address above')
+    expect(rendered.container.textContent).toContain('Browse without leaving Hermes')
 
     const webview = rendered.container.querySelector('webview') as HTMLElement
 
@@ -727,6 +806,25 @@ describe('PreviewPane console state', () => {
 
     expect(rendered.container.textContent).not.toContain('Type an address above')
     expect(rendered.queryByRole('textbox', { name: 'Address' })).not.toBeNull()
+  })
+
+  // The blank page is the one place with nothing to type into, so it offers the
+  // dev servers a person is usually here to look at as one-click chips.
+  it('opens a dev server from the blank page shortcuts', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane target={{ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' }} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const loadURL = vi.fn(async () => {})
+    Object.assign(webview, { loadURL })
+
+    const chips = rendered.getByRole('group', { name: 'Try a local server' })
+
+    fireEvent.click(within(chips).getByRole('button', { name: /localhost:5173/ }))
+
+    await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:5173'))
   })
 
   it('workspace edits reload a loopback dev page, never a site the tab browsed to', async () => {

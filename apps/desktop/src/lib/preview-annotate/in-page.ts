@@ -39,9 +39,30 @@ export interface AnnotatePinChrome {
   selector?: string
 }
 
+/** Markup tools: freehand, arrow, and the two shapes. `rectangle` and `ellipse`
+ *  are drawn corner to corner, the arrow from tail to head. */
+export type AnnotateMarkupTool = 'arrow' | 'draw' | 'ellipse' | 'rect'
+
+export interface AnnotateMarkupPoint {
+  x: number
+  y: number
+}
+
+export interface AnnotateMarkupStroke {
+  /** PAGE coordinates (client + scroll offset): a circle drawn around a heading
+   *  stays around it when the page scrolls, and lands in the crop wherever it
+   *  was drawn. */
+  points: AnnotateMarkupPoint[]
+  tool: AnnotateMarkupTool
+}
+
 export interface AnnotateInPage {
   beginCapture: () => Promise<boolean>
+  beginMarkup: (tool: AnnotateMarkupTool) => void
+  clearMarkup: () => void
   endCapture: () => void
+  endMarkup: () => void
+  getMarkup: () => AnnotateMarkupStroke[]
   getMarkerNumbers: () => number[]
   getOutlineColor: () => string
   hideDraft: () => void
@@ -51,6 +72,7 @@ export interface AnnotateInPage {
   showDraft: (rect: AnnotatePageRect, number: number) => void
   showPins: (pins: AnnotatePinChrome[]) => void
   teardown: () => void
+  undoMarkup: () => void
   wait: () => Promise<AnnotatePageEvent>
 }
 
@@ -100,6 +122,10 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   let draftBox: HTMLElement | null = null
   let marquee: HTMLElement | null = null
   let pinsLayer: HTMLElement | null = null
+  let markupLayer: SVGSVGElement | null = null
+  let markupTool: AnnotateMarkupTool | null = null
+  let marking: { node: SVGGElement; points: AnnotateMarkupPoint[]; tool: AnnotateMarkupTool } | null = null
+  const markupStrokes: { node: SVGGElement; points: AnnotateMarkupPoint[]; tool: AnnotateMarkupTool }[] = []
   let waiting: ((event: AnnotatePageEvent) => void) | null = null
   const queued: AnnotatePageEvent[] = []
   let drag: { x: number; y: number } | null = null
@@ -393,6 +419,9 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   }
 
   const relocate = () => {
+    // Strokes are stored in page coordinates, so the fixed layer rides the scroll.
+    paintMarkupLayer()
+
     for (let i = 0; i < livePins.length; i++) {
       const pin = livePins[i]
 
@@ -481,6 +510,148 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     return mark
   }
 
+  const SVG_NS = 'http://www.w3.org/2000/svg'
+
+  const svgNode = (name: string): SVGElement => doc.createElementNS(SVG_NS, name) as SVGElement
+
+  /** Client point → page point, so a stroke stays on its target when the page scrolls. */
+  const pagePoint = (clientX: number, clientY: number): AnnotateMarkupPoint => {
+    const offset = pageOffset()
+
+    return { x: clientX + offset.x, y: clientY + offset.y }
+  }
+
+  const strokePaint = { fill: 'none', stroke: blue, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '3' }
+
+  /** The markup layer covers the viewport; its children are page-positioned. */
+  const paintMarkupLayer = () => {
+    if (!markupLayer) {
+      return
+    }
+
+    const offset = pageOffset()
+
+    style(markupLayer as unknown as HTMLElement, {
+      height: '100%',
+      left: '0',
+      overflow: 'visible',
+      'pointer-events': 'none',
+      position: 'fixed',
+      top: '0',
+      transform: 'translate(' + -offset.x + 'px,' + -offset.y + 'px)',
+      width: '100%'
+    })
+  }
+
+  /** Repaint one stroke from its points: the shape follows the pointer. */
+  const paintStroke = (stroke: { node: SVGGElement; points: AnnotateMarkupPoint[]; tool: AnnotateMarkupTool }) => {
+    const start = stroke.points[0]
+
+    stroke.node.replaceChildren()
+
+    if (!start) {
+      return
+    }
+
+    const add = (name: string, attrs: Record<string, string>, paint: Record<string, string> = strokePaint) => {
+      const node = svgNode(name)
+
+      for (const key of Object.keys(attrs)) {
+        node.setAttribute(key, attrs[key])
+      }
+
+      for (const key of Object.keys(paint)) {
+        node.setAttribute(key, paint[key])
+      }
+
+      stroke.node.appendChild(node)
+    }
+
+    if (stroke.tool === 'draw') {
+      add('polyline', { points: stroke.points.map(point => point.x + ',' + point.y).join(' ') })
+
+      return
+    }
+
+    const end = stroke.points[stroke.points.length - 1]
+
+    if (!end) {
+      return
+    }
+
+    if (stroke.tool === 'rect') {
+      add('rect', {
+        height: String(Math.abs(end.y - start.y)),
+        width: String(Math.abs(end.x - start.x)),
+        x: String(Math.min(start.x, end.x)),
+        y: String(Math.min(start.y, end.y))
+      })
+
+      return
+    }
+
+    if (stroke.tool === 'ellipse') {
+      add('ellipse', {
+        cx: String((start.x + end.x) / 2),
+        cy: String((start.y + end.y) / 2),
+        rx: String(Math.abs(end.x - start.x) / 2),
+        ry: String(Math.abs(end.y - start.y) / 2)
+      })
+
+      return
+    }
+
+    add('line', { x1: String(start.x), x2: String(end.x), y1: String(start.y), y2: String(end.y) })
+
+    const angle = Math.atan2(end.y - start.y, end.x - start.x)
+    const head = 14
+
+    const wing = (spread: number) => ({
+      x: String(end.x - head * Math.cos(angle - spread)),
+      y: String(end.y - head * Math.sin(angle - spread))
+    })
+
+    const left = wing(0.42)
+    const right = wing(-0.42)
+
+    add(
+      'polygon',
+      { points: end.x + ',' + end.y + ' ' + left.x + ',' + left.y + ' ' + right.x + ',' + right.y },
+      { fill: blue, stroke: blue, 'stroke-linejoin': 'round', 'stroke-width': '2' }
+    )
+  }
+
+  const beginMarkup = (tool: AnnotateMarkupTool) => {
+    ensure()
+    markupTool = tool
+    drag = null
+
+    if (hoverBox) {
+      style(hoverBox, { display: 'none' })
+    }
+
+    if (marquee) {
+      style(marquee, { display: 'none' })
+    }
+  }
+
+  const endMarkup = () => {
+    markupTool = null
+    marking = null
+  }
+
+  const undoMarkup = () => {
+    const last = markupStrokes.pop()
+
+    last?.node.remove()
+  }
+
+  const clearMarkup = () => {
+    markupStrokes.length = 0
+    marking = null
+    markupLayer?.replaceChildren()
+  }
+
   const ensure = () => {
     if (host && shadow && hoverBox && draftBox && marquee && pinsLayer) {
       return
@@ -542,11 +713,31 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     shadow.appendChild(draftBox)
     shadow.appendChild(marquee)
     shadow.appendChild(pinsLayer)
+
+    // Markup sits in its own layer ABOVE the page and above the pins, and it is
+    // deliberately NOT hidden by beginCapture: a circle drawn around the target
+    // is the point of the screenshot.
+    markupLayer = svgNode('svg') as SVGSVGElement
+    markupLayer.setAttribute('data-annotate-markup', 'true')
+    shadow.appendChild(markupLayer)
+    paintMarkupLayer()
     doc.documentElement.appendChild(host)
   }
 
   const onMove = (event: MouseEvent) => {
     if (!hoverBox) {
+      return
+    }
+
+    if (marking) {
+      if (marking.tool === 'draw') {
+        marking.points.push(pagePoint(event.clientX, event.clientY))
+      } else {
+        marking.points[1] = pagePoint(event.clientX, event.clientY)
+      }
+
+      paintStroke(marking)
+
       return
     }
 
@@ -579,6 +770,21 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       return
     }
 
+    // A tool is armed: this gesture draws, it does not pick or box.
+    if (markupTool && markupLayer) {
+      event.preventDefault()
+      event.stopPropagation()
+
+      const node = svgNode('g') as SVGGElement
+
+      node.setAttribute('data-annotate-stroke', markupTool)
+      markupLayer.appendChild(node)
+      marking = { node, points: [pagePoint(event.clientX, event.clientY)], tool: markupTool }
+      paintStroke(marking)
+
+      return
+    }
+
     event.preventDefault()
     event.stopPropagation()
     drag = { x: event.clientX, y: event.clientY }
@@ -586,6 +792,32 @@ export function annotateInPage(doc: Document): AnnotateInPage {
   }
 
   const onUp = (event: MouseEvent) => {
+    if (marking) {
+      event.preventDefault()
+      event.stopPropagation()
+
+      const stroke = marking
+      const [start, end] = [stroke.points[0], stroke.points[stroke.points.length - 1]]
+
+      const drawn =
+        stroke.tool === 'draw'
+          ? stroke.points.length > 2
+          : Boolean(start && end && Math.abs(end.x - start.x) + Math.abs(end.y - start.y) > 12)
+
+      marking = null
+
+      // A click with a tool armed is a mis-click, not a one-pixel squiggle.
+      if (!drawn) {
+        stroke.node.remove()
+
+        return
+      }
+
+      markupStrokes.push(stroke)
+
+      return
+    }
+
     if (!drag) {
       return
     }
@@ -840,6 +1072,10 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     draftBox = null
     marquee = null
     pinsLayer = null
+    markupLayer = null
+    markupTool = null
+    marking = null
+    markupStrokes.length = 0
     drag = null
     liveDraft = null
     livePins = []
@@ -849,7 +1085,15 @@ export function annotateInPage(doc: Document): AnnotateInPage {
 
   return {
     beginCapture,
+    beginMarkup,
+    clearMarkup,
     endCapture,
+    endMarkup,
+    getMarkup: () =>
+      markupStrokes.map(stroke => ({
+        points: stroke.points.map(point => ({ x: point.x, y: point.y })),
+        tool: stroke.tool
+      })),
     getMarkerNumbers: () => {
       if (!shadow) {
         return []
@@ -875,6 +1119,7 @@ export function annotateInPage(doc: Document): AnnotateInPage {
     showDraft,
     showPins,
     teardown,
+    undoMarkup,
     wait: () => {
       if (queued.length) {
         return Promise.resolve(queued.shift() as AnnotatePageEvent)

@@ -30,6 +30,7 @@ import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } f
 import { markKeybindHandled } from '@/lib/keybinds/handled-keys'
 import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
+import { minimizeBrowserFloatFrom, toggleBrowserFloat, toggleBrowserOrDockFloat } from '@/store/browser-float'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import { recordAction, recordDislike } from '@/store/desktop-metrics'
@@ -52,7 +53,6 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -358,7 +358,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'view.toggleSimpleMode': toggleSimpleMode,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
-    'view.showBrowser': toggleBrowserTab,
+    'view.showBrowser': toggleBrowserOrDockFloat,
+    'view.floatBrowser': toggleBrowserFloat,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => toggleTerminalPane(),
     // Create first so the pane's open-effect ensure sees a non-empty set and
@@ -545,6 +546,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // listeners are on `window`, so stopPropagation in the bar can't
       // suppress this one — the dispatcher has to yield explicitly.
       if ($findInPage.get().active && findBarClaimsCombo(combo)) {
+        return
+      }
+
+      // Escape inside the floating Browser minimises it to its pill. Like the
+      // find bar above, the float yields explicitly: Escape is also
+      // composer.cancel, which would abort a live turn.
+      if (combo === 'escape' && minimizeBrowserFloatFrom(event.target)) {
+        event.preventDefault()
+
         return
       }
 

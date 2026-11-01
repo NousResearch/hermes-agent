@@ -104,6 +104,7 @@ export const arChrome = {
       'view.toggleReview': 'تبديل لوحة المراجعة',
       'view.showFiles': 'إظهار متصفح الملفات',
       'view.showBrowser': 'تبديل المتصفح',
+      'view.floatBrowser': 'تعويم المتصفح',
       'view.showTerminal': 'إظهار الطرفية',
       'view.closeTab': 'إغلاق علامة التبويب',
       'view.reopenTab': 'إعادة فتح علامة التبويب المغلقة',

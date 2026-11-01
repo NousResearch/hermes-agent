@@ -1,0 +1,155 @@
+"""Tests for CLI /copy command."""
+
+from unittest.mock import MagicMock, patch
+
+from cli import HermesCLI
+
+
+def _make_cli() -> HermesCLI:
+    cli_obj = HermesCLI.__new__(HermesCLI)
+    cli_obj.config = {}
+    cli_obj.console = MagicMock()
+    cli_obj.agent = None
+    cli_obj.conversation_history = []
+    cli_obj.session_id = "sess-copy-test"
+    cli_obj._pending_input = MagicMock()
+    cli_obj._app = None
+    return cli_obj
+
+
+def test_copy_copies_latest_assistant_message():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "latest"},
+    ]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+        result = cli_obj.process_command("/copy")
+
+    assert result is True
+    mock_copy.assert_called_once_with("latest")
+
+
+def test_copy_with_index_uses_requested_assistant_message():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "assistant", "content": "one"},
+        {"role": "assistant", "content": "two"},
+    ]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+        cli_obj.process_command("/copy 1")
+
+    mock_copy.assert_called_once_with("one")
+
+
+def test_copy_strips_reasoning_blocks_before_copy():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {
+            "role": "assistant",
+            "content": "<REASONING_SCRATCHPAD>internal</REASONING_SCRATCHPAD>\nVisible answer",
+        }
+    ]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+        cli_obj.process_command("/copy")
+
+    mock_copy.assert_called_once_with("Visible answer")
+
+
+
+
+def test_copy_prefers_osc52_in_ssh_sessions():
+    """Over SSH, native tools write the REMOTE clipboard — OSC 52 reaches
+    the local terminal instead (#31528)."""
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "remote answer"}]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=True), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy")
+
+    mock_osc52.assert_called_once_with("remote answer")
+    mock_native.assert_not_called()
+
+
+def test_copy_native_first_when_local():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": "local answer"}]
+
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy")
+
+    mock_native.assert_called_once_with("local answer")
+    mock_osc52.assert_not_called()
+
+
+def _make_cli_with_code_block(code: str, language: str = "python") -> HermesCLI:
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [{"role": "assistant", "content": f"```{language}\n{code}\n```"}]
+    return cli_obj
+
+
+def test_copy_code_uses_native_clipboard_locally():
+    cli_obj = _make_cli_with_code_block("x = 1")
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native, \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy-code 1")
+
+    mock_native.assert_called_once_with("x = 1")
+    mock_osc52.assert_not_called()
+
+
+def test_copy_code_uses_osc52_over_ssh():
+    cli_obj = _make_cli_with_code_block("x = 1")
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=True), \
+         patch("hermes_cli.clipboard.write_clipboard_text") as mock_native, \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/cc 1")
+
+    mock_osc52.assert_called_once_with("x = 1")
+    mock_native.assert_not_called()
+
+
+def test_copy_code_falls_back_to_osc52_when_native_copy_fails():
+    cli_obj = _make_cli_with_code_block("x = 1")
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=False), \
+         patch.object(cli_obj, "_write_osc52_clipboard") as mock_osc52:
+        cli_obj.process_command("/copy-code")
+
+    mock_osc52.assert_called_once_with("x = 1")
+
+
+def test_copy_code_skips_unclosed_fences_and_searches_backward():
+    cli_obj = _make_cli()
+    cli_obj.conversation_history = [
+        {"role": "assistant", "content": "```python\nearlier = True\n```"},
+        {"role": "assistant", "content": "```python\npartial = True"},
+    ]
+
+    with patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False), \
+         patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_native:
+        cli_obj.process_command("/copy-code 1")
+
+    mock_native.assert_called_once_with("earlier = True")
+
+
+def test_copy_code_rejects_non_integer_block_number():
+    cli_obj = _make_cli_with_code_block("x = 1")
+
+    with patch("cli._cprint") as mock_print:
+        cli_obj.process_command("/copy-code 2abc")
+
+    assert any("Usage: /copy-code" in str(call) for call in mock_print.call_args_list)
+

@@ -38,6 +38,15 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
     assert below.amount_usd < above.amount_usd
 
 
+def test_anthropic_sonnet_55_official_direct_api_pricing():
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    result = estimate_usage_cost("claude-sonnet-5-5", usage, provider="anthropic")
+
+    assert result.amount_usd == Decimal("12.00")
+    assert result.status == "estimated"
+    assert result.pricing_version == "anthropic-pricing-2026-10-28"
+
+
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
     "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},

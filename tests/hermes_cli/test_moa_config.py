@@ -43,6 +43,17 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
     assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
+    assert [
+        (slot["provider"], slot["model"]) for slot in DEFAULT_MOA_REFERENCE_MODELS
+    ] == [
+        ("openrouter", "deepseek/deepseek-v4-pro"),
+        ("openrouter", "openai/gpt-5.5"),
+    ]
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    preset = DEFAULT_CONFIG["moa"]["presets"][DEFAULT_MOA_PRESET_NAME]
+    assert preset["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+    assert preset["aggregator"] == DEFAULT_MOA_AGGREGATOR
 
 
 
@@ -170,12 +181,12 @@ def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(
     moa_cmd._print_config({"model": {"provider": "openai-codex"}})
 
     out = capsys.readouterr().out
-    # Default preset's aggregator is on openrouter → the notice names both providers.
+    # Default preset's aggregator is Anthropic → the notice names both providers.
     notice = next(line for line in out.splitlines() if "Aggregator is on" in line)
-    assert "openrouter" in notice and "openai-codex" in notice
+    assert "anthropic" in notice and "openai-codex" in notice
 
 
-@pytest.mark.parametrize("cfg", [{"model": {"provider": "openrouter"}}, {}])
+@pytest.mark.parametrize("cfg", [{"model": {"provider": "anthropic"}}, {}])
 def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys):
     from hermes_cli import moa_cmd
 
@@ -186,6 +197,52 @@ def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys)
 
 
 # ── Per-slot max_tokens ────────────────────────────────────────────────────
+
+
+def test_aggregator_max_tokens_round_trips_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"presets": {"p": _valid_preset_payload()}}
+    payload["presets"]["p"]["aggregator"]["max_tokens"] = 2000
+    assert validate_moa_payload(payload) == []
+    normalized = normalize_moa_config(payload)
+    assert normalized["presets"]["p"]["aggregator"]["max_tokens"] == 2000
+    assert normalized["aggregator"]["max_tokens"] == 2000
+
+    for invalid in (0, -1, 1.5, True, "2000"):
+        bad = {"presets": {"p": _valid_preset_payload()}}
+        bad["presets"]["p"]["aggregator"]["max_tokens"] = invalid
+        assert any("max_tokens" in issue for issue in validate_moa_payload(bad))
+
+
+def test_reference_max_tokens_round_trips_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"presets": {"p": _valid_preset_payload()}}
+    payload["presets"]["p"]["reference_max_tokens"] = 512
+    assert validate_moa_payload(payload) == []
+    normalized = normalize_moa_config(payload)
+    assert normalized["presets"]["p"]["reference_max_tokens"] == 512
+    assert normalized["reference_max_tokens"] == 512
+
+    for invalid in (0, -1, 1.5, True, "512"):
+        bad = {"presets": {"p": _valid_preset_payload()}}
+        bad["presets"]["p"]["reference_max_tokens"] = invalid
+        assert any("reference_max_tokens" in issue for issue in validate_moa_payload(bad))
+
+
+def test_daily_moa_budget_normalizes_and_validates():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"daily_budget_usd": 2.0, "presets": {"p": _valid_preset_payload()}}
+    assert validate_moa_payload(payload) == []
+    assert normalize_moa_config(payload)["daily_budget_usd"] == 2.0
+    assert normalize_moa_config({})["daily_budget_usd"] == 0.0
+
+    for invalid in (-1, float("inf"), float("nan"), True, "NaN"):
+        bad = {"daily_budget_usd": invalid, "presets": {"p": _valid_preset_payload()}}
+        assert any("daily_budget_usd" in issue for issue in validate_moa_payload(bad))
+
 
 
 

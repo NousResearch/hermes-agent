@@ -550,7 +550,10 @@ auxiliary:
             "agent.auxiliary_client.resolve_provider_client",
             lambda provider, model, **_kwargs: (fallback_client, model),
         )
-        monkeypatch.setattr("agent.auxiliary_client._transient_retry_count", lambda: 0)
+        monkeypatch.setattr(
+            "agent.auxiliary_routing_policy.get_transient_retry_count",
+            lambda *_args: 0,
+        )
 
         result = make_plugin_llm_for_test(
             plugin_id="my-plugin", policy=_policy()

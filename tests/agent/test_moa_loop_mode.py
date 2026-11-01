@@ -914,9 +914,58 @@ def test_prepared_aggregator_preserves_reasoning_config(monkeypatch):
     assert captured["reasoning_config"] == expected_reasoning
 
 
+def test_prepared_aggregator_slot_cap_overrides_profile_max_tokens(monkeypatch):
+    from agent import moa_loop
+
+    captured = {}
+
+    def fake_call_llm(**kwargs):
+        captured.update(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(moa_loop, "_slot_runtime", lambda slot: {"provider": slot["provider"], "model": slot["model"]})
+
+    facade = moa_loop.MoAChatCompletions("default")
+    facade._call_prepared_aggregator(
+        {
+            "messages": [{"role": "user", "content": "question"}],
+            "aggregator": {"provider": "anthropic", "model": "claude-sonnet-5-5", "max_tokens": 2000},
+            "aggregator_temperature": None,
+        },
+        {"max_tokens": 32000},
+    )
+
+    assert captured["provider"] == "anthropic"
+    assert captured["model"] == "claude-sonnet-5-5"
+    assert captured["max_tokens"] == 2000
 
 
 
+
+
+
+
+
+def test_aggregator_stream_retains_upstream_generation_id(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from agent import moa_loop
+
+    facade = moa_loop.MoAChatCompletions("default")
+    slot = {"provider": "anthropic", "model": "claude-sonnet-5-5"}
+    chunks = [SimpleNamespace(id="msg_sonnet_55_generation")]
+    with caplog.at_level(logging.INFO, logger="agent.moa_loop"):
+        consumed = list(facade._track_aggregator_stream(iter(chunks), slot))
+
+    assert consumed == chunks
+    assert facade.last_aggregator_generation_id == "msg_sonnet_55_generation"
+    assert any(
+        "MoA aggregator succeeded provider=anthropic model=claude-sonnet-5-5 generation_id=msg_sonnet_55_generation"
+        in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(monkeypatch):
@@ -957,12 +1006,14 @@ def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(m
             {"provider": "openrouter", "model": "good-model"},
             {"provider": "openrouter", "model": "bad-model"},
         ],
-        aggregator={"provider": "openrouter", "model": "aggregator"},
+        aggregator={"provider": "openrouter", "model": "aggregator", "max_tokens": 1536},
         reference_timeout=17.5,
         degraded_reference_policy="loud",
     )
 
     assert fanout_kwargs["reference_timeout"] == 17.5
+    assert aggregator_calls[0]["max_tokens"] == 1536
+
     private_prompt = aggregator_calls[0]["messages"][0]["content"]
     assert "useful advice" in private_prompt
     assert "super-secret" not in private_prompt

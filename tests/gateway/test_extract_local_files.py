@@ -14,6 +14,11 @@ import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
 
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    _is_sensitive_bare_local_file_path,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,6 +90,22 @@ class TestBasicDetection:
     def test_path_at_line_start(self):
         paths, _ = _extract("/var/data/image.png")
         assert paths == ["/var/data/image.png"]
+
+    def test_spreadsheet_and_data_extensions(self):
+        """Spreadsheets and non-sensitive structured data ship as file uploads."""
+        for ext in (".xlsx", ".xls", ".csv", ".tsv", ".json", ".xml"):
+            text = f"Data at /tmp/data{ext} ready"
+            paths, _ = _extract(text)
+            assert len(paths) == 1, f"Failed for {ext}"
+            assert paths[0] == f"/tmp/data{ext}"
+
+    def test_bare_yaml_paths_are_not_auto_attached(self):
+        """YAML is usually config; require explicit MEDIA: for upload."""
+        for ext in (".yaml", ".yml"):
+            text = f"Data at /tmp/data{ext} ready"
+            paths, cleaned = _extract(text)
+            assert paths == []
+            assert cleaned == text
 
 
 # ---------------------------------------------------------------------------
@@ -222,3 +243,146 @@ class TestEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestExplicitMediaTagStillWorks:
+
+    def test_explicit_media_tag_can_attach_yaml(self):
+        media, cleaned = BasePlatformAdapter.extract_media("Ship MEDIA:/tmp/generated.yaml now")
+        assert media == [("/tmp/generated.yaml", False)]
+        assert cleaned == "Ship  now"
+
+
+class TestSensitiveGuardDirect:
+    """Exercise ``_is_sensitive_bare_local_file_path`` directly.
+
+    The extraction suite above can only cover forms that survive the extension
+    regex. These cases pin the guard's own contract, including the
+    component-bounded word matching that replaced a raw substring test.
+    """
+
+    @pytest.mark.parametrize("path", [
+        "/Users/alice/.ssh/id_rsa",
+        "/Users/alice/.ssh/id_rsa.bak",
+        "/Users/alice/.ssh/id_ed25519",
+        "/Users/alice/certs/server.pem",
+        "/Users/alice/certs/server.key",
+        "/Users/alice/.hermes/config.yaml",
+        "/Users/alice/.hermes/plots/chart.png",
+        "/Users/alice/project/.env.local",
+        "/Users/alice/data/api-token.json",
+        "/Users/alice/data/service-secret.json",
+        "/Users/alice/data/passwords.txt",
+        "/Users/alice/data/credentials.json",
+        # Archive containers are opaque and can hold anything, so the word
+        # heuristic must apply to them exactly as it does to .json/.txt.
+        # These previously bypassed it because archive extensions were not
+        # in the word-scoped set, and every one of them is in
+        # BARE_LOCAL_FILE_EXTS -- i.e. auto-attachable.
+        "/Users/alice/out/secrets.zip",
+        "/Users/alice/out/credentials.tar",
+        "/Users/alice/out/passwords.gz",
+        "/Users/alice/out/secrets.7z",
+        "/Users/alice/out/api-tokens.zip",
+        "/Users/alice/out/token.tgz",
+    ])
+    def test_guard_blocks_sensitive_paths(self, path):
+        assert _is_sensitive_bare_local_file_path(path) is True
+
+    @pytest.mark.parametrize("path", [
+        # Component-bounded matching: these contain a sensitive WORD as a
+        # substring but not as a whole component.
+        "/Users/alice/out/tokenization.json",
+        "/Users/alice/out/tokenizer.json",
+        # Extension-scoped matching: the word IS a component, but the
+        # extension is a binary render/artifact format that cannot be a
+        # credential store.
+        "/Users/alice/plots/token_counts.png",
+        "/Users/alice/docs/secret-santa.pdf",
+        "/Users/alice/docs/password-policy-guide.pdf",
+        "/Users/alice/clips/tokens-per-second.mp4",
+        # Plain safe artifacts.
+        "/Users/alice/report.pdf",
+        "/Users/alice/chart.png",
+    ])
+    def test_guard_allows_legitimate_artifacts(self, path):
+        assert _is_sensitive_bare_local_file_path(path) is False
+
+    def test_sensitive_json_candidate_is_rejected_without_a_filesystem_probe(self):
+        """A matched sensitive candidate must never hit ``os.path.isfile()``."""
+        text = "See /Users/alice/data/api-token.json for details"
+
+        def exploding_isfile(p):
+            raise AssertionError(f"isfile() probed a sensitive candidate: {p}")
+
+        def fake_expanduser(p):
+            return "/home/user" + p[1:] if p.startswith("~/") else p
+
+        with patch("os.path.isfile", side_effect=exploding_isfile), \
+                patch("os.path.expanduser", side_effect=fake_expanduser):
+            paths, cleaned = BasePlatformAdapter.extract_local_files(text)
+
+        assert paths == []
+        assert cleaned == text
+
+    def test_safe_artifact_still_attaches_next_to_sensitive_path(self):
+        text = "Safe /tmp/report.pdf but do not send /Users/alice/.hermes/config.yaml"
+        paths, cleaned = _extract(text, existing_files={
+            "/tmp/report.pdf",
+            "/Users/alice/.hermes/config.yaml",
+        })
+        assert paths == ["/tmp/report.pdf"]
+        assert "/tmp/report.pdf" not in cleaned
+        assert "/Users/alice/.hermes/config.yaml" in cleaned
+
+
+class TestSensitivePathRejection:
+
+    @pytest.mark.parametrize("path", [
+        "/Users/alice/.hermes/config.yaml",
+        "/Users/alice/.hermes/profiles/aegis/config.yaml",
+        "/Users/alice/.hermes/.env",
+        "/Users/alice/.hermes/auth.json",
+        "/Users/alice/project/config.yaml",
+        "/Users/alice/project/config.yml",
+        "/Users/alice/project/.env",
+        "/Users/alice/project/.env.local",
+        # NOTE: id_rsa / id_ed25519 / *.pem are NOT extracted at all -- they
+        # carry no BARE_LOCAL_FILE_EXTS extension, so extract_local_files()
+        # never produces a candidate for the guard to reject. They are covered
+        # directly against the guard in TestSensitiveGuardDirect below; keeping
+        # them here would be a vacuous pass.
+        "/Users/alice/certs/server.key",
+        "/Users/alice/data/api-token.json",
+        "/Users/alice/data/passwords.txt",
+        "/Users/alice/data/service-secret.json",
+        "/Users/alice/data/credentials.json",
+    ])
+    def test_sensitive_bare_paths_are_not_attached_or_stripped(self, path):
+        text = f"The file is {path}"
+        paths, cleaned = _extract(text)
+        assert paths == []
+        assert cleaned == text
+
+    @pytest.mark.parametrize("path", [
+        "/Users/alice/.ssh/id_rsa",
+        "/Users/alice/.ssh/id_ed25519",
+        "/Users/alice/certs/server.pem",
+    ])
+    def test_extensionless_and_pem_paths_produce_no_candidate(self, path):
+        """Guard-independent proof: these forms never reach the guard.
+
+        ``extract_local_files()`` only matches BARE_LOCAL_FILE_EXTS, which has
+        no ``.pem`` and no extensionless form. Asserting "not attached" for
+        them in the guard suite above would pass even with the guard deleted,
+        so the real contract -- no candidate is ever produced -- is asserted
+        here instead.
+        """
+        text = f"The file is {path}"
+        with patch(
+            "gateway.platforms.base._is_sensitive_bare_local_file_path",
+            side_effect=AssertionError("guard must not be consulted"),
+        ):
+            paths, cleaned = _extract(text)
+        assert paths == []
+        assert cleaned == text

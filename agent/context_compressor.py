@@ -5524,7 +5524,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
-        feasibility_skip = not (force or prepared) and (
+        # Abort mode must attempt a summary instead of committing a deterministic fallback.
+        feasibility_skip = not (force or prepared or self.abort_on_summary_failure) and (
             self._fallback_streak_skip(telemetry)
             or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
         )

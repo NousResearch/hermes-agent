@@ -41,15 +41,15 @@ class TestUpstageProfile:
 class TestUpstageReasoning:
     """``build_api_kwargs_extras`` wires Solar's top-level ``reasoning_effort``.
 
-    Solar Pro accepts ``reasoning_effort`` (minimal|low|medium|high, default
-    minimal=off) and never requires echoing ``reasoning_content`` back, so only
+    Solar Pro accepts ``reasoning_effort`` (none|minimal = off, the server
+    default; low|medium|high|xhigh|max = on) and never requires echoing ``reasoning_content`` back, so only
     the request field is emitted — always top-level, never in extra_body.
     """
 
-    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
     def test_pro_explicit_effort_passes_through(self, upstage_profile, effort):
         extra_body, top_level = upstage_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": effort}, model="solar-pro3"
+            reasoning_config={"enabled": True, "effort": effort}, model="solar-pro4"
         )
         assert extra_body == {}
         assert top_level == {"reasoning_effort": effort}
@@ -60,19 +60,26 @@ class TestUpstageReasoning:
         # downgrade to the medium default.
         _, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "hyperthink"},
-            model="solar-pro3",
+            model="solar-pro4",
         )
         assert top_level == {"reasoning_effort": "high"}
+
+    def test_ultra_clamps_to_solar_max(self, upstage_profile):
+        # Hermes-internal "ultra" has no wire; the nearest weaker Solar level is now "max".
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "ultra"}, model="solar-pro4"
+        )
+        assert top_level == {"reasoning_effort": "max"}
 
     def test_disabled_omits_field(self, upstage_profile):
         # `/reasoning none` → enabled False → explicitly off.
         _, top_level = upstage_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False, "effort": "high"}, model="solar-pro3"
+            reasoning_config={"enabled": False, "effort": "high"}, model="solar-pro4"
         )
         assert top_level == {}
 
     @pytest.mark.parametrize(
-        "model", ["solar-pro3", "solar-pro", "solar-open2", "solar-mini4", "solar-mini4-preview"]
+        "model", ["solar-pro4", "solar-pro3", "solar-pro", "solar-open2", "solar-mini4", "solar-mini4-preview"]
     )
     def test_no_config_defaults_reasoning_on(self, upstage_profile, model):
         # Unset reasoning_config → default ON at medium (matches the /reasoning
@@ -95,6 +102,6 @@ class TestUpstageReasoning:
 
     def test_none_model_defaults_to_reasoning(self, upstage_profile):
         # No model in context → treated as reasoning-capable, consistent with
-        # the provider default (fallback_models[0] == "solar-pro3").
+        # the provider default (fallback_models[0] == "solar-pro4").
         _, top_level = upstage_profile.build_api_kwargs_extras(model=None)
         assert top_level == {"reasoning_effort": "medium"}

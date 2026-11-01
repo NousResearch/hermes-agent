@@ -4,6 +4,7 @@ import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
+import { resolveSpellCheckerLanguages, SPELLCHECK_LANGUAGES_ENV } from './spellcheck-languages'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
   async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
@@ -17937,10 +17938,11 @@ app.whenReady().then(() => {
   })
 })
 
-// Seed Chromium's spellchecker with the system locale (falling back to en-US).
-// On macOS Electron uses the native spellchecker which ignores this list, but
-// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
-// won't enable any without an explicit language.
+// Seed Chromium's spellchecker with every language the user writes in (the OS
+// preferred languages plus the app locale, or HERMES_DESKTOP_SPELLCHECK_LANGUAGES),
+// falling back to en-US. On macOS Electron uses the native spellchecker which
+// ignores this list, but on Windows/Linux Chromium downloads Hunspell
+// dictionaries on demand and won't enable any without an explicit language.
 function configureSpellChecker() {
   try {
     const defaultSession = session.defaultSession
@@ -17949,12 +17951,14 @@ function configureSpellChecker() {
       return
     }
 
-    const available = defaultSession.availableSpellCheckerLanguages || []
-    const locale = (app.getLocale && app.getLocale()) || 'en-US'
-    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
-    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
+    const languages = resolveSpellCheckerLanguages({
+      override: process.env[SPELLCHECK_LANGUAGES_ENV],
+      preferred: typeof app.getPreferredSystemLanguages === 'function' ? app.getPreferredSystemLanguages() : [],
+      locale: (app.getLocale && app.getLocale()) || 'en-US',
+      available: defaultSession.availableSpellCheckerLanguages || []
+    })
 
-    defaultSession.setSpellCheckerLanguages([chosen])
+    defaultSession.setSpellCheckerLanguages(languages)
   } catch (error) {
     rememberLog(`Spellchecker setup failed: ${error.message}`)
   }

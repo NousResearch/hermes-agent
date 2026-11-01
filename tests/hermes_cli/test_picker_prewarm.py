@@ -9,10 +9,32 @@ and it delegates to ``list_authenticated_providers`` to do the warming.
 
 from __future__ import annotations
 
+import builtins
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import hermes_cli.model_switch as ms
 from hermes_cli import model_switch_providers
+
+
+def test_sdk_import_precedes_classic_tui_prewarm(monkeypatch):
+    from hermes_cli import cli_tui_runtime_mixin
+
+    events = []
+    original_import = builtins.__import__
+
+    def record_import(name, *args, **kwargs):
+        if name == "openai":
+            events.append("sdk")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", record_import)
+    monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", lambda: events.append("picker"))
+    monkeypatch.setattr(cli_tui_runtime_mixin.threading, "Thread", lambda **kwargs: SimpleNamespace(
+        start=lambda: events.append("runtime")))
+    cli_tui_runtime_mixin.CLITuiRuntimeMixin._tui_startup_prewarm_and_warnings(
+        SimpleNamespace(config={}, _console_print=lambda *_: None), None)
+    assert events.index("sdk") < events.index("picker") < events.index("runtime")
 
 
 def _reset_guard():

@@ -1,0 +1,34 @@
+manifest_version: 1
+
+name: leash
+connector_slug: leash
+description: >-
+  Use connected email, files, calendars and contacts through configurable
+  protections, per-AI permissions, activity history and Undo for supported changes.
+source: https://lea.sh
+
+transport:
+  type: http
+  url: https://secure.lea.sh/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: leash
+
+suggest:
+  keywords:
+    - leash
+    - openleash
+  hosts:
+    - lea.sh
+    - openleash.com
+
+post_install: |
+  Sign in to Leash in the browser, then authorize a separate connection for Hermes.
+  If needed, run `hermes mcp login leash` and restart the session so tools load.
+  Connect the accounts you want to use at https://lea.sh/personal, then ask Hermes
+  to check the Leash connection without reading personal data.
+  Only activity routed through Leash is covered. Undo applies only to supported
+  reversible actions when enabled. Remove the connection in Your AIs to revoke it.
+  Support: max@openleash.com. Privacy: https://lea.sh/privacy.

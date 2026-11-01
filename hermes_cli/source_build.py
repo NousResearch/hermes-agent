@@ -49,6 +49,11 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+    # npm 11.x's published-package age gate rejects pinned 2024-era packages
+    # (e.g. undici@6.29.1 in the lockfile) when the repo .npmrc gates at 14 days
+    # and the caller's environment carries no override (e.g. a detached tmux
+    # shell). Force the gate off so `hermes --tui` builds in any shell.
+    env.setdefault("NPM_CONFIG_MIN_RELEASE_AGE", "0")
     return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
 
 

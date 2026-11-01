@@ -186,9 +186,45 @@ export function createDesktopProfilePreferences(
     }
   }
 
+  // Each connection's last-used profile, mirrored from the renderer so main can
+  // boot a remote primary on it before any window exists. Machine-local
+  // `profile` above is never a remote's memory.
+  function readConnectionProfiles(): Record<string, string> {
+    const value = read().connectionProfiles
+    const entries = value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []
+
+    return Object.fromEntries(
+      entries.filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string' && DESKTOP_PROFILE_NAME_RE.test(entry[1])
+      )
+    )
+  }
+
+  function connectionProfile(connectionId: null | string | undefined): null | string {
+    return connectionId ? (readConnectionProfiles()[connectionId] ?? null) : null
+  }
+
+  function rememberConnectionProfiles(value: unknown) {
+    const entries = value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []
+
+    const next = Object.fromEntries(
+      entries.filter(([id, profile]) => id.trim() && typeof profile === 'string' && DESKTOP_PROFILE_NAME_RE.test(profile))
+    )
+
+    if (JSON.stringify(next) !== JSON.stringify(readConnectionProfiles())) {
+      write({ ...read(true), connectionProfiles: next })
+    }
+  }
+
   function connectionRemoved(connectionId: string) {
     if (getDefault()?.connectionId === connectionId) {
       clearDefault()
+    }
+
+    const { [connectionId]: removed, ...rest } = readConnectionProfiles()
+
+    if (removed) {
+      write({ ...read(true), connectionProfiles: rest })
     }
   }
 
@@ -258,12 +294,14 @@ export function createDesktopProfilePreferences(
 
   return {
     afterProfileRequest,
+    connectionProfile,
     connectionRemoved,
     forgetMissingLocalProfiles,
     getDefault,
     profileChanged,
     readActive,
     remember,
+    rememberConnectionProfiles,
     setDefault
   }
 }

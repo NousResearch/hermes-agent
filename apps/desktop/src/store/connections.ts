@@ -78,7 +78,11 @@ let switchRevision = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
 
-$lastProfileByConnection.subscribe(value => persistStringRecord(LAST_PROFILE_STORAGE_KEY, value))
+$lastProfileByConnection.subscribe(value => {
+  persistStringRecord(LAST_PROFILE_STORAGE_KEY, value)
+  // Main boots the primary before this window exists, so it keeps a copy.
+  void window.hermesDesktop?.profile?.rememberConnections?.(value)?.catch(() => undefined)
+})
 
 const $activeConnectionProfile = computed(
   [$activeConnectionId, $activeGatewayProfile, $connection],

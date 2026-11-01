@@ -10526,7 +10526,7 @@ async function ensureBackend(
   profile,
   opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}
 ) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  let key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -10539,7 +10539,10 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
+    const followsPin = key === primaryProfileKey()
     const connection = await startHermes(key)
+    // A remote boot can re-pin to a profile that gateway serves while we waited.
+    key = followsPin ? primaryProfileKey() : key
     setWslBridgeProfileState(key, connection.mode !== 'remote')
 
     // A shared backend still owes the caller its profile scope, so renderer-side
@@ -11803,9 +11806,12 @@ async function startHermes(requestedProfile?: string) {
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. An explicit profile-scoped caller names both.
-  let { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
+  const launch = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
     : resolveLaunchProfile(readActiveDesktopProfile)
+
+  const activeProfile = launch.argvProfile
+  let primaryProfile = launch.routingProfile
 
   // Keep routing and native paths on this attempt's effective launch profile.
   primaryProfilePin.pin(primaryProfile)
@@ -11827,17 +11833,12 @@ async function startHermes(requestedProfile?: string) {
         advanceBootProgress,
         waitForRemote: waitForRemoteHermes,
         readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        connectionProfile: desktopProfilePreferences.connectionProfile,
+        // The machine-local preference stays: only this remote does not serve it.
         onProfileRestored: profile => {
+          rememberLog(`[profile] remote primary does not serve "${primaryProfile}"; booting it as "${profile}"`)
           primaryProfile = primaryProfilePin.pin(profile)
           setActiveGatewayProfile(profile)
-
-          if (readActiveDesktopProfile() === activeProfile) {
-            try {
-              writeActiveDesktopProfile(profile)
-            } catch (error) {
-              rememberLog(`[profile] could not remember restored profile: ${error}`)
-            }
-          }
         },
         updateBootProgress,
         logs: () => hermesLog.slice(-80),
@@ -15549,6 +15550,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
 ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
 ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
+ipcMain.handle('hermes:profile:connections:remember', async (_event, record) =>
+  desktopProfilePreferences.rememberConnectionProfiles(record)
+)
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
 // Desktop last used WITHOUT tearing down the backend or reloading the window.
@@ -17854,7 +17858,7 @@ app.whenReady().then(() => {
     hasRemoteOverride: profileHasRemoteOverride,
     launchProfile: parseLaunchProfile(process.argv),
     log: rememberLog,
-    profileExists: profile => directoryExists(path.join(HERMES_HOME, 'profiles', profile))
+    profileExists: profile => fs.statSync(path.join(HERMES_HOME, 'profiles', profile), { throwIfNoEntry: false })?.isDirectory() ?? false
   })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.

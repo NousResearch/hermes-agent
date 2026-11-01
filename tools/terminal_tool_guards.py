@@ -61,7 +61,7 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
 
 def _blocked_json(error: str, status: str) -> str:
     """The guard result envelope: exit_code 1 + *error* + *status*."""
-    return json.dumps({"output": "", "exit_code": 1, "error": error, "status": status}, ensure_ascii=False)
+    return json.dumps({"output": "", "exit_code": 1, "error": error, "status": status, "policy_blocked": True}, ensure_ascii=False)
 
 
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(

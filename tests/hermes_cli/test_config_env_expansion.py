@@ -40,6 +40,105 @@ class TestLoadConfigExpansion:
         assert config["plain"] == "no-substitution"
 
 
+class TestEnvRefDotenvFallback:
+    """#89199: plain CLI processes never call load_hermes_dotenv(), so ${env:VAR}
+    refs must resolve against ~/.hermes/.env directly instead of warning
+    "not set" for a var that is, in fact, set there."""
+
+    def test_load_config_resolves_env_ref_from_dotenv_without_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        from hermes_cli.config import invalidate_env_cache
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  bring:\n"
+            "    env:\n"
+            "      BRING_EMAIL: ${env:BRING_EMAIL}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "BRING_EMAIL=user@example.com\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("BRING_EMAIL", raising=False)
+        invalidate_env_cache()
+        # Patch the imported function's own globals. Other tests may reload
+        # hermes_cli.config, so string-target monkeypatches can hit a
+        # different module object than this collection-time import.
+        monkeypatch.setitem(
+            load_config.__globals__, "get_config_path", lambda: config_file
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            config = load_config()
+
+        assert config["mcp_servers"]["bring"]["env"]["BRING_EMAIL"] == (
+            "user@example.com"
+        )
+        assert not any(
+            "BRING_EMAIL is not set" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_env_ref_missing_everywhere_still_warns(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        from hermes_cli.config import invalidate_env_cache
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "model:\n  api_key: ${env:DEFINITELY_MISSING_89199}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("DEFINITELY_MISSING_89199", raising=False)
+        invalidate_env_cache()
+        monkeypatch.setitem(
+            load_config.__globals__, "get_config_path", lambda: config_file
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            config = load_config()
+
+        assert config["model"]["api_key"] == "${env:DEFINITELY_MISSING_89199}"
+        assert any(
+            "DEFINITELY_MISSING_89199 is not set" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_os_environ_wins_over_dotenv(self, tmp_path, monkeypatch):
+        from hermes_cli.config import invalidate_env_cache
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "model:\n  api_key: ${env:PRECEDENCE_89199}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "PRECEDENCE_89199=from-dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("PRECEDENCE_89199", "from-environ")
+        invalidate_env_cache()
+        monkeypatch.setitem(
+            load_config.__globals__, "get_config_path", lambda: config_file
+        )
+
+        config = load_config()
+
+        assert config["model"]["api_key"] == "from-environ"
+
+
 class TestLoadConfigCacheEnvStaleness:
     """The load_config() cache must not pin expansions made against a stale
     environment (#58514): a load before load_hermes_dotenv() runs, or an env

@@ -76,6 +76,34 @@ class TestSerializePayload:
         assert payload["tool_input"] is None
 
 
+    def test_assistant_text_reaches_extra(self):
+        """A policy gate must see the model's own message, not just tool args."""
+        token = shell_hooks._ASSISTANT_TEXT.set("🧠 SKILL pakai[deep-research]")
+        try:
+            payload = json.loads(shell_hooks._serialize_payload(
+                "pre_tool_call", {"tool_name": "terminal", "args": {"command": "ls"}},
+            ))
+        finally:
+            shell_hooks._ASSISTANT_TEXT.reset(token)
+        assert payload["extra"]["assistant_text"] == "🧠 SKILL pakai[deep-research]"
+
+
+    def test_assistant_text_absent_when_unset(self):
+        shell_hooks.set_assistant_text("")
+        payload = json.loads(shell_hooks._serialize_payload(
+            "pre_tool_call", {"tool_name": "terminal"},
+        ))
+        assert "assistant_text" not in payload["extra"]
+
+
+    def test_assistant_text_truncated_to_limit(self):
+        shell_hooks.set_assistant_text("x" * (shell_hooks._ASSISTANT_TEXT_LIMIT + 500))
+        try:
+            assert len(shell_hooks.current_assistant_text()) == shell_hooks._ASSISTANT_TEXT_LIMIT
+        finally:
+            shell_hooks.set_assistant_text("")
+
+
 # ── Matcher behaviour ─────────────────────────────────────────────────────
 
 

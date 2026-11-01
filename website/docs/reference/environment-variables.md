@@ -410,6 +410,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |
 | `SIGNAL_GROUP_ALLOWED_USERS` | Comma-separated group IDs, or `*` for all groups |
+| `SIGNAL_REQUIRE_MENTION` | Only answer Signal group messages that @mention the bot. Equivalent to `signal.require_mention` in `config.yaml`. |
+| `SIGNAL_OBSERVE_UNMENTIONED_GROUP_MESSAGES` | With `require_mention` on, keep unmentioned messages in allowed groups as context for the next mention instead of dropping them; needs `group_sessions_per_user: false`. Equivalent to `signal.observe_unmentioned_group_messages` in `config.yaml`. |
 | `SIGNAL_HOME_CHANNEL_NAME` | Display name for the Signal home channel |
 | `SIGNAL_IGNORE_STORIES` | Ignore Signal stories/status updates |
 | `SIGNAL_ALLOW_ALL_USERS` | Allow all Signal users without an allowlist |

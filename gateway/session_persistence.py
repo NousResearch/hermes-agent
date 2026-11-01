@@ -414,9 +414,8 @@ class SessionPersistenceMixin:
         return retired
 
     def _prune_stale_sessions_locked(self) -> None:
-        """Remove routing entries whose session has ended in state.db (startup, lock held). Stale ==
-        ``end_reason IS NOT NULL``; rows absent from the DB are kept; a ``None`` DB handle is a
-        no-op; DB errors are non-fatal."""
+        """Remove routing entries whose session has ended or is absent from state.db (startup,
+        lock held). A ``None`` DB handle is a no-op; DB errors are non-fatal."""
         if not self._entries:
             return
         stale_keys: list = []
@@ -429,7 +428,12 @@ class SessionPersistenceMixin:
                 if db is None:
                     continue
                 row = db.get_session(entry.session_id)
-                if row is None or row.get("end_reason") is None:
+                if row is None:
+                    # A hard-deleted session cannot be resumed. Keeping its route makes every
+                    # later mutation target an id that no longer exists.
+                    stale_keys.append(key)
+                    continue
+                if row.get("end_reason") is None:
                     continue
                 verdict = self._stale_entry_verdict(key, entry, row)
                 if verdict == "prune":

@@ -45,6 +45,21 @@ describe('requestPetUpdate', () => {
     })
   })
 
+  it('surfaces the terminal-only gate so the TUI can hide without a restart', async () => {
+    const request = vi.fn().mockResolvedValue({
+      enabled: true,
+      slug: 'boba',
+      terminalEnabled: false
+    })
+
+    const update = await requestPetUpdate(gateway(request), 'idle', false, () => true)
+
+    // The gate rides the cheap metadata probe (pet.info.meta), never pet.cells.
+    expect(update?.meta).toEqual({ enabled: true, slug: 'boba', terminalEnabled: false })
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith('pet.info.meta')
+  })
+
   it('silently drops cosmetic gateway failures', async () => {
     const request = vi.fn().mockRejectedValue(new Error('timeout: pet.info.meta'))
 

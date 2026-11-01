@@ -981,6 +981,11 @@ DEFAULT_CONFIG = {
             # column width. Half-block fallback clamps to a legibility floor.
             "scale": 0.33,
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
+            # Terminal-only switch: gate the pet on terminal surfaces (Ink TUI + legacy CLI
+            # pane, which render it as half-block pixels) without touching the desktop app.
+            # The desktop renders the same pet from native-resolution sprites via pet.info,
+            # so it stays visible whenever display.pet.enabled is true.
+            "terminal_enabled": True,
         },
     },
     "webapp": {"enabled": False, "host": "127.0.0.1", "port": 9120, "public_url": ""},  # gateway/webapp_listener.py

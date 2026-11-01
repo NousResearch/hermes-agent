@@ -3,6 +3,28 @@
   "name": "patch",
   "parameters": {
     "properties": {
+      "edits": {
+        "description": "Several edits to this ONE file in one call, applied in order, all-or-nothing. When used, omit old_string/new_string.",
+        "items": {
+          "properties": {
+            "new_string": {
+              "type": "string"
+            },
+            "old_string": {
+              "type": "string"
+            },
+            "replace_all": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
       "new_string": {
         "description": "Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
         "type": "string"
@@ -22,9 +44,7 @@
       }
     },
     "required": [
-      "path",
-      "old_string",
-      "new_string"
+      "path"
     ],
     "type": "object"
   }

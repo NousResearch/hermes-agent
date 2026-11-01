@@ -116,6 +116,10 @@ class FileOperations(ABC):
         """Replace text in a file using fuzzy matching."""
 
     @abstractmethod
+    def patch_multi(self, path: str, edits: list) -> PatchResult:
+        """Apply ordered replacements to one file, all-or-nothing."""
+
+    @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch."""
 
@@ -1626,6 +1630,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                       replace_all: bool = False) -> PatchResult:
         """Replace text in a file using fuzzy matching (``old_string`` must be
         unique unless ``replace_all``). Returns a PatchResult with diff + lint."""
+        return self._patch_replacements(path, [dict(old_string=old_string, new_string=new_string,
+                                                   replace_all=replace_all)])
+
+    def patch_multi(self, path: str, edits: list) -> PatchResult:
+        """Validate all edits, then match in memory before a single verified write."""
+        from tools.file_patch_edits import validate_patch_edits
+        try:
+            validate_patch_edits(edits)
+        except ValueError as exc:
+            return PatchResult(error=str(exc))
+        return self._patch_replacements(path, edits, multi=True)
+
+    def _patch_replacements(self, path: str, edits: list, multi: bool = False) -> PatchResult:
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1641,11 +1658,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
-        correction_notes = []
-        new_content, match_count, strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all, correction_notes=correction_notes)
-        if error or match_count == 0:
-            return self._no_match_result(path, content, old_string, new_string, match_count, error)
+        correction_notes, strategies = [], []
+        new_content = content
+        for i, edit in enumerate(edits, 1):
+            old_string, new_string = edit["old_string"], edit["new_string"]
+            changed, match_count, strategy, error = fuzzy_find_and_replace(
+                new_content, old_string, new_string, edit.get("replace_all", False), correction_notes=correction_notes)
+            if error or match_count == 0:
+                result = self._no_match_result(path, new_content, old_string, new_string, match_count, error)
+                # No already-applied shortcut for a batch: without the pre-batch file a re-send cannot be told
+                # from a batch with an edit still pending, and a false success is worse than a re-read.
+                if multi:
+                    return PatchResult(error=f"edit {i} of {len(edits)}: {result.error or error}")
+                return result
+            new_content = changed
+            strategies.append(strategy)
         # Models send bare-LF old/new strings; normalize the substituted region to
         # the file's ending so CRLF files stay consistent.
         file_ending = _detect_line_ending(content)
@@ -1661,7 +1688,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
             lint=write_result.lint,
-            note="\n".join(n for n in (*correction_notes, boundary_note([strategy])) if n) or None,
+            note="\n".join(n for n in (*correction_notes, boundary_note(strategies)) if n) or None,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics,
             _writes=[(path, hashlib.sha256(data).hexdigest(), write_result._content_sha256)])

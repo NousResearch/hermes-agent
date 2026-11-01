@@ -135,9 +135,9 @@ _TOOL_STUBS = {
     "search_files": ('pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, order: str = "discovery"',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
         '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}'),
-    "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
+    "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False, edits: list = None',
+        '"""Targeted find-and-replace (mode="replace", optional ordered atomic edits list) or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile, "edits": edits}'),
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
@@ -871,7 +871,7 @@ _TOOL_DOC_LINES = [
     ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
-    ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
+    ("patch", "  patch(path: str, old_string: str = None, new_string: str = None, replace_all: bool = False, edits: list = None) -> dict — ordered atomic edits to one file\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),

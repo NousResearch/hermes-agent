@@ -287,6 +287,7 @@ async def _start_gateway_start_control_socket(runner):
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
         from gateway.run_active_work_verb import active_work_verb
+        from gateway.run_restart_interrupt_verb import RESTART_INTERRUPT_VERB, restart_interrupt_verb
         from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
@@ -360,6 +361,8 @@ async def _start_gateway_start_control_socket(runner):
                            "purge-profile-identity": purge_profile_identity_verb(runner),
                            # `hermes gateway stop/restart` refuse while this names live work.
                            "active-work": active_work_verb(runner, _main_loop),
+                           # ...and, once the operator says interrupt it, restart without the after-turn wait.
+                           RESTART_INTERRUPT_VERB: restart_interrupt_verb(runner, _main_loop),
                            # A plugin installed/enabled by another process loads now and re-wires the
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})

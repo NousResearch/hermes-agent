@@ -24,6 +24,9 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _MODELS_DEV_DIRECT_HOSTS = {
     "openai": "openai.com", "xai": "x.ai", "anthropic": "anthropic.com", "google": "googleapis.com",
     "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
+    # OpenCode's gateways publish their own per-route rate cards on models.dev
+    # (``opencode-go`` and ``opencode``), so opencode.ai is their direct API.
+    "opencode-go": "opencode.ai", "opencode-zen": "opencode.ai",
 }
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.

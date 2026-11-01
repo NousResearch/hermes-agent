@@ -503,6 +503,10 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
                 f"skill_manage(action='write_file', name='{name}', file_path='references/example.md', "
                 "file_content='...')"}
     _attach_lint_findings(_add_description_prompt_preview(result, content), skill_md)
+    from tools.skill_archive_hints import archived_hint_text, similar_archived_skills
+    if archived := similar_archived_skills(name, _description_preview(content)):
+        result["similar_archived_skills"] = archived
+        result["archived_hint"] = archived_hint_text(archived)
     return result
 
 

@@ -29,6 +29,10 @@ class FakeWebglAddon {
   }
 }
 
+// xterm `onBell` handlers registered by the page, so a test can fire the same
+// event the PTY raises when the TUI opens a blocking prompt.
+const bellHandlers: Array<() => void> = [];
+
 class FakeTerminal {
   options: Record<string, unknown>;
   rows = 24;
@@ -63,6 +67,11 @@ class FakeTerminal {
   }
 
   loadAddon() {}
+
+  onBell(handler: () => void) {
+    bellHandlers.push(handler);
+    return { dispose() {} };
+  }
 
   onData() {
     return { dispose() {} };
@@ -105,6 +114,10 @@ vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
   uploadChatImage,
 }));
+
+const ringBell = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/terminal-bell", () => ({ ringBell }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
@@ -215,6 +228,8 @@ async function render(ui: ReactNode) {
 beforeEach(() => {
   FakeWebSocket.instances = [];
   webglInstances.length = 0;
+  bellHandlers.length = 0;
+  ringBell.mockClear();
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -634,6 +649,31 @@ describe("ChatPage", () => {
       "resize",
       "scroll",
     ]);
+  });
+});
+
+describe("ChatPage terminal bell", () => {
+  it("rings the audible bell when the PTY raises BEL", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Wired once, on the terminal the page actually opened — the whole point
+    // is that a prompt waiting on the user makes a sound in the browser, not
+    // just a BEL byte xterm drops.
+    expect(bellHandlers).toHaveLength(1);
+    expect(ringBell).not.toHaveBeenCalled();
+
+    await act(async () => {
+      bellHandlers[0]();
+    });
+    expect(ringBell).toHaveBeenCalledTimes(1);
   });
 });
 

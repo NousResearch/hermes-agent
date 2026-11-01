@@ -659,6 +659,17 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     return safe_servers
 
 
+# (server_name, outcome) pairs already warned about: the same clash is found again on every config load, which a
+# gateway repeats about once a minute; a changed outcome (other carried keys, a rejected native entry) warns anew.
+_portable_clash_warned: set[tuple[str, str]] = set()
+
+
+def _warn_portable_clash_once(name: str, outcome: str, message: str, *args: Any) -> None:
+    if (name, outcome) not in _portable_clash_warned:
+        _portable_clash_warned.add((name, outcome))
+        logger.warning(message, name, *args)
+
+
 def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
 
@@ -671,16 +682,19 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
             if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
-                logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
+                _warn_portable_clash_once(name, "rejected",
+                                          "Portable MCP server '%s' skipped: the native entry of that name was rejected")
             elif name in safe_servers:
                 native = safe_servers[name]
                 carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
                 if carried:
                     safe_servers[name] = {**native, **carried}
-                    logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
-                                   "with the package's declared %s", name, ", ".join(carried))
+                    _warn_portable_clash_once(name, "carried:" + ",".join(carried),
+                                              "Portable MCP server '%s' conflicts with native config; using the native "
+                                              "entry with the package's declared %s", ", ".join(carried))
                 else:
-                    logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
+                    _warn_portable_clash_once(name, "skipped",
+                                              "Portable MCP server '%s' conflicts with native config; skipping")
             else:
                 safe_servers[name] = dict(cfg)
     except Exception:

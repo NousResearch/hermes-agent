@@ -140,3 +140,16 @@ test('an SSH teardown leaves the tab disconnected instead of closing it', async 
     [{ code: null, signal: 'disconnected' }]
   )
 })
+
+test('app quit kills shells without telling the tabs they exited', async () => {
+  const { api, start } = register(null)
+  const local = await spawnFor(start, { connectionId: 'local' })
+  const attach = handles.map.get('hermes:terminal:attach') as (event: unknown, id: string) => boolean
+
+  assert.equal(attach({ sender: local.sender }, local.session.id), true)
+  api.disposeAllTerminalSessions()
+
+  // An exit here would close the tab and drop it from the restored layout.
+  assert.equal(local.fake.pty.kill.mock.calls.length >= 1, true)
+  assert.equal(local.sender.send.mock.calls.filter(([channel]) => String(channel).endsWith(':exit')).length, 0)
+})

@@ -50,6 +50,12 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
 
       pendingData = `${pendingData}${chunk}`.slice(-MAX_PENDING_OUTPUT)
     },
+    /** App quit: the renderer must not read the kill as the shell exiting,
+     *  or it closes the tab and drops it from the restored layout. */
+    silence(): void {
+      exited = true
+      pendingExit = null
+    },
     exit(payload: TerminalExitPayload): void {
       // The first exit is the verdict: a teardown's `disconnected` must not be
       // overwritten by the kill's own exit that follows it.

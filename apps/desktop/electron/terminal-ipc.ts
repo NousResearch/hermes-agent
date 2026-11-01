@@ -282,7 +282,8 @@ export function registerTerminalIpc({
 
   // App shutdown: kill every open PTY before environment teardown.
   function disposeAllTerminalSessions() {
-    for (const id of [...terminalSessions.keys()]) {
+    for (const [id, info] of [...terminalSessions.entries()]) {
+      info.outputGate.silence()
       disposeTerminalSession(id)
     }
   }

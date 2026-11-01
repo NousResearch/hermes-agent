@@ -234,6 +234,30 @@ def _is_compacted_message(db, message_id) -> bool:
     return _is_compacted_state(_get_message_storage_state(db, message_id))
 
 
+_TOOL_CALL_ARGS_PREVIEW = 200
+
+
+def _slim_tool_calls(tool_calls: Any) -> Any:
+    """Tool name plus a short argument preview: the raw JSON (whole file bodies, command lists)
+    outweighs the conversation text a recall reader needs."""
+    calls = tool_calls
+    if isinstance(calls, str):
+        try:
+            calls = json.loads(calls)
+        except ValueError:
+            return calls[:_TOOL_CALL_ARGS_PREVIEW]
+    if not isinstance(calls, list):
+        return calls
+    slim = []
+    for call in calls:
+        fn = (call or {}).get("function") or {} if isinstance(call, dict) else {}
+        args = fn.get("arguments")
+        args = args if isinstance(args, str) else json.dumps(args or {})
+        slim.append({"name": fn.get("name"), "arguments": args[:_TOOL_CALL_ARGS_PREVIEW]
+                     + ("…" if len(args) > _TOOL_CALL_ARGS_PREVIEW else "")})
+    return slim
+
+
 def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
                    max_content_len: Optional[int] = None) -> dict[str, Any]:
     """Slim a message row; keeps ``content`` even when empty (tool-call-only turns)."""
@@ -242,7 +266,9 @@ def _shape_message(m: dict[str, Any], anchor_id: Optional[int] = None,
         from tools.ansi_strip import strip_ansi
         content = strip_ansi(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
-    entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
+    entry.update({k: m.get(k) for k in ("tool_name", "tool_call_id") if m.get(k)})
+    if m.get("tool_calls"):
+        entry["tool_calls"] = _slim_tool_calls(m["tool_calls"])
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:
@@ -566,7 +592,11 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     return _ok(
         mode="scroll", session_id=session_id, around_message_id=around_message_id,
         session_meta=_session_meta_block(session_meta), window=window,
-        messages=[_shape_message(m, anchor_id=around_message_id) for m in messages],
+        # Tool output is cut at 1500 chars (it is most of a window and rarely the answer); user and
+        # assistant text keep 8000, which held every answer keyword on a real recall set.
+        messages=[_shape_message(m, anchor_id=around_message_id,
+                                 max_content_len=1500 if m.get("role") == "tool" and m.get("id") != around_message_id
+                                 else 8000) for m in messages],
         messages_before=view.get("messages_before", 0), messages_after=view.get("messages_after", 0),
         hint=("Scroll forward: re-call with around_message_id = the LAST message's "
               "id; backward: the FIRST message's id (the boundary message repeats "

@@ -247,6 +247,42 @@ describe('connection registry cache', () => {
     }
   })
 
+  it('#130944: a gateway picked during the roster read stays the saved last-used source', async () => {
+    const roster = deferred<{ profiles: { name: string }[] }>()
+    list.mockResolvedValue({ ...registry, primary: 'homelab', lastUsed: 'homelab', launchMode: 'last-used' })
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'windows-only', registryScoped: true })
+    $activeGatewayProfile.set('windows-only')
+    api.mockReturnValueOnce(roster.promise as never)
+
+    const boot = initializeConnectionsRegistry()
+    await vi.waitFor(() => expect(api).toHaveBeenCalled())
+    await selectConnection('work-vps')
+    roster.resolve({ profiles: [{ name: 'default' }] })
+    await boot
+
+    expect(setLastUsed).toHaveBeenCalledWith('work-vps')
+    expect(setLastUsed).not.toHaveBeenCalledWith('homelab')
+    expect($activeConnectionId.get()).toBe('work-vps')
+  })
+
+  it('#130944: the startup re-home never closes a conversation opened while it dials', async () => {
+    const open = deferred<void>()
+    list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'windows-only', registryScoped: true })
+    $activeGatewayProfile.set('windows-only')
+    api.mockResolvedValueOnce({ profiles: [{ name: 'default' }] } as never)
+    openGatewayAgent.mockReturnValueOnce(open.promise)
+
+    const boot = initializeConnectionsRegistry()
+    await vi.waitFor(() => expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default'))
+    $activeSessionId.set('opened-by-user')
+    open.resolve()
+    await boot
+
+    expect($activeSessionId.get()).toBe('opened-by-user')
+    expect($connection.get()?.profile).toBe('windows-only')
+  })
+
   it('boot restore yields to a source the user already picked while boot was settling', async () => {
     // Primary is local, launch mode is primary. The user clicks a fleet-rail
     // square on the homelab gateway before the boot-time restore runs. The

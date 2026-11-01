@@ -286,6 +286,29 @@ async function reconcileStartupProfile(
   }
 }
 
+/** Boot lands on the preferred source: re-validate the live one's profile, or
+ *  restore onto it. */
+async function restorePreferredConnection(
+  preferredId: string,
+  kind: string | undefined,
+  freshSessionRequest: number
+): Promise<void> {
+  if ($activeConnectionId.get() !== preferredId) {
+    await selectConnection(preferredId, { restore: true })
+
+    return
+  }
+
+  const revision = switchRevision
+  await reconcileStartupProfile(preferredId, kind, freshSessionRequest)
+
+  // The roster read is a window: a pick that landed meanwhile saved its own
+  // source, and the reconcile's own switch already saved this one.
+  if (revision === switchRevision && pendingTarget === null && $activeConnectionId.get() === preferredId) {
+    await rememberConnection(preferredId)
+  }
+}
+
 /**
  * Load the registry once for Sessions and restore the explicit default route,
  * otherwise the last successfully used source. Later registry refreshes stay
@@ -369,12 +392,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return registry
   }
 
-  if ($activeConnectionId.get() === preferredId) {
-    await reconcileStartupProfile(preferredId, preferred?.kind, freshSessionRequest)
-    await rememberConnection(preferredId)
-  } else {
-    await selectConnection(preferredId, { restore: true })
-  }
+  await restorePreferredConnection(preferredId, preferred?.kind, freshSessionRequest)
 
   return $connectionsRegistry.get() ?? registry
 }
@@ -407,6 +425,22 @@ export interface SelectConnectionOptions {
    *  source yet, so a second restore pass — the normal case, because main opens
    *  the local backend before the registry settles — read as user-initiated. */
   restore?: boolean
+}
+
+/** A silent restore never closes a conversation the user opened while it dialed. */
+function restoreYields(restoreOnBoot: boolean, openedSession: string): boolean {
+  return restoreOnBoot && openSessionKey() !== openedSession
+}
+
+/** The pick in flight loses ownership: its late steps see a newer revision. */
+function abandonPick(): void {
+  switchRevision += 1
+  pendingTarget = null
+  $pendingConnectionId.set(null)
+}
+
+function openSessionKey(): string {
+  return `${$activeSessionId.get() ?? ''}\u0000${$selectedStoredSessionId.get() ?? ''}`
 }
 
 /** The silent boot restore, by its caller's word, or (first pass, before any
@@ -497,6 +531,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // A draft the user starts while this pick is in flight (a gateway group's
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
   const draftIntent = currentNewChatIntent()
+  const openedSession = openSessionKey()
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
@@ -508,6 +543,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // declines here: no draft, no activation, so the user never flips through it.
   const beforeActivate = () => {
     if (revision !== switchRevision) {
+      return false
+    }
+
+    if (restoreYields(restoreOnBoot, openedSession)) {
+      abandonPick()
+
       return false
     }
 

@@ -106,7 +106,7 @@ def _target_tree_paths(git_cmd: list[str], cwd: Path, refs) -> Optional[tuple[se
     files: set[str] = set()
     read_any = False
     for ref in dict.fromkeys(refs):
-        resolved = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{tree}}"], cwd, text=True)
+        resolved = _git_quiet(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{tree}}"], cwd)
         if resolved is None:
             return None
         if resolved.returncode:

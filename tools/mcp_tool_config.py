@@ -640,14 +640,39 @@ def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
     return None
 
 
+def _validate_mcp_entry(name: str, cfg: Any) -> tuple[bool, str]:
+    """Minimal connect-contract check: a dict with ``command`` and/or ``url``.
+
+    A non-dict or command/url-less row is not a server (#33119). Security and
+    cost checks stay in ``_filter_suspicious_mcp_servers``.
+    """
+    if not isinstance(cfg, dict):
+        return False, f"entry value is not a dict (got {type(cfg).__name__})"
+    if not cfg.get("command") and not cfg.get("url"):
+        return False, "entry declares neither 'command' (stdio) nor 'url' (http)"
+    return True, ""
+
+
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
-    """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
+    """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path.
+
+    Also drops malformed rows (non-dict, or neither command nor url) so one bad
+    installer write cannot break discovery (#33119).
+    """
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
         validate_mcp_server_entry = None
     safe_servers = {}
     for name, cfg in servers.items():
+        ok, reason = _validate_mcp_entry(name, cfg)
+        if not ok:
+            logger.warning(
+                "Skipping malformed mcp_servers entry %r: %s. "
+                "Fix or remove this entry in ~/.hermes/config.yaml.",
+                name, reason,
+            )
+            continue
         issues = validate_mcp_server_entry(name, cfg) if validate_mcp_server_entry and isinstance(cfg, dict) else None
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))

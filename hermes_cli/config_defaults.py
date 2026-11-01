@@ -383,14 +383,14 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
-        # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
-        # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
-        # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.
+        # Keyless free-tier ring: with NO web backend configured or keyed, web tools rotate round-robin across
+        # exa/parallel/firecrawl/keenable free tiers, failing over on rate limits. Never pre-empts a keyed one.
         "keyless_fallback": True,
-        # One-shot rescue: when the chosen/keyed backend fails a call, THAT call retries once on the
-        # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
-        # keyless_fallback is false.
+        # One-shot rescue: when the chosen/keyed backend fails a call (after *_fallback_chain), THAT call
+        # retries once on the keyless ring; the next call tries the chosen backend again. Off w/o keyless_fallback.
         "keyless_rescue": True,
+        "search_fallback_chain": [],   # opt-in ordered fallbacks when search_backend fails, e.g. ["exa", "tavily"]
+        "extract_fallback_chain": [],  # same for web_extract (only failed URLs re-sent); never cached or sticky
         # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
         # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
         # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a

@@ -20,6 +20,7 @@ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecra
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
+from tools.web_tools_chain import chain_summary, search_unresolved_primary, search_via_chain
 from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
@@ -325,9 +326,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         provider = _wsp_get_provider(backend) if backend else None
         if provider is None or not provider.supports_search():
             if provider is None and backend and selection_exists("web"):
-                error_text = debug_call_data["error"] = _strict_selection_error("search", backend)
+                error_text = _strict_selection_error("search", backend)
+                response_data = search_unresolved_primary(backend, error_text, query, limit) or {
+                    "success": False, "error": error_text}
+                debug_call_data["error"] = response_data.get("error")
                 _finish_debug("web_search_tool", debug_call_data)
-                return json.dumps({"success": False, "error": error_text}, indent=2, ensure_ascii=False)
+                return json.dumps(response_data, indent=2, ensure_ascii=False)
             # Never-configured install: legacy availability-walked autodetect.
             provider = get_active_search_provider()
 
@@ -370,12 +374,19 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
         return resp, False
 
     def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
-        """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
-        eligible; None means the vendor's own failure stands."""
+        """Managed Firecrawl for a failed managed Perplexity call, else the opt-in fallback chain, else the
+        one-shot keyless rescue when eligible; None means the vendor's own failure stands."""
         fallback = _managed_search_fallback(provider, error, query, fetch_limit)
         if fallback is not None:
             return fallback
-        return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
+        served, chain_errors = search_via_chain(provider.name, error, query, fetch_limit)
+        if served is not None:
+            return served
+        if chain_errors:
+            error = f"{error} (fallback chain also failed: {chain_summary(chain_errors[1:])})"
+        if _rescue_eligible(provider):
+            return _rescue_search(provider.name, error, query, fetch_limit)
+        return {"success": False, "error": error, "data": {"chain_errors": chain_errors}} if chain_errors else None
 
     response_data = search_memo.lookup(provider.name, query, limit)
     if response_data is None:

@@ -67,6 +67,7 @@ import { captureDestination, isCurrentDestination, type SubmissionDestination } 
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
+import { useAttentionNotifier } from './useAttentionNotifier.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -318,8 +319,7 @@ export function useMainApp(gw: GatewayClient) {
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
   // Bumped by the gateway `reaction` event (core-detected affection).
   const goodVibesTick = useStore($goodVibesTick)
-  const [bellOnComplete, setBellOnComplete] = useState(false)
-  const [bellOnPrompt, setBellOnPrompt] = useState(false)
+  const { bellOnComplete, bellOnPrompt, notifyAttention, setBellOnComplete, setBellOnPrompt } = useAttentionNotifier()
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -1035,7 +1035,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog: setSlashCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, bellOnPrompt, stdout, sys },
+        system: { bellOnComplete, bellOnPrompt, notifyAttention, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -1049,6 +1049,7 @@ export function useMainApp(gw: GatewayClient) {
       bellOnComplete,
       bellOnPrompt,
       composerActions.enqueue,
+      notifyAttention,
       composerActions.setInput,
       gateway,
       panel,
@@ -1073,12 +1074,12 @@ export function useMainApp(gw: GatewayClient) {
       createServerRequestHandler({
         ringPromptBell: () => {
           if (bellOnPrompt && stdout?.isTTY) {
-            stdout.write('\x07')
+            notifyAttention('prompt')
           }
         },
         setStatus: status => patchUiState({ status })
       }),
-    [bellOnPrompt, stdout]
+    [bellOnPrompt, notifyAttention, stdout]
   )
 
   onServerRequestRef.current = onServerRequest
@@ -1584,6 +1585,7 @@ export function useMainApp(gw: GatewayClient) {
       pagerPageSize,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
+      replaceDraft: composerActions.replaceDraft,
       submit,
       updateInput,
       voiceRecordKey

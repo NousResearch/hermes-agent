@@ -201,6 +201,19 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [gw, setComposerTokens]
   )
 
+  // A Ctrl+R recall replaces the draft outright: backslash-continued lines left in `inputBuf`
+  // would otherwise be sent above the recalled prompt on the next Enter.
+  const replaceDraft = useCallback(
+    (value: string) => {
+      setInputBuf([])
+      syncTokens(value)
+      setInput(value)
+      setHistoryIdx(null)
+      historyDraftRef.current = value
+    },
+    [historyDraftRef, setHistoryIdx, setInput, setInputBuf, syncTokens]
+  )
+
   /**
    * Attach an image the gateway already resolved: a token at the cursor,
    * followed by whatever non-path text came along with it (a drag-drop paste
@@ -568,6 +581,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pushHistory,
       queueDraft,
       removeQueue: removeQ,
+      replaceDraft,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,
@@ -590,6 +604,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       pushHistory,
       queueDraft,
       removeQ,
+      replaceDraft,
       setCompIdx,
       setComposerTokens,
       setHistoryIdx,

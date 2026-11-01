@@ -300,6 +300,8 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   connection: ConnectionOverlayState | null
   connectors: boolean
+  /** Ctrl+R prompt-history search; `query` seeds the filter from the draft. */
+  historySearch: null | { query: string }
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -411,6 +413,8 @@ export interface ComposerActions {
   /** Composer text for queue-edit slot `index` (local items first, then server-queued rows). */
   queueDraft: (index: number) => string
   removeQueue: (index: number) => void
+  /** Replace the WHOLE draft (continuation lines included), as a history recall does. */
+  replaceDraft: (value: string) => void
   setCompIdx: StateSetter<number>
   setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
@@ -522,6 +526,8 @@ export interface GatewayEventHandlerContext {
   system: {
     bellOnComplete: boolean
     bellOnPrompt?: boolean
+    /** Desktop notification + BEL for a finished turn or a waiting prompt (display.bell_on_*). */
+    notifyAttention?: (kind: 'complete' | 'prompt') => void
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -630,6 +636,7 @@ export interface AppLayoutComposerProps {
   pagerPageSize: number
   queueEditIdx: null | number
   queuedDisplay: string[]
+  replaceDraft: (value: string) => void
   submit: (value: string) => void
   updateInput: StateSetter<string>
   voiceRecordKey: ParsedVoiceRecordKey
@@ -677,6 +684,8 @@ export interface AppOverlaysProps {
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
+  /** Ctrl+R search picked an entry: it replaces the draft for editing. */
+  onHistoryAccept: (entry: string) => void
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

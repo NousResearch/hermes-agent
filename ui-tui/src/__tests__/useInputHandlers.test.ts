@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  historySearchSeed,
   resolveCtrlCComposerAction,
   resolveDoubleEscAction,
   shouldDetachEditedHistoryInput,
@@ -239,5 +240,12 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().vaultCode).toBeNull()
     expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
     expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
+})
+
+describe('historySearchSeed — Ctrl+R search starts from the draft', () => {
+  it('seeds from a single-line draft and starts empty for a multi-line one', () => {
+    expect(historySearchSeed('  git push ')).toBe('git push')
+    expect(historySearchSeed('line one\nline two')).toBe('')
   })
 })

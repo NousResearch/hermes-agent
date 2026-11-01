@@ -166,6 +166,15 @@ export const pickersEn = {
         refresh: ' refresh · '
       }
     },
+    history: {
+      title: 'Search prompt history',
+      countOne: (count: number) => `${count} match`,
+      countOther: (count: number) => `${count} matches`,
+      // {0} = the search text the user typed.
+      noMatches: (query: string) => `no earlier prompt matches "${query}"`,
+      empty: 'no prompt history yet',
+      hint: 'type to search · Ctrl+R/↓ older · ↑ newer · Enter edit · Esc cancel'
+    },
     pet: {
       title: 'Pets',
       loading: 'loading pets…',

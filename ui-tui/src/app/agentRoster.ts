@@ -10,6 +10,8 @@ import { $uiState } from './uiStore.js'
 
 // Session-local presentation only; never persisted to config.
 export const $agentDockCollapsed = atom(false)
+// Whether the live-work dock is on screen: Ctrl+R toggles it then, and opens history search otherwise.
+export const $agentDockVisible = atom(false)
 
 const EMPTY: SubagentListResponse = { subagents: [], delegations: [] }
 export const $agentSnapshot = atom<{ sid: string | null; data: SubagentListResponse }>({ sid: null, data: EMPTY })

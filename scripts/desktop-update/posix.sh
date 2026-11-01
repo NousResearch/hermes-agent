@@ -56,6 +56,9 @@ NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0 SELF_TEST_SWAP=0
 HANDOFF_DAEMONIZED=0 HANDOFF_RUN="" MARKER_OP=""
 MARKER_REFRESH_EVERY_S=300
+# A live step is bounded by the absence of progress, never by wall time (parity
+# with windows.ps1 StepIdleTimeoutSeconds); see step_watchdog_start.
+STEP_IDLE_SECONDS=600
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -82,6 +85,7 @@ while [ $# -gt 0 ]; do
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --self-test-refresh-every) MARKER_REFRESH_EVERY_S="$2"; shift 2 ;;
+    --self-test-step-idle) STEP_IDLE_SECONDS="$2"; shift 2 ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -89,6 +93,7 @@ done
 [ "$SELF_TEST_UI" -eq 1 ] || [ "$SELF_TEST_SWAP" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 case "$DESKTOP_PID" in ''|*[!0-9]*) echo "--desktop-pid must be a pid" >&2; exit 64 ;; esac
 case "$MARKER_REFRESH_EVERY_S" in ''|0|*[!0-9]*) echo "--self-test-refresh-every must be a positive number of seconds" >&2; exit 64 ;; esac
+case "$STEP_IDLE_SECONDS" in ''|0|*[!0-9]*) echo "--self-test-step-idle must be a positive number of seconds" >&2; exit 64 ;; esac
 [ -z "$HANDOFF_RUN" ] || [[ "$HANDOFF_RUN" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "--handoff-run must match [A-Za-z0-9._-]{1,128}" >&2; exit 64; }
 [ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
 TARGET_ARGS=(--branch "$BRANCH")
@@ -289,11 +294,14 @@ UPDATE_COMMITTED=0 RECEIPT_OUTCOME=""
 receipt_json_field() { # file key -> the top-level string value (json.dumps indent=2 layout)
   sed -n "s/^  \"$2\": \"\([A-Za-z0-9._:+-]*\)\",\{0,1\}\$/\1/p" "$1" 2>/dev/null | head -n 1
 }
-update_committed_after_exit() { # -> 0 iff this run's receipt shows the commit point passed
-  local root="$HERMES_HOME" f outcome
-  # hermes_constants.get_default_hermes_root: a <root>/profiles/<name> home files under <root>
+update_root_home() { # hermes_constants.get_default_hermes_root: a <root>/profiles/<name> home files under <root>
+  local root="$HERMES_HOME"
   [ "$(basename "$(dirname "$root")")" != profiles ] || root="$(dirname "$(dirname "$root")")"
-  f="$root/logs/update_receipts/latest.json"
+  printf '%s' "$root"
+}
+update_committed_after_exit() { # -> 0 iff this run's receipt shows the commit point passed
+  local f outcome
+  f="$(update_root_home)/logs/update_receipts/latest.json"
   [ -f "$f" ] && [ -n "$UPDATE_CORRELATION" ] || return 1
   [ "$(receipt_json_field "$f" correlation_id)" = "$UPDATE_CORRELATION" ] || return 1
   [ -n "$(receipt_json_field "$f" finished_at)" ] || return 1
@@ -756,6 +764,7 @@ add_warning() { # step reason -- post-commit follow-up failed; the update still 
 }
 
 finish() {
+  step_watchdog_stop
   # Ordering (gille's reviews, both rounds):
   #   1. deliver the outcome (swap/gate) so the truth exists;
   #   2. durable result + marker removal (the relaunched app consumes the
@@ -1220,6 +1229,73 @@ if [ "$NO_GATEWAY" -eq 1 ]; then
   log "update requested without --gateway (remote-served Desktop)"
 fi
 
+# ── step idle watchdog (parity with windows.ps1 StepIdleTimeoutSeconds) ─────
+# `hermes update` is bounded by the ABSENCE of progress, never by wall time: a
+# slow fetch or a 40-minute Desktop build keeps it alive, while a step whose
+# whole process tree writes nothing to this log or to update.log, starts no
+# process and burns no CPU for STEP_IDLE_SECONDS is stalled -- a full pipe once
+# parked the updater at 0% CPU right after "Fetching updates..." forever
+# (#138672). update.log counts because the update tees its loud build there,
+# not into our pipe (the windows "logstall" lesson). A stall stops the step's
+# tree and reads as exit 124, the sentinel windows.ps1 uses, and passes the
+# same completion-banner veto (resolve_stalled_update).
+UPDATE_PROGRESS_LOG="$(update_root_home)/logs/update.log"
+STEP_WATCHDOG="" STEP_STALLED=0 UPDATE_INTERRUPTED=0
+descendant_pids() { # pid -> it and every live descendant, one per line
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    { kids[$2] = kids[$2] " " $1 }
+    END { n = 1; q[1] = root
+          for (i = 1; i <= n; i++) { print q[i]; c = split(kids[q[i]], k, " "); for (j = 1; j <= c; j++) q[++n] = k[j] } }'
+}
+step_progress_stamp() { # pid -> a fingerprint that changes whenever the step's tree makes progress
+  local pids
+  pids="$(descendant_pids "$1" | paste -s -d, -)"
+  printf '%s|%s|%s|%s' "$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')" \
+    "$(wc -c < "$UPDATE_PROGRESS_LOG" 2>/dev/null | tr -d '[:space:]')" \
+    "$pids" "$(ps -o time= -p "$pids" 2>/dev/null | tr -d '[:space:]')"
+}
+step_watchdog_start() { # pid flag -- stops the pid's tree and creates flag once it stalls
+  local pid="$1" flag="$2"
+  rm -f "$flag" 2>/dev/null
+  ( trap - TERM
+    stamp="$(step_progress_stamp "$pid")" since="$(date +%s)"
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 1
+      now="$(step_progress_stamp "$pid")"
+      if [ "$now" != "$stamp" ]; then stamp="$now" since="$(date +%s)"; continue; fi
+      [ $(( $(date +%s) - since )) -ge "$STEP_IDLE_SECONDS" ] || continue
+      : > "$flag"
+      log "step stalled: no output, no update.log growth, no new process and no CPU in its process tree for ${STEP_IDLE_SECONDS}s while pid $pid remained alive; stopping its process tree"
+      tree="$(descendant_pids "$pid")"
+      kill -TERM $tree 2>/dev/null
+      for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      kill -KILL $tree $(descendant_pids "$pid") 2>/dev/null
+      exit 0
+    done ) &
+  STEP_WATCHDOG=$!
+}
+step_watchdog_stop() { # [flag] -- a watchdog that flagged a stall finishes its escalation
+  [ -n "$STEP_WATCHDOG" ] || return 0
+  # The root can die of the watchdog's TERM while a descendant ignores it; the
+  # watchdog alone holds that tree and its pending KILL (bounded: <=10 s).
+  [ -n "${1:-}" ] && [ -e "$1" ] || kill -KILL "$STEP_WATCHDOG" 2>/dev/null
+  wait "$STEP_WATCHDOG" 2>/dev/null
+  STEP_WATCHDOG=""
+}
+# `hermes update` can COMPLETE (its output carries "Update complete!") and
+# still be stopped by the watchdog: its post-update phase (gateway restart
+# hand-off) stayed alive and silent past the bound. Windows learned this in
+# #96205; the rule is reused verbatim, never a bare timeout -> failure: a
+# stall is success when the banner printed and nothing after the LAST banner
+# reports a failure ("Update not complete", "Update incomplete", "✗ ...").
+resolve_stalled_update() {
+  [ "$STEP_STALLED" -eq 1 ] || return 0
+  case "$OUT" in *"Update complete!"*) ;; *) return 0 ;; esac
+  ! printf '%s' "${OUT##*Update complete!}" | grep -Eq 'incomplete|not complete|✗' || return 0
+  log "update completed before the idle watchdog stopped its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+  CODE=0 UPDATE_INTERRUPTED=1
+}
+
 run_update() { # streams straight into the log (a killed run keeps its output);
   # OUT = this run's slice of the log. TERM goes back to default for the child
   # so neither it nor anything it starts (gateways) inherits our SIG_IGN.
@@ -1241,11 +1317,16 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   pid=$!
   if marker_add_delegate "$pid"; then
     : > "$go"
+    step_watchdog_start "$pid" "$go.stalled"
     while :; do
       wait "$pid"; CODE=$?
       [ "$CODE" -ne 127 ] || break          # not our child any more
       kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
     done
+    step_watchdog_stop "$go.stalled"
+    STEP_STALLED=0
+    if [ -e "$go.stalled" ]; then STEP_STALLED=1 CODE=124; fi
+    rm -f "$go.stalled" 2>/dev/null
   else
     # No go-file: the child is still our parked shell, not an updater. Never
     # let a timed-out/refused marker write turn this custody barrier fail-open.
@@ -1257,6 +1338,7 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   rm -f "$go" 2>/dev/null
   for sig in HUP INT QUIT; do trap "on_signal $sig" "$sig"; done
   OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"
+  resolve_stalled_update
   [ -z "$PENDING_SIGNAL" ] || on_signal "$PENDING_SIGNAL"
 }
 
@@ -1290,6 +1372,10 @@ fi
 trap 'on_signal TERM' TERM
 
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete." UPDATE_COMMITTED=1
+  if [ "$UPDATE_INTERRUPTED" -eq 1 ]; then
+    DONE_NOTE="Hermes was updated, but its post-update steps (gateway resume) stopped making progress and were stopped. Run hermes update again to finish them."
+    add_warning "update" "post-update steps stopped by the idle watchdog after the update completed"
+  fi
   # Contract C3: a Desktop build that fails after the code committed is an owed
   # follow-up (hermes update exits 0 and prints one whole "Desktop app build
   # owed:" line for it; the follow-up text itself is truncated). The user is on
@@ -1342,6 +1428,10 @@ else
   if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
       && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
+  fi
+  # A stopped stall is what happened, whatever else the install looks like.
+  if [ "$STEP_STALLED" -eq 1 ]; then
+    FINAL_MSG="Update stopped: hermes update made no progress for ${STEP_IDLE_SECONDS}s (no output, no update.log growth, no CPU), so it was stopped. Run hermes update in a terminal to retry, or hermes debug share to send a report."
   fi
 fi
 

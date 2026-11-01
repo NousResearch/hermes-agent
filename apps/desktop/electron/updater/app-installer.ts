@@ -19,6 +19,7 @@ import {
   win32AppInstallerFeedPath
 } from '../app-updater'
 
+import type { PinnedDownloadProgress } from './artifact'
 import type { ChannelTarget } from './channel'
 import { channelPublicBase } from './channel-protocol'
 import { applyPackagedHandoff } from './packaged-handoff'
@@ -35,7 +36,12 @@ export interface AppInstallerStrategyDeps {
   /** Channel + variant from the baked install stamp. */
   channel: string
   /** Verification must bind descriptor, artifact digest, native identity and signer. */
-  feed?: { url: string; version: string; verifyPrepared: (file: string) => Promise<void> }
+  feed?: {
+    url: string
+    version: string
+    /** Downloads the pinned package (reporting its bytes) and verifies it. */
+    verifyPrepared: (file: string, onBytes?: PinnedDownloadProgress) => Promise<void>
+  }
   light: boolean
   /** The App Installer feed base URL; empty when nothing configured it. */
   feedBaseUrl: string
@@ -77,7 +83,7 @@ export function appInstallerCheckToStatus(check: AppInstallerCheck, appVersion: 
 export function createChannelAppInstallerStrategy(
   deps: AppInstallerStrategyDeps,
   target: ChannelTarget,
-  verifyPrepared: (file: string, target: ChannelTarget) => Promise<void>
+  verifyPrepared: (file: string, target: ChannelTarget, onBytes?: PinnedDownloadProgress) => Promise<void>
 ): AppInstallerStrategy {
   if (target.package.platform !== 'win32') {
     throw new Error('Expected Windows channel target')
@@ -90,9 +96,40 @@ export function createChannelAppInstallerStrategy(
     feed: {
       url: target.feedUrl,
       version: target.package.version,
-      verifyPrepared: (file: string): Promise<void> => verifyPrepared(file, target)
+      verifyPrepared: (file: string, onBytes?: PinnedDownloadProgress): Promise<void> =>
+        verifyPrepared(file, target, onBytes)
     }
   })
+}
+
+const HANDOFF_PROGRESS = {
+  stage: 'restart',
+  message: 'Applying the Hermes update — the window will close and the App Installer will finish.',
+  percent: 100
+} as const
+
+const DOWNLOAD_REPORT_EVERY_MS = 2000
+const MB = 1024 * 1024
+
+/** The pinned package download as `fetch` progress (the renderer bounds `fetch`
+ *  by inactivity; `restart` is reserved for the hand-off), at most every 2 s. */
+function pinnedDownloadReporter(emit: AppInstallerStrategyDeps['emitUpdateProgress']): PinnedDownloadProgress {
+  let reportedAt = 0
+
+  return (received: number, total: number): void => {
+    const now = Date.now()
+
+    if (received < total && now - reportedAt < DOWNLOAD_REPORT_EVERY_MS) {
+      return
+    }
+
+    reportedAt = now
+    emit({
+      stage: 'fetch',
+      message: `Downloading the Hermes update (${Math.floor(received / MB)} of ${Math.ceil(total / MB)} MB)`,
+      percent: total > 0 ? Math.floor((received * 100) / total) : null
+    })
+  }
 }
 
 export class AppInstallerStrategy {
@@ -154,11 +191,7 @@ export class AppInstallerStrategy {
       return { ok: true, manual: true, bundled: true, mechanism: this.mechanism }
     }
 
-    this.deps.emitUpdateProgress({
-      stage: 'restart',
-      message: 'Applying the Hermes update — the window will close and the App Installer will finish.',
-      percent: 100
-    })
+    this.deps.emitUpdateProgress(HANDOFF_PROGRESS)
 
     return applyPackagedHandoff(
       {
@@ -183,7 +216,12 @@ export class AppInstallerStrategy {
           {
             prepare: async (url: string): Promise<string> => {
               const file = await this.deps.installer.prepare(url)
-              await this.deps.feed?.verifyPrepared(file)
+
+              if (this.deps.feed) {
+                await this.deps.feed.verifyPrepared(file, pinnedDownloadReporter(this.deps.emitUpdateProgress))
+                // The download reported `fetch`; the hand-off owns the overlay again.
+                this.deps.emitUpdateProgress(HANDOFF_PROGRESS)
+              }
 
               return file
             },

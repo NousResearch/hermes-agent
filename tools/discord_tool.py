@@ -256,7 +256,7 @@ def _message_summary(msg: dict[str, Any]) -> dict[str, Any]:
 def _limit_param(limit: Any, default: int) -> str:
     """Discord caps list endpoints at 100 per page."""
     try:
-        return str(min(int(limit), 100))
+        return str(max(1, min(int(limit), 100)))
     except (TypeError, ValueError):
         return str(min(default, 100))
 

@@ -1644,10 +1644,12 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-  // Passive background read that must never cold-start a pooled backend (#103375).
+  // Passive background request that must never cold-start a pooled backend (#103375).
   // When true and the target profile has no warm pool entry, the main process
-  // fails fast without spawning a child or consuming a pool slot, so background
-  // tile reconciles cannot starve interactive opens.
+  // fails fast without spawning a child or consuming a pool slot. Background
+  // hide sweeps also mark their PATCH passive to survive eviction after the snapshot.
+  // An explicit false on a prewrite snapshot allows the same cold backend
+  // dial as its following mutation; omitted forced-local GETs remain passive.
   passive?: boolean
   // An interactive Settings scope selection may cold-start a profile backend.
   // Keep that intent separate from passive hydration so the pool can reserve a

@@ -1460,9 +1460,9 @@ export const host = {
     })
   },
 
-  /** Mutate the durable hidden flag through the source primary. Keeping the
-   *  owner profile in the body (not request.profile) prevents Electron from
-   *  starting a profile backend merely to reconcile persisted visibility. */
+  /** Reconcile durable visibility only on an already-warm source. Keeping the
+   *  owner profile in the body scopes the mutation; both the snapshot and PATCH
+   *  must stay passive so eviction between them cannot restart a local child. */
   setPersistedSessionHidden: async (
     route: PluginProfileRoute | null,
     options: { sessionId: string; profile: string; hidden: boolean }
@@ -1487,13 +1487,15 @@ export const host = {
       () =>
         hermesApi<SessionMutationSnapshot>({
           ...scope,
-          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
+          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`,
+          passive: true
         }),
       identity =>
         hermesApi<{ ok: boolean; hidden: boolean }>({
           ...scope,
           path,
           method: 'PATCH',
+          passive: true,
           body: { ...payload, ...identity }
         })
     )

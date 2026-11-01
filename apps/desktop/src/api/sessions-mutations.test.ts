@@ -12,6 +12,20 @@ import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemot
 
 beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
 
+it('a forced-local archive explicitly dials for its snapshot before the fenced PATCH', async () => {
+  setApiRequestConnection('local')
+  vi.mocked(hermesApi).mockImplementation(async request => request.method === 'PATCH'
+    ? { ok: true } as never
+    : { exists: true, runtime_revision: 19, runtime_generation: 4 } as never)
+  await expect(setSessionArchived('cold', true, 'work')).resolves.toEqual({ ok: true })
+  const [snapshot, write] = vi.mocked(hermesApi).mock.calls.map(([request]) => request)
+  expect(snapshot).toMatchObject({ connectionId: 'local',
+    path: '/api/sessions/cold/mutation-snapshot?profile=work', passive: false })
+  expect(write).toMatchObject({ method: 'PATCH', path: '/api/sessions/cold' })
+  expect(write.body).toMatchObject({ archived: true, profile: 'work',
+    expected_revision: 19, expected_generation: 4, request_id: expect.any(String) })
+})
+
 it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
   vi.mocked(hermesApi).mockImplementation(async request => {
     if (!request.method || request.method === 'GET') {

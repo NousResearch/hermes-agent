@@ -500,6 +500,7 @@ import {
   createQuitTeardownCoordinator,
   type QuitTeardownTask
 } from './quit-teardown'
+import { dispatchRegistryApiRequest as dispatchRegistryApiRequestWithDeps } from './registry-api-dispatch'
 import {
   boundedInstallId,
   createPrimaryInstallIdResolver,
@@ -10603,6 +10604,23 @@ async function ensureBackend(
 // a genuinely-local dial when the v1 mode says remote; non-local connections
 // cache under the composite key from backendScopeKey() with the same entry
 // lifecycle as per-profile local descriptors.
+function registryLocalRouteForProfile(profile: unknown) {
+  const rawProfile = String(profile ?? '').trim()
+  const profileKey = rawProfile || 'default'
+
+  const localProfileExists = rawProfile
+    ? directoryExists(path.join(HERMES_HOME, 'profiles', rawProfile.toLowerCase()))
+    : undefined
+
+  // Keep the dispatch read gate and the actual resolver on one route. The raw
+  // profile preserves the distinction between enumeration and a concrete dial.
+  return resolveRegistryLocalRoute(rawProfile || null, {
+    globalRemote: globalRemoteActive(),
+    profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey)),
+    ...(rawProfile ? { localProfileExists } : {})
+  })
+}
+
 async function ensureRegistryBackend(
   connectionId,
   profile,
@@ -10705,19 +10723,7 @@ async function ensureRegistryBackend(
     // can't collide with the v1 remote descriptor cached at the bare key.
     profileDeletionGate.assertCanStart(profileKey)
 
-    const rawProfile = String(profile ?? '').trim()
-
-    const localProfileExists = rawProfile
-      ? directoryExists(path.join(HERMES_HOME, 'profiles', rawProfile.toLowerCase()))
-      : undefined
-
-    // Pass the raw profile, not profileKey: profileKey collapses null to
-    // 'default' and would refuse an unprofiled enumeration as a concrete dial.
-    const localRoute = resolveRegistryLocalRoute(rawProfile || null, {
-      globalRemote: globalRemoteActive(),
-      profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey)),
-      ...(rawProfile ? { localProfileExists } : {})
-    })
+    const localRoute = registryLocalRouteForProfile(profile)
 
     if (localRoute.refuse) {
       throw new Error(localRoute.refuse)
@@ -16012,32 +16018,17 @@ async function dispatchRegistryApiRequest(
   routeProfile = request?.profile,
   requestProfile = request?.profile
 ) {
-  // Claim-guarded (#90812): every registry-scoped REST call funnels through
-  // here, so it can race a renderer's own WS reconnect dial for the same
-  // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
-      )
-
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method || 'GET')
-
-  const response = await fetchJsonForBackend(connection, requestPath, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  return dispatchRegistryApiRequestWithDeps(request, registryConnectionId, routeProfile, requestProfile, {
+    afterProfileRequest: (id, apiRequest, response, mode) =>
+      desktopProfilePreferences.afterProfileRequest(id, apiRequest, response, mode),
+    claim: (key, ensure) => backendDialClaims.run(key, ensure),
+    ensure: (id, profile, passive) => ensureRegistryBackend(id, profile, '', { passive }),
+    fetch: (backend, requestPath, options) => fetchJsonForBackend(backend, requestPath, options),
+    localRoute: registryLocalRouteForProfile,
+    path: pathForRegistryBackendRequest,
+    timeout: timeoutMs => resolveTimeoutMs(timeoutMs, DEFAULT_FETCH_TIMEOUT_MS),
+    tag: tagRegistrySessionResponse
   })
-
-  desktopProfilePreferences.afterProfileRequest(registryConnectionId, request, response, connection.mode)
-
-  return (request?.method || 'GET').toUpperCase() === 'GET'
-    ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
-    : response
 }
 
 function registryConnectionKind(connectionId) {

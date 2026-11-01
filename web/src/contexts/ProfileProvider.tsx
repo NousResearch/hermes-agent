@@ -37,7 +37,33 @@ import {
  * pages. We now sync the switcher when the sticky active profile differs from
  * the dashboard process on load, and ProfilesPage updates the switcher when
  * you click "Set as active".
+ *
+ * Persistence: the selection is mirrored to localStorage so a bare page
+ * reload / re-navigation without `?profile=` in the URL does NOT silently
+ * fall back to the dashboard's own profile. Without this, a destructive
+ * action (gateway restart) fired right after a reload could target the
+ * wrong profile's gateway while the switcher still visually showed the
+ * intended one moments before the reload (#profile-scope-restart-footgun).
  */
+const MANAGEMENT_PROFILE_STORAGE_KEY = "hermes.dashboard.managementProfile";
+
+function readStoredProfile(): string {
+  try {
+    return localStorage.getItem(MANAGEMENT_PROFILE_STORAGE_KEY) ?? "";
+  } catch {
+    return ""; // localStorage unavailable (private mode, disabled storage): fall back to URL/default
+  }
+}
+
+function writeStoredProfile(name: string): void {
+  try {
+    if (name) localStorage.setItem(MANAGEMENT_PROFILE_STORAGE_KEY, name);
+    else localStorage.removeItem(MANAGEMENT_PROFILE_STORAGE_KEY);
+  } catch {
+    // best-effort only — persistence is a convenience, never a hard requirement
+  }
+}
+
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { pathname } = useLocation();
@@ -45,12 +71,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const [currentProfile, setCurrentProfile] = useState("default");
   const bootstrapProfile = dashboardInitialProfile();
 
-  // An explicit URL wins; profile-less deep links inherit the unified-launch
+  // Precedence: an explicit URL param (deep link / in-app nav) > the last
+  // stored selection (survives a bare reload) > the unified-launch bootstrap
   // preselection injected by the server. Afterwards state leads and the URL
-  // follows.
-  const [profile, setProfileState] = useState(
-    () => initialProfileScope(searchParams, bootstrapProfile),
-  );
+  // follows. The stored selection is a fallback only: it must never mask a
+  // scope the URL or the bootstrap payload already named.
+  const [profile, setProfileState] = useState(() => {
+    const urlScope = searchParams.get("profile");
+    if (urlScope !== null) return urlScope;
+    return readStoredProfile() || initialProfileScope(searchParams, bootstrapProfile);
+  });
 
   // A profile param that CHANGED (e.g. the Profiles page's "Manage skills &
   // tools" linking to /skills?profile=X) is an explicit scope request and
@@ -63,6 +93,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     setSeenUrlProfile(urlProfile);
     if (urlProfile !== null && urlProfile !== profile) {
       setProfileState(urlProfile);
+      // An explicit URL scope is a deliberate selection: persist it so a
+      // subsequent reload without ?profile= keeps targeting the same profile.
+      writeStoredProfile(urlProfile);
     }
   }
 
@@ -100,10 +133,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         const active = info.active || "default";
         setCurrentProfile(current);
 
-        // Explicit URL and unified-launch bootstrap scopes win. Without
-        // either, align the switcher with the sticky active profile so Chat
-        // and management pages match what Profiles shows as "active".
+        // Explicit URL and unified-launch bootstrap scopes win, and so does a
+        // profile already restored from localStorage (the user's last explicit
+        // choice for this browser) — otherwise a returning user editing profile
+        // B would get silently bounced back to the sticky "active" profile on
+        // every reload. Only align to "active" when none of those named a
+        // scope, matching the original cold-start behavior.
         if (
+          !profile &&
           shouldAdoptActiveProfile(
             urlProfile,
             bootstrapProfile,
@@ -113,6 +150,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         ) {
           setManagementProfile(active);
           setProfileState(active);
+          writeStoredProfile(active);
         }
       })
       .catch(() => {});
@@ -127,6 +165,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     (name: string) => {
       setManagementProfile(name);
       setProfileState(name);
+      writeStoredProfile(name);
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);

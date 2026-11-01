@@ -346,6 +346,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
+    rememberConnections: (record: Record<string, string>) =>
+      ipcRenderer.invoke('hermes:profile:connections:remember', record),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting

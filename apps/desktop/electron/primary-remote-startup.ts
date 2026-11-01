@@ -53,6 +53,8 @@ export function createPrimaryRemoteConnection<State extends object>(
 interface PrimaryRemoteStartupOptions<State extends object> {
   profile: string
   restoreRememberedProfile: () => boolean
+  /** The profile this connection itself last ran, mirrored from the renderer. */
+  connectionProfile?: (connectionId: string | undefined) => null | string | undefined
   signal?: AbortSignal
   assertCurrentAttempt: () => void
   advanceBootProgress: (phase: string, message: string, progress: number) => Promise<void>
@@ -68,6 +70,42 @@ interface PrimaryRemoteStartupOptions<State extends object> {
   }) => void
   logs: () => string[]
   windowState: () => State
+}
+
+/**
+ * The served profile a primary should boot as when the inherited one is not
+ * served: null keeps `active`. Same ladder as the renderer's
+ * startupProfileForConnection, so main and the window land on one profile.
+ */
+export function servedStartupProfile(
+  active: string,
+  remembered: null | string | undefined,
+  profiles: Array<{ name: string }>
+): null | string {
+  const names = new Set(profiles.map(profile => profile.name))
+
+  if (names.has(active)) {
+    return null
+  }
+
+  if (remembered && names.has(remembered)) {
+    return remembered
+  }
+
+  return names.has('default') ? 'default' : (profiles[0]?.name ?? null)
+}
+
+/** A complete profile listing, or null: a failed or partial read proves nothing. */
+function servedProfiles(listing: unknown): Array<{ name: string }> | null {
+  const profiles = (listing as { profiles?: unknown } | null)?.profiles
+
+  if (!Array.isArray(profiles) || profiles.length === 0) {
+    return null
+  }
+
+  return profiles.every(profile => typeof profile?.name === 'string' && profile.name.trim())
+    ? (profiles as Array<{ name: string }>)
+    : null
 }
 
 /** Resolve a stale last-used profile against the gateway we actually connected to. */
@@ -102,16 +140,14 @@ export async function connectPrimaryRemote<State extends object>(
 
     options.signal?.throwIfAborted()
     options.assertCurrentAttempt()
-    const profiles = (listing as { profiles?: Array<{ name?: string }> } | null)?.profiles
+    const profiles = servedProfiles(listing)
 
-    if (
-      Array.isArray(profiles) &&
-      profiles.every(profile => typeof profile?.name === 'string' && profile.name.trim()) &&
-      profiles.some(profile => profile?.name === 'default') &&
-      !profiles.some(profile => profile?.name === options.profile) &&
-      options.restoreRememberedProfile()
-    ) {
-      restoredProfile = 'default'
+    const target =
+      profiles &&
+      servedStartupProfile(options.profile, options.connectionProfile?.(remote.connectionId), profiles)
+
+    if (target && options.restoreRememberedProfile()) {
+      restoredProfile = target
       options.onProfileRestored(restoredProfile)
     }
   }

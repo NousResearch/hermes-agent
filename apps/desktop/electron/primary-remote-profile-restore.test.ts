@@ -17,19 +17,33 @@ const remote = {
   token: 'placeholder'
 }
 
-test('only a successful authoritative deletion verdict replaces implicit workspace memory', async ({ onTestFinished }) => {
+test('only a successful authoritative roster moves the primary, onto a profile that gateway serves', async ({
+  onTestFinished
+}) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-profile-restore-'))
   const preferencePath = path.join(home, 'active-profile.json')
   const preferences = createDesktopProfilePreferences(preferencePath)
-  onTestFinished(() => { fs.unlinkSync(preferencePath); fs.rmdirSync(home) })
+  onTestFinished(() => fs.rmSync(home, { recursive: true, force: true }))
 
   const cases = [
     { name: 'deleted', listing: { profiles: [{ name: 'default' }] }, want: 'default' },
     { name: 'still exists', listing: { profiles: [{ name: 'default' }, { name: 'work' }] }, want: 'work' },
+    {
+      name: 'connection memory served',
+      listing: { profiles: [{ name: 'default' }, { name: 'lab' }] },
+      remembered: 'lab',
+      want: 'lab'
+    },
+    {
+      name: 'connection memory not served',
+      listing: { profiles: [{ name: 'default' }] },
+      remembered: 'lab',
+      want: 'default'
+    },
+    { name: 'no default', listing: { profiles: [{ name: 'other' }] }, want: 'other' },
     { name: 'empty', listing: { profiles: [] }, want: 'work' },
     { name: 'malformed', listing: {}, want: 'work' },
     { name: 'partial roster', listing: { profiles: [{ name: 'default' }, {}] }, want: 'work' },
-    { name: 'no default', listing: { profiles: [{ name: 'other' }] }, want: 'work' },
     { name: 'failed read', listing: new Error('offline'), want: 'work' },
     { name: 'explicit route or destination override', allow: false, want: 'work' },
     { name: 'destination override added during probe', destinationChanged: true, want: 'work' },
@@ -39,6 +53,7 @@ test('only a successful authoritative deletion verdict replaces implicit workspa
 
   for (const row of cases) {
     preferences.remember('work')
+    preferences.rememberConnectionProfiles(row.remembered ? { remote: row.remembered, other: 'work' } : {})
     let allow = row.allow !== false
     const pin = new PrimaryProfilePin()
     pin.pin('work')
@@ -48,6 +63,7 @@ test('only a successful authoritative deletion verdict replaces implicit workspa
       {
         profile: 'work',
         restoreRememberedProfile: () => allow,
+        connectionProfile: preferences.connectionProfile,
         assertCurrentAttempt: () => undefined,
         advanceBootProgress: async () => undefined,
         waitForRemote: async () => undefined,
@@ -63,7 +79,6 @@ test('only a successful authoritative deletion verdict replaces implicit workspa
         },
         onProfileRestored: profile => {
           pin.pin(profile)
-          preferences.remember(profile)
         },
         updateBootProgress: () => undefined,
         logs: () => [],
@@ -72,11 +87,25 @@ test('only a successful authoritative deletion verdict replaces implicit workspa
     )
 
     assert.equal(pin.booted, row.want, row.name)
-    assert.equal(preferences.readActive(), row.want, row.name)
-    assert.equal(connection.profile, row.want === 'default' ? 'default' : undefined, row.name)
+    assert.equal(connection.profile, row.want === 'work' ? undefined : row.want, row.name)
+    // The legacy profile is this machine's; a remote that lacks it never rewrites it.
+    assert.equal(preferences.readActive(), 'work', row.name)
     assert.equal(connection.baseUrl, 'https://offline.invalid')
     assert.equal(connection.connectionId, 'remote')
   }
+})
+
+test('connection memory is pruned with its connection and ignores invalid names', ({ onTestFinished }) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-profile-memory-'))
+  const preferences = createDesktopProfilePreferences(path.join(home, 'active-profile.json'))
+  onTestFinished(() => fs.rmSync(home, { recursive: true, force: true }))
+
+  preferences.rememberConnectionProfiles({ lab: 'work', bad: '../etc', other: 'default' })
+  assert.equal(preferences.connectionProfile('lab'), 'work')
+  assert.equal(preferences.connectionProfile('bad'), null)
+  preferences.connectionRemoved('lab')
+  assert.equal(preferences.connectionProfile('lab'), null)
+  assert.equal(preferences.connectionProfile('other'), 'default')
 })
 
 test('a superseded or aborted roster probe cannot publish or mutate the primary profile', async () => {

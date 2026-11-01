@@ -102,6 +102,14 @@ describe('Settings > Run onboarding again', () => {
     expect($introCopy.get()).toBe('playing')
   })
 
+  it('starts onboarding when the main-window opener is temporarily unavailable', async () => {
+    $onboardingChatOpener.set(null)
+
+    await runAgain()
+
+    expect(calls.find(([method]) => method === 'onboarding.start')?.[1]).toMatchObject({ rerun: true })
+  })
+
   it("puts the user's layout and window size back when the run ends", async () => {
     const { mine } = await runAgain()
 

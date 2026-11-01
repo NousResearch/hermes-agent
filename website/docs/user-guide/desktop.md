@@ -192,7 +192,9 @@ Then, in the Webapp of the gateway you want to start from:
 
 Chats, profiles, sessions, settings, scheduled jobs and skills always come with the grant.
 Unchecked access stays closed even through a socket. A socket opened under the grant must
-match what was allowed. These choices close the Webapp's own terminal, file, bot-screen and
+match what was allowed. On the gateway's own socket, shell and CLI commands need terminal access,
+except Bot Mode's profile edits. Screen and voice commands need theirs, and the wake word counts
+as voice. These choices close the Webapp's own terminal, file, bot-screen and
 voice panels. They do not limit what an agent on that machine can do in a chat, because its
 tools run there with that profile's settings.
 

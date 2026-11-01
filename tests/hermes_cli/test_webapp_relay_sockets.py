@@ -120,26 +120,52 @@ def test_revoking_the_grant_closes_the_relayed_socket(live_gateway):
         assert (closed.value.code, closed.value.reason) == (4401, "Gateway relay revoked")
 
 
-def _rpc(ws, rid, method):
-    ws.send_text(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": {}}))
+def _rpc(ws, rid, method, params=None):
+    ws.send_text(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}))
     while (frame := ws.receive_json()).get("id") != rid:
         pass  # events (gateway.ready, ...) arrive between replies
     return frame
 
 
-@pytest.mark.parametrize("scopes", [(), ("display",)])
-def test_a_relayed_gateway_socket_reaches_screen_and_voice_methods_only_with_their_scope(live_gateway, scopes):
-    # The gateway's own socket carries the Bot Screen's grabs and takeover and the voice recorder as
-    # RPCs, so a grant without those scopes must not reach them there either.
+def _refused(frame) -> bool:
+    error = frame.get("error") or {}
+    return error.get("code") == 4030 and "not granted" in error.get("message", "")
+
+
+#: A call each optional scope must open: the scope, the method and its params.
+_SCOPED_CALLS = (
+    ("terminal", "shell.exec", {"command": "echo relayed"}),
+    ("terminal", "cli.exec", {"argv": ["config", "set", "terminal.backend", "local"]}),
+    ("display", "display.thumbnail", {}), ("display", "display.lease.acquire", {}),
+    ("voice", "voice.record", {}), ("voice", "wake.start", {}))
+
+
+@pytest.mark.parametrize("scopes", [(), ("display",), ("terminal",)])
+def test_a_relayed_gateway_socket_reaches_scoped_methods_only_with_their_scope(live_gateway, scopes):
+    # The gateway's own socket also runs shell and CLI commands, drives the Bot Screen and records
+    # voice, so a grant without those scopes must not reach them there either.
     hub, _there, row = _pair_live(live_gateway, scopes=scopes)
     with hub.websocket_connect(_relayed_url(hub, row, "/api/ws", "gateway"), headers=ORIGIN) as ws:
-        for rid, method in enumerate(("display.thumbnail", "display.lease.acquire", "voice.record"), start=1):
-            if method.split(".")[0] in scopes:
-                if method == "display.thumbnail":  # read-only, so it may run here
-                    assert _rpc(ws, rid, method).get("error", {}).get("code") != 4030
-                continue
-            error = _rpc(ws, rid, method).get("error") or {}
-            assert error.get("code") == 4030 and "not granted" in error.get("message", ""), (method, error)
+        for rid, (scope, method, params) in enumerate(_SCOPED_CALLS, start=1):
+            if scope not in scopes:
+                assert _refused(_rpc(ws, rid, method, params)), method
+        if "display" in scopes:  # read-only, so it may run here
+            assert not _refused(_rpc(ws, 90, "display.thumbnail"))
+        if "terminal" in scopes:
+            ran = _rpc(ws, 91, "shell.exec", {"command": "echo relayed"})
+            assert ran.get("result", {}).get("stdout", "").strip() == "relayed", ran
+
+
+def test_a_relayed_gateway_socket_without_terminal_access_still_edits_bot_profiles(live_gateway):
+    # Bot Mode describes, deletes and resets a bot's profile through cli.exec. The profile and
+    # settings routes every grant reaches make the same changes, so those command lines stay open.
+    hub, _there, row = _pair_live(live_gateway, scopes=())
+    with hub.websocket_connect(_relayed_url(hub, row, "/api/ws", "gateway"), headers=ORIGIN) as ws:
+        edit = _rpc(ws, 1, "cli.exec", {"argv": ["profile", "describe", "no-such-bot", "--text", "Helps"]})
+        assert edit.get("result", {}).get("blocked") is False, edit  # the CLI ran it
+        for rid, argv in enumerate((["profile", "describe", "no-such-bot", "--text", "Helps", "--yes"],
+                                    ["profile", "delete", "--help", "--yes"], ["--version"]), start=2):
+            assert _refused(_rpc(ws, rid, "cli.exec", {"argv": argv})), argv
 
 
 def test_a_socket_opened_under_a_grant_needs_that_grants_scope(relay_app):

@@ -26,8 +26,25 @@ def yn(b: bool) -> str:
 
 
 def section_cfg(cfg: dict, section: str) -> dict:
-    """``cfg["secrets"][section]`` or ``{}``."""
-    return (cfg.get("secrets") or {}).get(section) or {}
+    """``cfg["secrets"][section]``, or ``{}`` when either level is missing or not a mapping."""
+    secrets = cfg.get("secrets")
+    value = secrets.get(section) if isinstance(secrets, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def section_cfg_for_write(cfg: dict, section: str) -> dict:
+    """``cfg["secrets"][section]`` as a live mapping, replacing a non-mapping level with ``{}``.
+
+    The write-side twin of :func:`section_cfg`: a malformed ``secrets:`` or
+    ``secrets.<section>`` value is overwritten instead of crashing ``setdefault``.
+    """
+    secrets = cfg.get("secrets")
+    if not isinstance(secrets, dict):
+        secrets = cfg["secrets"] = {}
+    value = secrets.get(section)
+    if not isinstance(value, dict):
+        value = secrets[section] = {}
+    return value
 
 
 def cfg_str(cfg: dict, key: str) -> str:
@@ -181,7 +198,7 @@ def prompt_index(console: Console, prompt: str, count: int, *,
 def disable_secret_source(section: str, message: str) -> int:
     """Set ``secrets.<section>.enabled = False`` in config.yaml and print ``message``."""
     cfg = load_config()
-    cfg.setdefault("secrets", {}).setdefault(section, {})["enabled"] = False
+    section_cfg_for_write(cfg, section)["enabled"] = False
     save_config(cfg)
     Console().print(message)
     return 0

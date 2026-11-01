@@ -28,6 +28,13 @@ export const jaProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuAppearance: '外観',
   noColor: '色なし',
   menuAddFolder: 'フォルダを追加',
+  menuRemoveFolder: 'フォルダを外す…',
+  removeFolderTitle: 'フォルダを外す',
+  removeFolderDesc:
+    'このプロジェクトからフォルダを外します。ファイルは削除されません。そのフォルダで開始したチャットはこのプロジェクトに表示されなくなります。',
+  removeFolderNewPrimary: path => `${path} が主フォルダになります。`,
+  removeFolderLast: 'プロジェクトには少なくとも1つのフォルダが必要です。',
+  removeFolderFailed: 'フォルダを外せませんでした',
   menuSetActive: 'アクティブに設定',
   menuDelete: '削除',
   reveal: 'フォルダで表示',

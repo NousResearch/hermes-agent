@@ -119,6 +119,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**agentmail**](../user-guide/skills/optional/email/email-agentmail.md) | Use when an agent needs AgentMail CLI email inboxes. |
+| [**cooper-email**](../user-guide/skills/optional/email/email-cooper-email.md) | Give the agent its own email inbox to send and receive. |
 
 ## finance
 

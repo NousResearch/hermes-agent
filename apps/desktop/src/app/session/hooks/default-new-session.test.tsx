@@ -87,6 +87,7 @@ function mountSlashCommand(startFreshSessionDraft: () => void) {
       requestGateway: vi.fn(async () => ({})),
       copy: {},
       getRoutedStoredSessionId: () => null,
+      getRouteToken: () => 'route',
       getRuntimeIdForStoredSession: () => null
     } as never)
   )

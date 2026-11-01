@@ -9,7 +9,7 @@ facade (siblings never form a module-level cycle) so the seam every test patches
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Dict
+from typing import TYPE_CHECKING, Any, Callable, Dict
 
 if TYPE_CHECKING:
     from agent.auxiliary_client import _ResolveRequest, _ResolveResult
@@ -20,6 +20,30 @@ logger = logging.getLogger("agent.auxiliary_client")
 # contract test_auxiliary_client_resolve_dedup.py pins for every fall-through).
 _LOGGED_MINIMAX_ABSENT_KEYS: set = set()
 _LOGGED_MINIMAX_UNEXPECTED_KEYS: set = set()
+
+
+def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
+    """Registered profile's own client for an ``api_key`` aux route, or ``None``.
+
+    Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
+    and the ``external_process`` branch below: a profile whose wire protocol is not
+    OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
+    A profile that raises is logged and skipped — a third-party plugin can only fail to
+    provide a client, never take the auxiliary resolution down."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        logger.warning("resolve_provider_client: provider profile %r failed to create an "
+                       "auxiliary client; falling back to the standard client path",
+                       provider, exc_info=True)
+        return None
 
 
 def _resolve_vertex_arm(req: _ResolveRequest) -> _ResolveResult:

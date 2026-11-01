@@ -21,6 +21,7 @@ def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypat
     monkeypatch.setenv('RUNTIME_TEST_SENTINEL', 'retained')
     monkeypatch.setattr(gateway_windows, 'windowless_gateway_restart_spec',
                         lambda command: (command, None, {'RUNTIME_TEST_OVERLAY': '1'}))
+    monkeypatch.setattr(start, 'start_gateway_job', lambda *args, **kwargs: None)
     captured = {}
     child = SimpleNamespace(pid=123)
     def spawn(command, **kwargs):

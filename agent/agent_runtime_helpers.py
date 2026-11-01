@@ -2490,12 +2490,10 @@ def switch_model(
 def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
     """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
     try:
+        from agent.inline_tool_executors import tool_hook_ids
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            function_name, function_args, **tool_hook_ids(agent, effective_task_id, tool_call_id),
             middleware_trace=list(middleware_trace),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
@@ -2568,6 +2566,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                platform=getattr(agent, "platform", None) or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),

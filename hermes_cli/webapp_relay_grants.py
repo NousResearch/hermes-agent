@@ -67,9 +67,10 @@ _SOCKET_TICKET_SCOPES = {"host-terminal": "terminal", "speak-stream": "voice", "
 _SOCKET_PATH_SCOPES = {"/api/pty": "terminal", "/api/console": "terminal", "/api/host-terminal": "terminal",
                        "/api/display/ws": "display", "/api/audio/speak-stream": "voice",
                        "/api/audio/transcribe-stream": "voice"}
-#: JSON-RPC namespaces on a relayed ``/api/ws`` each optional scope opens: the bot screens and voice its
-#: routes and sockets carry also answer over the gateway's own socket (screen grabs, takeover, recording).
-_RPC_SCOPES = {"display": "display", "voice": "voice"}
+#: JSON-RPC namespaces on a relayed ``/api/ws`` each optional scope opens: the gateway's own socket
+#: also runs shell and CLI commands, drives the bot screens and records voice (the recorder and the
+#: wake word), none of it in a chat turn.
+_RPC_SCOPES = {"shell": "terminal", "cli": "terminal", "display": "display", "voice": "voice", "wake": "voice"}
 _SELF_REVOKE = re.compile(r"^/api/webapp/relay/grants/([A-Za-z0-9_-]{1,64})$")
 
 
@@ -336,12 +337,41 @@ def relay_grant_of(ws) -> Optional[str]:
     return getattr(ws, "_hermes_relay_grant", None) if ws is not None else None
 
 
-def relay_rpc_refusal(ws, method) -> Optional[str]:
-    """Why JSON-RPC *method* may not run on *ws*, a socket another gateway relays here, or None (also
-    for a socket nobody relays): its namespace needs a scope the grant lacks."""
+def _profile_name(arg: str) -> bool:
+    from hermes_cli.profiles import validate_profile_name
+    try:
+        validate_profile_name(arg)
+    except ValueError:
+        return False
+    return True
+
+
+def _any_text(_arg: str) -> bool:
+    return True
+
+
+#: ``cli.exec`` command lines open without terminal access: Bot Mode's profile edits, which the
+#: profile and settings routes every grant reaches make as well. A word is itself, a test any argument.
+_PROFILE_EDITS = (("profile", "describe", _profile_name, "--text", _any_text),
+                  ("profile", "delete", _profile_name, "--yes"),
+                  ("--profile", _profile_name, "config", "unset", "model"))
+
+
+def _profile_edit(argv) -> bool:
+    return isinstance(argv, list) and any(
+        len(argv) == len(shape) and all(
+            isinstance(arg, str) and (arg == want if isinstance(want, str) else want(arg))
+            for arg, want in zip(argv, shape))
+        for shape in _PROFILE_EDITS)
+
+
+def relay_rpc_refusal(ws, method, params=None) -> Optional[str]:
+    """Why JSON-RPC *method* with *params* may not run on *ws*, a socket another gateway relays here, or
+    None (also for a socket nobody relays): its namespace needs a scope the grant lacks, unless it is
+    one of Bot Mode's profile edits."""
     grant_id = relay_grant_of(ws)
     needed = _RPC_SCOPES.get(str(method or "").split(".", 1)[0]) if grant_id is not None else None
-    if needed is None:
+    if needed is None or (method == "cli.exec" and isinstance(params, dict) and _profile_edit(params.get("argv"))):
         return None
     home = getattr(getattr(getattr(ws, "app", None), "state", None), "webapp_home", None)
     grant = grant_for(home, grant_id) if home is not None else None

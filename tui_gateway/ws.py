@@ -392,7 +392,8 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     from hermes_cli.process_identity import serving_local_desktop
     from hermes_cli.webapp_relay_grants import relay_rpc_refusal
     # A socket another gateway relays here reaches a scope's methods only under a grant with that scope.
-    if (refused := relay_rpc_refusal(getattr(transport, "ws", None), req_method)) is not None:
+    params = req.get("params") if isinstance(req, dict) else None
+    if (refused := relay_rpc_refusal(getattr(transport, "ws", None), req_method, params)) is not None:
         return {"jsonrpc": "2.0", "error": {"code": 4030, "message": refused},
                 "id": req.get("id") if isinstance(req, dict) else None}
     from tui_gateway.server_requests import resolve_pinned_response

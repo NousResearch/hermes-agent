@@ -717,7 +717,9 @@ def _kanban_task_title() -> Optional[str]:
     if not task_id or not is_dispatcher_owned_worker_context():
         return None
     try:
-        from hermes_cli import kanban_db, kanban_db_connect
+        from hermes_cli.kanban_backend import get_kanban_db as _get_kb, get_kanban_db_connect as _get_kbc
+        kanban_db = _get_kb()
+        kanban_db_connect = _get_kbc()
         from hermes_state import SessionDB
         with kanban_db_connect.connect_closing() as conn:
             task = kanban_db.get_task(conn, task_id)

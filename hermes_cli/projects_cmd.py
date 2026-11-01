@@ -215,7 +215,9 @@ def _cmd_bind_board(args, conn, proj) -> str:
         return f"Unbound board from {proj.slug}"
     if proj.primary_path:  # best-effort: point the bound board's default_workdir at the primary repo
         try:
-            from hermes_cli import kanban_db as kb
+            from hermes_cli.kanban_backend import get_kanban_db as _get_kb
+
+            kb = _get_kb()
 
             slug = kb._normalize_board_slug(args.board)
             if slug and (slug == kb.DEFAULT_BOARD or kb.board_exists(slug)):

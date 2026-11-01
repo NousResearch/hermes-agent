@@ -58,8 +58,9 @@ def _record_kanban_budget_exhausted(
     from multiple exit paths.
     """
     try:
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_cli.kanban_backend import lazy_kanban_db as _lazy_kb, lazy_kanban_db_connect as _lazy_kbc
+        _kb = _lazy_kb()
+        _kbc = _lazy_kbc()
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:

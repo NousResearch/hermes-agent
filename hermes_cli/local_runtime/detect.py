@@ -13,7 +13,8 @@ import urllib.request
 from dataclasses import dataclass
 
 # Always 127.0.0.1 — resolving localhost costs ~2s/request on Windows.
-DEFAULT_PROBE_PORTS = (8080,)  # llama-server default; managed port comes from config
+# llama-server defaults: 9931 since ggml-org/llama.cpp#30159, 8080 before it. Managed port comes from config.
+DEFAULT_PROBE_PORTS = (8080, 9931)
 
 
 @dataclass

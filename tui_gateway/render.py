@@ -7,20 +7,39 @@ everything returns None and the TUI falls back to its own markdown.tsx.
 from __future__ import annotations
 
 import importlib
+import inspect
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _accepts_cols(fn) -> bool:
+    """Whether ``fn`` takes the ``cols`` keyword (explicitly, or via ``**kwargs``).
+
+    An unintrospectable callable is assumed to take it; the caller's exception
+    handling then decides."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    return "cols" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _rich(name: str, *args, cols: int):
-    """Call ``agent.rich_output.<name>(*args, cols=cols)``; retry without ``cols`` for older
-    signatures; None when the module is missing or the renderer fails."""
+    """Call ``agent.rich_output.<name>(*args, cols=cols)`` — without ``cols`` for an older
+    signature; None when the module is missing or the renderer fails. The ``cols`` decision
+    is made from the signature, never by catching a ``TypeError`` (which a renderer's own
+    body may raise) and re-invoking it."""
     try:
         fn = getattr(importlib.import_module("agent.rich_output"), name)
     except (ImportError, AttributeError):
         return None
     try:
-        return fn(*args, cols=cols)
-    except TypeError:
-        return fn(*args)
+        return fn(*args, cols=cols) if _accepts_cols(fn) else fn(*args)
     except Exception:
+        logger.debug("rich_output.%s failed; TUI falls back to markdown", name, exc_info=True)
         return None
 
 

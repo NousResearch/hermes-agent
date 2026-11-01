@@ -20,8 +20,8 @@ class TestPluginAPISecretScopeProductionMount:
     ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
     dependency in isolation; this closes the actual reported surface end-to-end and pins
     that the launch profile and a ``?profile=`` request read distinct secrets, that the
-    request profile does not leak back into the launch profile, and that an unknown
-    profile is rejected in the dependency before the handler runs.
+    request profile does not leak back into the launch profile, and that a plugin-owned
+    ``profile`` query value reaches its handler without changing host scope.
     """
 
     _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
@@ -97,8 +97,10 @@ class TestPluginAPISecretScopeProductionMount:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "key": "sk-launch-a"}
 
-    def test_unknown_profile_rejected_before_handler(self):
-        # The dependency raises HTTPException(404) before the handler runs, so this is a
-        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
-        resp = self._probe("ghost")
-        assert resp.status_code == 404
+    def test_plugin_profile_query_reaches_handler_without_changing_host_scope(self):
+        # ``profile`` belongs to the plugin route. An unrecognised value must not make
+        # the host secret-scope dependency reject the request before the handler can
+        # apply its own profile semantics.
+        resp = self._probe("all")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a", "profile": "all"}

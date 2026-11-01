@@ -1,0 +1,42 @@
+manifest_version: 1
+
+name: adspirer
+description: >-
+  Turn your advertising strategy into live campaigns. Create, launch, and
+  optimize ads across Google, Meta, Amazon, LinkedIn, TikTok, and ChatGPT Ads
+  with Adspirer.
+source: https://www.adspirer.com/docs/mcp
+
+# Vendor-hosted Streamable HTTP with native MCP OAuth and dynamic client
+# registration. No local bridge, API key, or bootstrap process is required.
+transport:
+  type: http
+  url: https://mcp.adspirer.com/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - adspirer
+  hosts:
+    - adspirer.com
+    - adspirer.ai
+
+post_install: |
+  Requires an Adspirer account and access to the advertising accounts you
+  want to manage. On first connection, authorize Adspirer in your browser,
+  or run `hermes mcp login adspirer`.
+  Connect advertising accounts at https://adspirer.ai/connections.
+
+  Tool usage is subject to your Adspirer plan and advertising-platform
+  permissions and API limits. Ad spend is billed by the advertising platforms.
+  Tools can create, launch, and edit real campaigns and advertising budgets.
+  Review proposed changes before execution. This MCP entry does not install
+  the separate Adspirer plugin's workflow skills; skill-based confirmation
+  instructions are not an enforcement boundary provided by this manifest.
+
+  Review tool access with `hermes mcp configure adspirer`, then start a new
+  session or run /reload-mcp. First ask for connected accounts and a read-only
+  performance report. Documentation: https://www.adspirer.com/docs/mcp
+  Support: support@adspirer.com

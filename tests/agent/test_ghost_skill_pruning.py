@@ -198,13 +198,13 @@ class TestProtectedSkillPrune:
         msgs_active = (
             self._filler(2)
             + [{"role": "user", "content": "Execute the readiness audit"}]
-            + _skill_view_pair("call_active", "always-verify", size=5000)
+            + _skill_view_pair("call_active", "agent-readiness-audit", size=5000)
             + tool_rounds_active
         )
         # Positive polarity: 14 assistant/tool rows (> _SKILL_PRUNE_RECENT_WINDOW=10) after skill_view
         # within the SAME active user turn -> skill body stays intact.
         res_active, _ = c._prune_old_tool_results(msgs_active, protect_tail_count=4)
-        assert res_active[4]["content"].startswith("# always-verify instructions")
+        assert res_active[4]["content"].startswith("# agent-readiness-audit instructions")
         assert SKILL_PRUNED_MARKER_PREFIX not in res_active[4]["content"]
 
         # Negative polarity: a new user turn arrives and runs >10 messages without naming the skill ->
@@ -215,7 +215,7 @@ class TestProtectedSkillPrune:
             + tool_rounds_active
         )
         res_next, _ = c._prune_old_tool_results(msgs_next_turn, protect_tail_count=4)
-        assert _skill_pruned_marker("always-verify") in res_next[4]["content"]
+        assert _skill_pruned_marker("agent-readiness-audit") in res_next[4]["content"]
 
     def test_synthetic_mid_turn_user_row_does_not_evict_active_turn_skill(self):
         """Mid-turn runtime injections ([Your active task list...], [IMPORTANT: Context...]) have role=='user'

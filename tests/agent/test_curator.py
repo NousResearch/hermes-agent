@@ -1158,3 +1158,19 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     assert not (root / "skills" / ".curator_state").exists(), "thread wrote the ROOT home's state"
     state = json.loads((profile / "skills" / ".curator_state").read_text(encoding="utf-8-sig"))
     assert state["last_run_summary"].endswith("llm: stub")
+
+
+def test_review_prompt_sets_no_archive_quota(curator_env):
+    """The consolidation prompt must not impose an archive quota (#126703).
+
+    ``fewer than 10 archives means you stopped too early`` applied whatever
+    the library's size, so on a small or already-consolidated library the
+    model archived healthy skills just to reach the count. Completion is now
+    scoped to every cluster being decided on its merits, zero consolidations
+    is named as a valid result, and 'keep' no longer requires the skill to
+    already be a class-level umbrella.
+    """
+    prompt = curator_env["curator"].CURATOR_REVIEW_PROMPT
+    assert "fewer than 10" not in prompt
+    assert "legitimate decision ONLY" not in prompt
+    assert "zero consolidations is a valid result" in prompt

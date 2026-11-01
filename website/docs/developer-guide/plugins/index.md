@@ -886,9 +886,11 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
-   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
-   works; `**kwargs` is how you opt into the full, additively growing context.
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `session_key`,
+   `user_task`, `parent_agent`, ...) and only forwards the ones your signature names, so
+   `def handler(args)` works; `**kwargs` is how you opt into the full, additively growing context.
+   `session_key` is the routing key of the calling chat (the value `ctx.inject_message(session_key=...)`
+   takes), or `""` when the call is not inside a gateway session.
 
 ## Step 5: Write the registration
 

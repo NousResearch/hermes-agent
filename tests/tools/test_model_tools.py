@@ -198,6 +198,38 @@ class TestHandleFunctionCall:
         assert post_call[1]["status"] == "blocked"
         assert post_call[1]["error_type"] == "edit_approval_denied"
 
+    def test_plugin_tool_handler_receives_the_calling_session_key(self):
+        """A handler that declares ``session_key`` gets the bound route key; a narrow ``handle(args)``
+        handler is unaffected, and outside a bound session the key is empty."""
+        from gateway.session_context import scoped_session_key
+        from tools.registry import registry
+
+        seen = {}
+
+        def keyed(args, session_key="unset"):
+            seen["keyed"] = session_key
+            return json.dumps({"ok": True})
+
+        def narrow(args):
+            seen["narrow"] = True
+            return json.dumps({"ok": True})
+
+        schema = {"type": "object", "properties": {}}
+        for name, handler in (("plugin_keyed_probe", keyed), ("plugin_narrow_probe", narrow)):
+            registry.register(name=name, toolset="probe", schema={"name": name, "description": name,
+                              "parameters": schema}, handler=handler)
+        try:
+            with scoped_session_key("agent:main:telegram:dm:42"):
+                assert json.loads(handle_function_call("plugin_keyed_probe", {})) == {"ok": True}
+                assert json.loads(handle_function_call("plugin_narrow_probe", {})) == {"ok": True}
+            assert seen["keyed"] == "agent:main:telegram:dm:42"
+            assert seen["narrow"] is True
+            assert json.loads(handle_function_call("plugin_keyed_probe", {})) == {"ok": True}
+            assert seen["keyed"] == ""
+        finally:
+            registry.deregister("plugin_keyed_probe")
+            registry.deregister("plugin_narrow_probe")
+
 
 # =========================================================================
 # Agent loop tools

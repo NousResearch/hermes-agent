@@ -425,12 +425,65 @@ class TestBridgeDispatch:
         assert err
 
 
-# ---------------------------------------------------------------------------
-# End-to-end via the real handle_function_call (smoke test).
-# ---------------------------------------------------------------------------
+    def test_unwrap_recovers_direct_tool_present_in_session(self):
+        """A provider may wrap an eager tool in tool_call despite its schema being direct."""
+        from tools.tool_search import resolve_underlying_call
+
+        name, args, err = resolve_underlying_call(
+            {"name": "terminal", "arguments": {"command": "echo hi"}},
+            session_tool_names={"terminal", "tool_call"},
+        )
+
+        assert (name, args, err) == (
+            "terminal",
+            {"command": "echo hi"},
+            None,
+        )
+
+    def test_unwrap_rejects_direct_tool_absent_from_session(self):
+        """Recovery must not widen the current session's authorized tool surface."""
+        from tools.tool_search import resolve_underlying_call
+
+        _, _, err = resolve_underlying_call(
+            {"name": "terminal", "arguments": {"command": "echo hi"}},
+            session_tool_names={"read_file", "tool_call"},
+        )
+
+        assert err is not None
+        assert "not available" in err
 
 
 class TestHandleFunctionCallIntegration:
+
+    def test_tool_call_recovers_eager_tool_present_in_session(self, monkeypatch):
+        """Bridge recovery re-enters normal dispatch with the eager tool identity."""
+        import model_tools
+
+        observed = {}
+
+        def _capture(name, args, original_args, ids, **kwargs):
+            observed.update(name=name, args=args, original_args=original_args)
+            return "recovered"
+
+        monkeypatch.setattr(model_tools, "_execute_tool", _capture)
+
+        result = model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={
+                "calls": [{
+                    "name": "terminal",
+                    "arguments": {"command": "printf hi"},
+                }],
+            },
+            enabled_tools=["terminal"],
+        )
+
+        assert result == "recovered"
+        assert observed == {
+            "name": "terminal",
+            "args": {"command": "printf hi"},
+            "original_args": {"command": "printf hi"},
+        }
 
     def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
         """Inline bridge results still complete the tool lifecycle."""

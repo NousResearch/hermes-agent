@@ -612,6 +612,11 @@ def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[I
     if unavailable:
         return None, {}, unavailable
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        # Some providers occasionally wrap a tool that was already exposed
+        # directly in this session. Recover that call without widening scope:
+        # callers that know the session surface must prove membership.
+        if session_tool_names is not None and name in frozenset(session_tool_names):
+            return name, raw_args, None
         return None, {}, not_deferrable_error(name, session_tool_names)
     return name, raw_args, None
 

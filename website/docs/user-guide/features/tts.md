@@ -515,6 +515,7 @@ stt:
   local:
     model: "base"             # tiny, base, small, medium, large-v3, turbo
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    command_timeout: 300      # seconds allowed for the local whisper CLI / HERMES_LOCAL_STT_COMMAND run
   groq:
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:

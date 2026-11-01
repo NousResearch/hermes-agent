@@ -11,6 +11,15 @@ alone deliberately — users' ``LANG``/``LC_*`` choices are respected.
 
 Stdlib only: entry points import this before ``harden_import_path()`` runs, so nothing
 here may pull in a Hermes package that a project-local directory could shadow.
+
+This module also runs a platform-independent guard on import,
+``harden_user_site_version()``, which drops any ``pythonX.Y/site-packages``
+directory from ``sys.path`` that belongs to a *different* Python minor
+version than the running interpreter. A stray directory like that (typically
+a ``PYTHONPATH``/user-site leak from the launching environment) can only
+ever hold incompatible compiled extensions, and Python reports the failure
+as a confusing "cannot import name '_imaging' from 'PIL'" deep inside
+whatever backend touches it first rather than a clear version mismatch.
 """
 
 from __future__ import annotations
@@ -19,6 +28,7 @@ import errno
 import importlib.abc
 import importlib.util
 import os
+import re
 import selectors
 import socket
 import sys
@@ -222,6 +232,18 @@ def install_happy_eyeballs_socket_connect() -> None:
         _patch_urllib3_create_connection(urllib3_connection)
     elif not any(isinstance(finder, _Urllib3ConnectionPatcher) for finder in sys.meta_path):
         sys.meta_path.insert(0, _Urllib3ConnectionPatcher())
+
+# Matches a complete ".../pythonX.Y/site-packages" path — captures (major,
+# minor) so it can be compared against the running interpreter's own
+# version. The two path components must be adjacent: a "pythonX.Y" segment
+# immediately followed by a "site-packages" segment. Anchoring on the full
+# pair (rather than checking "pythonX.Y/" and "site-packages" as
+# independent substrings anywhere in the path) avoids misfiring on paths
+# where the two happen to appear separately, e.g.
+# ".../python3.12/config/site-packages-notes".
+_PYVER_DIR_RE = re.compile(
+    r"python(\d+)\.(\d+)[\\/]site-packages(?=[\\/]|$)", re.IGNORECASE
+)
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -468,6 +490,48 @@ def export_scratch_tmp_env() -> None:
         pass  # a missing/unwritable home just leaves the system temp dir in place
 
 
+def harden_user_site_version() -> None:
+    """Drop any ``pythonX.Y/site-packages`` dir for the *wrong* interpreter
+    version out of ``sys.path``.
+
+    A long-lived server process (the gateway, the dashboard's ``tui_gateway``
+    backend, ...) can end up with a stray site-packages directory belonging
+    to a different Python minor version on its ``sys.path`` — e.g. a
+    ``PYTHONPATH``/user-site leak from the launching environment (a systemd
+    unit that doesn't scrub the operator's shell env, a stale venv
+    activation). That directory can only ever contain compiled extension
+    modules the running interpreter cannot load (the ``.so`` ABI tag is
+    version-specific) — the import doesn't fail cleanly, it fails with a
+    confusing ``cannot import name '_imaging' from 'PIL'`` deep inside
+    whatever backend touched it first, because Python only reports the
+    missing submodule, not the version mismatch that caused it.
+
+    Removing any such directory up front means backend imports (PIL, etc.)
+    always resolve into the running interpreter's own, healthy
+    site-packages instead of silently shadowing into an incompatible one.
+    Never raises; a clean ``sys.path`` is a no-op.
+
+    Must run first in the module-level bootstrap sequence below, before
+    ``harden_import_path()`` or PM's ``activate_dependencies()`` do any of
+    their own ``sys.path`` surgery.
+    """
+    current = (sys.version_info.major, sys.version_info.minor)
+    try:
+        cleaned = []
+        changed = False
+        for entry in sys.path:
+            match = _PYVER_DIR_RE.search(entry)
+            if match and (int(match.group(1)), int(match.group(2))) != current:
+                changed = True
+                continue
+            cleaned.append(entry)
+        if changed:
+            sys.path[:] = cleaned
+    except Exception:
+        # Bootstrap must never crash an entry point.
+        pass
+
+
 # Apply on import — entry points just need ``import hermes_bootstrap``
 # (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
@@ -476,6 +540,12 @@ apply_windows_utf8_bootstrap()
 enable_windows_vt()
 suppress_platform_ver_console()
 install_never_free_environ()
+
+# Scrub any mismatched-Python-version site-packages dir off sys.path before
+# any backend module (PIL, etc.) can resolve an import into it, and before
+# harden_import_path()/PM's activate_dependencies() do their own sys.path
+# surgery below.
+harden_user_site_version()
 
 # Every entry point imports this module before its dependency graph.
 from pathlib import Path

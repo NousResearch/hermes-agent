@@ -748,8 +748,11 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
+                # Rich containers (lists/quotes) crop when soft_wrap disables their
+                # internal wrapping. Only plain text can delegate wrapping to the terminal.
+                soft_wrap = str(mode or "render").strip().lower() in {"raw", "strip"}
                 ChatConsole().print(_render_final_assistant_content(response, mode=mode),
-                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                                    style=_resp_text, soft_wrap=soft_wrap)
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(

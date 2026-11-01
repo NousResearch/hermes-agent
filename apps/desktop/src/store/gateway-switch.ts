@@ -24,6 +24,7 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
@@ -215,6 +216,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetDeadSessionPrune()
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
+  setSessionProfilesFailed([])
   setCronSessions([])
   invalidateCronJobsRequests()
   // The star map is a scan of the outgoing backend's skills and memory; an open view reloads it

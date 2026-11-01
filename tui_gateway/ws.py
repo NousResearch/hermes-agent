@@ -57,7 +57,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     path = None
     try:
         from gateway.scale_to_zero import dashboard_client_heartbeat_path
-        # Resolved here: the worker thread does not carry the caller's profile scope.
+        # The process's own home, whatever profile scope the socket runs in (the watcher reads it).
         path = dashboard_client_heartbeat_path()
         with _dashboard_client_touch_lock:
             if path in _dashboard_client_touch_pending:

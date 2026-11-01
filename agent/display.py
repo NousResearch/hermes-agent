@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.i18n import t
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
@@ -406,7 +406,9 @@ def _preview_todo_list(args: dict, _max_len: int) -> str:
 def _preview_shell(key: str):
     def _build(args: dict, max_len: int) -> str | None:
         command = args.get(key)
-        return None if command is None else _tail_trunc(summarize_shell_command(str(command)), max_len) or None
+        # Sanitize before summarizing: the spinner sits under the approval prompt and must not hide what it does.
+        return None if command is None else _tail_trunc(
+            summarize_shell_command(sanitize_command_for_display(str(command))), max_len) or None
     return _build
 
 

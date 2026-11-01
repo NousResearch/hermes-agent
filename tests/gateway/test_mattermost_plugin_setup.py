@@ -51,3 +51,14 @@ class TestMattermostHomeChannelClear:
         assert "MATTERMOST_HOME_CHANNEL" not in saved
 
 
+def test_security_hint_names_a_documented_user_id_lookup(monkeypatch):
+    """The profile dialog has no user ID; the hint must not send people there."""
+    saved, removed, shown = {}, [], []
+    _patch_setup_io(monkeypatch, _PROMPTS_BLANK, saved, removed, existing={})
+    monkeypatch.setattr(cli_output_mod, "print_info", lambda line, *_a, **_kw: shown.append(line))
+    interactive_setup()
+
+    out = "\n".join(shown)
+    assert "User Management" in out
+    assert "/api/v4/users/username/" in out
+    assert "click your avatar" not in out

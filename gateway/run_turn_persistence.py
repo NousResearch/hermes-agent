@@ -55,6 +55,49 @@ def _acp_launch(runner, source) -> bool:
 
 
 class GatewayTurnPersistenceMixin:
+    @staticmethod
+    def _is_intentional_silence(agent_result, response) -> bool:
+        try:
+            from gateway.response_filters import is_intentional_silence_agent_result
+            return is_intentional_silence_agent_result(agent_result, response)
+        except Exception:
+            return False
+
+    async def _record_room_silence_decision(
+        self, session_key, agent_result, silent, *, display_kind=None, reply_expected=None,
+    ):
+        """Bind recovery permission to this exact persisted final and active-turn token.
+
+        A raw persisted marker is not proof that a partial/interrupted turn completed. A crash
+        before this receipt is durable keeps the human safeguard; transcript bytes stay intact.
+        """
+        from gateway.response_filters import is_intentional_silence_response, silence_allowed
+        kind = agent_result.get("queued_terminal_display_kind", display_kind)
+        expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
+        if (not silent or not session_key or silence_allowed(kind, expected)
+                or not is_intentional_silence_response(agent_result.get("final_response"))):
+            return
+        store = self.async_session_store
+        try:
+            entry = await store.lookup_by_session_key(session_key)
+            token = entry.active_turn_token if entry is not None else None
+            if not isinstance(token, str):
+                return
+            history = await store.load_transcript(entry.session_id)
+            # The agent may have saved its final before gateway session metadata was appended.
+            # Match recovery's visible tail rather than the literal last bookkeeping row.
+            last = next((m for m in reversed(history) if m.get("role") not in ("session_meta", "system")), {})
+            if (last.get("role") != "assistant" or last.get("timestamp") is None
+                    or last.get("content") != agent_result.get("final_response")):
+                return
+            await store.set_session_metadata(session_key, "room_silence_decision", {
+                "token": token, "timestamp": last.get("timestamp"), "silent": bool(silent),
+            })
+        except Exception:
+            # The receipt only lets crash recovery honour this silence; without it recovery keeps
+            # the human-turn notice. Live delivery must stay silent rather than become an error.
+            logger.warning("Could not record the room silence decision for %s", session_key, exc_info=True)
+
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
@@ -78,13 +121,14 @@ class GatewayTurnPersistenceMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up, or a message not addressed to the bot, may go
         # silent; any other human one must not.
-        from gateway.response_filters import (
-            is_machinery_display_kind, silence_allowed, strip_trailing_silence_marker,
-        )
+        from gateway.response_filters import is_machinery_display_kind, strip_trailing_silence_marker
         from gateway.run_turn import _unexpected_silence_reply
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
-        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
+        _silence_source = agent_result.get("queued_terminal_source", source)
+        if _intentional_silence and not self._silence_allowed_for_source(
+            _silence_source, _silence_kind, _silence_reply_expected, agent_result,
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -93,7 +137,7 @@ class GatewayTurnPersistenceMixin:
             response = _unexpected_silence_reply()
         elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.debug(
-                "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
+                "silence marker suppressed on an unaddressed or opted-in turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
 
@@ -594,7 +638,7 @@ class GatewayTurnPersistenceMixin:
             if response and adapter and not agent_result.get("media_already_delivered"):
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
-            if _footer_line and adapter:
+            if _footer_line and adapter and not _intentional_silence:
                 try:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:

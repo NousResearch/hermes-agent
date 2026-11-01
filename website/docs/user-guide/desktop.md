@@ -734,11 +734,10 @@ catalog re-pins the entry before you click Install, the dialog shows the new pin
 backend older than the app cannot hold an install to the reviewed commit; the dialog says so and installs
 only if you choose **Install anyway**. If a package's agent half installs but its desktop half cannot
 follow because the source moved, the dialog says only the agent half is in, and installs again only with
-**Force reinstall**, which replaces both halves with the version shown. Because a browser tab asks for it, the
-desktop-only clone takes `https://`
-repositories only (no `http://`, `ssh`/`git@` or `file://` sources), refuses a plugin folder that
-contains symbolic links or is larger than 64 MB, and never replaces an installed plugin unless
-**Force reinstall** is checked. A plugin installed this way loads on the next scan; a plugin that
+**Force reinstall**, which replaces both halves with the version shown. The desktop-only clone takes
+any source `hermes plugins install` takes, held to the reviewed commit. Because a browser tab asks for
+it, the clone refuses a plugin folder that contains symbolic links or is larger than 64 MB, and never
+replaces an installed plugin unless **Force reinstall** is checked. A plugin installed this way loads on the next scan; a plugin that
 starts disabled is turned on from its card. Removing one from **Capabilities → Plugins** deletes the
 folder on that host; the desktop half of a package is removed with the package. A plugin's folder
 access (`ctx.files`) is not available in a browser.

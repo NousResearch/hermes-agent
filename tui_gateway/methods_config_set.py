@@ -88,7 +88,11 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     except Exception:
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
-    if not confirmed:
+    is_reset = getattr(parsed, "is_reset", False)
+    if is_reset:  # `/model reset` queued: show the default it adopts, not the word "reset"
+        pending_model, pending_provider = _config_model_target()
+        pending_model = pending_model or str(value)
+    if not confirmed and not is_reset:
         # A bare pick resolves against the live provider at turn start; guard on that same provider
         # here, or a provider-keyed price check passes now and drops the queued pick later.
         agent = session.get("agent")

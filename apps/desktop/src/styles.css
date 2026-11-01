@@ -1754,6 +1754,15 @@ body.guest-pointer-lock :is(webview, iframe) {
   pointer-events: none;
 }
 
+/* Hidden DOM terminals still parse output, but their rows need no layout.
+   Keep the host and xterm helpers measurable for fitting and live font changes;
+   hiding the whole xterm would cache zero-width glyph measurements. WebGL
+   surfaces are deliberately unchanged. */
+[data-terminal].invisible .xterm-rows,
+[data-persistent-terminal][aria-hidden='true'] .xterm-rows {
+  display: none;
+}
+
 /* Bottom clearance lives on [data-slot='aui_composer-clearance'] —
    virtualized items unmount, so :nth-last-child can't fire reliably. */
 

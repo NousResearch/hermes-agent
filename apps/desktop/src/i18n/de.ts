@@ -3687,7 +3687,6 @@ export const deOverrides = {
       backgroundRunning: 'Hintergrundaufgabe läuft',
       draftSession: 'Entwurf – noch nichts gesendet',
       handoffOrigin: platform => `Übergeben von ${platform}`,
-      continuationOrigin: 'Automatische Fortsetzung — dieser Chat wurde komprimiert und fortgesetzt',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Umbenannt',
       renameFailed: 'Umbenennen fehlgeschlagen',

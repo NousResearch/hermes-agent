@@ -273,6 +273,8 @@ class GatewayProfileReconcileMixin:
             # Only acknowledge the configuration observed before connecting;
             # a setup save during an awaited handshake needs another scan.
             scan_signature = profile_serve_signature(current[name])
+            if name in changed:
+                self._drop_stale_platform_verdicts(name)
             try:
                 connected = await self._start_one_profile_adapters(name, current[name], claimed)
             except MultiplexConfigError as exc:
@@ -327,6 +329,19 @@ class GatewayProfileReconcileMixin:
             await self._after_profiles_added([(n, current[n]) for n in added])
         result["served_profiles"] = self.served_profile_names()
         return result
+
+    def _drop_stale_platform_verdicts(self, name: str) -> None:
+        """Before a changed profile's rescan, drop its ``<name>:<platform>`` status entries for
+        platforms with no live or queued adapter: the rescan re-publishes every verdict that still
+        holds, so a fatal/disabled entry about a credential the user just removed can't outlive it."""
+        from gateway.run import _write_runtime_status_quiet
+        live = set((getattr(self, "_profile_adapters", None) or {}).get(name) or {})
+        live |= set((getattr(self, "_profile_failed_platforms", None) or {}).get(name) or {})
+        noted = getattr(self, "_unserved_secondary_platforms", None)
+        if isinstance(noted, set):
+            noted -= {entry for entry in noted if entry[0] == name}
+        _write_runtime_status_quiet(drop_profile_platforms=name,
+                                    keep_platforms={f"{name}:{getattr(p, 'value', p)}" for p in live})
 
     def _parked_profile_names(self) -> list:
         """Profiles that exist but could not be served (unusable store, home owned elsewhere); boot's

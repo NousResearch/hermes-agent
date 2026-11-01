@@ -1,0 +1,4 @@
+otto-counterpoint plugin smoke
+status=passed
+result={"blocked_reason": null, "correction_count": 0, "counterpoint": "nous/anthropic/claude-sonnet-5", "critique_status": "no_material_finding", "decision": "counterpoint", "finding_dispositions": [], "generator": "openai-codex/gpt-5.6-luna", "ledger_events": ["run.created", "run.started", "run.finished"], "response_replaced": false, "tool_count": 0, "workflow_status": "succeeded", "workflow_verdict": "accept_local"}
+raw prompt/response/model reasoning: not persisted

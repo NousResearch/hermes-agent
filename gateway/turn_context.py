@@ -17,6 +17,7 @@ from agent.session_activity import AwakeIdleMeter
 class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
+    reply_event: Any = None  # original transport event for per-reply speech and VC routing
     reply_expected: Optional[bool] = None
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.

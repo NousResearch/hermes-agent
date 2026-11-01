@@ -397,7 +397,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { execGit, killTimedGitChildren, setNoConsoleGitRoots } from './no-console-git'
 import { registerNativeNotifications } from './notification-ipc'
-import { loginFlightKey, OauthLoginFlights } from './oauth-login-flights'
+import { loginFlightKey, OauthLoginFlights, originFromFlightKey } from './oauth-login-flights'
 import { startOauthLoginWindow } from './oauth-login-window'
 import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -7133,7 +7133,28 @@ async function clearOauthSession(baseUrl) {
 // withoutInteractiveOauthLogin scope) keeps the window hidden; only a
 // user-driven caller may show one. oauth-login-flights.ts keeps one flow per
 // cookie jar, so a burst of callers shares one window.
-const oauthLoginFlights = new OauthLoginFlights()
+// Silent sign-in exhaustion push: after `maxConsecutiveFailures` consecutive
+// failed background attempts for a gateway jar, automatic logins stop entirely
+// and the renderer surfaces "reconnection required" with a manual sign-in as
+// the only way back. `login-restored` closes that state (any successful login
+// for the jar, including one driven by another surface).
+function broadcastOauthLoginState(
+  channel: 'hermes:oauth:login-exhausted' | 'hermes:oauth:login-restored',
+  baseUrl: string
+) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const { webContents } = win
+
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send(channel, { baseUrl })
+    }
+  }
+}
+
+const oauthLoginFlights = new OauthLoginFlights({
+  onExhausted: key => broadcastOauthLoginState('hermes:oauth:login-exhausted', originFromFlightKey(key)),
+  onLoginRecovered: key => broadcastOauthLoginState('hermes:oauth:login-restored', originFromFlightKey(key))
+})
 
 function openOauthLoginWindow(
   baseUrl,

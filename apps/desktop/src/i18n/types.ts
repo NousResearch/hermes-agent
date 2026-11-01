@@ -424,6 +424,16 @@ export interface Translations extends NoticeTranslations {
 
   boot: BootTranslations
 
+  // Silent sign-in exhausted for the active gateway: the "reconnection
+  // required" banner (remote-reauth-banner.tsx) and its manual action.
+  remoteReauthBanner: {
+    title: string
+    body: (host: string) => string
+    action: string
+    signingIn: string
+    failed: string
+  }
+
   notifications: {
     sharedProfileWarning: string
     region: string

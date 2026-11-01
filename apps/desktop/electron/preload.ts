@@ -326,6 +326,23 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   oauthLoginConnectionConfig: (remoteUrl, options) =>
     ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl, options),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
+  // Main → renderer: automatic (silent) sign-in for this gateway exhausted its
+  // bounded retries — no more login windows will open on their own. The UI
+  // surfaces "reconnection required"; a manual sign-in is the only way back.
+  onOauthLoginExhausted: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:oauth:login-exhausted', listener)
+
+    return () => ipcRenderer.removeListener('hermes:oauth:login-exhausted', listener)
+  },
+  // Main → renderer: a login for this gateway succeeded, closing a failure
+  // episode (the exhaustion state can be cleared).
+  onOauthLoginRestored: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:oauth:login-restored', listener)
+
+    return () => ipcRenderer.removeListener('hermes:oauth:login-restored', listener)
+  },
   // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in
   // (cloud-auto-discovery Phase 3).
   cloud: {

@@ -46,17 +46,19 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers", "/api/mcp/oauth/callback/",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
-# Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
+# Root files matched exactly. Browsers fetch the page icons without cookies (the Webapp's page icon and
 # home-screen icon are ``/apple-touch-icon.png``), so behind the gate they hit the sign-in redirect
-# and log an auto-SSO ``login_start`` with no sign-in behind it.
-_GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
+# and log an auto-SSO ``login_start`` with no sign-in behind it. The browser fetches the Webapp's
+# notification worker again for each update check, which a notification click can start long after
+# the sign-in expired; a redirect there fails the update and starts the same stray ``login_start``.
+_GATE_PUBLIC_FILES: frozenset[str] = frozenset({"/apple-touch-icon.png", "/notification-worker.js"})
 
 
 def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_ICONS`
+    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_FILES`
     matched exactly so ``/api/status`` never exposes ``/api/status/extension``;
     :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
-    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or any(
+    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_FILES or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 

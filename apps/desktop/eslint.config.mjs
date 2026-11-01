@@ -16,6 +16,13 @@ export default [
     }
   },
   {
+    // The Webapp's service worker (public/notification-worker.js) runs in a worker scope.
+    files: ['public/**/*.js'],
+    languageOptions: {
+      globals: globals.serviceworker
+    }
+  },
+  {
     // THE PLUGIN FENCE: plugins speak @hermes/plugin-sdk (+ react), never `@/…`
     // internals — the same isolation a runtime-fetched published plugin gets,
     // enforced on bundled ones so the SDK surface stays honest and sufficient.

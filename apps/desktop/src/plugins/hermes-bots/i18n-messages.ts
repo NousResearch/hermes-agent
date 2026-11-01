@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type DraftMessages } from './draft-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** Describe-a-bot drafting (New Agent / Edit Profile). */
+  draft: DraftMessages
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string

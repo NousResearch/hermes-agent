@@ -33,11 +33,13 @@ import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@
 import { useMemo } from 'react'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { DRAFT_LOCALES } from './draft-locales'
 import { bind, type Bound } from './i18n-bind'
 import { type BotsMessages } from './i18n-messages'
 import { getPluginCtx } from './shared'
 
 const en: BotsMessages = {
+  draft: DRAFT_LOCALES.en,
   canonical: CANONICAL_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
@@ -480,6 +482,7 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  draft: DRAFT_LOCALES.ja,
   canonical: CANONICAL_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
@@ -926,6 +929,7 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  draft: DRAFT_LOCALES.zh,
   canonical: CANONICAL_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
@@ -1355,6 +1359,7 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  draft: DRAFT_LOCALES.zhHant,
   canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',

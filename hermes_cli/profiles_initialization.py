@@ -27,7 +27,8 @@ def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
 
 
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
-                           description: Optional[str], soul: Optional[str] = None) -> None:
+                           description: Optional[str], soul: Optional[str] = None,
+                           display_name: Optional[str] = None) -> None:
     """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""
     from hermes_cli.profiles import (
         _seed_file_if_missing, _PLACEHOLDER_ENV, NO_BUNDLED_SKILLS_MARKER,
@@ -62,7 +63,10 @@ def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
 
-    # Description last, so a partial-create failure doesn't strand a description file.
-    if description and description.strip():
+    # Identity last, so a partial-create failure doesn't strand a profile.yaml.
+    meta = {"description": description.strip(), "description_auto": False} if description and description.strip() else {}
+    if display_name and display_name.strip():
+        meta["display_name"] = display_name
+    if meta:
         with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
-            write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
+            write_profile_meta(profile_dir, **meta)

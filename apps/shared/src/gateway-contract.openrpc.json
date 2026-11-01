@@ -2599,6 +2599,24 @@
       }
     },
     {
+      "name": "profiles.draft",
+      "summary": "Draft a bot (name, title, description, sectioned SOUL, catalog-checked capabilities) from a description via the auxiliary model; writes nothing.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfilesDraftParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ProfilesDraftResult"
+        }
+      }
+    },
+    {
       "name": "profiles.get_asset",
       "summary": "A profile asset as a data URL.",
       "params": [
@@ -29240,6 +29258,99 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileDraftDropped": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "ProfileDraftDropped",
+        "type": "object"
+      },
+      "ProfileDraftPrevious": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "soul": {
+            "default": "",
+            "title": "Soul",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileDraftSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "toolsets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Toolsets",
+            "type": "array"
+          },
+          "mcp_servers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          }
+        },
+        "title": "ProfileDraftPrevious",
+        "type": "object"
+      },
+      "ProfileDraftSection": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title"
+        ],
+        "title": "ProfileDraftSection",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
         "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
@@ -30177,6 +30288,185 @@
           "model"
         ],
         "title": "ProfilesDescribeResult",
+        "type": "object"
+      },
+      "ProfilesDraftParams": {
+        "additionalProperties": false,
+        "description": "``description`` = what the bot should be (or, with ``name``, the change to make). ``name``\n= an existing profile to revise (edit mode); ``source`` = the profile whose installed skills\nand MCP servers form the catalog for a new bot (default ``default``). ``current`` + ``note``\n+ ``only`` regenerate one part of an unsaved draft.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Current"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          },
+          "only": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Only"
+          }
+        },
+        "title": "ProfilesDraftParams",
+        "type": "object"
+      },
+      "ProfilesDraftResult": {
+        "additionalProperties": false,
+        "description": "Nothing is written. ``dropped`` = suggested names absent from the target's catalog;\n``previous`` (edit mode) = the saved profile the draft is compared against, and ``soul`` is\nthat saved SOUL.md with only the changed sections rewritten.",
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          },
+          "soul": {
+            "default": "",
+            "title": "Soul",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileDraftSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "toolsets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Toolsets",
+            "type": "array"
+          },
+          "mcp_servers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "dropped": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileDraftDropped"
+            },
+            "title": "Dropped",
+            "type": "array"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileDraftPrevious"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ProfilesDraftResult",
         "type": "object"
       },
       "ProfilesGetAssetParams": {

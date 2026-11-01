@@ -49,6 +49,7 @@ def test_routes_require_auth(client):
     client.headers.clear()
     assert client.get("/api/local-models/omlx/status").status_code == 401
     assert client.post("/api/local-models/omlx/install").status_code == 401
+    assert client.post("/api/local-models/download/cancel", json={"job_id": "unowned"}).status_code == 401
 
 
 def test_discovery_excludes_incomplete_models(client):
@@ -61,7 +62,7 @@ def test_discovery_excludes_incomplete_models(client):
             (path / "model.safetensors").touch()
     assert omlx.local_models() == ["ready"]
     data = client.get("/api/local-models/omlx/status").json()
-    assert data["models"] == [{"id": "ready", "active": False}]
+    assert data["models"] == [{"id": "ready", "active": False, "size_bytes": 0}]
     assert data["installed"] is False and data["running"] is False
 
 
@@ -144,6 +145,48 @@ def test_external_executable_cannot_be_adopted(client):
     assert omlx._process(state) is None
 
 
+@pytest.mark.platforms("macos", arch="arm64")
+def test_delete_removes_only_the_requested_managed_model(client):
+    from hermes_cli import config
+    from hermes_cli.local_runtime import omlx
+
+    for name in ("remove-me", "keep-me"):
+        path = omlx.models_dir() / name
+        path.mkdir(parents=True)
+        (path / "config.json").write_text("{}")
+        (path / "model.safetensors").write_bytes(b"model")
+    before = config.load_config_readonly()
+    response = client.post("/api/local-models/omlx/delete", json={"model_id": "remove-me"})
+    assert response.status_code == 200, response.text
+    assert omlx.local_models() == ["keep-me"]
+    assert config.load_config_readonly() == before
+
+
+@pytest.mark.platforms("macos", arch="arm64")
+@pytest.mark.parametrize("protected", ["active", "running", "symlink", "traversal"])
+def test_delete_refuses_unsafe_or_in_use_models(client, monkeypatch, tmp_path, protected):
+    from hermes_cli import config
+    from hermes_cli.local_runtime import omlx
+
+    path = tmp_path / "outside" if protected in {"symlink", "traversal"} else omlx.models_dir() / "ready"
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}")
+    (path / "model.safetensors").write_bytes(b"model")
+    mid = "ready"
+    if protected == "active":
+        config.save_config({"model": {"provider": "custom", "default": mid, "base_url": omlx.BASE_URL}})
+    elif protected == "running":
+        monkeypatch.setattr(omlx, "_process", lambda state: Mock())
+    elif protected == "symlink":
+        omlx.models_dir().mkdir(parents=True)
+        (omlx.models_dir() / mid).symlink_to(path, target_is_directory=True)
+    else:
+        mid = str(path)
+    response = client.post("/api/local-models/omlx/delete", json={"model_id": mid})
+    assert response.status_code == 409, response.text
+    assert (path / "model.safetensors").read_bytes() == b"model"
+
+
 @pytest.mark.platforms("posix")
 def test_operation_lock_refuses_racing_mutation(client):
     from hermes_cli.local_runtime import omlx
@@ -163,7 +206,7 @@ def test_download_validation_and_job_contract(client, monkeypatch):
     omlx.cli().touch()
     assert client.post("/api/local-models/omlx/download", json={"repo": "../bad"}).status_code == 422
     received = []
-    monkeypatch.setattr(omlx, "download", lambda repo: received.append(repo))
+    monkeypatch.setattr(omlx, "download", lambda repo, **kwargs: received.append(repo))
     response = client.post("/api/local-models/omlx/download", json={"repo": "mlx-community/tiny"})
     assert response.status_code == 200
     jid = response.json()["job_id"]
@@ -175,20 +218,252 @@ def test_download_validation_and_job_contract(client, monkeypatch):
 
 
 @pytest.mark.platforms("macos", arch="arm64")
-def test_download_publishes_only_complete_snapshot(client, monkeypatch):
+def test_download_labels_cached_bytes_and_uses_only_network_samples_for_speed(client, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
     from hermes_cli.local_runtime import omlx
+    from hermes_cli.web_routers import local_models as jobs
+    from hermes_cli.web_routers import omlx as omlx_router
+    from tests.waiting import wait_until
+
+    omlx.cli().parent.mkdir(parents=True)
+    omlx.cli().touch()
+    entered, release = Event(), Event()
+    clock = iter([0.0, 2.0])
+    monkeypatch.setattr(omlx_router, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+
+    def fetch(repo, *, progress=None, transfer_progress=None, cancel_event=None, before_publish=None):
+        if transfer_progress is not None:
+            transfer_progress(16)
+        if progress is not None:
+            progress(32, 128, {})
+            progress(96, 128, {})
+        if transfer_progress is not None:
+            transfer_progress(64)
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(omlx, "download", fetch)
+    response = client.post("/api/local-models/omlx/download", json={"repo": "mlx-community/tiny"})
+    jid = response.json()["job_id"]
+    try:
+        assert entered.wait(5)
+        job = client.get(f"/api/local-models/jobs/{jid}").json()
+        assert job["status"] == "running"
+        assert job["done_bytes"] == 96 and job["total_bytes"] == 128
+        assert job["percent"] == 75
+        assert job["cached_bytes"] == 32
+        assert job["received_bytes"] == 64
+        assert job["bytes_per_sec"] == 24
+        assert "eta_seconds" not in job
+        assert job["can_pause"] is False
+    finally:
+        release.set()
+    assert wait_until(lambda: client.get(f"/api/local-models/jobs/{jid}").json()["status"] == "done")
+    assert jid not in jobs._RUNNING
+
+
+@pytest.mark.parametrize("cached,total", [(64, 192), (9064196870, 19760308230)])
+def test_snapshot_progress_counts_cached_bytes_and_ignores_network_bar(monkeypatch, capsys, cached, total):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import omlx_download
+
+    def snapshot(**kwargs):
+        if kwargs.get("dry_run"):
+            return [SimpleNamespace(file_size=cached, will_download=False, commit_hash="pinned"),
+                    SimpleNamespace(file_size=total-cached, will_download=True, commit_hash="pinned")]
+        assert kwargs["revision"] == "pinned"
+        progress = kwargs["tqdm_class"]
+        with progress(desc="Fetching files", total=2) as files:
+            files.update(1)
+        remaining = total - cached
+        chunk = remaining // 4
+        with progress(desc="Downloading bytes", unit="B", total=remaining) as network:
+            network.update(remaining)
+            network.refresh()
+        with progress(desc="Reconstructing (incomplete total...)", unit="B", total=remaining) as model:
+            model.update(chunk)
+            model.refresh()
+            model.update(remaining - chunk)
+            model.refresh()
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=snapshot))
+    omlx_download.download("owner/model", "isolated-model")
+    lines = capsys.readouterr().out.splitlines()
+    events = [json.loads(line.removeprefix("HERMES_OMLX_PROGRESS "))
+              for line in lines if line.startswith("HERMES_OMLX_PROGRESS ")]
+    transfers = [json.loads(line.removeprefix("HERMES_OMLX_TRANSFER "))
+                 for line in lines if line.startswith("HERMES_OMLX_TRANSFER ")]
+    assert events[0] == [cached, total] and events[-1] == [total, total]
+    assert [cached + (total - cached) // 4, total] in events
+    assert all(size == total and cached <= done <= size for done, size in events)
+    assert transfers and transfers[-1] == total - cached
+
+
+@pytest.mark.platforms("macos", arch="arm64")
+@pytest.mark.parametrize("fail", [False, True])
+def test_download_streams_progress_before_publishing(client, monkeypatch, fail):
+    import subprocess
+    import sys
+
+    from hermes_cli.local_runtime import omlx
+
     python = omlx.cli().with_name("omlx-cluster-python")
     python.parent.mkdir(parents=True)
     python.touch()
+    destination = omlx.models_dir() / "mlx-community--tiny"
+    stage = omlx.models_dir() / ".mlx-community--tiny"
+    real_popen = subprocess.Popen
+    processes, events, received, published = [], [], [], []
+    script = '''
+import json, sys, time
+from pathlib import Path
+from threading import Event
+stage = Path(sys.argv[1])
+(stage / 'config.json').write_text('{}')
+(stage / 'model.safetensors').write_bytes(b'x' * 32)
+print('HERMES_OMLX_TRANSFER 16', flush=True)
+print('HERMES_OMLX_PROGRESS ' + json.dumps([32, 128]), flush=True)
+deadline = time.monotonic() + 5
+while not (stage / 'observed').exists():
+    assert time.monotonic() < deadline
+    Event().wait(0.01)
+if sys.argv[2] == 'True':
+    print('fixture transfer failed', file=sys.stderr)
+    sys.exit(2)
+(stage / 'model.safetensors').write_bytes(b'x' * 128)
+print('HERMES_OMLX_TRANSFER 64', flush=True)
+print('HERMES_OMLX_PROGRESS ' + json.dumps([128, 128]), flush=True)
+'''
+
     def fetch(args, **kwargs):
-        stage = Path(args[-1])
-        assert stage.name.startswith(".")
-        (stage / "config.json").write_text("{}")
-        (stage / "model.safetensors").touch()
-        return Mock(returncode=0)
-    monkeypatch.setattr(omlx.subprocess, "run", fetch)
-    assert omlx.download("mlx-community/tiny") == "mlx-community--tiny"
-    assert omlx.local_models() == ["mlx-community--tiny"]
+        process = real_popen([sys.executable, "-c", script, args[-1], str(fail)], **kwargs)
+        processes.append(process)
+        return process
+
+    def progress(done, total, ranges):
+        assert not destination.exists()
+        if done == 32:
+            assert processes[0].poll() is None
+            (stage / "observed").touch()
+        events.append((done, total, ranges))
+
+    def before_publish():
+        assert processes[0].poll() is not None
+        assert not destination.exists()
+        published.append(True)
+
+    monkeypatch.setattr(omlx.subprocess, "Popen", fetch)
+    if fail:
+        with pytest.raises(RuntimeError, match="exit 2") as error:
+            omlx.download("mlx-community/tiny", progress=progress, transfer_progress=received.append)
+        assert "fixture transfer failed" in str(error.value)
+        assert omlx.local_models() == []
+        assert stage.is_dir()
+        assert events == [(32, 128, {})]
+        assert received == [16]
+    else:
+        assert omlx.download("mlx-community/tiny", progress=progress, transfer_progress=received.append,
+                             before_publish=before_publish) == "mlx-community--tiny"
+        assert published == [True]
+        assert omlx.local_models() == ["mlx-community--tiny"]
+        assert events == [(32, 128, {}), (128, 128, {})]
+        assert received == [16, 64]
+        assert (destination / "model.safetensors").stat().st_size == 128
+    assert processes[0].poll() is not None
+
+
+@pytest.mark.platforms("macos", arch="arm64")
+def test_cancel_download_reaps_worker_and_keeps_partial_snapshot(client, monkeypatch):
+    import subprocess
+    import sys
+
+    from hermes_cli.local_runtime import omlx
+    from hermes_cli.web_routers import local_models as jobs
+    from tests.waiting import wait_until
+
+    omlx.cli().parent.mkdir(parents=True)
+    omlx.cli().touch()
+    omlx.cli().with_name("omlx-cluster-python").touch()
+    real_popen, children = subprocess.Popen, []
+    script = '''
+from pathlib import Path
+from threading import Event
+import sys
+stage = Path(sys.argv[1])
+(stage / 'config.json').write_text('{}')
+(stage / 'model.safetensors').write_bytes(b'x' * 32)
+print('HERMES_OMLX_PROGRESS [32, 128]', flush=True)
+Event().wait(30)
+'''
+
+    def spawn(args, **kwargs):
+        if str(args[1]).endswith("omlx_download.py"):
+            child = real_popen([sys.executable, "-c", script, args[-1]], **kwargs)
+            children.append(child)
+            return child
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(omlx.subprocess, "Popen", spawn)
+    response = client.post("/api/local-models/omlx/download", json={"repo": "owner/cancel-test"})
+    jid = response.json()["job_id"]
+    try:
+        assert wait_until(lambda: jobs._JOBS[jid]["done_bytes"] == 32, timeout=5)
+        assert client.get(f"/api/local-models/jobs/{jid}").json()["can_cancel"]
+        cancelled = client.post("/api/local-models/download/cancel", json={"job_id": jid})
+        assert cancelled.status_code == 200 and cancelled.json()["cancel_requested"]
+        assert wait_until(lambda: jobs._JOBS[jid]["status"] == "cancelled", timeout=5)
+        job = client.get(f"/api/local-models/jobs/{jid}").json()
+        assert job["error"] is None and not job["can_cancel"]
+        assert children[0].poll() is not None
+        assert jid not in jobs._RUNNING
+        assert (omlx.models_dir() / ".owner--cancel-test/model.safetensors").read_bytes() == b"x" * 32
+        assert not (omlx.models_dir() / "owner--cancel-test").exists()
+        with omlx.operation_lock("download"):
+            pass
+        assert jid in {j["job_id"] for j in client.get("/api/local-models/jobs").json()["jobs"]}
+        assert not client.post("/api/local-models/download/cancel", json={"job_id": jid}).json()["cancel_requested"]
+        assert client.post("/api/local-models/download/cancel", json={"job_id": "missing"}).status_code == 404
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+
+
+@pytest.mark.platforms("macos", arch="arm64")
+def test_cancel_is_refused_once_download_publication_starts(client, monkeypatch):
+    from threading import Event
+
+    from hermes_cli.local_runtime import omlx
+    from hermes_cli.web_routers import local_models as jobs
+    from tests.waiting import wait_until
+
+    omlx.cli().parent.mkdir(parents=True)
+    omlx.cli().touch()
+    entered, release = Event(), Event()
+    replies = []
+
+    def fetch(repo, *, before_publish=None, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        if before_publish is not None:
+            before_publish()
+        replies.append(client.post("/api/local-models/download/cancel", json={"job_id": jid}).json())
+
+    monkeypatch.setattr(omlx, "download", fetch)
+    jid = client.post("/api/local-models/omlx/download", json={"repo": "owner/completed"}).json()["job_id"]
+    try:
+        assert entered.wait(5)
+    finally:
+        release.set()
+    assert wait_until(lambda: jobs._JOBS[jid]["status"] != "running", timeout=5)
+    assert replies == [{"ok": True, "cancel_requested": False}]
+    assert jobs._JOBS[jid]["status"] == "done"
 
 
 @pytest.mark.platforms("macos", arch="arm64")

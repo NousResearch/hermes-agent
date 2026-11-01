@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import {
   activateOmlxModel,
+  deleteOmlxModel,
   downloadOmlxModel,
   getOmlxStatus,
   installOmlx,
@@ -14,7 +15,9 @@ import {
 import { enLocalModels } from '@/i18n/en_local_models'
 import { notifyError } from '@/store/notifications'
 
+import { deleteModel } from './local-models-actions'
 import { LocalModelsEngine } from './local-models-engine'
+import { SideloadedModelRow } from './local-models-model-rows'
 
 const { owner } = vi.hoisted(() => ({ owner: { connectionId: 'local-A', profile: 'work' } }))
 let client: QueryClient
@@ -25,9 +28,11 @@ vi.mock('@/api/omlx', () => ({
   installOmlx: vi.fn(),
   downloadOmlxModel: vi.fn(),
   activateOmlxModel: vi.fn(),
+  deleteOmlxModel: vi.fn(),
   setOmlxServer: vi.fn()
 }))
 vi.mock('./local-models-actions', () => ({
+  deleteModel: vi.fn(),
   useLocalModelsActionScope: () => ({ owner, client, copy: enLocalModels }),
   isActiveStatus: (status: string) => status === 'running' || status === 'paused'
 }))
@@ -46,9 +51,10 @@ vi.mock('@/store/local-runtime-jobs', () => ({
 }))
 vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 vi.mock('./profile-scope', () => ({ ActiveProfileNote: () => null }))
-vi.mock('./local-model-download-progress', () => ({
+vi.mock(import('./local-model-download-progress'), async importOriginal => ({
+  ...(await importOriginal()),
   LocalModelDownloadActions: () => null,
-  LocalModelDownloadProgress: () => null
+  LocalModelDownloadProgress: () => <span />
 }))
 
 let status: OmlxStatus
@@ -73,6 +79,7 @@ beforeEach(() => {
   })
 })
 afterEach(() => {
+  vi.restoreAllMocks()
   cleanup()
   client.clear()
 })
@@ -135,6 +142,34 @@ it('does not switch engines when persistence fails', async () => {
   await waitFor(() => expect(notifyError).toHaveBeenCalled())
   expect(screen.getByText('Existing llama.cpp controls')).toBeTruthy()
   expect(screen.getByRole('button', { name: 'llama.cpp' }).getAttribute('aria-pressed')).toBe('true')
+})
+
+it('reuses model deletion confirmation and sends deletion only to the scoped oMLX API', async () => {
+  status.selected = true
+  vi.mocked(deleteOmlxModel).mockResolvedValue({ ok: true })
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  mount()
+  const remove = await screen.findByRole('button', { name: enLocalModels.deleteAction })
+  fireEvent.click(remove)
+  expect(confirm).toHaveBeenCalledWith(enLocalModels.deleteConfirm('model-A'))
+  expect(deleteOmlxModel).not.toHaveBeenCalled()
+  confirm.mockReturnValue(true)
+  fireEvent.click(remove)
+  await waitFor(() => expect(deleteOmlxModel).toHaveBeenCalledWith('model-A', owner))
+  expect(deleteModel).not.toHaveBeenCalled()
+})
+
+it('keeps the shared row on llama.cpp actions when no engine callbacks are supplied', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
+  render(
+    <SideloadedModelRow jobs={[]} model={{ id: 'model.gguf', size_label: '1 GB' }} status={{ active_model_id: null }} />
+  )
+  fireEvent.click(screen.getByRole('button', { name: enLocalModels.deleteAction }))
+  expect(deleteModel).toHaveBeenCalledWith({ owner, client, copy: enLocalModels }, 'model.gguf')
+  expect(deleteOmlxModel).not.toHaveBeenCalled()
+  await waitFor(() =>
+    expect((screen.getByRole('button', { name: enLocalModels.deleteAction }) as HTMLButtonElement).disabled).toBe(false)
+  )
 })
 
 it('hides the engine choice and ignores a stale oMLX preference on unsupported hosts', async () => {

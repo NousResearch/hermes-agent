@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import atexit
+from concurrent.futures import CancelledError
 from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import selectors
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -122,6 +125,20 @@ def local_models() -> list[str]:
                   and p.is_dir() and (p / "config.json").is_file() and any(p.glob("*.safetensors")))
 
 
+def delete_model(model_id: str, config: dict) -> None:
+    require_supported()
+    with operation_lock("download"), operation_lock():
+        path = models_dir() / model_id
+        if (model_id not in local_models() or path.is_symlink()
+                or path.resolve().parent != models_dir().resolve()):
+            raise ValueError("Model is not a managed oMLX snapshot")
+        if is_configured(config) and (config.get("model") or {}).get("default") == model_id:
+            raise ValueError("Select a different model before deleting the active model")
+        if _process(read_state()) is not None:
+            raise RuntimeError("Turn off oMLX before deleting a model")
+        shutil.rmtree(path)
+
+
 def ensure_for_runtime(runtime: dict, config: dict) -> None:
     """CLI, gateway and background turns share the same explicit lifecycle preference."""
     if (is_configured(config) and (config.get("local_runtime") or {}).get("omlx_enabled")
@@ -144,7 +161,9 @@ def status(config: dict) -> dict:
             "selected": (config.get("local_runtime") or {}).get("engine", "llamacpp") == "omlx",
             "model_dir": str(models_dir()), "base_url": BASE_URL,
             "version": VERSION if cli().is_file() else None,
-            "models": [{"id": mid, "active": mid == active} for mid in local_models()],
+            "models": [{"id": mid, "active": mid == active,
+                        "size_bytes": sum(p.stat().st_size for p in (models_dir() / mid).glob("*.safetensors"))}
+                       for mid in local_models()],
             "error": error if supported() else "oMLX requires macOS 15 or newer on Apple Silicon (arm64)"}
 
 
@@ -291,7 +310,22 @@ def validate_model(model_id: str) -> None:
         raise RuntimeError("oMLX generation validation returned no text; model was not selected")
 
 
-def download(repo: str) -> str:
+def _report_download_line(line: bytes, progress, transfer_progress) -> None:
+    if line.startswith(b"HERMES_OMLX_PROGRESS "):
+        done, total = json.loads(line.removeprefix(b"HERMES_OMLX_PROGRESS "))
+        if type(done) is not int or type(total) is not int or not 0 <= done <= total:
+            raise RuntimeError("Invalid oMLX download byte counts")
+        if progress is not None:
+            progress(done, total, {})
+    elif line.startswith(b"HERMES_OMLX_TRANSFER "):
+        received = json.loads(line.removeprefix(b"HERMES_OMLX_TRANSFER "))
+        if type(received) is not int or received < 0:
+            raise RuntimeError("Invalid oMLX transfer byte count")
+        if transfer_progress is not None:
+            transfer_progress(received)
+
+
+def download(repo: str, *, progress=None, transfer_progress=None, cancel_event=None, before_publish=None) -> str:
     require_supported()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repo):
         raise ValueError("Use a Hugging Face owner/model repository ID")
@@ -301,18 +335,56 @@ def download(repo: str) -> str:
     model_id = repo.replace("/", "--")
     # Hidden staging prevents discovery of partial snapshots; HF resumes a failed transfer.
     with operation_lock("download"):
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError("Download cancelled")
         stage = models_dir() / ("." + model_id)
         destination = models_dir() / model_id
         if destination.exists():
             return model_id
         stage.mkdir(parents=True, exist_ok=True)
-        script = "from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1],local_dir=sys.argv[2])"
-        result = subprocess.run([str(python), "-c", script, repo, str(stage)],
-                                env=server_child_env(os.environ), capture_output=True, text=True, timeout=14400, check=False)
-        if result.returncode:
-            raise RuntimeError("Hugging Face download failed: " + result.stderr[-2000:])
+        script = Path(__file__).with_name("omlx_download.py")
+        args = [str(python), str(script), repo, str(stage)]
+        with tempfile.TemporaryFile(dir=stage) as errors, subprocess.Popen(
+            args, env=server_child_env(os.environ), stdout=subprocess.PIPE, stderr=errors,
+        ) as child:
+            assert child.stdout is not None
+            deadline = time.monotonic() + 14400
+            pending = b""
+            try:
+                with selectors.DefaultSelector() as reader:
+                    reader.register(child.stdout, selectors.EVENT_READ)
+                    while reader.get_map():
+                        if cancel_event is not None and cancel_event.is_set():
+                            raise CancelledError("Download cancelled")
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(args, 14400)
+                        for key, _ in reader.select(min(1, remaining)):
+                            chunk = os.read(key.fd, 65536)
+                            if not chunk:
+                                reader.unregister(key.fd)
+                                continue
+                            lines = (pending + chunk).split(b"\n")
+                            pending = lines.pop()
+                            if len(pending) > 65536:
+                                raise RuntimeError("Invalid oMLX download progress output")
+                            for line in lines:
+                                _report_download_line(line, progress, transfer_progress)
+                child.wait(timeout=max(0, deadline - time.monotonic()))
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.wait()
+            if cancel_event is not None and cancel_event.is_set():
+                raise CancelledError("Download cancelled")
+            if child.returncode:
+                errors.seek(max(0, errors.seek(0, os.SEEK_END) - 2000))
+                raise RuntimeError(f"Hugging Face download failed (exit {child.returncode}): "
+                                   + errors.read().decode(errors="replace"))
         if not (stage / "config.json").is_file() or not any(stage.glob("*.safetensors")):
             raise ValueError("Repository is not a safetensors MLX model (config.json and weights required)")
+        if before_publish is not None:
+            before_publish()
         stage.rename(destination)
         # Upstream scans at startup. A running owned server is refreshed on next activation.
     return model_id

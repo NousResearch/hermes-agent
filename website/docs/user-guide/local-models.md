@@ -69,6 +69,9 @@ The **Turn on** and **Turn off** buttons control the Hermes-managed oMLX
 server. Changing the engine selector alone changes which library you are
 viewing; **Use** changes the model for new chats. Existing conversations
 and cloud-provider settings are not replaced just by viewing another engine.
+Downloaded MLX models use the same model rows, **Use** action, and delete
+confirmation as llama.cpp. Turn off oMLX before deleting a model; select a
+different model before deleting the currently configured one.
 
 oMLX requires macOS 15 or newer on Apple Silicon. The engine selector is
 hidden on unsupported backend hosts, and the API rejects selecting oMLX
@@ -76,8 +79,15 @@ there; Intel Macs are not supported even if they support Metal. Hermes installs 
 checksum-pinned, self-contained upstream app bundle into its private runtime
 directory, not `/Applications`, and serves only on `127.0.0.1:18081` with a
 private API key. An occupied port fails explicitly; Hermes never takes over
-an unrelated oMLX server. Model downloads show their current phase but do not
-yet support byte progress or pause/resume. The CLI's **Local models** setup
+an unrelated oMLX server. Model downloads report snapshot bytes and percentage.
+Files already downloaded are labeled explicitly, so a resumed download can
+start above zero. Xet reconstructs files in batches; Hermes does not infer
+network speed or an ETA from those bursts. Received network bytes and speed
+are shown separately when the downloader reports them. Retrying a failed
+download reuses its cached files. **Cancel** stops an active oMLX model
+download and keeps partial files for retry; it does not stop inference or
+delete installed models. Pause/resume controls are not yet supported.
+The CLI's **Local models** setup
 still uses llama.cpp; the engine choice is in Desktop.
 
 MLX models and llama.cpp GGUF files are different formats. Hermes keeps their

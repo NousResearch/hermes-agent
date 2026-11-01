@@ -1,4 +1,7 @@
 """oMLX control plane. Shares local-model jobs and profile-safe config writes."""
+from collections import deque
+import time
+from threading import Event
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -20,7 +23,7 @@ class ServerBody(BaseModel):
     action: Literal["start", "stop"]
 
 
-class ActivateBody(BaseModel):
+class ModelBody(BaseModel):
     model_id: str
 
 
@@ -78,7 +81,7 @@ def server(body: ServerBody, profile: str | None = None):
 
 
 @router.post("/activate")
-def activate(body: ActivateBody, profile: str | None = None):
+def activate(body: ModelBody, profile: str | None = None):
     _supported()
     with _config_profile_scope(profile):
         with jobs._http_error(409):
@@ -93,6 +96,14 @@ def activate(body: ActivateBody, profile: str | None = None):
     return {"ok": True}
 
 
+@router.post("/delete")
+def delete(body: ModelBody, profile: str | None = None):
+    _supported()
+    with _config_profile_scope(profile), jobs._http_error(409):
+        omlx.delete_model(body.model_id, config_mod.load_config_readonly())
+    return {"ok": True}
+
+
 @router.post("/download")
 def download(body: DownloadBody):
     _supported()
@@ -103,9 +114,31 @@ def download(body: DownloadBody):
         raise HTTPException(409, "Install the managed oMLX runtime first")
     mid = body.repo.replace("/", "--")
     job = jobs._job("model-download", f"oMLX · {body.repo}", model_id=mid)
+    samples = deque()
+    cancel = Event()
+    with jobs._JOBS_LOCK:
+        jobs._RUNNING[job["job_id"]] = {"cancel": cancel}
+    def progress(done, total, ranges):
+        # Xet reconstructs model bytes in bursts; these are not network throughput samples.
+        with jobs._JOBS_LOCK:
+            job.setdefault("cached_bytes", done)
+            job.update(done_bytes=done, total_bytes=total or None, ranges=ranges)
+    def transfer(received):
+        with jobs._JOBS_LOCK:
+            now = time.monotonic()
+            samples.append((now, received))
+            while len(samples) > 1 and now - samples[0][0] > jobs._RATE_WINDOW:
+                samples.popleft()
+            rate, _ = jobs._rate_and_eta(samples, received, None)
+            job["received_bytes"] = received
+            if rate is not None:
+                job["bytes_per_sec"] = rate
+            else:
+                job.pop("bytes_per_sec", None)
     def run():
         jobs._step(job, "downloading", f"Downloading {body.repo}")
-        omlx.download(body.repo)
+        omlx.download(body.repo, progress=progress, transfer_progress=transfer, cancel_event=cancel,
+                      before_publish=lambda: jobs._step(job, "finalizing", "Finalizing download"))
         jobs._finish(job, f"oMLX · {body.repo} ready")
     jobs._spawn_job(job, "omlx-download", run)
     return {"job_id": job["job_id"]}

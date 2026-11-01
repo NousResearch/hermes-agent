@@ -53,6 +53,8 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   quickstartConfigure: '自分で選ぶ',
   downloaded: 'ダウンロード済み',
   downloadAction: size => `ダウンロード · ${size}`,
+  downloadCached: size => `${size} はダウンロード済み`,
+  downloadReceived: size => `${size} を受信`,
   downloadProgress: (done, total) => `${done} / ${total}`,
   downloadStatusRunning: 'ダウンロード中',
   downloadSpeed: rate => `${rate}`,

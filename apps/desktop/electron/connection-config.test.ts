@@ -970,9 +970,11 @@ test('oMLX profile controls share the host backend with explicit profile scope',
     ['GET', 'status'],
     ['POST', 'select'],
     ['POST', 'server'],
-    ['POST', 'activate']
+    ['POST', 'activate'],
+    ['POST', 'delete']
   ]) {
     const path = `/api/local-models/omlx/${action}`
+
     for (const profile of ['default', 'iris']) {
       assert.deepEqual(
         resolveProfileApiRequest(profile, path, {
@@ -987,8 +989,11 @@ test('oMLX profile controls share the host backend with explicit profile scope',
 })
 
 test('oMLX machine jobs start on the backend that owns job polling', () => {
-  for (const action of ['install', 'download']) {
-    const path = `/api/local-models/omlx/${action}`
+  for (const path of [
+    '/api/local-models/omlx/install',
+    '/api/local-models/omlx/download',
+    '/api/local-models/download/cancel'
+  ]) {
     assert.deepEqual(
       resolveProfileApiRequest('iris', path, {
         globalRemote: false,

@@ -1573,11 +1573,13 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'done' | 'error' | 'paused' | 'running'
+  status: 'cancelled' | 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
   done_bytes: number
+  cached_bytes?: number
+  received_bytes?: number
   percent?: number
   /** Smoothed transfer rate (bytes/sec) and remaining seconds. Present only
    * while a download is actually moving — absent when parked or settled, so a
@@ -1590,6 +1592,8 @@ export interface LocalRuntimeJob {
   ranges?: Record<string, [number, number][]>
   /** Control flags: false while the job is in a phase that cannot park
    * (server start, default assignment, non-download quickstart legs). */
+  can_cancel?: boolean
+  cancel_requested?: boolean
   can_pause?: boolean
   can_resume?: boolean
   /** The backend has accepted a pause request; the status flips when the

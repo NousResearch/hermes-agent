@@ -53,6 +53,8 @@ export const deLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: 'Modelle durchsuchen',
   downloaded: 'Heruntergeladen',
   downloadAction: size => `Download · ${size}`,
+  downloadCached: size => `${size} bereits heruntergeladen`,
+  downloadReceived: size => `${size} empfangen`,
   downloadProgress: (done, total) => `${done} von ${total} werden heruntergeladen`,
   downloadDoneToast: model => `${model} ist bereit.`,
   installDoneToast: 'Lokale Laufzeit installiert und bereit.',

@@ -713,6 +713,7 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'POST /api/local-models/omlx/select',
   'POST /api/local-models/omlx/server',
   'POST /api/local-models/omlx/activate',
+  'POST /api/local-models/omlx/delete',
   'GET /api/dashboard/themes',
   'PUT /api/dashboard/theme',
   'GET /api/dashboard/font',
@@ -749,7 +750,9 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
   // Machine-wide installs/downloads share the host's in-memory job registry.
   if (
     method === 'POST' &&
-    (pathname === '/api/local-models/omlx/install' || pathname === '/api/local-models/omlx/download')
+    (pathname === '/api/local-models/omlx/install' ||
+      pathname === '/api/local-models/omlx/download' ||
+      pathname === '/api/local-models/download/cancel')
   ) {
     return false
   }

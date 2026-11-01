@@ -9,7 +9,7 @@ export interface OmlxStatus {
   model_dir: string
   base_url: string
   version: string | null
-  models: { id: string; active: boolean }[]
+  models: { id: string; active: boolean; size_bytes?: number }[]
   error?: string | null
 }
 
@@ -45,6 +45,15 @@ export function activateOmlxModel(modelId: string, scope: LocalModelsScope): Pro
     body: { model_id: modelId },
     method: 'POST',
     path: '/api/local-models/omlx/activate'
+  })
+}
+
+export function deleteOmlxModel(modelId: string, scope: LocalModelsScope): Promise<{ ok: boolean }> {
+  return hermesApi<{ ok: boolean }>({
+    ...scope,
+    body: { model_id: modelId },
+    method: 'POST',
+    path: '/api/local-models/omlx/delete'
   })
 }
 

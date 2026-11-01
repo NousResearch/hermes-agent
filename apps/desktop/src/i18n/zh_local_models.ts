@@ -58,6 +58,8 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: '浏览模型',
   downloaded: '已下载',
   downloadAction: size => `下载 · ${size}`,
+  downloadCached: size => `${size} 已下载`,
+  downloadReceived: size => `${size} 已接收`,
   downloadProgress: (done, total) => `${done} / ${total}`,
   downloadStatusRunning: '下载中',
   downloadSpeed: rate => `${rate}`,

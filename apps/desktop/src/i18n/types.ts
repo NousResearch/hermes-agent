@@ -1369,6 +1369,8 @@ export interface Translations extends NoticeTranslations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadCached: (size: string) => string
+      downloadReceived: (size: string) => string
       downloadStatusRunning: string
       downloadSpeed: (rate: string) => string
       downloadEta: (time: string) => string

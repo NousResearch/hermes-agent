@@ -52,6 +52,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: 'Explorar modelos',
   downloaded: 'Descargado',
   downloadAction: size => `Descargar · ${size}`,
+  downloadCached: size => `${size} ya descargados`,
+  downloadReceived: size => `${size} recibidos`,
   downloadProgress: (done, total) => `Descargando ${done} de ${total}`,
   downloadDoneToast: model => `${model} está listo.`,
   installDoneToast: 'Entorno local instalado y listo.',

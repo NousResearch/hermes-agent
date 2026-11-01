@@ -53,6 +53,8 @@ export const enLocalModels: Translations['settings']['localModels'] = {
   noRecommendationAction: 'Browse models',
   downloaded: 'Downloaded',
   downloadAction: size => `Download · ${size}`,
+  downloadCached: size => `${size} already downloaded`,
+  downloadReceived: size => `${size} received`,
   downloadProgress: (done, total) => `${done} of ${total}`,
   downloadStatusRunning: 'Downloading',
   downloadSpeed: rate => `${rate}`,

@@ -54,6 +54,8 @@ export const frLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: 'Parcourir les modèles',
   downloaded: 'Téléchargé',
   downloadAction: size => `Télécharger · ${size}`,
+  downloadCached: size => `${size} déjà téléchargés`,
+  downloadReceived: size => `${size} reçus`,
   downloadProgress: (done, total) => `Téléchargement de ${done} sur ${total}`,
   downloadDoneToast: model => `${model} est prêt.`,
   installDoneToast: 'Le moteur local est installé et prêt.',

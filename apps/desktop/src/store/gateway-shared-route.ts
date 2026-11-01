@@ -35,12 +35,20 @@ export async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 
 // Scopes whose last route resolution rode the primary socket (shared primary /
 // shared remote). A HINT for passive readers only (gateway.ts gatewayRouteState);
-// requests still resolve the route per call.
-const primaryRiders = new Set<string>()
+// requests still resolve the route per call. Each hint is bound to the primary
+// socket + connection it was learned on: after a soft re-home the same profile
+// may live on another backend, so a hint from the old primary must not key it
+// as `primary:<profile>` under the new one.
+export interface PrimaryIdentity {
+  connectionId: null | string
+  gateway: unknown
+}
 
-export function notePrimaryRider(scope: string, rides: boolean): boolean {
+const primaryRiders = new Map<string, PrimaryIdentity>()
+
+export function notePrimaryRider(owner: PrimaryIdentity, scope: string, rides: boolean): boolean {
   if (rides) {
-    primaryRiders.add(scope)
+    primaryRiders.set(scope, owner)
   } else {
     primaryRiders.delete(scope)
   }
@@ -48,4 +56,8 @@ export function notePrimaryRider(scope: string, rides: boolean): boolean {
   return rides
 }
 
-export const isPrimaryRider = (scope: string): boolean => primaryRiders.has(scope)
+export function isPrimaryRider(scope: string, current: PrimaryIdentity): boolean {
+  const owner = primaryRiders.get(scope)
+
+  return Boolean(owner && owner.gateway === current.gateway && owner.connectionId === current.connectionId)
+}

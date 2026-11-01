@@ -53,6 +53,7 @@ vi.mock('@/store/session-request-router', async importOriginal => ({
 
 const { $gateway } = await import('@/store/gateway')
 const { $gatewayState } = await import('@/store/session')
+const { $primaryGatewayRoute } = await import('@/store/gateway-primary-route')
 
 const ownerOf = (call: unknown[]) => JSON.stringify(call[0] ?? 'ambient')
 const callsFor = (owner: unknown) => h.request.mock.calls.filter(c => ownerOf(c) === JSON.stringify(owner)).length
@@ -245,5 +246,20 @@ describe('useLiveWorkRoster', () => {
 
     await act(async () => finishOld({ sessions: [] }))
     expect($liveWorkRoster.get()['::y']).toBeDefined()
+  })
+
+  it('starts over when the primary re-homes to another connection while the socket state stays open', async () => {
+    act(() => $primaryGatewayRoute.set({ connectionId: 'old-host', mode: 'remote' }))
+    h.request.mockRejectedValueOnce(Object.assign(new Error('method not found'), { code: -32601 }))
+    renderHook(() => useLiveWorkRoster())
+    await tick(0)
+    expect(callsFor('ambient')).toBe(1)
+
+    h.request.mockResolvedValue({ sessions: [{ session_id: 'new-host-row', subagents: 1 }] })
+    act(() => $primaryGatewayRoute.set({ connectionId: 'new-host', mode: 'remote' }))
+    await tick(0)
+
+    expect(callsFor('ambient')).toBe(2)
+    expect($liveWorkRoster.get()['primary:default']?.sessions['new-host-row']?.subagents).toBe(1)
   })
 })

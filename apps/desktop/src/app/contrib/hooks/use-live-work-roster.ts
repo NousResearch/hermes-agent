@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { $gateway, activeGatewayProfileKey, gatewayRouteState, isActivePrimary } from '@/store/gateway'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $liveWorkRoster, rosterSourceHasWork, setLiveWorkRosterSource } from '@/store/live-work-roster'
 import { $gatewayState, ownerLookupSessionRows } from '@/store/session'
 import { ambientRequestFor } from '@/store/session-gone-latch'
@@ -73,12 +74,17 @@ function rosterSources(): Map<string, RosterSource> {
  *  included) and keeps retrying, so a recovered socket comes back on its own. */
 export function useLiveWorkRoster() {
   const gatewayState = useStore($gatewayState)
+  // Route keys (`primary:<profile>`, `ambient`) name a socket, not a backend:
+  // a soft re-home of the primary must start over, even while the foreground
+  // socket (a secondary) stays open, or old buckets and stops outlive it.
+  const { connectionId: primaryConnection, mode: primaryMode } = useStore($primaryGatewayRoute)
 
   useEffect(() => {
-    if (gatewayState !== 'open') {
-      // Counts from a dropped socket are unverified; the reconnect re-reads them.
-      $liveWorkRoster.set({})
+    // Counts from a dropped socket or a previous primary are unverified; the
+    // (re)connect re-reads them.
+    $liveWorkRoster.set({})
 
+    if (gatewayState !== 'open') {
       return
     }
 
@@ -176,5 +182,5 @@ export function useLiveWorkRoster() {
       window.clearInterval(timer)
       window.removeEventListener('focus', hydrate)
     }
-  }, [gatewayState])
+  }, [gatewayState, primaryConnection, primaryMode])
 }

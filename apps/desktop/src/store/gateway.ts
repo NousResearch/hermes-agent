@@ -33,7 +33,12 @@ import {
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
-import { isPrimaryRider, notePrimaryRider, sharedPrimaryRoute } from '@/store/gateway-shared-route'
+import {
+  isPrimaryRider,
+  notePrimaryRider,
+  type PrimaryIdentity,
+  sharedPrimaryRoute
+} from '@/store/gateway-shared-route'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -325,7 +330,7 @@ export function gatewayRouteState(connectionId: null | string, profile: string):
   const scope = registryBackendScopeKey(connectionId, key)
   const onPrimary = key === g.primaryProfile && (scope === key || isPrimaryRegistryRoute(connectionId, key))
 
-  if (onPrimary || isPrimaryRider(scope)) {
+  if (onPrimary || isPrimaryRider(scope, primaryIdentity())) {
     return { key: `primary:${key}`, open: isOpen(g.primaryGateway) }
   }
 
@@ -379,6 +384,10 @@ export function dispatchPrimaryServerRequest(request: ServerRequest, profile: st
 function primaryConnectionId(): null | string {
   return $primaryGatewayRoute.get().connectionId
 }
+
+// Taken BEFORE a route await, so a hint learned across a re-home stays bound
+// to the primary the route was resolved against.
+const primaryIdentity = (): PrimaryIdentity => ({ connectionId: primaryConnectionId(), gateway: g.primaryGateway })
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   const next = normKey(profile)
@@ -1139,7 +1148,7 @@ async function gatewayForProfile(
     throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
   }
 
-  if (notePrimaryRider(key, await sharedPrimaryRoute(key))) {
+  if (notePrimaryRider(primaryIdentity(), key, await sharedPrimaryRoute(key))) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1277,7 +1286,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (notePrimaryRider(scope, await ridesPrimaryBackend(connectionId, key))) {
+  if (notePrimaryRider(primaryIdentity(), scope, await ridesPrimaryBackend(connectionId, key))) {
     traceAgentRoute(scope, 'primary-shared')
 
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
@@ -1688,9 +1697,14 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {return}
+  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {
+    return
+  }
 
-  if (event.type === 'message.start' || (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)) {
+  if (
+    event.type === 'message.start' ||
+    (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)
+  ) {
     // The gateway emits settled session.info before immediately chaining a
     // queued/goal follow-up. Keep the same route alive for that next turn.
     cancelTurnLeaseRelease(key)

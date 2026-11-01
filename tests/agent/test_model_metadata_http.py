@@ -157,6 +157,35 @@ def servers():
         thread.join(timeout=5)
 
 
+@pytest.mark.parametrize("auth_name", ["Authorization", "authorization"])
+def test_failed_command_key_does_not_borrow_configured_authorization(servers, monkeypatch, auth_name):
+    from agent.command_token_source import CommandTokenSource
+    from hermes_constants import get_hermes_home
+
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append({key.lower(): value for key, value in self.headers.items()})
+            body = b'{"data":[{"id":"other-identity","max_model_len":32768}]}'
+            self.send_response(200 if self.headers.get("Authorization") else 401)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setenv("HTTP_PROXY", servers(Handler))
+    monkeypatch.setenv("NO_PROXY", "")
+    base_url = "http://metadata.invalid/v1"
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"providers": {"gateway": {
+        "base_url": base_url, "extra_headers": {auth_name: "configured-fallback", "X-Consumer": "assistant"},
+    }}}))
+    assert model_metadata.fetch_endpoint_model_metadata(base_url, api_key=CommandTokenSource("exit 7")) == {}
+    assert seen and all("authorization" not in headers and headers["x-consumer"] == "assistant" for headers in seen)
+
+
 def test_redirect_credentials_and_proxy_routing_are_preserved(servers, monkeypatch):
     seen = []
     sink_url = ""

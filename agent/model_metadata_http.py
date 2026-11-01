@@ -16,6 +16,8 @@ def auth_headers(api_key: object = "", base_url: str = "") -> dict[str, str]:
     token = materialize_probe_api_key(api_key)
     headers = httpx.Headers({"Authorization": f"Bearer {token}"} if token else {})
     headers.update(get_custom_provider_extra_headers(base_url))
+    if callable(api_key) and not token:
+        headers.pop("Authorization", None)
     return dict(headers)
 
 

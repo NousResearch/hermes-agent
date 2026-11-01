@@ -6,6 +6,7 @@ execution + delivery stay in cron.scheduler.run_job / _deliver_result; never rei
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import inspect
 import logging
 import threading
@@ -370,9 +371,16 @@ def fire_overdue_jobs(
             claimed = provider.claim_fire(job_id)
             if claimed is None:
                 continue
+            # A raw thread starts with an EMPTY contextvars context, so run_one_job would resolve
+            # home (and with it secrets, config, and the spawned worker's HERMES_HOME) to the
+            # LAUNCH profile instead of the profile whose store this sweep is walking. Inherit the
+            # caller's context — same pattern as the built-in ticker's dispatch pool.
+            fire_ctx = contextvars.copy_context()
             threading.Thread(
-                target=provider.fire_claimed, args=(claimed,),
-                kwargs={"adapters": adapters, "loop": loop}, daemon=True,
+                target=lambda: fire_ctx.run(
+                    provider.fire_claimed, claimed, adapters=adapters, loop=loop
+                ),
+                daemon=True,
                 name=f"cron-misfire-{job_id[:12]}",
             ).start()
             fired += 1

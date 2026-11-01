@@ -1,0 +1,34 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: page2ai
+description: Convert web pages or HTML to clean Markdown for LLM context. Preserves code blocks with language tags and reading structure. Zero telemetry.
+source: https://github.com/igorsaevets/page2ai-mcp
+
+# Official author-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live 2026-08-31:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://page2ai-mcp-remote.vercel.app/api/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers.
+suggest:
+  keywords:
+    - page2ai
+    - webpage to markdown
+    - html to markdown
+    - convert page to markdown
+    - web scraping for llm
+  hosts:
+    - page2ai-mcp-remote.vercel.app
+
+post_install: |
+  No account or credentials needed — Page2AI is publicly hosted with no auth.
+  Tools are available as soon as the session restarts. For a local install
+  instead, use the npm package: npx -y @page2ai/mcp (Node 22+ required).

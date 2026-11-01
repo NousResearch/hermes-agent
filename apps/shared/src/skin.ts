@@ -51,6 +51,7 @@ export const SKIN_COLOR_TOKENS = [
   // CLI / TUI chrome.
   'prompt',
   'input_rule',
+  'user_rule',
   'response_border',
   'shell_dollar',
   'selection_bg',

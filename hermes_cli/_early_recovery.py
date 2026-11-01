@@ -1411,6 +1411,7 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
     lock = _claim_recovery_lock(root)
     if lock is None:
         return False
+    attempt_recorded = False
     try:
         # Recheck after locking: another launch can finish between discovery and claim.
         markers = [path for path in marker_paths if path.is_file()]
@@ -1424,6 +1425,12 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         if not explicit and any(_read_marker_attempts(marker) >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS for marker in markers):
             print("hermes: automatic dependency repair retry limit reached; run `hermes pm repair`", file=sys.stderr)
             return False
+        if not explicit:
+            # A killed repair cannot reach the exception handler. Persist first,
+            # including before importing a possibly half-installed PM module.
+            for marker in markers:
+                _count_failed_attempt(marker)
+            attempt_recorded = True
         from pm.recovery import repair_dependencies
 
         print("hermes: repairing the recorded dependency environment...", file=sys.stderr)
@@ -1438,8 +1445,9 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
 
         if isinstance(exc, PermissionError) and install_state_permission_message(root, exc):
             raise  # The bootstrap or PM CLI reports the access error once.
-        for marker in markers:
-            _count_failed_attempt(marker)
+        if not attempt_recorded:
+            for marker in markers:
+                _count_failed_attempt(marker)
         print(f"hermes: dependency repair failed: {exc}; run `hermes pm repair`", file=sys.stderr)
         return False
     finally:

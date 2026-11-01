@@ -524,6 +524,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_read_at REAL,
     tool_names TEXT,
     transcript_revision INTEGER NOT NULL DEFAULT 0,
+    -- Explicit project binding (projects.db ``projects.id``): the session was deliberately put in
+    -- this project. ``cwd`` stays the working folder; NULL = unbound (folder inference only).
+    project_id TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id),
     FOREIGN KEY (system_prompt_hash) REFERENCES system_prompts(hash)
 );
@@ -796,6 +799,8 @@ BEGIN
 END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_project_id
+    ON sessions(project_id) WHERE project_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
     ON messages(session_id, display_order, active DESC, id DESC)
     WHERE active = 1 OR compacted = 1;

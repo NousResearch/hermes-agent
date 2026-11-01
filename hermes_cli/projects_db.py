@@ -477,6 +477,38 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
 
 
+def project_folder(project: Project) -> Optional[str]:
+    """The folder a session bound to ``project`` works in: the primary path, else the first folder."""
+    return project.primary_path or next(
+        (f.path for f in project.folders if f.is_primary), project.folders[0].path if project.folders else None)
+
+
+def session_project_ref(project: Project) -> dict:
+    """The compact ``project`` object a session payload carries (API + RPC wire shape)."""
+    return {"id": project.id, "slug": project.slug, "name": project.name, "icon": project.icon,
+            "color": project.color, "folder": project_folder(project), "board_slug": project.board_slug}
+
+
+def resolve_session_project(conn: sqlite3.Connection, id_or_slug: Optional[str]) -> Optional[Project]:
+    """The ACTIVE project a session may be bound to (by id, then slug); ``None`` for an empty,
+    unknown or archived reference. Binding a new session into an archived project is refused."""
+    ref = str(id_or_slug or "").strip()
+    project = get_project(conn, ref) if ref else None
+    return None if project is None or project.archived else project
+
+
+def session_project_refs(project_ids: Iterable[Optional[str]], db_path: Optional[Path] = None) -> dict[str, dict]:
+    """``{project_id: session_project_ref}`` for the given ids (archived included: a session stays
+    labelled with the project it was bound to). Ids that resolve to nothing are omitted. Opens the
+    projects DB only when there is at least one id, so unbound listings never touch it."""
+    wanted = sorted({str(pid) for pid in project_ids if pid})
+    if not wanted:
+        return {}
+    with connect_closing(db_path) as conn:
+        return {pid: session_project_ref(p) for pid in wanted if (p := get_project(conn, pid)) is not None
+                and p.id == pid}
+
+
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     """Deterministic ``<project-slug>/<task-id>[-<title-slug>]`` branch name for a project-linked kanban
     task (stable and human-meaningful, replacing the random ``wt/<task-id>`` fallback)."""

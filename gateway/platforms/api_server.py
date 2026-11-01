@@ -51,7 +51,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
-    "reasoning_streaming": True,
+    "reasoning_streaming": True, "session_projects": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -114,6 +114,7 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_session_projects as _session_projects
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
@@ -2184,7 +2185,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[dict[str, Any]] = None, route: Optional[dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[dict[str, Any]] = None,
-        room_execution_policy: Optional[dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[dict[str, Any]] = None, session_cwd: str = "") -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2247,7 +2248,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "gateway_session_key": gateway_session_key,
             # The session's provider from the previous request, so its queued recall reaches this turn
             # (#120116); checked back in by the turn's finally.
-            "memory_manager": self._memory_sessions.checkout(session_id)}
+            "memory_manager": self._memory_sessions.checkout(session_id), "cwd": session_cwd or None}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
@@ -2436,40 +2437,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _session_db_unavailable() -> web.Response:
         return _error_response("Session database unavailable", 503, code="session_db_unavailable")
 
-    @staticmethod
-    def _session_response(session: dict[str, Any]) -> dict[str, Any]:
-        """Return a stable, client-safe session representation."""
-        safe_keys = (
-            "id", "source", "user_id", "model", "title", "started_at", "ended_at", "end_reason",
-            "message_count", "tool_call_count", "input_tokens", "output_tokens",
-            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
-            "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
-        payload = {key: session.get(key) for key in safe_keys if key in session}
-        # SQLite stores the flags as 0/1.
-        payload.update(
-            {f: bool(payload[f]) for f in ("pinned", "archived", "hidden") if f in payload})
-        # Full system prompts / model_config never cross the client API; only their presence.
-        payload["has_system_prompt"] = bool(session.get("system_prompt"))
-        payload["has_model_config"] = bool(session.get("model_config"))
-        raw_model_config = session.get("model_config")
-        try:
-            model_config = (
-                json.loads(raw_model_config)
-                if isinstance(raw_model_config, str)
-                else raw_model_config
-            )
-        except (TypeError, json.JSONDecodeError):
-            model_config = None
-        # Exact-id consumers may inspect/resume delegate children even though
-        # list endpoints intentionally omit them. Project only the provenance
-        # bit the client needs so it cannot accidentally promote such a row
-        # into an ordinary session list; never expose the model snapshot.
-        payload["is_internal_child"] = bool(
-            isinstance(model_config, dict)
-            and model_config.get("_delegate_from") is not None
-        )
-        return payload
+    # Client-safe session payload (+ ``project`` when given the bound project's object).
+    _session_response = staticmethod(_session_projects.session_response)
 
     @staticmethod
     def _message_response(message: dict[str, Any]) -> dict[str, Any]:
@@ -2531,6 +2500,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         title_filter = (request.query.get("title") or "").strip() or None
         include_hidden = bool(title_filter) and _coerce_request_bool(
             request.query.get("include_hidden"), default=False)
+        project_id = await _session_projects.list_project_filter(request)
 
         async def _list() -> list:
             # include_pinned back-fills pins past the recency window; search_query pushes the
@@ -2538,7 +2508,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             rows = await asyncio.to_thread(
                 db.list_sessions_rich, source=source, limit=limit, offset=offset,
                 include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
+                search_query=title_filter, include_hidden=include_hidden, project_id=project_id)
             if title_filter:
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
@@ -2567,79 +2537,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Back-filled pins arrive PAST the limit: counting them would report a page that doesn't exist.
         windowed = sum(1 for s in sessions if not s.get("pinned"))
         return web.json_response({
-            "object": "list", "data": [self._session_response(s) for s in sessions],
+            "object": "list", "data": await _session_projects.session_payloads(sessions),
             "limit": limit, "offset": offset, "has_more": windowed >= limit})
 
     @_require_auth
     async def _handle_create_session(self, request: web.Request) -> web.Response:
-        """POST /api/sessions -- create an empty Hermes session row. Existence check, insert and
-        title handling run as ONE off-loop write so concurrent same-id creates can't both 201."""
-        body, err = await self._read_json_body(request)
-        if err:
-            return err
-        from gateway.platforms.api_server_bot_chat import create_peer_bot_chat
-        if (bot_chat := await create_peer_bot_chat(self, body)) is not None:
-            return bot_chat  # the owner minted the canonical Bot Chat (#139370)
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return self._session_db_unavailable()
-        raw_id = body.get("id") or body.get("session_id")
-        session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        from gateway.session import _is_path_unsafe
-        if not session_id or re.search(r'[\r\n\x00]', session_id) or _is_path_unsafe(session_id):
-            return _error_response("Invalid session ID", 400, code="invalid_session_id")
-        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
-            return _error_response("Session ID too long", 400, code="invalid_session_id")
-        system_prompt = body.get("system_prompt")
-        if system_prompt is not None and not isinstance(system_prompt, str):
-            return _error_response("system_prompt must be a string", 400, code="invalid_system_prompt")
-        source = self._normalize_session_source(body.get("source") or "api_server")
-        runtime_request = self._session_runtime_request_from_body(body)
-        lock_error = self._runtime_lock_error(runtime_request)
-        if lock_error is not None:
-            return lock_error
-        requested = runtime_request.get("requested") or {}
-        # The normalized requested["model"] (prefix split, virtual alias nulled) — the raw body
-        # would persist "hermes-agent" and later send it to the provider literally.
-        model_name = self._clean_runtime_id(requested.get("model")) or None
-        model_config = None
-        if requested.get("model") or requested.get("provider"):
-            model_config = {"browser_model_lock": {
-                "provider": requested.get("provider") or "", "model": requested.get("model") or "",
-                "model_options": runtime_request.get("model_options") or {},
-                "route_source": runtime_request.get("route_source") or "",
-                "confirmed": bool(runtime_request.get("require_model_lock")),
-                "updated_at": time.time()}}
-        title = body.get("title")
-
-        def _atomic(conn):
-            from hermes_state_mutation_retirement import create_conflict
-            if conflict := create_conflict(conn, session_id):  # one BEGIN IMMEDIATE write: a racing create sees the row
-                return None, conflict
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
-                (session_id, source, model_name, json.dumps(model_config) if model_config else None,
-                 system_prompt, time.time()))
-            if title is not None:
-                clean_title = db.sanitize_title(str(title))
-                if clean_title:
-                    try:
-                        db._resolve_title_conflict(conn, session_id, clean_title)
-                    except ValueError as exc:  # the DB's uniqueness rule; undo the INSERT
-                        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                        return None, f"title:{exc}"
-                conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
-            session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            return (dict(session_row) if session_row else {
-                "id": session_id, "source": source, "model": model_name, "title": title}), None
-        session, err = await asyncio.to_thread(db._execute_write, _atomic)
-        if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
-            return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
-        if err and err.startswith("title:"):
-            return _error_response(err[len("title:"):], 400, code="invalid_title")
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
+        """POST /api/sessions -- see ``api_server_session_projects.handle_create_session``."""
+        return await _session_projects.handle_create_session(self, request, _api_server=sys.modules[__name__])
 
     @_require_auth
     async def _handle_get_session(self, request: web.Request) -> web.Response:
@@ -2647,7 +2551,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        return web.json_response({"object": "hermes.session", "session": await _session_projects.session_payload(session)})
 
     @_require_auth
     async def _handle_patch_session(self, request: web.Request) -> web.Response:
@@ -2687,7 +2591,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        return web.json_response({"object": "hermes.session", "session": await _session_projects.session_payload(session)})
 
     @_require_auth
     async def _handle_delete_session(self, request: web.Request) -> web.Response:
@@ -2802,7 +2706,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except ValueError as exc:
             return _error_response(str(exc), 400, code="invalid_title")
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
-        return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+        return web.json_response({"object": "hermes.session", "session": await _session_projects.session_payload(fork)}, status=201)
 
     async def _prepare_session_chat(self, request: web.Request) -> tuple:
         """Shared prelude for /api/sessions/{id}/chat[/stream]: header/body validation, then
@@ -3570,7 +3474,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @staticmethod
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", cwd: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -3582,7 +3486,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from gateway.session_context import set_session_vars
         return set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
-            profile=profile, async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            profile=profile, async_delivery=False, cron_session="", session_history_delivery=session_history_delivery,
+            cwd=cwd)  # a project session's folder pins context discovery + the prompt's cwd
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[dict[str, Any]], requested_runtime: Optional[dict[str, Any]],

@@ -344,6 +344,9 @@ class SessionCompressionMixin:
         # that NULL; auxiliary usage must not write ``unknown`` into it first.
         from gateway.session_policy import created_surface
         created_source = created_surface(parent["created_source"]) or created_surface(source)
+        # The child stays in the parent's project unless it was handed a different working folder.
+        child_cwd = cwd or parent["cwd"]
+        project_id = parent["project_id"] if "project_id" in parent.keys() and child_cwd == parent["cwd"] else None
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
@@ -353,11 +356,11 @@ class SessionCompressionMixin:
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
                    thread_id, display_name, origin_json, pinned, started_at,
-                   archived, auto_archived
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   archived, auto_archived, project_id
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
-                system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
+                system_prompt_hash, parent["tool_names"], parent_session_id, child_cwd, parent["git_branch"],
                 parent["git_repo_root"],
                 profile_name or parent["profile_name"] or self._own_profile_name(),
                 parent["user_id"], parent["session_key"], parent["chat_id"], parent["chat_type"],
@@ -367,7 +370,7 @@ class SessionCompressionMixin:
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 (parent["archived"] or 0) if continuation else 0,
-                (parent["auto_archived"] or 0) if continuation else 0),
+                (parent["auto_archived"] or 0) if continuation else 0, project_id),
         )
 
     def publish_compression_child(
@@ -425,7 +428,7 @@ class SessionCompressionMixin:
             """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
                       user_id, session_key, chat_id, chat_type,
                       thread_id, display_name, origin_json, profile_name, tool_names,
-                      archived, auto_archived, pinned, model_config, created_source
+                      archived, auto_archived, pinned, model_config, created_source, project_id
                FROM sessions WHERE id = ?""",
             (parent_session_id,),
         ).fetchone()

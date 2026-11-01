@@ -81,7 +81,8 @@ def api_session_vars():
     current = api_execution.get()
     if current is None:
         return {}
-    return {'session_history_delivery': current['settings'].get('session_history_delivery') or ''}
+    return {'session_history_delivery': current['settings'].get('session_history_delivery') or '',
+            'cwd': current.get('session_cwd') or ''}
 
 
 def check_api_settings(adapter, settings):
@@ -442,7 +443,14 @@ def prepare_api_execution(authority, ref, payload):
     if data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
+    from gateway.platforms.api_server_session_projects import pin_run_workspace, stored_session_cwd
+    # A project session's turn runs in its folder: the prompt/context cwd (api_session_vars) and the
+    # terminal/file tools of the physical session the turn writes to.
+    target = authority.physical_target(ref)
+    session_cwd = stored_session_cwd(authority.db, target)
+    pin_run_workspace(target, session_cwd)
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
+            'session_cwd': session_cwd,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
             'relay_metadata': data.get('relay_metadata') if data else None,
             'resume_unanswered': bool(data and data.get('resume_unanswered'))}

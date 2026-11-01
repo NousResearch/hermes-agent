@@ -2580,6 +2580,8 @@ export interface ProjectTreeNode {
   repos?: ProjectTreeRepo[]
   previewSessions?: ProjectTreeSession[]
   sessionIds?: string[]
+  folderMatchIds?: string[]
+  folderMatches?: ProjectTreeSession[]
 }
 export interface ProjectTreeRepo {
   id: string
@@ -2627,6 +2629,7 @@ export interface ProjectTreeSession {
   _lineage_root_id?: string | null
   _lineage_ids?: string[] | null
   continuation_kind?: string | null
+  project_id?: string | null
   profile?: string | null
   [key: string]: unknown
 }
@@ -3363,15 +3366,29 @@ export interface SessionArchiveResult {
   archived: boolean
   session_key: string
 }
+/** ``project_id`` (id or slug) binds the session to that project, ``cwd`` defaulting to its folder; an explicit ``null``/``""`` unassigns (``cwd`` defaults to ``~``); absent = a cwd-only move that keeps the binding while ``cwd`` stays inside the project (``5062``: unknown or archived project). */
 export interface SessionWorkspaceMoveParams {
   profile?: string | null
   session_key: string
-  cwd: string
+  cwd?: string | null
+  project_id?: string | null
 }
 export interface SessionWorkspaceMoveResult {
   cwd: string
   branch?: string | null
   git_repo_root?: string | null
+  project_id?: string | null
+  project?: SessionProjectRef | null
+}
+/** ``hermes_cli/projects_db.py::session_project_ref`` — the project a session is bound to. */
+export interface SessionProjectRef {
+  id: string
+  slug: string
+  name: string
+  icon?: string | null
+  color?: string | null
+  folder?: string | null
+  board_slug?: string | null
 }
 export interface SessionCwdSetParams {
   session_id: string
@@ -6456,7 +6473,7 @@ export interface RpcMethods {
   'session.undo': { params: SessionUndoParams; result: SessionUndoResult }
   /** Token / context / cost counters for the session (+ Nous credit lines when available). */
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
-  /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
+  /** Re-home a stored session's workspace and project binding; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }
   /** Strict provider check through the same runtime resolution the agent uses on session creation. */
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }

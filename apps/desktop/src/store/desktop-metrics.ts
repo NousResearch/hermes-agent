@@ -34,6 +34,7 @@ import { atom } from 'nanostores'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
+import { invokeOptionalIpc } from '@/lib/optional-ipc'
 import { readJson, writeJson } from '@/lib/storage'
 
 import type { SharedMetricsRequester } from './shared-metrics'
@@ -867,7 +868,9 @@ async function drainRendererCrashes(): Promise<void> {
   const bridge = window.hermesDesktop?.desktopMetrics
 
   try {
-    const pending = await bridge?.takeRendererCrashes?.()
+    const pending = await invokeOptionalIpc('hermes:desktop-metrics:crash:take', () =>
+      bridge?.takeRendererCrashes?.()
+    )
 
     if (!pending) {
       return

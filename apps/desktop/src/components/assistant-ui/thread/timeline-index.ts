@@ -1,6 +1,6 @@
 import { capabilityScoped, hermesApi, type ProfileScope, sessionReadOwnerPin } from '@/api/client'
 
-import type { TimelineEntry } from './timeline-data'
+import { timelineDockLabel, type TimelineEntry } from './timeline-data'
 
 interface TimelinePage {
   entries: Array<{ row_id: number; preview: string; timestamp?: number }>
@@ -78,7 +78,12 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?
       const merged = new Map(previous?.entries.map(entry => [entry.rowId, entry]))
 
       for (const entry of page.entries) {
-        merged.set(entry.row_id, { id: `history:${entry.row_id}`, rowId: entry.row_id, preview: entry.preview })
+        merged.set(entry.row_id, {
+          id: `history:${entry.row_id}`,
+          label: timelineDockLabel(entry.preview),
+          preview: entry.preview,
+          rowId: entry.row_id
+        })
       }
 
       const value = {

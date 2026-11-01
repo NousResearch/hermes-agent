@@ -66,7 +66,8 @@ def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, v
         assert home == root and name == 'worker'
         assert marker.exists() is (verb == 'stop')
         calls.append('unserve')
-        return {'unserved': name, 'served_profiles': ['default']}
+        return {'unserved': name, 'served_profiles': ['default'],
+                'writer_settlement': 'settled', 'reservation': 'released'}
 
     def serve(home, name):
         assert home == root and name == 'worker'
@@ -169,7 +170,8 @@ def test_stop_parks_a_served_profile_instead_of_stopping_the_host(homes, monkeyp
     def unserve(home, name):
         assert home == root and name == 'worker' and marker.exists()
         calls.append('unserve')
-        return {'unserved': name, 'served_profiles': ['default']}
+        return {'unserved': name, 'served_profiles': ['default'],
+                'writer_settlement': 'settled', 'reservation': 'released'}
 
     def host_stop(*args, **kwargs):
         raise AssertionError('stop killed the host gateway pid')

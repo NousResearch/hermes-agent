@@ -1,5 +1,6 @@
 """Tests for the verify environment manifest and the smoke runner."""
 
+import contextlib
 import http.server
 import json
 import os
@@ -270,23 +271,6 @@ class TestTerminateProcessGroupGuard:
     lead: a child spawned without start_new_session shares OUR process group,
     and the group signal would take the verify runner down with it."""
 
-    def test_shared_group_child_gets_terminate_only(self, monkeypatch):
-        import os as _os
-
-        from agent.verify.runner import _terminate_process_group
-
-        proc = MagicMock()
-        proc.pid = 999
-        proc.poll.return_value = None
-        monkeypatch.setattr(_os, "getpgid", lambda pid: 555)  # != pid: shared group
-        killpg_calls = []
-        monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
-
-        _terminate_process_group(proc)
-
-        assert killpg_calls == []
-        proc.terminate.assert_called_once()
-
     def test_real_shared_group_child_does_not_signal_us(self):
         """Real child in our own group: if killpg fired, this test process would
         be dead before the assertion. The direct child still dies."""
@@ -327,3 +311,65 @@ class TestTerminateProcessGroupGuard:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+
+@pytest.mark.platforms("windows")
+class TestStartPhaseShellGrandchild:
+    """``shell=True`` interposes ``cmd.exe``, so the app the recipe starts is a GRANDCHILD.
+    ``start_new_session=True`` is a POSIX-only no-op and Windows has no ``os.killpg``, so the
+    runner used to stop that ``cmd.exe`` alone. The app survived: it kept the readiness port
+    bound, so the next ``hermes verify`` could not bind it, and it held the stdout write end it
+    inherited, so reading the pipe to EOF never returned -- verify hung forever and printed
+    nothing, not even the JSON report (#134525)."""
+
+    @staticmethod
+    def _free_port() -> int:
+        import socket
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    def test_grandchild_is_stopped_and_the_phase_returns(self, tmp_path):
+        import sys
+
+        import psutil
+
+        from agent.verify.runner import _run_start_phase
+
+        port, pid_file = self._free_port(), tmp_path / "server.pid"
+        server = tmp_path / "server.py"
+        server.write_text(
+            "import os, sys\n"
+            "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer\n"
+            "class H(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        self.send_response(200); self.end_headers(); self.wfile.write(b'ok')\n"
+            "    def log_message(self, *a): pass\n"
+            f"open({str(pid_file)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
+            "print('SERVER-UP', flush=True)\n"
+            "ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()\n",
+            encoding="utf-8",
+        )
+        recipe = Recipe(name="grandchild app", kind="test", port=port, readiness_path="/health",
+                        start=f'"{sys.executable}" "{server}" {port}')
+
+        result: list = []
+        worker = threading.Thread(
+            target=lambda: result.append(_run_start_phase(recipe, tmp_path, 30.0)), daemon=True)
+        worker.start()
+        # Bounded join: unfixed, the phase never returns at all, and a hanging test tells nobody why.
+        worker.join(timeout=90)
+
+        server_pid = int(pid_file.read_text(encoding="utf-8")) if pid_file.is_file() else None
+        try:
+            assert result, "the start phase never returned (the grandchild still held the stdout pipe)"
+            assert server_pid is not None, "the recipe's server never started"
+            assert result[0].ready is True, result[0]
+            assert not psutil.pid_exists(server_pid) or not psutil.Process(server_pid).is_running(), (
+                "the app survived teardown and still holds the readiness port")
+            # The pipe reached EOF, so the phase reports what the app actually printed.
+            assert "SERVER-UP" in result[0].output_tail
+        finally:
+            if server_pid is not None:  # never leak the server into the rest of the run
+                with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                    psutil.Process(server_pid).kill()

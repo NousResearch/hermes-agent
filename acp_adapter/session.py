@@ -350,7 +350,12 @@ class SessionManager:
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+            # Prefer the route's named form (``custom:<name>``) for provider: the bare kind a
+            # named custom provider leaves on agent.provider cannot be re-resolved on resume (#139908).
+            if key == "provider":
+                value = getattr(state.agent, "provider_route", None) or getattr(state.agent, key, None)
+            else:
+                value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
 
@@ -536,9 +541,21 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        # A persisted row can carry a named custom endpoint downgraded to the bare kind
+        # (`custom`) plus its base_url (#142714): bare custom resolves credentialless, so
+        # map the recorded endpoint back to the configured identity it came from first —
+        # those rows then restore onto the endpoint they used instead of failing closed.
+        requested = requested_provider or config_provider
+        if requested == "custom" and base_url:
+            from hermes_cli.runtime_provider_custom import find_custom_provider_identity
+            try:
+                requested = find_custom_provider_identity(base_url) or requested
+            except Exception:
+                logger.debug("ACP session could not map its recorded base_url back to a "
+                             "named custom provider", exc_info=True)
         try:
             runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+                requested=requested, target_model=(model or default_model) or None)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
@@ -577,6 +594,19 @@ class SessionManager:
             if resolve_error is not None:
                 raise resolve_error from exc
             raise
+        if resolve_error is not None and requested_provider:
+            # Fail closed on an explicit request (#139908): the bare build "succeeded" only by
+            # dropping the failed resolution, landing the agent on the config-default endpoint —
+            # a different endpoint the session never used, later sent this provider's key.
+            # The bare-fallback contract (#91090) stands for the config-default request.
+            raise resolve_error
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
+        # The named route the agent actually resolved (``custom:<name>``), which AIAgent keeps
+        # only as the bare kind (``custom``): _persist stores it so a resume re-resolves the
+        # same named entry instead of a credentialless bare kind (#139908). A recovered
+        # identity (#142714) is the route too, so the next persist stores it back named.
+        route = str(requested or config_provider or "").strip()
+        if route:
+            agent.provider_route = route
         return agent

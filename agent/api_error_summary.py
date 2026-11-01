@@ -4,6 +4,7 @@ Entitlement-failure detection, xAI subscription decoration, structured-detail co
 redaction of provider error payloads.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import functools
 import json
 import re
 from typing import Any, Dict, Optional
@@ -71,6 +72,22 @@ def _is_xai_entitlement_text(lower: str) -> bool:
 def _http_prefix(error: Exception) -> str:
     status_code = getattr(error, "status_code", None)
     return f"HTTP {status_code}: " if status_code else ""
+
+
+class _BindsAgentProvider:
+    """Static-style method that also receives ``provider=<agent.provider>`` when called on an agent.
+
+    Class access (``ApiErrorSummaryMixin._summarize_api_error(err)``) returns the plain function, and
+    callers keep the one-argument call shape, so one-argument stubs set on an instance still work.
+    """
+
+    def __init__(self, func):
+        self._func = func
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self._func
+        return functools.partial(self._func, provider=getattr(obj, "provider", None))
 
 
 class ApiErrorSummaryMixin:
@@ -151,8 +168,8 @@ class ApiErrorSummaryMixin:
             return ""
         return str(value)
 
-    @staticmethod
-    def _summarize_api_error(error: Exception) -> str:
+    @_BindsAgentProvider
+    def _summarize_api_error(error: Exception, provider: Optional[str] = None) -> str:
         """Extract a human-readable one-liner from an API error.
 
         Cloudflare HTML pages → ``<title>``; network/DNS failures (even SDK-wrapped) → offline hint;
@@ -172,7 +189,7 @@ class ApiErrorSummaryMixin:
             current = current.__cause__ or current.__context__
 
         from agent.timeout_error_summary import summarize_timeout_error
-        timeout_summary = summarize_timeout_error(error)
+        timeout_summary = summarize_timeout_error(error, provider)
         if timeout_summary is not None:
             return timeout_summary
 

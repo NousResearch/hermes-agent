@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("mcp.client.auth.oauth2")
 
-from tests.tools.test_mcp_google_offline_access import GOOGLE, OTHER_AS, RESOURCE, _standin  # noqa: E402
+from tests.tools.test_mcp_google_offline_access import GOOGLE, OTHER_AS, RESOURCE, _standin
 
 
 async def _run(tmp_path, monkeypatch, *, issuer, authorization_params=None):

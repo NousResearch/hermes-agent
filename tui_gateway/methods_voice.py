@@ -549,6 +549,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("wake.start")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Arm the wake-word listener for the calling surface ("tui" | "gui"); ``{started: False,
     reason}`` when disabled/owned/not ready. ``persist: true`` (explicit gesture) also flips

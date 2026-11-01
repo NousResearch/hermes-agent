@@ -118,6 +118,63 @@ def test_quick_snapshot_tree_is_owner_only_under_permissive_umask(tmp_path) -> N
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in files)
 
 
+@pytest.mark.platforms("posix")  # POSIX permission bits
+def test_full_zip_backup_is_owner_only_from_creation_under_permissive_umask(tmp_path, monkeypatch) -> None:
+    """A full HERMES_HOME zip holds secrets, so it must be 0600 while being written, not only after.
+
+    Under a normal 0022 umask a plain ``ZipFile(path, "w")`` creates a 0644 file, so a chmod after
+    publish leaves a window where another user can read it. Record the partial's mode *during*
+    the write, then check the published archive and its directory.
+    """
+    from hermes_cli import backup
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    seen: list[int] = []
+    real_write = backup._write_zip_entries
+
+    def spying_write(zf, *args, **kwargs):
+        seen.append(stat.S_IMODE(Path(zf.filename).stat().st_mode))
+        return real_write(zf, *args, **kwargs)
+
+    monkeypatch.setattr(backup, "_write_zip_entries", spying_write)
+
+    old_umask = os.umask(0o022)
+    try:
+        out = backup._create_prefixed_full_backup(home, "pre-update-", 5, "pre-update", "pre-update")
+    finally:
+        os.umask(old_umask)
+
+    assert out is not None and out.is_file()
+    assert seen == [0o600]
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert stat.S_IMODE(out.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.platforms("posix")
+def test_full_zip_backup_fails_closed_when_it_cannot_be_made_private(tmp_path, monkeypatch) -> None:
+    """If the owner-only file cannot be created, no readable archive is left behind."""
+    from hermes_cli import backup
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    real_open = os.open
+
+    def refuse_private_open(path, flags, mode=0o777, **kwargs):
+        if mode == 0o600 and flags & os.O_EXCL:
+            raise PermissionError("cannot create private file")
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(backup.os, "open", refuse_private_open)
+
+    out = backup._create_prefixed_full_backup(home, "pre-update-", 5, "pre-update", "pre-update")
+
+    assert out is None
+    assert list((home / "backups").glob("*")) == []
+
+
 def test_quick_snapshot_listing_ignores_partial_directories(tmp_path) -> None:
     home = tmp_path / ".hermes"
     partial = home / "state-snapshots" / ".unfinished.1.partial"

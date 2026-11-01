@@ -308,7 +308,8 @@ def _build_child_agent(
                     # delegation.inherit_soul (off by default) gives default children the parent's SOUL.md
                     # the same way (the cron pattern: persona kept, cwd context files still skipped).
                     **({"load_soul_identity": True}
-                       if profile_home is not None or bool((delegation_cfg or {}).get("inherit_soul", False))
+                       if profile_home is not None
+                       or is_truthy_value((delegation_cfg or {}).get("inherit_soul"), default=False)
                        else {}),
                 )
             except BaseException:

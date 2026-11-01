@@ -35,6 +35,11 @@ class TestDelegationInheritSoul(unittest.TestCase):
         self.assertTrue(kwargs["skip_context_files"])
         self.assertTrue(kwargs["load_soul_identity"])
 
+    def test_quoted_false_keeps_the_default_identity(self):
+        """A YAML string "false" must not switch the flag on (bool("false") is True)."""
+        kwargs = self._child_kwargs({"inherit_soul": "false"})
+        self.assertFalse(kwargs.get("load_soul_identity", False))
+
 
 if __name__ == "__main__":
     unittest.main()

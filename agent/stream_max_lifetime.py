@@ -40,6 +40,17 @@ def resolve_stream_max_lifetime(stale_timeout: float | None) -> float:
     return cap
 
 
+class StreamLifetimeExceeded(TimeoutError):
+    """A stream attempt cut by ``agent.stream_max_lifetime``: the stream opened and was still
+    delivering chunks, so the user-facing error names the setting, not the endpoint."""
+
+    def __init__(self, elapsed: float, cap: float):
+        super().__init__(
+            f"Response still streaming after {elapsed:.0f}s, cut by agent.stream_max_lifetime ({cap:g}s). "
+            f"Raise agent.stream_max_lifetime, or set it to 0 to turn the cap off, if this model "
+            f"legitimately streams this long.")
+
+
 class StreamLifetime:
     """Per-call clock: restarts whenever a new stream attempt is dispatched, so each
     retry gets the full cap, and after each kill (the killed attempt may unwind slowly)."""

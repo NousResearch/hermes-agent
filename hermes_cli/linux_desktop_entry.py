@@ -34,6 +34,18 @@ DESKTOP_ENTRY_NAME = f"{APP_ID}.desktop"
 # alias (NoDisplay=true) so pre-rename taskbar pins keep resolving (see _alias_legacy_desktop_entry).
 LEGACY_DESKTOP_ENTRY_NAME = "hermes.desktop"
 
+# WM_CLASS Electron's X11 window reports. Electron derives it from the application name and
+# ignores Chromium's --class switch (#45866), so an X11 toplevel can never be made to carry
+# APP_ID. GNOME matches such a window by StartupWMClass and, failing that, by a
+# `<WM_CLASS>.desktop` file name — which is why the pre-rename file name above doubles as the
+# X11 identity (see _write_x11_window_class_entry).
+X11_WM_CLASS = "Hermes"
+
+# Proprietary NVIDIA driver marker. apps/desktop/electron/wslg-launch-process.ts relaunches a
+# Wayland launch onto XWayland while this exists: the native Wayland path kills Chromium's GPU
+# process on those drivers (the SwiftShader fallback that follows pins whole CPU cores).
+NVIDIA_DRIVER_VERSION_PATH = Path("/proc/driver/nvidia/version")
+
 # XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
 # (updater relaunch) launches. See launched_from_shell().
 SHELL_LAUNCH_ENV_VAR = "DESKTOP_STARTUP_ID"
@@ -577,21 +589,36 @@ def _quote_exec_arg(arg: str) -> str:
     return f'"{escaped}"'
 
 
-def render_desktop_entry(exec_command: str, icon: str) -> str:
-    """The app-id entry: identity lives in the file name and ``StartupWMClass``."""
-    return (
-        "[Desktop Entry]\n"
-        "Type=Application\n"
-        "Name=Hermes\n"
-        "GenericName=Hermes Desktop\n"
-        "Comment=Launch Hermes Desktop\n"
-        f"Exec={exec_command}\n"
-        f"Icon={icon}\n"
-        "Terminal=false\n"
-        "Categories=Utility;\n"
-        "StartupNotify=true\n"
-        f"StartupWMClass={APP_ID}\n"
-    )
+def render_desktop_entry(
+    exec_command: str,
+    icon: str,
+    *,
+    wm_class: str = APP_ID,
+    hidden: bool = False,
+) -> str:
+    """One launcher entry: identity lives in the file name and ``StartupWMClass``.
+
+    ``wm_class`` is the class the shell matches the window against — ``APP_ID`` on Wayland, the
+    X11 ``WM_CLASS`` for an XWayland toplevel. ``hidden`` keeps the entry out of the app grid and
+    is only safe for an entry that another, visible one already covers: GNOME drops the taskbar
+    pin of a ``NoDisplay`` entry as soon as its app exits.
+    """
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Hermes",
+        "GenericName=Hermes Desktop",
+        "Comment=Launch Hermes Desktop",
+        f"Exec={exec_command}",
+        f"Icon={icon}",
+        "Terminal=false",
+        "Categories=Utility;",
+        "StartupNotify=true",
+        f"StartupWMClass={wm_class}",
+    ]
+    if hidden:
+        lines.append("NoDisplay=true")
+    return "\n".join(lines) + "\n"
 
 
 def _render_legacy_alias_entry(exec_command: str, icon: str) -> str:
@@ -767,6 +794,115 @@ def _launcher_entry_management_enabled() -> bool:
         return True
 
 
+_X11_PLATFORM = "x11"
+_WAYLAND_PLATFORM = "wayland"
+
+
+def _nvidia_proprietary_driver() -> bool:
+    """True when the proprietary NVIDIA driver is loaded (its ``/proc`` marker exists)."""
+    try:
+        return NVIDIA_DRIVER_VERSION_PATH.is_file()
+    except OSError:
+        return False
+
+
+def _configured_desktop_settings() -> "tuple[list[str], str]":
+    """``(electron_flags, ozone_platform_hint)`` from ``config.yaml``; empty on any error."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        desktop_cfg = (load_config_readonly() or {}).get("desktop") or {}
+    except Exception:
+        return [], ""
+    raw_flags = desktop_cfg.get("electron_flags")
+    if isinstance(raw_flags, str):
+        flags = shlex.split(raw_flags, posix=(os.name != "nt"))
+    elif isinstance(raw_flags, (list, tuple)):
+        flags = [str(f) for f in raw_flags if str(f).strip()]
+    else:
+        flags = []
+    hint = desktop_cfg.get("ozone_platform_hint")
+    return flags, (hint.strip().lower() if isinstance(hint, str) else "")
+
+
+def _explicit_ozone_platform(environ: Mapping[str, str]) -> Optional[str]:
+    """Platform an explicit ozone switch or hint pins, or ``None`` when unset/``auto``.
+
+    The two sources are the ones ``hermes desktop`` bridges into the Electron launch: an
+    ``--ozone-platform=`` switch in ``desktop.electron_flags``, and the
+    ``ELECTRON_OZONE_PLATFORM_HINT`` it exports from ``desktop.ozone_platform_hint`` — where an
+    environment variable already set wins over the config value.
+    """
+    flags, configured_hint = _configured_desktop_settings()
+    for flag in flags:
+        if flag.startswith("--ozone-platform="):
+            value = flag.split("=", 1)[1].strip().lower()
+            if value in (_X11_PLATFORM, _WAYLAND_PLATFORM):
+                return value
+    hint = environ.get("ELECTRON_OZONE_PLATFORM_HINT", configured_hint)
+    value = hint.strip().lower()
+    return value if value in (_X11_PLATFORM, _WAYLAND_PLATFORM) else None
+
+
+def window_platform(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """Platform the desktop window becomes a toplevel on: ``"x11"``, ``"wayland"`` or ``None``.
+
+    ``None`` means no graphical session was detected: there is no window to match, so the
+    entries are left untouched.
+
+    Mirrors ``wslgLaunchArgs()``/``defaultBackend()`` in
+    ``apps/desktop/electron/wslg-launch-process.ts``, which runs before the app loads: on a
+    Wayland session the binary is relaunched with ``--ozone-platform=<backend>``, and that
+    backend is X11 whenever the host runs the proprietary NVIDIA driver. That relaunch is why a
+    shell sees an X11 ``WM_CLASS`` (not the Wayland app_id) on those hosts, and therefore why
+    the entry it can match has to be the X11 one. Keep both implementations in step.
+    """
+    env = os.environ if environ is None else environ
+    if not env.get("WAYLAND_DISPLAY"):
+        # No relaunch happens: Electron opens an X11 toplevel, or no window at all.
+        return _X11_PLATFORM if env.get("DISPLAY") else None
+
+    explicit = _explicit_ozone_platform(env)
+    if explicit is not None:
+        return explicit
+
+    return _X11_PLATFORM if _nvidia_proprietary_driver() else _WAYLAND_PLATFORM
+
+
+def _write_x11_window_class_entry(applications_dir: Path, exec_command: str, icon: str) -> bool:
+    """Write the entry a shell resolves an X11 window against; True when it was (re)written.
+
+    Electron's X11 window reports ``hermes``/``Hermes`` (#45866), and GNU/Linux shells look for
+    the entry named after that class: ``hermes.desktop``. It stays visible on purpose — GNOME
+    drops a ``NoDisplay`` entry's taskbar pin as soon as its app exits, so hiding this file
+    turns every launch into a second, icon-less dock entry. A file at that path that is not ours
+    is left alone; management of an existing one honours the same opt-out as the app-id entry.
+    """
+    path = applications_dir / LEGACY_DESKTOP_ENTRY_NAME
+    try:
+        text: Optional[str] = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        text = None
+    if text is not None:
+        if not _launcher_entry_management_enabled():
+            return False
+        if not any(line.strip() == "Name=Hermes" for line in text.splitlines()):
+            return False
+
+    contents = render_desktop_entry(exec_command, icon, wm_class=X11_WM_CLASS)
+    if text == contents:
+        return False
+
+    try:
+        from utils import atomic_write_text
+
+        atomic_write_text(path, contents, create_mode=0o755)
+        path.chmod(0o755)
+    except OSError:
+        return False
+    return True
+
+
 def _alias_legacy_desktop_entry(applications_dir: Path, exec_command: str, icon: str) -> bool:
     """Keep the pre-rename ``hermes.desktop`` as a hidden alias of the app-id entry.
 
@@ -799,9 +935,14 @@ def _alias_legacy_desktop_entry(applications_dir: Path, exec_command: str, icon:
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
     """Create or refresh the app-id entry, respecting the opt-out for existing entries.
 
-    Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is converted
-    into a hidden alias once the new entry exists, and only while launcher management is
-    enabled — deleting it instead would silently kill existing taskbar pins (#124492).
+    Only the app-id entry is written here; the entry a shell matches the window against is
+    chosen by platform (see ``window_platform()``): on Wayland that is the app-id entry itself,
+    which stays visible, while a pre-rename ``hermes.desktop`` beside it becomes a hidden alias
+    once the new entry exists — deleting it instead would silently kill existing taskbar pins
+    (#124492). On X11/XWayland no entry named after the app-id can ever match, so the X11 entry
+    is written (visible) and the app-id one is hidden to avoid listing Hermes twice; see
+    ``_write_x11_window_class_entry``. Launcher management is skipped entirely when
+    ``desktop.manage_launcher_entry`` is false and the app-id entry already exists.
     ``None`` on non-Linux platforms, when the write fails, or when the resolved ``Exec``
     provably cannot serve ``hermes desktop`` — a convenience, never a reason to fail a launch.
     """
@@ -823,6 +964,7 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     if _persisted_exec_serves_desktop(exec_command) is False:
         return None
 
+    platform = window_platform()
     icon = icon_path(project_root)
     # Prefer the themed name: the icon is COPIED into the hicolor tree, so the entry outlives the
     # checkout (an absolute Icon= path breaks when the checkout moves). Absolute path only when
@@ -830,7 +972,11 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     icon_value = str(icon) if icon.is_file() else "hermes"
     if icon.is_file() and _install_icon_to_hicolor(icon):
         icon_value = "hermes"
-    contents = render_desktop_entry(exec_command, icon_value)
+    # The app-id entry is the window-matched one on Wayland; on X11 the window-class entry takes
+    # that job and this one hides so the app grid keeps a single Hermes.
+    contents = render_desktop_entry(
+        exec_command, icon_value, hidden=platform == _X11_PLATFORM
+    )
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
@@ -850,11 +996,17 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     except OSError:
         return None
 
-    # Converting the old entry is management too: with the opt-out set, an existing
-    # launcher stays untouched even here, in the missing-entry path where the new
+    # Writing the window-class entry is management too: with the opt-out set, an existing
+    # launcher stays untouched even here, in the missing-entry path where the app-id
     # entry is still created.
-    aliased = manage_enabled and _alias_legacy_desktop_entry(entry_path.parent, exec_command, icon_value)
-    if aliased or not unchanged:
+    wrote_window_entry = False
+    if platform == _X11_PLATFORM:
+        wrote_window_entry = _write_x11_window_class_entry(entry_path.parent, exec_command, icon_value)
+    elif platform == _WAYLAND_PLATFORM:
+        wrote_window_entry = manage_enabled and _alias_legacy_desktop_entry(
+            entry_path.parent, exec_command, icon_value
+        )
+    if wrote_window_entry or not unchanged:
         refresh_desktop_databases(entry_path.parent)
     return entry_path
 

@@ -2,6 +2,7 @@
 inbound webhooks (text, media attachments, typing indicators, read receipts)."""
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -565,7 +566,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        if self._webhook_token(request) != self.password:
+        # Compare as bytes: compare_digest raises TypeError on non-ASCII str
+        # inputs, which would turn a wrong password into a 500 instead of 401.
+        if not hmac.compare_digest(
+            (self._webhook_token(request) or "").encode("utf-8"), (self.password or "").encode("utf-8")
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())

@@ -2695,8 +2695,7 @@ def cmd_dashboard(args):
         from hermes_cli.observability.shared_metrics_process import begin_process
         begin_process("serve")
 
-    # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
-    # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.
+    # Both desktop and dashboard always expose the embedded Chat tab.
     start_server(
         host=args.host,
         port=args.port,
@@ -2710,6 +2709,7 @@ def cmd_dashboard(args):
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
         # The validated token file lives in desktop-ssh/<ownershipId>/, next to the Desktop's lock.
         ssh_lock_path=Path(_token_file).parent / BACKEND_LOCK_NAME if _token_file else None,
+        **({"external_supervisor": True} if getattr(args, "external_supervisor", False) else {}),
     )
 
 

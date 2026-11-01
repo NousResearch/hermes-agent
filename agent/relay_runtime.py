@@ -73,6 +73,23 @@ def runtime_metadata(runtime_id: str, **extra: Any) -> dict[str, Any]:
     return {RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION, RUNTIME_INSTANCE_KEY: runtime_id, **extra}
 
 
+def session_identity_metadata(session_id: str, profile_key: str | None = None) -> dict[str, str]:
+    """Return the correlation metadata Relay projects natively on every scope of a session.
+
+    Relay's ``gen_ai`` projection reads ``session_id`` into ``gen_ai.conversation.id`` (and
+    ``session.id`` on trace roots), ``user_id`` into ``user.id`` and ``gen_ai.agent.name`` as is.
+    Relay does not inherit metadata from parent scopes, so session, turn, LLM and tool scopes
+    each carry these keys; backends such as OpenObserve group sessions and discover agents on them."""
+    identity: dict[str, str] = {}
+    if session_id:
+        identity["session_id"] = str(session_id)
+    profile = str(profile_key or "").strip()
+    if profile:
+        identity["user_id"] = profile
+        identity["gen_ai.agent.name"] = f"hermes:{profile}"
+    return identity
+
+
 def _scope_input(cwd: Any = None) -> dict[str, str]:
     """Return Relay scope input for a known logical working directory."""
     return {"cwd": cwd.strip()} if isinstance(cwd, str) and cwd.strip() else {}
@@ -516,7 +533,12 @@ class RelayRuntime:
                 session.cwd = _scope_input(cwd).get("cwd", "")
             if session.handle is None:
                 self._open_session_scope(
-                    session, {**(metadata or {}), **runtime_metadata(self.runtime_id)},
+                    session,
+                    {
+                        **(metadata or {}),
+                        **session_identity_metadata(session_id, self.profile_key),
+                        **runtime_metadata(self.runtime_id),
+                    },
                     resolve_parent=True, data=data, exit_fallback=True,
                 )
         return session
@@ -543,7 +565,9 @@ class RelayRuntime:
                     session.session_id, session.segment - 1, exc_info=True,
                 )
             scope_metadata = runtime_metadata(
-                self.runtime_id, **{"hermes.session.segment": session.segment, "hermes.session.segment_reason": reason},
+                self.runtime_id,
+                **session_identity_metadata(session.session_id, self.profile_key),
+                **{"hermes.session.segment": session.segment, "hermes.session.segment_reason": reason},
             )
             try:
                 self._open_session_scope(session, scope_metadata, resolve_parent=False)
@@ -1075,6 +1099,7 @@ class RelaySessionCoordinator:
                 runtime_metadata(
                     host.runtime_id,
                     **{"hermes.execution_surface": lease.platform or "unknown"},
+                    **session_identity_metadata(lease.session_id, lease.profile_key),
                 )
             )
             turn.handle = _warn_on_error(

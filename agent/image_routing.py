@@ -318,12 +318,26 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+def _probe_litellm(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """LiteLLM proxy ``/model/info`` verdict for custom endpoints, whose operator aliases no catalog knows."""
+    slug = _clean_str(provider).lower()
+    if slug != "custom" and not slug.startswith("custom:"):
+        return None
+    base_url = _resolve_inference_base_url(cfg, provider)
+    if not base_url:
+        return None
+    from agent.model_metadata_litellm import query_litellm_supports_vision
+
+    return query_litellm_supports_vision(model, base_url, api_key=_resolve_inference_api_key(cfg, provider))
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
+    ("litellm model info", _probe_litellm),
 )
 
 
@@ -337,7 +351,7 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe). A plugin's
+    (managed local runtime → models.dev catalog → Ollama → LiteLLM ``/model/info``). A plugin's
     per-model ``ProviderProfile.model_capabilities`` reaches this through the
     catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
     deliberately NOT consulted: it declares that tool-result messages may carry

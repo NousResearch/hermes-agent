@@ -204,6 +204,7 @@ function sdBox(px, py, cx, cy, hw, hh) {
 
 // Line segment SDF
 function sdSegment(px, py, ax, ay, bx, by) {
+  if (ax === bx && ay === by) return dist(px, py, ax, ay);
   let pa = createVector(px - ax, py - ay);
   let ba = createVector(bx - ax, by - ay);
   let t = constrain(pa.dot(ba) / ba.dot(ba), 0, 1);

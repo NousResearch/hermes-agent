@@ -126,6 +126,7 @@ from agent.credential_pool import load_pool
 from agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from agent.message_metadata import data_use_requirement
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
+from agent.reasoning_effort import is_kimi_model
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
 from agent.auxiliary_health import (
@@ -592,12 +593,6 @@ def _bare_model(model: Optional[str]) -> str:
     return (model or "").strip().lower().rsplit("/", 1)[-1]
 
 
-def _is_kimi_model(model: Optional[str]) -> bool:
-    """True for any Kimi / Moonshot model that manages temperature server-side."""
-    bare = _bare_model(model)
-    return bare.startswith("kimi-") or bare == "kimi"
-
-
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     """True for Arcee Trinity Large Thinking (direct or via OpenRouter)."""
     return _bare_model(model) == "trinity-large-thinking"
@@ -665,7 +660,7 @@ def _fixed_temperature_for_model(
 ) -> Optional[float] | object:
     """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, Gemini 3.6+, routes
     that already rejected it), a fixed ``float``, or ``None``."""
-    if _is_kimi_model(model):
+    if is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
     from agent.gemini_native_adapter import gemini_sampling_deprecated

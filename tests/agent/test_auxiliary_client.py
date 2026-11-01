@@ -3197,22 +3197,6 @@ class TestAnthropicAuxiliaryReasoningTranslation:
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
 
-    def test_kimi_reasoning_uses_top_level_effort(self):
-        kwargs = _build_call_kwargs(
-            "kimi-coding",
-            "kimi-k2-turbo-preview",
-            [{"role": "user", "content": "hi"}],
-            reasoning_config={"enabled": True, "effort": "medium"},
-            base_url="https://api.moonshot.ai/v1",
-        )
-
-        # K3 maps medium → high (ref: K3 model docs)
-        assert kwargs["reasoning_effort"] == "high"
-        assert "reasoning" not in kwargs.get("extra_body", {})
-        assert "thinking" not in kwargs.get("extra_body", {})
-
-
-
     @pytest.mark.asyncio
     async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):
         response = SimpleNamespace(

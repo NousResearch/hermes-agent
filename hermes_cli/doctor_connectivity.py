@@ -175,12 +175,16 @@ def _probe_anthropic() -> ProbeResult:
 
 
 def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_health_check) -> ProbeResult:
-    key = next((k for k in (os.getenv(ev, "") for ev in env_vars) if k), "")
+    src, key = next(((ev, v) for ev in env_vars if (v := os.getenv(ev, ""))), ("", ""))
     if not key:
         return _skip(pname)
     label = pname.ljust(20)
     if not supports_health_check:
         return _row(pname, "ok", "(key configured)", label=label)
+    # A key found on a later variable in the chain belongs to another profile's endpoint (cross-region
+    # fallbacks, e.g. alibaba-token-plan-cn reading the international Token Plan key): a rejection there
+    # means this region was never configured, not that the working key is broken (#136791).
+    fallback_key = src != env_vars[0]
     try:
         import httpx
         base, url, headers = _apikey_request(key, base_env, default_url)
@@ -190,7 +194,10 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
             if r.status_code == 400:  # Anthropic-shaped 400 still proves route + auth (#66756)
                 return _row(pname, "ok", label=label)
             if r.status_code == 403:
-                return _row(pname, "fail", "(access denied)", [f"Check {env_vars[0]} in .env"], label=label)
+                if fallback_key:
+                    return _row(pname, "warn", f"(key from {src} not valid here; set {env_vars[0]} to use this region)",
+                                label=label)
+                return _row(pname, "fail", "(access denied)", [f"Check {src} in .env"], label=label)
         else:
             r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
@@ -198,7 +205,9 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     except Exception as e:
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:
-        return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
+        if fallback_key:
+            return _row(pname, "warn", f"(key from {src} not valid here; set {env_vars[0]} to use this region)", label=label)
+        return _row(pname, "fail", "(invalid API key)", [f"Check {src} in .env"], label=label)
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
 
 

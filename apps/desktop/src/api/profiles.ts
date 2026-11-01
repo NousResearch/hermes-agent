@@ -8,15 +8,16 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-export function getProfiles(): Promise<ProfilesResponse> {
+export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
   return hermesApi<ProfilesResponse>({
+    ...(scope === undefined ? {} : capabilityScoped(scope)),
     path: '/api/profiles',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
-  return hermesApi<{ name: string; ok: boolean; path: string }>({
+export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
+  return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
     path: '/api/profiles',
     method: 'POST',
     body

@@ -32,10 +32,10 @@ def _is_image_part(part: Any) -> bool:
     return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
 
 
-def _salvage_text_parts(content: list, *, any_dict_text: bool) -> List[str]:
+def _salvage_text_parts(content: list, *, any_dict_text: bool) -> list[str]:
     """Stripped, non-empty text from string parts and text-typed dict parts (or any dict's
     ``text`` when ``any_dict_text``), in order."""
-    texts: List[str] = []
+    texts: list[str] = []
     for part in content:
         if isinstance(part, str):
             text = part.strip()
@@ -146,10 +146,11 @@ class VisionMessagePrepMixin:
         """True if the active provider accepts list-type tool content (some, e.g. Xiaomi MiMo, take
         multimodal user messages but 400 on list-type tool content; profile ``supports_vision_tool_messages``)."""
         try:
-            from providers import get_provider_profile
-            profile = get_provider_profile((getattr(self, "provider", "") or "").strip())
-            if profile is not None:
-                return getattr(profile, "supports_vision_tool_messages", True)
+            from providers import routed_model_rejects_vision_tool_messages
+            return not routed_model_rejects_vision_tool_messages(
+                (getattr(self, "provider", "") or "").strip(),
+                (getattr(self, "model", "") or "").strip(),
+            )
         except Exception:
             pass
         return True  # default: assume compatible
@@ -158,7 +159,7 @@ class VisionMessagePrepMixin:
         if not self._content_has_image_parts(content):
             return content
 
-        image_notes: List[str] = []
+        image_notes: list[str] = []
         for part in filter(_is_image_part, content):
             image_data = part.get("image_url", {})
             image_url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data or "")
@@ -173,7 +174,7 @@ class VisionMessagePrepMixin:
             return f"{prefix}\n\n{suffix}"
         return prefix or suffix or "[A multimodal message was converted to text for Anthropic compatibility.]"
 
-    def _get_transport(self, api_mode: str = None):
+    def _get_transport(self, api_mode: str | None = None):
         """Return the cached transport for the given (or current) api_mode (lazy; None if unregistered)."""
         mode = api_mode or self.api_mode
         cache = getattr(self, "_transport_cache", None)

@@ -27,11 +27,13 @@ vi.mock('electron', () => ({
 
 import { registerNativeNotifications } from './notification-ipc'
 
-function windowStub() {
-  return {
+function windowStub(focused = true) {
+  return Object.assign(new EventEmitter(), {
+    flashFrame: vi.fn(),
     isDestroyed: vi.fn(() => false),
+    isFocused: vi.fn(() => focused),
     webContents: { isDestroyed: vi.fn(() => false), send: vi.fn() }
-  }
+  })
 }
 
 beforeEach(() => {
@@ -40,13 +42,21 @@ beforeEach(() => {
   host.shown.length = 0
 })
 
-it('returns native clicks and approval actions to the emitting window, not the primary', () => {
+it('returns native clicks and approval actions to the emitting window, not the primary', async () => {
   const primary = windowStub()
   const source = windowStub()
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
-  const notify = host.handle.mock.calls[0][1] as (event: IpcMainInvokeEvent, payload: HermesNotification) => boolean
+  registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
 
   const payload = {
     kind: 'approval',
@@ -59,7 +69,7 @@ it('returns native clicks and approval actions to the emitting window, not the p
     ]
   }
 
-  expect(notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)).toBe(true)
+  expect(await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)).toBe(true)
   expect(focusWindow).not.toHaveBeenCalled()
   expect(primary.webContents.send).not.toHaveBeenCalled()
   host.shown[0].emit('click')
@@ -80,14 +90,23 @@ it('returns native clicks and approval actions to the emitting window, not the p
   expect(primary.webContents.send).toHaveBeenCalledWith('hermes:focus-session', payload.focusSessionId)
 })
 
-it('delivers plugin callbacks to their source and falls back only for navigation after it closes', () => {
+it('delivers plugin callbacks to their source and falls back only for navigation after it closes', async () => {
   const primary = windowStub()
   const source = windowStub()
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
-  const notify = host.handle.mock.calls[0][1] as (event: IpcMainInvokeEvent, payload: HermesNotification) => boolean
-  notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
+  registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, {
     kind: 'plugin',
     notifyId: 'source-callback',
     activate: '/plugin',
@@ -112,4 +131,28 @@ it('delivers plugin callbacks to their source and falls back only for navigation
       notifyId: undefined
     })
   )
+})
+
+it('flashes an unfocused source window until it regains focus, and leaves a focused one alone', async () => {
+  const source = windowStub(false)
+  host.fromWebContents.mockReturnValue(source)
+  registerNativeNotifications({ getMainWindow: () => null, focusWindow: vi.fn(), platform: 'win32' })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  const event = { sender: source.webContents } as unknown as IpcMainInvokeEvent
+
+  await notify(event, { kind: 'turnDone', sessionId: 'a', title: 'Hermes finished' })
+  await notify(event, { kind: 'turnDone', sessionId: 'b', title: 'Hermes finished' })
+  expect(source.flashFrame.mock.calls).toEqual([[true]])
+
+  source.emit('focus')
+  expect(source.flashFrame.mock.calls).toEqual([[true], [false]])
+
+  source.isFocused.mockReturnValue(true)
+  await notify(event, { kind: 'turnDone', sessionId: 'c', title: 'Hermes finished' })
+  expect(source.flashFrame).toHaveBeenCalledTimes(2)
 })

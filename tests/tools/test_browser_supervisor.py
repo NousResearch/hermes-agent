@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -62,28 +63,21 @@ def _find_chrome() -> str:
 
 
 @pytest.fixture
-def chrome_cdp(request):
+def chrome_cdp(tmp_path):
     """Start a headless Chrome with --remote-debugging-port, yield its WS URL.
 
-    Uses a unique port per xdist worker to avoid cross-worker collisions.
+    Binds an ephemeral port (bind port 0, read back the real one) so
+    concurrently-running test files in the per-file parallel runner can
+    never collide on a fixed port.
     Always launches with ``--site-per-process`` so cross-origin iframes
     become real OOPIFs (needed by the iframe interaction tests).
     """
-
-    # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
-    # Under subprocess-per-file isolation there's no xdist, so we fall back
-    # to "master" via the session-scoped fixture below.
-    worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
-    if worker_id == "master":
-        port_offset = 0
-    else:
-        port_offset = int(worker_id.lstrip("gw"))
-    port = 9225 + port_offset
     profile = tempfile.mkdtemp(prefix="hermes-supervisor-test-")
+    stderr = (tmp_path / "chrome.stderr").open("w+b")
     proc = subprocess.Popen(
         [
             _find_chrome(),
-            f"--remote-debugging-port={port}",
+            "--remote-debugging-port=0",
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
@@ -92,13 +86,17 @@ def chrome_cdp(request):
             "--site-per-process",  # force OOPIFs for cross-origin iframes
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr,
     )
 
     ws_url = None
+    port = None
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
         try:
+            port = int((Path(profile) / "DevToolsActivePort").read_text(encoding="utf-8").splitlines()[0])
             import urllib.request
             with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/json/version", timeout=1
@@ -122,7 +120,10 @@ def chrome_cdp(request):
             except (AssertionError, Exception):
                 pass
         shutil.rmtree(profile, ignore_errors=True)
-        pytest.skip("Chrome didn't expose CDP in time")
+        stderr.seek(0)
+        diagnostic = stderr.read().decode("utf-8", errors="replace")
+        stderr.close()
+        pytest.fail(f"Chrome didn't expose CDP in time: {diagnostic}")
 
     yield ws_url, port
 
@@ -149,6 +150,7 @@ def chrome_cdp(request):
         except (AssertionError, Exception):
             pass
     shutil.rmtree(profile, ignore_errors=True)
+    stderr.close()
 
 
 def _test_page_url() -> str:
@@ -162,7 +164,6 @@ def _test_page_url() -> str:
 
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
-    import asyncio
     import websockets as _ws_mod
 
     async def run():
@@ -308,36 +309,6 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     assert r["action"] == "dismiss"
     assert "PYTEST-TOOL-END2END" in r["dialog"]["message"]
 
-
-def test_browser_cdp_frame_id_real_oopif_smoke_documented():
-    """Document that real-OOPIF E2E was manually verified — see PR #14540.
-
-    A pytest version of this hits an asyncio version-quirk in the venv
-    (3.11) that doesn't show up in standalone scripts (3.13 + system
-    websockets). The mechanism IS verified end-to-end by two separate
-    smoke scripts in /tmp/dialog-iframe-test/:
-
-      * smoke_local_oopif.py   — local Chrome + 2 http servers on
-        different hostnames + --site-per-process. Outer page on
-        localhost:18905, iframe src=http://127.0.0.1:18906. Calls
-        browser_cdp(method='Runtime.evaluate', frame_id=<OOPIF>) and
-        verifies inner page's title comes back from the OOPIF session.
-        PASSED on 2026-04-23: iframe document.title = 'INNER-FRAME-XYZ'
-
-      * smoke_bb_iframe_agent_path.py — Browserbase + real cross-origin
-        iframe (src=https://example.com/). Same browser_cdp(frame_id=)
-        path. PASSED on 2026-04-23: iframe document.title =
-        'Example Domain'
-
-    The test_browser_cdp_frame_id_routes_via_supervisor pytest covers
-    the supervisor-routing plumbing with a fake injected OOPIF.
-    """
-    pytest.skip(
-        "Real-OOPIF E2E verified manually with smoke_local_oopif.py and "
-        "smoke_bb_iframe_agent_path.py — pytest version hits an asyncio "
-        "version quirk between venv (3.11) and standalone (3.13). "
-        "Smoke logs preserved in /tmp/dialog-iframe-test/."
-    )
 
 
 def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):

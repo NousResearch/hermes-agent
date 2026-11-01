@@ -1,0 +1,16 @@
+name: spectator
+repo: https://github.com/Sahil-SS9/spectator-mode
+sha: a1467ded9802559b30061efe861701d8ec14bcae
+description: Harness-neutral live session sharing, summaries, and branch queries. Disclosure — reads state.db read-only and exposes masked transcripts to invite-token guests on the dashboard; host-approved guest suggestions are injected via ctx.inject_message.
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Sahil-SS9/spectator-mode
+platforms: []
+capabilities:
+  provides_tools:
+    - spectator
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

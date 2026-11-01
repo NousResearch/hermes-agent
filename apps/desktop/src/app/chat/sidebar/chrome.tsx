@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
@@ -7,7 +8,6 @@ import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import type { TileDock } from '@/store/session-states'

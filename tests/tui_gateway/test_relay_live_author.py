@@ -1,7 +1,7 @@
 """A relayed dm into a live Bot Chat keeps its sender all the way into ``run_conversation``.
 
-The relay handler stamps the author as an in-process ``DeliveryAuthor``; ``prompt.submit`` accepts only
-that object, so a dashboard client cannot claim a bot identity through the same RPC.
+The relay bridge forwards authors to canonical authority, never to UI execution.
+The retained prompt path accepts only an in-process ``DeliveryAuthor`` object.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _session(agent=None, **extra):
 
 
 class _InlineThread:
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target, self._args, self._kwargs = target, args, kwargs or {}
 
     def start(self):
@@ -57,19 +57,30 @@ def turn_env(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "_get_usage", lambda agent: {})
 
 
-def test_live_relay_stamps_the_sender_as_a_delivery_author(tmp_path, monkeypatch):
+def test_live_relay_forwards_sender_to_canonical_authority(tmp_path, monkeypatch):
+    from tools import bot_live_delivery
+
     home = tmp_path / ".hermes"
     (home / "profiles" / "ops").mkdir(parents=True)
+    (home / "profiles" / "ops" / "config.yaml").touch()  # identity marker: bare dirs are not profiles
     monkeypatch.setenv("HERMES_HOME", str(home))
     submitted = []
-    monkeypatch.setitem(srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
-    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
-    monkeypatch.setitem(srv._sessions, "live-ops",
-                        {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []})
+    receipt = {"status": "queued", "delivery_id": "a" * 32, "admission_id": "admission"}
+    monkeypatch.setattr(bot_live_delivery, "authority_delivery",
+                        lambda target, params: submitted.append((target, params)) or receipt)
+    monkeypatch.setitem(srv._methods, "prompt.submit",
+                        lambda *a: pytest.fail("relay must not execute through the UI"))
+    monkeypatch.setattr(srv, "current_transport", lambda: None)
 
-    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", "from_profile": "coder", "from_handle": "coder"}))
+    response = srv._methods["bot_relay.deliver"](1, {
+        "id": "a" * 32, "profile": "ops", "message": "ping",
+        "from_profile": "coder", "from_handle": "coder",
+    })
 
-    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}]
+    assert _result(response) == receipt
+    assert submitted == [(home / "profiles" / "ops", {
+        "id": "a" * 32, "profile": "ops", "message": "ping", "author": AUTHOR,
+    })]
 
 
 def test_prompt_submit_refuses_a_client_supplied_author(monkeypatch):
@@ -106,12 +117,8 @@ def test_busy_relay_dms_queue_with_their_authors_and_drain_with_them(monkeypatch
     assert [(t, kw.get("turn_author")) for t, kw in dispatched] == [("ping", AUTHOR), ("hello", OTHER), ("human note", None)]
 
 
-def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_declares_it(turn_env, monkeypatch):
-    from tui_gateway import wisdom_mediation
-
+def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_declares_it(turn_env):
     seen = []
-    activity = []
-    monkeypatch.setattr(wisdom_mediation, "note_activity", lambda session, **kwargs: activity.append(session))
 
     def accepting(user_message, *, turn_author="not passed", **kwargs):
         seen.append(turn_author)
@@ -123,14 +130,9 @@ def test_turn_runner_passes_the_author_only_when_set_and_only_to_an_agent_that_d
 
     for fn, author in ((accepting, AUTHOR), (accepting, None), (legacy, AUTHOR)):
         agent = types.SimpleNamespace(session_id="a", run_conversation=fn, clear_interrupt=lambda: None)
-        session = _session(agent=agent, running=True)
-        session["_wisdom_activity_tracking"] = True
-        srv._run_prompt_submit("rid", "ui-sid", session, "ping", turn_author=author)
-        assert session["_wisdom_user_activity"] > 0
-        assert activity[-1] is session
+        srv._run_prompt_submit("rid", "ui-sid", _session(agent=agent, running=True), "ping", turn_author=author)
 
     assert seen == [AUTHOR, "not passed", "legacy called"]
-    assert len(activity) == 3
 
 
 def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monkeypatch):

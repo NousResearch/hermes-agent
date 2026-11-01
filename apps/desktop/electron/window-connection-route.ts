@@ -1,4 +1,4 @@
-import { backendScopeKey, type ConnectionRegistry } from './connection-registry'
+import { backendScopeKey, type ConnectionRegistry, LOCAL_CONNECTION_ID } from './connection-registry'
 
 export interface WindowConnectionRoute {
   connectionId: null | string
@@ -38,6 +38,32 @@ export function registrySshScopeForWindowRoute(
   }
 
   return backendScopeKey(route.connectionId, route.profile)
+}
+
+/**
+ * The route a window must re-dial after a PRIMARY connection apply (#92352).
+ *
+ * An apply re-homes the primary, but the window's recorded route still names
+ * the source it just LEFT. `resolveDesktopConnectionRequest` answers the
+ * renderer's profile-less apply re-dial from that record, so the renderer kept
+ * dialing the stale registry-scoped gateway — and every later reconnect, plus
+ * any window launched from that route, re-asked the same stale question until a
+ * restart dropped the in-memory record. Re-point the record at the newly
+ * applied primary, keeping the profile the window was viewing: an applied
+ * registry source (remote/cloud/ssh) stays registry-scoped to that exact
+ * identity, while a This-device apply stays unscoped so the dial follows the
+ * freshly written v1 config.
+ */
+export function appliedPrimaryWindowRoute(
+  registry: ConnectionRegistry,
+  profile: null | string | undefined
+): WindowConnectionRoute {
+  const key = String(profile ?? '').trim() || 'default'
+  const primary = String(registry?.primary ?? '').trim()
+
+  return primary && primary !== LOCAL_CONNECTION_ID
+    ? { connectionId: primary, profile: key, registryScoped: true }
+    : { connectionId: null, profile: key, registryScoped: false }
 }
 
 export interface RegistrySshPoolEntry {
@@ -87,5 +113,31 @@ export class WindowConnectionRouteRegistry {
 
   delete(webContentsId: number): void {
     this.routes.delete(webContentsId)
+  }
+
+  /** Version scope for a window's route; a missing or destroyed window means the primary. */
+  versionScopeFor(win: { isDestroyed: () => boolean; webContents: { id: number } } | null): VersionScope {
+    return win && !win.isDestroyed() ? windowRouteVersionScope(this.routes.get(win.webContents.id)) : {}
+  }
+}
+
+export interface VersionScope {
+  connectionId?: string
+  profile?: string
+}
+
+/**
+ * The gateway scope a window-level query (e.g. the native About panel version)
+ * should use for a window. Only a registry-scoped route pins a connection;
+ * a legacy route contributes its profile; no route means the primary.
+ */
+export function windowRouteVersionScope(route: WindowConnectionRoute | null | undefined): VersionScope {
+  if (!route) {
+    return {}
+  }
+
+  return {
+    ...(route.registryScoped && route.connectionId ? { connectionId: route.connectionId } : {}),
+    ...(route.profile ? { profile: route.profile } : {})
   }
 }

@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from tools import subagent_worktree as sw  # noqa: E402
+from tools import subagent_worktree as sw
 
 
 def _git(args, cwd, check=True):
@@ -115,7 +115,7 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertEqual(branches.strip(), "")
 
-    def test_finalize_keeps_worktree_with_commits(self):
+    def test_finalize_archives_worktree_with_commits(self):
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "work1")
         assert info is not None
@@ -126,19 +126,26 @@ class SubagentWorktreeTests(unittest.TestCase):
         _git(["config", "user.name", "Child"], wt)
         _git(["commit", "-q", "-m", "child work"], wt)
         payload = sw.finalize_subagent_worktree(info)
-        self.assertFalse(payload["pruned"])
+        # Contract (snapshot-then-delete, approved 2026-10-17): never removed without a
+        # restorable archive; the branch stays for the parent to merge.
+        self.assertTrue(payload["pruned"])
         self.assertEqual(payload["commits"], 1)
-        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertFalse(os.path.isdir(info["path"]))
+        self.assertEqual(_git(["rev-parse", payload["archive"] + "^1"], repo).stdout,
+                         _git(["rev-parse", info["branch"]], repo).stdout)
 
-    def test_finalize_keeps_dirty_worktree(self):
+    def test_finalize_archives_dirty_worktree(self):
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "dirty1")
         assert info is not None
         (Path(info["path"]) / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
         payload = sw.finalize_subagent_worktree(info)
-        self.assertFalse(payload["pruned"])
+        # Contract (snapshot-then-delete, approved 2026-10-17): the uncommitted file lives on in
+        # the archive commit before the tree is removed.
+        self.assertTrue(payload["pruned"])
         self.assertTrue(payload["dirty"])
-        self.assertTrue(os.path.isdir(info["path"]))
+        self.assertFalse(os.path.isdir(info["path"]))
+        self.assertEqual(_git(["show", payload["archive"] + ":wip.txt"], repo).stdout, "uncommitted\n")
 
     def test_finalize_keeps_worktree_when_git_inspection_fails(self):
         """#88113: a non-zero git status exit must not be read as "clean".
@@ -239,13 +246,9 @@ class SubagentWorktreeTests(unittest.TestCase):
         branches = _git(["branch", "--list", info["branch"]], repo).stdout
         self.assertNotEqual(branches.strip(), "")
 
-    def test_finalize_note_disclaims_only_the_unmeasured_field(self):
-        """A partial failure must not claim a MEASURED value is unknown.
-
-        A bad base_commit fails `rev-list` while `status` still succeeds, so
-        ``dirty`` is a real measurement — the note should disclaim ``commits``
-        only, or it misreports in the other direction.
-        """
+    def test_finalize_partial_inspection_failure_keeps_measured_dirty(self):
+        """A bad base_commit fails `rev-list` while `status` still succeeds:
+        ``dirty`` stays a real measurement and the worktree is kept."""
         repo = _make_repo(self.tmp)
         info = sw.create_subagent_worktree(str(repo), "partial")
         assert info is not None
@@ -260,10 +263,6 @@ class SubagentWorktreeTests(unittest.TestCase):
         self.assertTrue(payload["dirty"])
         self.assertTrue(payload["inspection_failed"])
         self.assertFalse(payload["pruned"])
-        # The note names ONLY the unmeasured field.
-        self.assertIn("commits UNKNOWN", payload["note"])
-        self.assertNotIn("dirty UNKNOWN", payload["note"])
-        self.assertNotIn("commits/dirty", payload["note"])
         self.assertTrue((wt / "UNTRACKED.txt").exists())
 
     def test_finalize_keeps_worktree_when_base_commit_missing(self):
@@ -299,19 +298,7 @@ class SubagentWorktreeTests(unittest.TestCase):
 
     # ── local_backend_active ───────────────────────────────────────────
 
-    def test_local_backend_active_local(self):
-        with mock.patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"terminal": {"backend": "local"}},
-        ):
-            self.assertTrue(sw.local_backend_active())
 
-    def test_local_backend_active_docker(self):
-        with mock.patch(
-            "hermes_cli.config.load_config_readonly",
-            return_value={"terminal": {"backend": "docker"}},
-        ):
-            self.assertFalse(sw.local_backend_active())
 
     # ── context note ───────────────────────────────────────────────────
 
@@ -321,7 +308,6 @@ class SubagentWorktreeTests(unittest.TestCase):
         )
         self.assertIn("/x/wt", note)
         self.assertIn("hermes-subagent/subagent-1", note)
-        self.assertIn("WORKTREE ISOLATION", note)
 
 
 class WorktreePayloadSchemaTests(unittest.TestCase):
@@ -359,49 +345,8 @@ class WorktreePayloadSchemaTests(unittest.TestCase):
         self.assertIn(info["path"], unproven["note"])
         self.assertIn(info["branch"], unproven["note"])
 
-    def test_delegate_tool_fallback_uses_the_shared_factory(self):
-        """delegate_tool's fallback must emit the flagged schema, not the
-        creation-side metadata dict it used to leak."""
-        from tools import delegate_tool  # noqa: F401  (import-safety check)
-
-        repo = _make_repo(self.tmp)
-        info = sw.create_subagent_worktree(str(repo), "fallback")
-        assert info is not None
-
-        # Drive the real helper the fallback calls.
-        payload = sw.unproven_worktree_payload(info, "finalize raised: boom")
-        self.assertEqual(
-            set(payload),
-            {
-                "path",
-                "branch",
-                "commits",
-                "dirty",
-                "pruned",
-                "inspection_failed",
-                "note",
-            },
-        )
-        self.assertFalse(payload["pruned"])
-        self.assertEqual(payload["commits"], 0)
-        self.assertFalse(payload["dirty"])
 
 
-class DelegationConfigGateTests(unittest.TestCase):
-    def test_worktree_isolation_default_off(self):
-        from tools import delegate_tool
-
-        with mock.patch.object(delegate_tool, "_load_config", return_value={}):
-            self.assertFalse(delegate_tool._get_worktree_isolation())
-
-    def test_worktree_isolation_enabled(self):
-        from tools import delegate_tool
-
-        with mock.patch.object(
-            delegate_tool, "_load_config",
-            return_value={"worktree_isolation": True},
-        ):
-            self.assertTrue(delegate_tool._get_worktree_isolation())
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
-from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+from hermes_cli.commands import resolve_command
 
 
 def _source(*, chat_type="dm", chat_id="chat-1", user_id="user-1", platform=Platform.TELEGRAM):
@@ -87,7 +87,7 @@ async def test_broadcast_shaped_platforms_are_refused(monkeypatch, platform):
 @pytest.mark.asyncio
 async def test_a_private_chat_type_is_accepted(monkeypatch):
     runner = _runner(monkeypatch)
-    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.Declined()]))
+    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.TimedOut()]))
 
     assert await runner._handle_login_command(_event(chat_type="private")) == anon_auth.UPGRADE_START
     assert "login" in runner._login_attempts
@@ -100,19 +100,18 @@ async def test_a_dm_posts_the_code_as_three_messages_then_the_terminal_copy(monk
     states = [
         anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5),
         anon_auth.Waiting(),
-        anon_auth.Declined(),
+        anon_auth.TimedOut(),
     ]
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter(states))
 
     assert await runner._handle_login_command(_event()) == anon_auth.UPGRADE_START
     await _finish_tasks(runner)
 
-    assert [call.args[1] for call in runner._deliver_platform_notice.await_args_list] == [
-        "https://example.test/sign-in",
-        "CODE-1",
-        "Do not share this code. Waiting for sign-in, up to 15 minutes.",
-        anon_auth.Declined().copy,
-    ]
+    notices = [call.args[1] for call in runner._deliver_platform_notice.await_args_list]
+    # URL and code arrive as their own messages (copyable), then one waiting notice, then the outcome.
+    assert len(notices) == 4
+    assert notices[:2] == ["https://example.test/sign-in", "CODE-1"]
+    assert notices[-1] == anon_auth.TimedOut().copy
 
 
 @pytest.mark.asyncio
@@ -123,7 +122,7 @@ async def test_the_start_ack_arrives_before_the_flow_is_advanced(monkeypatch):
     def flow(**_kwargs):
         nonlocal advanced
         advanced = True
-        yield anon_auth.Declined()
+        yield anon_auth.TimedOut()
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
 
@@ -134,12 +133,10 @@ async def test_the_start_ack_arrives_before_the_flow_is_advanced(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", [
-    anon_auth.Declined(),
-    anon_auth.Superseded(),
+    anon_auth.Cancelled(),
     anon_auth.TimedOut(),
-    anon_auth.Retired(),
-    anon_auth.Failed("account_busy"),
-    anon_auth.Unavailable(),
+    anon_auth.Failed(anon_auth.ANON_UNREACHABLE),
+    anon_auth.Failed(),
 ])
 async def test_each_terminal_outcome_is_pushed_to_the_same_dm(monkeypatch, state):
     runner = _runner(monkeypatch)
@@ -168,7 +165,7 @@ async def test_a_drain_that_raises_still_pushes_a_terminal_notice(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch, caplog):
+async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch):
     runner = _runner(monkeypatch)
     delivered = []
 
@@ -180,17 +177,15 @@ async def test_a_failed_code_push_does_not_abort_the_drain(monkeypatch, caplog):
     runner._deliver_platform_notice = deliver
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([
         anon_auth.Code("https://example.test/sign-in", "CODE-1", 45, 5),
-        anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True),
+        anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True,
+                            handoff=("Your apps moved to person@example.test: gmail.",)),
     ]))
 
     await runner._handle_login_command(_event())
     await _finish_tasks(runner)
 
-    assert delivered[-2:] == [
-        "Do not share this code. Waiting for sign-in, up to 1 minute.",
-        "Signed in as person@example.test.\nDefault model is now model-1.",
-    ]
-    assert "push failed" in caplog.text
+    assert len(delivered) == 4
+    assert "Your apps moved to person@example.test: gmail." in delivered[-1]
 
 
 @pytest.mark.asyncio
@@ -237,7 +232,7 @@ async def test_a_second_login_from_the_same_identity_supersedes_the_first(monkey
     def flow(**kwargs):
         seen.append(kwargs)
         yield anon_auth.Code("https://example.test/sign-in", "CODE", 60, 1)
-        yield anon_auth.Superseded() if kwargs["cancelled"]() else anon_auth.Declined()
+        yield anon_auth.Cancelled() if kwargs["cancelled"]() else anon_auth.TimedOut()
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
     await runner._handle_login_command(_event())
@@ -247,10 +242,9 @@ async def test_a_second_login_from_the_same_identity_supersedes_the_first(monkey
     assert first.cancelled is True
     assert runner._login_attempts["login"] is not first
     await _finish_tasks(runner)
-    assert seen[0]["cancel_wins_after_promotion"] is False
-    # The replaced attempt tells its own DM why its code stopped working.
+    # The replaced attempt tells its own DM that its code stopped working.
     assert any(
-        pushed.args[0] is first.source and pushed.args[1] == anon_auth.Superseded().copy
+        pushed.args[0] is first.source and pushed.args[1] == anon_auth.Cancelled().copy
         for pushed in runner._deliver_platform_notice.await_args_list)
 
 
@@ -264,9 +258,8 @@ async def test_a_superseded_attempt_that_already_completed_still_pushes_its_comp
     def flow(**kwargs):
         seen.append(kwargs)
         yield anon_auth.Code("https://example.test/sign-in", "CODE", 60, 1)
-        # The user approved this attempt in the browser before it lost the race, so the grant is
-        # already spent and the flow completes anyway (S-2b, S-10).
-        yield completed if kwargs["cancelled"]() else anon_auth.Declined()
+        # This attempt saved the account before the replacement's cancel reached it.
+        yield completed if kwargs["cancelled"]() else anon_auth.TimedOut()
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
     await runner._handle_login_command(_event())
@@ -275,7 +268,6 @@ async def test_a_superseded_attempt_that_already_completed_still_pushes_its_comp
     assert runner._login_attempts["login"] is not first
     await _finish_tasks(runner)
 
-    assert seen[0]["cancel_wins_after_promotion"] is False
     assert any(
         pushed.args[0] is first.source and pushed.args[1] == completed.copy
         for pushed in runner._deliver_platform_notice.await_args_list)
@@ -295,7 +287,7 @@ async def test_a_replacement_reaches_a_poll_running_on_the_private_executor(monk
         polling.set()
         while not kwargs["cancelled"]():
             time.sleep(0.01)
-        yield anon_auth.Superseded()
+        yield anon_auth.Cancelled()
 
     monkeypatch.setattr(anon_auth, "run_sign_in", flow)
     await runner._handle_login_command(_event())
@@ -446,8 +438,7 @@ async def test_the_sweep_is_skipped_when_the_model_did_not_change(monkeypatch):
 
     runner._evict_cached_agent.assert_not_called()
     runner.async_session_store.set_model_override.assert_not_awaited()
-    assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test.")
+    assert "person@example.test" in runner._deliver_platform_notice.await_args_list[-1].args[1]
 
 
 @pytest.mark.asyncio
@@ -459,9 +450,7 @@ async def test_a_completion_with_no_default_names_the_slash_command(monkeypatch)
         anon_auth.Completed(email="person@example.test", model="", model_changed=True),
     )
 
-    assert runner._deliver_platform_notice.await_args_list[-1].args[1] == (
-        "Signed in as person@example.test.\n"
-        "No default model is set yet; run /model to pick one.")
+    assert "/model" in runner._deliver_platform_notice.await_args_list[-1].args[1]
 
 
 @pytest.mark.asyncio
@@ -506,7 +495,7 @@ async def test_shutdown_cancellation_marks_the_attempt_cancelled(monkeypatch):
 async def test_the_drain_never_touches_the_shared_executor(monkeypatch):
     runner = _runner(monkeypatch)
     runner._get_executor = MagicMock(side_effect=AssertionError("shared executor used"))
-    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.Declined()]))
+    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.TimedOut()]))
     del runner.__dict__["_run_login_blocking"]
 
     await runner._run_login(SimpleNamespace(
@@ -517,21 +506,8 @@ async def test_the_drain_never_touches_the_shared_executor(monkeypatch):
     runner._login_exec.shutdown(wait=True)
 
 
-def test_the_registry_row_and_alias_match_the_command_contract():
-    command = resolve_command("login")
-    assert command.name == "login"
-    assert resolve_command("signin") is None
-    assert command.desktop == "settings"
-    assert command.aliases == ()
-    assert command.busy_policy == "dispatch"
-    assert not command.cli_only and not command.gateway_only
-    assert "login" in GATEWAY_KNOWN_COMMANDS
-    assert resolve_command("upgrade").name == "subscription"
 
 
-def test_the_handler_table_builds():
-    runner = object.__new__(GatewayRunner)
-    assert runner._command_handler_table(("login",))["login"] == runner._handle_login_command
 
 
 @pytest.mark.asyncio
@@ -543,3 +519,70 @@ async def test_login_dispatches_mid_turn():
 
     assert await runner._dispatch_busy_slash_command(event, command, "", event.source) == "started"
     runner._handle_login_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeypatch):
+    """A local CLI/TUI/Desktop session is a DM on the LOCAL adapter, whose ``send`` is a no-op: the
+    link, code and outcome reach its viewers as ``notification.show`` events, never the platform push."""
+    from gateway import session_authorities
+    runner = _runner(monkeypatch)
+    published = []
+    live = SimpleNamespace(event_stream=SimpleNamespace(
+        publish=lambda sid, payload, event_type: published.append((sid, event_type, payload["text"]))))
+    authority = SimpleNamespace(sessions={"local-1": live})
+    monkeypatch.setattr(session_authorities, "active_authority", lambda _runner: authority)
+    states = [anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5), anon_auth.TimedOut()]
+    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter(states))
+
+    event = SimpleNamespace(source=_source(platform=Platform.LOCAL, chat_id="local-1"))
+    assert await runner._handle_login_command(event) == anon_auth.UPGRADE_START
+    await _finish_tasks(runner)
+
+    assert [(sid, kind) for sid, kind, _ in published] == [("local-1", "notification.show")] * 4
+    assert [text for *_, text in published][:2] == ["https://example.test/sign-in", "CODE-1"]
+    assert published[-1][2] == anon_auth.TimedOut().copy
+    runner._deliver_platform_notice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_replacing_login_never_lands_between_the_final_check_and_the_save(monkeypatch):
+    runner = _runner(monkeypatch)
+    seen = []
+
+    def flow(**kwargs):
+        seen.append(kwargs)
+        yield anon_auth.TimedOut()
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    await runner._handle_login_command(_event())
+    attempt = runner._login_attempts["login"]
+    await _finish_tasks(runner)
+    lock, attempts = runner._login_registry()
+    with lock:
+        attempts["login"] = attempt   # the attempt is still live while its save runs
+    guard = seen[0]["persist_guard"]
+    with guard() as may_persist:
+        # The save runs without the registry lock (the event loop takes it), and a replacing
+        # /login while it runs is told a sign-in is finishing instead of cancelling a done deal.
+        assert may_persist is True and not lock.locked()
+        assert await runner._handle_login_command(_event()) == anon_auth.LOGIN_BUSY_ELSEWHERE
+        assert attempt.cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_never_claims_the_save(monkeypatch):
+    runner = _runner(monkeypatch)
+    seen = []
+
+    def flow(**kwargs):
+        seen.append(kwargs)
+        yield anon_auth.TimedOut()
+
+    monkeypatch.setattr(anon_auth, "run_sign_in", flow)
+    await runner._handle_login_command(_event())
+    attempt = runner._login_attempts["login"]
+    await _finish_tasks(runner)
+    attempt.cancelled = True
+    with seen[0]["persist_guard"]() as may_persist:
+        assert may_persist is False

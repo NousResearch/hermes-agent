@@ -1,0 +1,71 @@
+name: hermes-video-editor
+title: Video Editor (local FFmpeg)
+repo: https://github.com/oliverhees/hermes-video-editor
+sha: 66035165c71e09b7f77a08aecc36e35c0b2dce14
+version: "0.3.0"
+description: "Local video editor for your own footage: 45 FFmpeg tools for the agent (cut, silence removal, 9:16 reframe, captions, music with ducking, loudness, platform export and checks) plus a visual editor in Hermes Desktop with canvas, any number of tracks for text, shapes, video overlays and music, scenes and an English/German help. 100% local, no API key. Licence: PolyForm Noncommercial 1.0.0. Disclosure — the Desktop page starts a local web server on 127.0.0.1 (random port, per-run token) that can read and write media and image files anywhere under your home folder (and any VE_EDITOR_ROOTS); preview caches go to the system temp folder. The agent tools run ffmpeg/ffprobe on the input paths the model passes and write media, image or .srt files at the output paths it passes (replacing an existing file only with overwrite: true)."
+maintainer: oliverhees
+category: tools
+tier: community
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/oliverhees/hermes-video-editor/blob/66035165c71e09b7f77a08aecc36e35c0b2dce14/README.md
+image: https://raw.githubusercontent.com/oliverhees/hermes-video-editor/66035165c71e09b7f77a08aecc36e35c0b2dce14/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/oliverhees/hermes-video-editor/66035165c71e09b7f77a08aecc36e35c0b2dce14/docs/editor.png
+readme: true
+capabilities:
+  provides_tools:
+    - lk_media_doctor
+    - lk_media_probe
+    - lk_detect_silence
+    - lk_detect_scenes
+    - lk_extract_frame
+    - lk_loudness_report
+    - lk_trim
+    - lk_split
+    - lk_join
+    - lk_remove_silence
+    - lk_remove_segments
+    - lk_change_speed
+    - lk_reverse
+    - lk_loop
+    - lk_crossfade_join
+    - lk_crop
+    - lk_crop_to_aspect
+    - lk_resize
+    - lk_rotate_flip
+    - lk_pad_blur_background
+    - lk_color_adjust
+    - lk_denoise_video
+    - lk_fade_video
+    - lk_stabilize
+    - lk_add_text
+    - lk_burn_captions
+    - lk_add_image_overlay
+    - lk_picture_in_picture
+    - lk_stack_videos
+    - lk_blur_region
+    - lk_extract_audio
+    - lk_replace_audio
+    - lk_mix_music
+    - lk_normalize_loudness
+    - lk_sync_audio_offset
+    - lk_adjust_volume
+    - lk_fade_audio
+    - lk_denoise_audio
+    - lk_mute_video
+    - lk_export_preset
+    - lk_platform_check
+    - lk_compress_to_size
+    - lk_to_gif
+    - lk_contact_sheet
+    - lk_transcribe_captions
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Requires FFmpeg and ffprobe on PATH (apt install ffmpeg / brew install ffmpeg / winget install Gyan.FFmpeg).
+  - lk_transcribe_captions is optional and needs 'pip install faster-whisper' plus a model already on disk.
+  - The visual editor has one main video track plus any number of tracks for text, shapes, video overlays, audio and scenes; these items sit at fixed times and do not move when the main clips are cut (bundle them in a scene to move them together).
+  - Licence is PolyForm Noncommercial 1.0.0 (source-available): free for non-commercial use, commercial use needs a separate licence from Lokyy.de.
+  - The editor preview needs H.264 or VP8 playback in the app's browser engine; editing and export work without it.

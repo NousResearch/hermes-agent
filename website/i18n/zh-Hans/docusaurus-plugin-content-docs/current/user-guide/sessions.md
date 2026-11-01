@@ -65,7 +65,7 @@ Hermes 存储 session 历史以便恢复对话，但不会在每次对话时重�
 | `weixin` | 微信（个人版） |
 | `bluebubbles` | 通过 BlueBubbles macOS 服务器的 Apple iMessage |
 | `qqbot` | QQ Bot（腾讯 QQ）通过官方 API v2 |
-| `homeassistant` | Home Assistant 对话 |
+| `homeassistant` | Home Assistant 事件（插件） |
 | `webhook` | 传入 webhook |
 | `api-server` | API 服务器请求 |
 | `acp` | ACP 编辑器集成 |
@@ -162,7 +162,8 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
    - **Telegram** — 开启新的论坛话题（如果在聊天中启用了 Bot API 9.4+ Topics 模式则为私信话题，或论坛超级群组话题）。
    - **Discord** — 在主文字频道下创建 1440 分钟自动归档的线程。
    - **Slack** — 发布一条种子消息并使用其 `ts` 作为线程锚点。
-   - **WhatsApp / Signal / Matrix / SMS** — 无原生线程，回退到直接使用主频道。
+   - **Matrix** — 发布一条种子消息并使用其事件 id 作为线程根（`m.thread` 关系）。
+   - **WhatsApp / Signal / SMS** — 无原生线程，回退到直接使用主频道。
 4. Gateway 将目标键重新绑定到你现有的 CLI session id，然后伪造一个合成用户轮次，要求 agent 确认并总结。回复会出现在新线程中。
 5. Gateway 确认成功后，CLI 打印 `/resume` 提示并干净退出：
 
@@ -181,7 +182,7 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 - 线程创建失败（权限不足、话题模式未开启）→ 直接回退到主频道并仍然完成切换；没有线程隔离，但切换本身有效。
 - `adapter.send` 失败（速率限制、临时 API 错误）→ 切换标记为失败并附带原因；行被清除以便重试。
 
-**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack——这是最常见的情况——因此大多数设置不会遇到此问题。
+**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack / Matrix——这是最常见的情况——因此大多数设置不会遇到此问题。
 
 ## Session 命名 {#session-naming}
 
@@ -300,7 +301,7 @@ hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
 hermes sessions export backup.jsonl --redact
 ```
 
-导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
+导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和每一条已存储的消息，每条都带有 `active`/`compacted` 标记。其中包括原地压缩归档的轮次，以及被 rewind 或编辑移除的消息。导入该文件（dashboard 的 session 导入）时，这些行会恢复为已归档的历史，而不会成为活跃的模型上下文。CLI 和消息平台的 `/save json` 快照同样如此。请把备份视为包含该 session 曾经有过的全部内容；要分享对话，请用 `--redact` 导出显示格式（`--format md` 或 `html`，只包含 session 显示的历史）。每个 session 的备份在内存中构建，因此已存储行数超过 `sessions.max_export_messages` 的 session 会被拒绝。
 
 #### HTML
 
@@ -381,6 +382,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+删除一个仍在运行中的对话所使用的 session 并不会结束该对话：它下一次保存时会以同一个 id 重建 session，并写入完整的内存中对话记录。如果希望该 session 彻底消失，请先关闭对话。
+
 ### 重命名 Session
 
 ```bash
@@ -411,6 +414,7 @@ hermes sessions prune --older-than 30 --yes
 
 :::info
 清理仅删除**已结束**的 session（已被显式结束或自动重置的 session）。活跃 session 永远不会被清理。
+被压缩拆分成多个 session 的对话作为一个整体清理：只要后续任一段仍保留，较早的段就会保留。
 :::
 
 ### Session 统计
@@ -430,7 +434,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](/reference/cli-commands#hermes-insights)。
+如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](../reference/cli-commands.md#hermes-insights)。
 
 ## Session 搜索工具
 
@@ -588,7 +592,7 @@ sessions:
   min_interval_hours: 24    # 清理间隔不短于此值
 ```
 
-活跃 session 永远不会被自动清理，无论时间多长。
+活跃 session 永远不会被自动清理，无论时间多长。被压缩拆分成多个 session 的对话同样如此：只要后续任一段仍保留，其较早的段就会保留，并在整个对话符合条件后一起清理。
 
 ### 手动清理
 

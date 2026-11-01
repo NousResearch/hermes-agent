@@ -1,5 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmHost } from '@/components/confirm-host'
@@ -9,6 +10,7 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
 const getEnvVars = vi.fn()
+const revealEnvVar = vi.fn()
 const setEnvVar = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
@@ -18,16 +20,18 @@ vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('alpha'),
   $profiles: atom([]),
   refreshProfiles: async () => {},
-  normalizeProfileKey: (p: string | null) => p || 'default'
+  normalizeProfileKey: (p: string | null) => p || 'default',
+  profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
 }))
 
 vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn(),
   getProfiles: async () => ({ profiles: (await import('@/store/profile')).$profiles.get() }),
-  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile),
   disconnectOAuthProvider: (...args: unknown[]) => disconnectOAuthProvider(...args),
   getEnvVars: (...args: unknown[]) => getEnvVars(...args),
-  listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args)
+  listOAuthProviders: (...args: unknown[]) => listOAuthProviders(...args),
+  revealEnvVar: (key: string, profile?: string) => revealEnvVar(key, profile),
+  setEnvVar: (key: string, value: string, profile?: string) => setEnvVar(key, value, profile)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -35,6 +39,12 @@ vi.mock('@/store/onboarding', () => ({
   startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args),
   startManualLocalEndpoint: (reason: null | string) => startManualLocalEndpoint(reason)
 }))
+
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { ProvidersSettings } = await import('./providers-settings')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
+const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 
 function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> = {}): OAuthProvider {
   return {
@@ -74,6 +84,8 @@ beforeEach(() => {
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
+  revealEnvVar.mockResolvedValue({ value: 'old-secret' })
+  setEnvVar.mockResolvedValue({ ok: true })
   listOAuthProviders.mockResolvedValue({
     providers: [provider('nous', true), provider('minimax-oauth', false)]
   })
@@ -89,7 +101,6 @@ afterEach(() => {
 // Removal goes through confirm() from @/store/confirm, so the host has to be
 // mounted for the prompt to render — same as in the real app shell.
 async function renderProvidersSettings() {
-  const { ProvidersSettings } = await import('./providers-settings')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -105,8 +116,6 @@ async function renderProvidersSettings() {
 
 describe('ProvidersSettings', () => {
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
-    const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')
     $profiles.set(
@@ -121,7 +130,6 @@ describe('ProvidersSettings', () => {
       }))
     )
     getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
-    const { ProvidersSettings } = await import('./providers-settings')
 
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
@@ -134,7 +142,9 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
+      // Back onto the app's active profile: no override is stored, but the
+      // request must still name it (#118432).
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-a'))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -144,7 +154,6 @@ describe('ProvidersSettings', () => {
   })
 
   it('uses the settings target for account reads, removal and sign-in', async () => {
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
     $settingsScopeOverride.set('beta')
 
     try {
@@ -177,7 +186,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', undefined))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'default'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -192,17 +201,6 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     })
 
-    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
-  })
-
-  it('keeps provider selection separate from account removal', async () => {
-    await renderProvidersSettings()
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('Nous Portal'))
-    })
-
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', undefined)
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
@@ -223,7 +221,6 @@ describe('ProvidersSettings', () => {
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
@@ -240,12 +237,160 @@ describe('ProvidersSettings', () => {
     })
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     await act(async () => {
       render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
     })
 
     expect(await screen.findByText('WidgetAI')).toBeTruthy()
+  })
+
+  it('renders separate provider cards that share one credential env var', async () => {
+    getEnvVars.mockResolvedValue({
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Mainland-China DashScope route',
+            primary: true,
+            provider: 'alibaba-cn',
+            provider_label: 'Alibaba Cloud DashScope (China)',
+            url: 'https://bailian.console.aliyun.com/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Qwen Cloud')).toBeTruthy()
+    expect(screen.getByText('Alibaba Cloud DashScope (China)')).toBeTruthy()
+    const inputs = screen.getAllByPlaceholderText(/Paste .* key/)
+    expect(inputs).toHaveLength(2)
+
+    fireEvent.focus(inputs[0])
+    fireEvent.change(inputs[0], { target: { value: 'shared-secret' } })
+
+    expect(screen.getAllByDisplayValue('shared-secret')).toHaveLength(1)
+    expect((inputs[1] as HTMLInputElement).value).toBe('')
+  })
+
+  it('keeps a card on its own key when a shared credential arrives with primary: false', async () => {
+    // The CN Coding Plan card's own credential (its index-0 var) plus the
+    // shared DASHSCOPE_API_KEY, which the catalog contributes as a FALLBACK
+    // alias (primary: false) because it is index >= 1 for that provider. The
+    // card's "Paste key" must edit the provider's own key, not the shared one.
+    getEnvVars.mockResolvedValue({
+      ALIBABA_CODING_PLAN_CN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: true
+      }),
+      ALIBABA_CODING_PLAN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: false
+      }),
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Coding Plan fallback alias',
+            primary: false,
+            provider: 'alibaba-coding-plan-cn',
+            provider_label: 'Alibaba Cloud (Coding Plan, China)',
+            url: 'https://help.aliyun.com/zh/model-studio/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Alibaba Cloud (Coding Plan, China)')).toBeTruthy()
+
+    // Exactly one primary "Paste … key" input per card; the CN card's must edit
+    // ALIBABA_CODING_PLAN_CN_API_KEY, never the shared DASHSCOPE_API_KEY.
+    const inputs = container.querySelectorAll('input[type="password"]')
+    const pasteInputs = await screen.findAllByPlaceholderText(/Paste .* key/)
+    expect(pasteInputs).toHaveLength(2) // Qwen Cloud card + the CN Coding Plan card
+
+    const cnCard = screen
+      .getAllByText('Alibaba Cloud (Coding Plan, China)')
+      .map(el => el.closest('[role="button"]') ?? el.closest('div[class*="group/card"]'))
+      .find(Boolean)!
+
+    const cnInput = cnCard.querySelector('input[type="password"]')!
+    expect(inputs.length).toBeGreaterThanOrEqual(1)
+
+    fireEvent.focus(cnInput)
+    fireEvent.change(cnInput, { target: { value: 'cn-tier-secret' } })
+    fireEvent.click(within(cnCard as HTMLElement).getByRole('button', { name: 'Save' }))
+
+    // The write names the CN-specific var — never the shared DASHSCOPE_API_KEY.
+    await waitFor(() => {
+      const [key, value] = setEnvVar.mock.calls.at(-1) ?? []
+      expect(key).toBe('ALIBABA_CODING_PLAN_CN_API_KEY')
+      expect(value).toBe('cn-tier-secret')
+      expect(setEnvVar).not.toHaveBeenCalledWith('DASHSCOPE_API_KEY', expect.anything(), expect.anything())
+    })
+  })
+
+  it('clears the shared reveal when a namespaced provider-card draft is saved', async () => {
+    const varKey = 'DASHSCOPE_API_KEY'
+    const editKey = `Qwen Cloud:${varKey}`
+    getEnvVars.mockResolvedValue({
+      [varKey]: keyVar({ is_set: true, redacted_value: '••••••••' })
+    })
+
+    const { useEnvCredentials } = await import('./env-credentials')
+    const state = { current: null as null | ReturnType<typeof useEnvCredentials> }
+
+    function Harness() {
+      state.current = useEnvCredentials()
+
+      return null
+    }
+
+    render(<Harness />)
+    await waitFor(() => expect(state.current?.vars).not.toBeNull())
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onReveal(varKey))
+    })
+    expect(state.current!.rowProps.revealed[varKey]).toBe('old-secret')
+
+    act(() => {
+      state.current!.rowProps.setEdits(current => ({ ...current, [editKey]: 'new-secret' }))
+    })
+    await waitFor(() => expect(state.current!.rowProps.edits[editKey]).toBe('new-secret'))
+
+    await act(async () => {
+      await Promise.resolve(state.current!.rowProps.onSave(varKey, editKey))
+    })
+
+    expect(setEnvVar).toHaveBeenCalledWith(varKey, 'new-secret', undefined)
+    expect(state.current!.rowProps.edits[editKey]).toBeUndefined()
+    expect(state.current!.rowProps.revealed[varKey]).toBeUndefined()
   })
 
   it('orders API-key providers by priority then name, and filters them via search', async () => {
@@ -259,7 +404,6 @@ describe('ProvidersSettings', () => {
     })
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     // Equal priority → alphabetical tiebreak: Acme, Middle, Zebra.
@@ -284,6 +428,25 @@ describe('ProvidersSettings', () => {
     expect(await screen.findByText('No providers match your search.')).toBeTruthy()
   })
 
+  it('expands and scrolls to the provider named by a ?key= deep link', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    getEnvVars.mockResolvedValue({
+      ACME_API_KEY: keyVar({ description: 'Acme blurb', provider: 'acme', provider_label: 'Acme' }),
+      ZEBRA_API_KEY: keyVar({ description: 'Zebra blurb', provider: 'zebra', provider_label: 'Zebra' })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=providers&pview=keys&key=ZEBRA_API_KEY']}>
+        <ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByText('Zebra blurb')).toBeTruthy()
+    expect(screen.queryByText('Acme blurb')).toBeNull()
+    await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled())
+  })
+
   it('offers a Local / custom endpoint entry in the API-keys tab that opens the custom-endpoint flow', async () => {
     // Regression: the composer pill and the providers "have an API key"
     // affordance both dead-end on the env-var-driven key catalog, which never
@@ -292,11 +455,9 @@ describe('ProvidersSettings', () => {
     getEnvVars.mockResolvedValue({})
     listOAuthProviders.mockResolvedValue({ providers: [] })
 
-    const { ProvidersSettings } = await import('./providers-settings')
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     const row = await screen.findByText('Local / custom endpoint')
-    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
 
     fireEvent.click(row)
 

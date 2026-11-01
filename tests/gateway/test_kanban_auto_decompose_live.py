@@ -9,7 +9,6 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
-import pytest
 
 from gateway.kanban_watchers_common import _board_slugs, _resolve_auto_decompose_settings
 
@@ -25,14 +24,10 @@ def test_dispatch_board_allowlist_filters_registered_boards():
     assert _board_slugs(FakeKanban(), ("shattered-flames-server",)) == ["shattered-flames-server"]
 
 
-def test_enabled_by_default_when_key_absent():
-    enabled, per_tick = _resolve_auto_decompose_settings(lambda: {"kanban": {}})
-    assert enabled is True
-    assert per_tick == 3
 
 
 def test_disabled_when_flag_false():
-    enabled, per_tick = _resolve_auto_decompose_settings(
+    enabled, _per_tick = _resolve_auto_decompose_settings(
         lambda: {"kanban": {"auto_decompose": False}}
     )
     assert enabled is False

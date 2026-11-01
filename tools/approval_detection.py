@@ -191,7 +191,10 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     """Detect ``sudo -S`` without configured SUDO_PASSWORD -> (is_blocked, description). When
     SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S`` itself, so this guard only
     fires when the LLM wrote it explicitly."""
-    if "SUDO_PASSWORD" not in os.environ and _SUDO_STDIN_RE.search(_normalize_command_for_detection(command).lower()):
+    if "SUDO_PASSWORD" not in os.environ and any(
+        _SUDO_STDIN_RE.search(variant.lower()) for variant in _command_detection_variants(command)
+        if isinstance(variant, str)
+    ):
         return (True, "sudo password guessing via stdin (sudo -S)")
     return (False, None)
 

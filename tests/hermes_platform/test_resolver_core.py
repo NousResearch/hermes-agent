@@ -91,6 +91,38 @@ def test_windows_pathext_is_honored_without_mutating_environ(tmp_path, monkeypat
     assert os.environ.get("PATHEXT") == before
 
 
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("search", ["path", "known_dir"])
+@pytest.mark.parametrize("pathext", [".CMD", ".CMD;.BAT"])
+@pytest.mark.parametrize("ambient", [".BAT", ".BAT;.CMD"])
+def test_windows_explicit_pathext_wins_over_ambient(tmp_path, monkeypatch, search, pathext, ambient):
+    for suffix in (".cmd", ".bat"):
+        (tmp_path / f"tool{suffix}").write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setenv("PATHEXT", ambient)
+    ctx = LookupContext(path=str(tmp_path) if search == "path" else "", pathext=pathext)
+    known_dirs = (str(tmp_path),) if search == "known_dir" else ()
+
+    res = locate_command("tool", ctx, known_dirs=known_dirs)
+
+    assert res.command[0].lower() == str(tmp_path / "tool.cmd").lower()
+    assert os.environ["PATHEXT"] == ambient
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("search", ["path", "known_dir"])
+@pytest.mark.parametrize("pathext", [".CMD", ""])
+def test_windows_explicit_pathext_excludes_ambient_suffixes(tmp_path, monkeypatch, search, pathext):
+    (tmp_path / "tool.bat").write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setenv("PATHEXT", ".BAT")
+    ctx = LookupContext(path=str(tmp_path) if search == "path" else "", pathext=pathext)
+    known_dirs = (str(tmp_path),) if search == "known_dir" else ()
+
+    res = locate_command("tool", ctx, known_dirs=known_dirs)
+
+    assert not res.found
+    assert res.command == ()
+    assert os.environ["PATHEXT"] == ".BAT"
+
 
 
 def test_one_candidate_per_known_dir_regardless_of_pathext(tmp_path):

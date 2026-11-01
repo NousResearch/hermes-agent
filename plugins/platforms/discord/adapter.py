@@ -5203,7 +5203,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
 
     def _discord_history_backfill_limit(self) -> int:
-        """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message."""
+        """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message
+        (or walk the whole window when ``history_full_thread`` applies)."""
         configured = self.config.extra.get("history_backfill_limit")
         if configured is not None:
             try:
@@ -5216,26 +5217,60 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         except (ValueError, TypeError):
             return 50
 
+    def _discord_history_full_thread(self, channel: Any = None) -> bool:
+        """Whether *channel* walks the whole thread instead of stopping at the bot's last message.
+
+        ``discord.history_full_thread`` (env ``DISCORD_HISTORY_FULL_THREAD``, env wins):
+        ``true`` / ``"*"`` = everywhere; ``false`` (default) = nowhere; a list or CSV of
+        channel IDs/names = only there. A thread matches by its own ID or its parent's, so
+        one channel entry covers every thread under it. Off by default: the window
+        duplicates messages already in the session transcript.
+        """
+        raw = self._gate_raw("history_full_thread", "DISCORD_HISTORY_FULL_THREAD")
+        if raw is None or isinstance(raw, bool):
+            return bool(raw)
+        if isinstance(raw, (int, float)):
+            # Bare int from YAML: 0/1 read as a flag, anything else as one channel ID.
+            if raw in (0, 1):
+                return bool(raw)
+            raw = [raw]
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text in {"true", "1", "yes", "on", "*"}:
+                return True
+            if text in {"", "false", "0", "no", "off", "none"}:
+                return False
+        scope = self._gate_csv_set(raw)
+        if "*" in scope:
+            return True
+        if not scope or channel is None:
+            return False
+        return bool(scope & self._discord_channel_keys_from_channel(channel))
+
     async def _fetch_channel_context(
         self, channel: Any, before: DiscordMessage, reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
-        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID."""
+        ``reply_target`` a second scan ending at the target is merged chronologically, deduped by ID.
+        When ``history_full_thread`` covers *channel*, the self-message stop is skipped."""
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
+        full_thread = self._discord_history_full_thread(channel)
         allow_bots_raw = self._get_allow_bots()
         include_other_bots = allow_bots_raw != "none"
         # Narrow via cached last-self-message id (`after`) only if it predates the trigger; miss => full scan.
+        # Full-thread mode skips the cache: `after=` would drop everything before our last reply.
         channel_id = str(getattr(channel, "id", ""))
-        _cached_id = self._last_self_message_id.get(channel_id)
         _after_obj = None
-        try:
-            if _cached_id and int(_cached_id) < int(before.id):
-                _after_obj = discord.Object(id=int(_cached_id))
-        except (ValueError, TypeError):
-            pass  # Malformed cache entry — fall back to cold-start scan
+        if not full_thread:
+            _cached_id = self._last_self_message_id.get(channel_id)
+            try:
+                if _cached_id and int(_cached_id) < int(before.id):
+                    _after_obj = discord.Object(id=int(_cached_id))
+            except (ValueError, TypeError):
+                pass  # Malformed cache entry — fall back to cold-start scan
         is_thread_channel = isinstance(channel, discord.Thread)
         has_unverified = False
         try:
@@ -5295,7 +5330,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 ):
                     continue
                 # Partition point: our own conversational message (needed for cold start).
-                if msg.author == self._client.user:
+                # Skipped in full-thread mode so earlier turns stay visible.
+                if not full_thread and msg.author == self._client.user:
                     break
                 line = _keep(msg)
                 if line is None:
@@ -7281,6 +7317,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if hbl is not None:
         seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
+    # history_full_thread: opt-in; true/"*" everywhere or a list of channel/parent IDs.
+    if "history_full_thread" in discord_cfg:
+        hft = discord_cfg["history_full_thread"]
+        seeded_extra["history_full_thread"] = hft
+        _env_default("DISCORD_HISTORY_FULL_THREAD", _csv(hft) if isinstance(hft, list) else str(hft).lower())
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):

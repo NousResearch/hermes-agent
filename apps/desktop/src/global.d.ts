@@ -812,9 +812,14 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
+  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  connectionId?: null | string
   cwd: string
   id: string
   shell: string
+  /** No shell was started: the tab's gateway was removed (`missing`) or has
+   *  no shell transport (`no-shell`). */
+  unavailable?: 'missing' | 'no-shell'
   /** Server-owned process and replay; do not restore renderer scrollback. */
   persistent?: boolean
 }

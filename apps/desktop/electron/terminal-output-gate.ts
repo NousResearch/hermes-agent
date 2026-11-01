@@ -15,6 +15,7 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
   let attached = false
   let pendingData = ''
   let pendingExit: TerminalExitPayload | null = null
+  let exited = false
 
   const flushExit = (payload: TerminalExitPayload) => {
     sendExit(payload)
@@ -50,6 +51,14 @@ export function createTerminalOutputGate({ onExitFlushed, sendData, sendExit }: 
       pendingData = `${pendingData}${chunk}`.slice(-MAX_PENDING_OUTPUT)
     },
     exit(payload: TerminalExitPayload): void {
+      // The first exit is the verdict: a teardown's `disconnected` must not be
+      // overwritten by the kill's own exit that follows it.
+      if (exited) {
+        return
+      }
+
+      exited = true
+
       if (attached) {
         flushExit(payload)
 

@@ -3085,6 +3085,12 @@ export const jaOverrides = {
     terminalNew: '新しいターミナル',
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
+    terminalNewOn: '新しいターミナルを開く場所…',
+    terminalGatewayRemoved: '削除されたゲートウェイ',
+    terminalGatewayRemovedBody:
+      'このターミナルが動作していたゲートウェイは削除されたため、再度開けません。このタブを閉じてください。',
+    terminalGatewayNoShellBody:
+      'このゲートウェイにはシェルアクセスがないため、このターミナルは再度開けません。このタブを閉じてください。',
     addToChat: 'チャットに追加'
   },
 

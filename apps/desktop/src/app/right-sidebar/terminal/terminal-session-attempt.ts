@@ -2,11 +2,11 @@ import type { Terminal } from '@xterm/xterm'
 import type { RefObject } from 'react'
 
 import type { HermesTerminalSession } from '@/global'
+import { translateNow } from '@/i18n'
 import { hostHas } from '@/lib/host-capabilities'
-import { $activeConnectionId } from '@/store/connections'
-import { $activeGatewayProfile } from '@/store/profile'
 
-import { $terminals, markTerminalPersistent, removeExitedTerminal } from './terminals'
+import { defaultTerminalGateway, terminalGatewayOf } from './terminal-gateway'
+import { $terminals, adoptTerminalGateway, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
 type TerminalApi = Window['hermesDesktop']['terminal']
 
@@ -21,6 +21,11 @@ const TERMINAL_EXIT_MESSAGES: Record<string, string> = {
   capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.',
   'signed-out': 'Signed out of Hermes. Sign this browser in again, then press Enter to reconnect.'
 }
+
+const TERMINAL_UNAVAILABLE_KEYS = {
+  missing: 'rightSidebar.terminalGatewayRemovedBody',
+  'no-shell': 'rightSidebar.terminalGatewayNoShellBody'
+} as const
 
 // True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
 // App quit kills the PTYs from the main process, which fires onExit in the
@@ -130,21 +135,33 @@ export function createSessionAttemptController(
       term.write(`${message}\r\n`)
     }
 
+    // The tab's own gateway; a tab from an older Desktop takes the one picked
+    // in Sessions (never the window-backend route, which a pick doesn't move).
+    const tab = $terminals.get().find(entry => entry.id === id)
+    const gateway = terminalGatewayOf(tab) ?? defaultTerminalGateway()
+
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
-      // Carry the Sessions active (gateway, profile) so a new PTY resolves
-      // the SSH tunnel for the gateway the user is LOOKING at — not the
-      // window-backend route, which a Sessions-switch doesn't re-point.
-      .start({
-        cols: term.cols,
-        connectionId: $activeConnectionId.get() ?? null,
-        cwd: resolveCwd(),
-        profile: $activeGatewayProfile.get(),
-        restoreKey: id,
-        resumeOnly,
-        rows: term.rows
-      })
+      .start({ cols: term.cols, cwd: resolveCwd(), restoreKey: id, resumeOnly, rows: term.rows, ...gateway })
       .then(async session => {
+        const ranOn = gateway ?? (session.connectionId ? { connectionId: session.connectionId } : undefined)
+
+        if (ranOn) {
+          adoptTerminalGateway(id, ranOn)
+        }
+
+        if (session.unavailable) {
+          // The gateway is gone or has no shell: an exited tab, never a
+          // local shell under the remote's name.
+          if (!isDisposed() && current) {
+            restoreHistory()
+            setStatus('closed')
+            term.write(`\r\n${translateNow(TERMINAL_UNAVAILABLE_KEYS[session.unavailable])}\r\n`)
+          }
+
+          return
+        }
+
         persistent = Boolean(session.persistent)
         resumeOnly = persistent
 

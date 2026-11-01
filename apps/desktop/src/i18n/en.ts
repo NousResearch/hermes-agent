@@ -4247,6 +4247,12 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalNewOn: 'New terminal on…',
+    terminalGatewayRemoved: 'Removed gateway',
+    terminalGatewayRemovedBody:
+      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody:
+      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

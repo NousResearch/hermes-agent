@@ -10,6 +10,7 @@ import { $currentCwd } from '@/store/session'
 import { setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
+import type { TerminalGateway } from './terminal-gateway'
 
 // xterm WebGL terminals that share one glyph atlas (same font/theme/DPR) keep
 // per-terminal render models over a SHARED texture. Clearing one terminal's
@@ -134,16 +135,24 @@ export interface TerminalEntry {
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
+  /** The gateway this tab was opened on (`local` = This device). The shell
+   *  runs on that host whichever gateway the window shows later; absent on a
+   *  tab from an older Desktop until its first start reports where it ran. */
+  connectionId?: string
+  /** Gateway profile the SSH tunnel is keyed by (with `connectionId`). */
+  profile?: string
 }
 
 interface PersistedTerminalEntry {
   auto: boolean
+  connectionId?: string
   cwd: string
   id: string
   restoreCwd?: string
   reviveBuffer?: string
   /** A server shell was created for this tab; restoration must never respawn it. */
   persistent?: boolean
+  profile?: string
   title: string
 }
 
@@ -158,6 +167,13 @@ const TERMINALS_STORAGE_KEY = 'hermes.desktop.terminals.v1'
 // localStorage quota. Roughly mirrors VS Code's persistentSessionScrollback
 // default (100 lines) once the serialized escape codes are counted in.
 const MAX_REVIVE_BUFFER_CHARS = 48_000
+
+function persistedGateway(record: Record<string, unknown>): Pick<PersistedTerminalEntry, 'connectionId' | 'profile'> {
+  const connectionId = typeof record.connectionId === 'string' ? record.connectionId.trim() : ''
+  const profile = typeof record.profile === 'string' ? record.profile.trim() : ''
+
+  return connectionId ? { connectionId, ...(profile ? { profile } : {}) } : {}
+}
 
 function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -177,6 +193,7 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
 
   return {
     auto: typeof record.auto === 'boolean' ? record.auto : true,
+    ...persistedGateway(record),
     cwd,
     id,
     ...(restoreCwd ? { restoreCwd } : {}),
@@ -226,8 +243,10 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
     .filter(term => term.kind === 'user')
     .map(term => ({
       auto: term.auto,
+      ...(term.connectionId ? { connectionId: term.connectionId } : {}),
       cwd: term.cwd,
       id: term.id,
+      ...(term.profile ? { profile: term.profile } : {}),
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       ...(term.persistent ? { persistent: true } : {}),
@@ -262,14 +281,32 @@ export const $activeTerminal = computed(
 const newId = () => randomUuid()
 
 /** Append a fresh terminal and focus it. Captures the current cwd once (its only
- *  tie to session/project state); pass an explicit cwd to override. Returns the id. */
-export function createTerminal(cwd: string = $currentCwd.get()): string {
+ *  tie to session/project state). Without an explicit gateway the tab takes the
+ *  one picked in Sessions when its shell first starts. Returns the id. */
+export function createTerminal(cwd: string = $currentCwd.get(), gateway?: TerminalGateway): string {
   const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user' }])
+  $terminals.set([...$terminals.get(), { id, title: 'Terminal', auto: true, cwd, kind: 'user', ...gateway }])
   $activeTerminalId.set(id)
 
   return id
 }
+
+/** Record where a tab that had no gateway first ran. A recorded gateway never
+ *  changes: a later Sessions pick must not move a shell to another host. */
+export function adoptTerminalGateway(id: string, gateway: TerminalGateway): void {
+  $terminals.set(
+    $terminals.get().map(term =>
+      term.id === id && term.kind === 'user' && !term.connectionId ? { ...term, ...gateway } : term
+    )
+  )
+}
+
+/** True once user tabs run on more than one host: only then do This device
+ *  tabs need a label too. */
+export const $terminalHostsMixed = computed(
+  $terminals,
+  list => new Set(list.filter(term => term.kind === 'user' && term.connectionId).map(term => term.connectionId)).size > 1
+)
 
 // Procs we've already surfaced a tab for — so closing an agent tab doesn't
 // resurrect it on the next poll while the process is still running.

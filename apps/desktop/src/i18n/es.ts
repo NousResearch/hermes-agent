@@ -4660,6 +4660,12 @@ export const esOverrides = {
     terminalNew: 'Nueva terminal',
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
+    terminalNewOn: 'Nueva terminal en…',
+    terminalGatewayRemoved: 'Gateway eliminado',
+    terminalGatewayRemovedBody:
+      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+    terminalGatewayNoShellBody:
+      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
     addToChat: 'Añadir al chat'
   },
   preview: {

@@ -4686,6 +4686,12 @@ export const frOverrides = {
     terminalNew: 'Nouveau terminal',
     terminalCloseOthers: 'Fermer les autres',
     terminalCloseAll: 'Tout fermer',
+    terminalNewOn: 'Nouveau terminal sur…',
+    terminalGatewayRemoved: 'Passerelle supprimée',
+    terminalGatewayRemovedBody:
+      'La passerelle sur laquelle ce terminal tournait a été supprimée ; il ne peut pas être rouvert. Fermez cet onglet.',
+    terminalGatewayNoShellBody:
+      'Cette passerelle n’offre pas d’accès shell ; ce terminal ne peut pas être rouvert. Fermez cet onglet.',
     addToChat: 'Ajouter à la conversation'
   },
   preview: {

@@ -466,6 +466,12 @@ export const zhHantChrome = {
     terminalNew: '新增終端機',
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
+    terminalNewOn: '新增終端機於…',
+    terminalGatewayRemoved: '已移除的閘道',
+    terminalGatewayRemovedBody:
+      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody:
+      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
     addToChat: '新增至聊天'
   },
 

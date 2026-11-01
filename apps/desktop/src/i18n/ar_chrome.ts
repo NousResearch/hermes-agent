@@ -515,6 +515,12 @@ export const arChrome = {
     loadingTree: 'جار تحميل الشجرة...',
     loadingFiles: 'جار تحميل الملفات...',
     terminalHide: 'إخفاء الطرفية',
+    terminalNewOn: 'طرفية جديدة على…',
+    terminalGatewayRemoved: 'بوابة محذوفة',
+    terminalGatewayRemovedBody:
+      'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
+    terminalGatewayNoShellBody:
+      'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {

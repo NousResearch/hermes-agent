@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopProfileRoute } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
-import { requestGatewayForAgent } from '@/store/gateway'
+import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
 import {
   $activeGatewayProfile,
   $newChatConnectionId,
@@ -115,6 +115,7 @@ beforeEach(() => {
   })
   window.hermesDesktop = { profile: { setDefault: async (route: DesktopProfileRoute) => route } } as never
   vi.mocked(requestGatewayForAgent).mockReset()
+  vi.mocked(activeGatewayConnectionId).mockReturnValue('previous')
   vi.mocked(requestGatewayForAgent).mockResolvedValue({
     session_id: 'created',
     stored_session_id: 'created-stored',
@@ -179,6 +180,9 @@ describe('generic new session default routing', () => {
 
   it.each(['draft', 'tile'])('keeps a legacy default on the profile-only creation path for a %s', async action => {
     const { result, requestGateway } = mountActions()
+    vi.mocked(activeGatewayConnectionId).mockReturnValue(null)
+    $newChatConnectionId.set(null)
+    $newChatProfile.set(null)
     await act(() => setDefaultProfile({ connectionId: null, profile: 'personal' }))
 
     if (action === 'draft') {
@@ -219,6 +223,9 @@ describe('generic new session default routing', () => {
   it('does not mistake the configured default folder for explicit project routing', async () => {
     applyConfiguredDefaultProjectDir('/configured-default')
     const { result } = mountActions()
+    vi.mocked(activeGatewayConnectionId).mockReturnValue(null)
+    $newChatConnectionId.set(null)
+    $newChatProfile.set(null)
     await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
     expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
@@ -231,6 +238,9 @@ describe('generic new session default routing', () => {
       window.history.replaceState(null, '', query)
       const { result } = mountActions()
       const slash = mountSlashCommand(result.current.startFreshSessionDraft)
+      vi.mocked(activeGatewayConnectionId).mockReturnValue(null)
+      $newChatConnectionId.set(null)
+      $newChatProfile.set(null)
 
       await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
       await act(() => slash.result.current('/new'))
@@ -254,7 +264,7 @@ describe('generic new session default routing', () => {
   })
 
   it.each([
-    { options: undefined, connectionId: 'lab', profile: 'research' },
+    { options: undefined, connectionId: 'previous', profile: 'other' },
     { options: { profile: 'chosen' }, connectionId: 'previous', profile: 'chosen' },
     {
       options: { route: { connectionId: 'chosen-host', profile: 'chosen' } },
@@ -279,14 +289,36 @@ describe('generic new session default routing', () => {
     }
   )
 
+  it('routes a generic new session to the active gateway ahead of a different saved default', async () => {
+    const { result } = mountActions()
+    captureNewChatSource('link2')
+    $newChatProfile.set('default')
+    $activeGatewayProfile.set('default')
+    await act(() => setDefaultProfile({ connectionId: 'local', profile: 'default' }))
+
+    act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    await act(() => result.current.createBackendSessionForSend('hello'))
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'link2',
+      'default',
+      'session.create',
+      expect.objectContaining({ profile: 'default' }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+  })
+
   it.each([
     { connectionId: 'lab', profile: 'research' },
     { connectionId: 'local', profile: 'personal' }
   ])('uses the saved exact owner only for a new draft: $connectionId/$profile', async saved => {
     const { result, requestGateway } = mountActions()
+    vi.mocked(activeGatewayConnectionId).mockReturnValue(null)
+    $newChatConnectionId.set(null)
+    $newChatProfile.set(null)
     await act(() => setDefaultProfile(saved))
     expect($activeSessionId.get()).toBe('existing-runtime')
-    expect($newChatProfile.get()).toBe('other')
+    expect($newChatProfile.get()).toBeNull()
 
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
     await act(() => result.current.createBackendSessionForSend('hello'))

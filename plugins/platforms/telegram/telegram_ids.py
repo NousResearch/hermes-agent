@@ -22,6 +22,23 @@ def normalize_telegram_chat_id(chat_id: Any) -> int | str:
         return chat_id_str
 
 
+def link_preview_disabled_chats(extra: Any) -> frozenset[str]:
+    """Chat IDs listed in ``disable_link_preview_chats`` (comma/semicolon string or list)."""
+    raw = extra.get("disable_link_preview_chats") if isinstance(extra, dict) else None
+    if raw is None:
+        return frozenset()
+    parts = raw.replace(";", ",").split(",") if isinstance(raw, str) else raw if isinstance(raw, (list, tuple, set)) else [raw]
+    return frozenset(str(part).strip() for part in parts if str(part).strip())
+
+
+def link_previews_disabled_for(extra: Any, chat_id: Any) -> bool:
+    """True when ``disable_link_previews`` is on, or ``chat_id`` is in ``disable_link_preview_chats``."""
+    flag = extra.get("disable_link_previews") if isinstance(extra, dict) else None
+    if flag is True or str(flag).strip().lower() in {"true", "1", "yes", "on"}:
+        return True
+    return str(chat_id).strip() in link_preview_disabled_chats(extra)
+
+
 def looks_like_telegram_username(chat_id: Any) -> bool:
     """True when the value is an ``@username``-format Telegram chat identifier."""
     return bool(_TELEGRAM_USERNAME_RE.fullmatch(str(chat_id).strip()))

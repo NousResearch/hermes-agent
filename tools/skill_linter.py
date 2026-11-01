@@ -80,6 +80,21 @@ def _strip_code_blocks(body: str) -> str:
     return re.sub(r"```.*?```", "", body, flags=re.DOTALL)
 
 
+def _fence_unbalanced(body: str) -> bool:
+    """True when ``` / ~~~ fences do not pair up per marker type.
+
+    A marker of the other type while one is open is block content (the 4-backtick
+    nesting idiom), so only the opening type can close it.
+    """
+    open_marker: Optional[str] = None
+    for m in re.finditer(r"^[ \t]*(```|~~~)", body, re.MULTILINE):
+        if open_marker is None:
+            open_marker = m.group(1)
+        elif m.group(1) == open_marker:
+            open_marker = None
+    return open_marker is not None
+
+
 def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     name = str(frontmatter.get("name", "")).strip()
     if name and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
@@ -125,6 +140,11 @@ def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -
 
 
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
+    if _fence_unbalanced(body):
+        yield _warn("fence-pairing",
+                    "code fences (``` or ~~~) do not pair up; an unclosed fence makes everything "
+                    "after it render as code, hiding later sections from fence-aware tooling. "
+                    "Close the fence.")
     if len(body) > _BODY_SOFT_BUDGET_CHARS:
         yield _warn("oversized-body",
                     f"SKILL.md body is {len(body):,} chars (~{len(body) // 4:,} tokens); skill_view loads "

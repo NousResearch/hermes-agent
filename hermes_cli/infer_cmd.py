@@ -1,4 +1,4 @@
-"""One configured model call for scripts, using the host's existing LLM route."""
+"""One script-facing inference invocation using Hermes's configured LLM route."""
 
 from __future__ import annotations
 

@@ -7,8 +7,8 @@ from typing import Callable
 
 def build_infer_parser(subparsers, *, cmd_infer: Callable) -> None:
     parser = subparsers.add_parser(
-        "infer", help="Call a configured model once without an agent session",
-        description="Run one model completion using this profile's provider and credentials. "
+        "infer", help="Run a configured model inference without an agent session",
+        description="Run one prompt using this profile's provider and credentials. "
                     "No agent, tools, memory, or chat session is created.",
     )
     parser.add_argument("prompt", nargs="?", help="Prompt text, or '-' to read standard input")
@@ -16,7 +16,7 @@ def build_infer_parser(subparsers, *, cmd_infer: Callable) -> None:
     parser.add_argument("--model", help="Model ID or Hermes model alias (default: selected model)")
     parser.add_argument("--schema", metavar="PATH", help="JSON Schema file for structured output")
     parser.add_argument("--json", action="store_true", help="Print success or failure, text, and route/usage as JSON")
-    parser.add_argument("--include-response", action="store_true", help="Include the model client's full response in --json output")
-    parser.add_argument("--max-tokens", type=int, default=None, help="Maximum output tokens")
+    parser.add_argument("--include-response", action="store_true", help="Include a JSON snapshot of the response returned to Hermes by its model client")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Request an output-token limit (provider support varies)")
     parser.add_argument("--timeout", type=float, default=None, help="Request timeout in seconds")
     parser.set_defaults(func=cmd_infer)

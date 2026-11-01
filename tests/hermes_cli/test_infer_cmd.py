@@ -198,7 +198,7 @@ def test_infer_includes_non_text_response_fields_on_request(configured_home, mon
     assert output["response"]["provider_detail"] == {"code": "partial", "data": {"base64": "dHdvIGJ5dGVz"}}
 
 
-def test_infer_requires_json_for_full_response(configured_home, monkeypatch, capsys):
+def test_infer_requires_json_for_response_snapshot(configured_home, monkeypatch, capsys):
     monkeypatch.setattr("agent.auxiliary_client.call_llm", lambda **kw: pytest.fail("model called"))
     assert cmd_infer(_args(json=False, include_response=True)) == 1
     captured = capsys.readouterr()

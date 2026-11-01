@@ -73,6 +73,7 @@ def test_worker_route_and_api_content_preserve_exact_usage_and_target_fences(tmp
             original(method, **params)
             raise TimeoutError('lost-ack')
         store.rpc = lost_ack
+        store.owner_patience_s = 0  # every reply is lost: no resend window
         with pytest.raises(TimeoutError, match='lost-ack'):
             store.update_session_billing_route('owned', provider='third', base_url='https://third.invalid')
         store.rpc = original

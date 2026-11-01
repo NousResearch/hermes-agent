@@ -56,7 +56,7 @@ def busy_arrival_fields(*, platform: Any, disposition: str, seconds: float | Non
 # ---- busy arrivals ----
 
 class _Arrival:
-    __slots__ = ("admission_id", "admitting", "arrived", "disposition", "done", "home", "merged", "platform")
+    __slots__ = ("admission_id", "admitting", "arrived", "disposition", "done", "home", "merged", "parked", "platform")
 
     def __init__(self, platform: Any, home: str | None) -> None:
         self.arrived = time.monotonic()
@@ -66,6 +66,7 @@ class _Arrival:
         self.admission_id: str | None = None
         self.merged: list[_Arrival] = []
         self.done = False
+        self.parked = False  # its row stays queued behind a paused FIFO: not dropped, owed later
 
 
 # FIFO admission id -> arrival whose row is still queued. Touched only on the gateway loop.
@@ -137,8 +138,18 @@ def note_busy_admitted(event: Any, admission_id: str, status: str) -> None:
         _queued[tag.admission_id] = tag
         while len(_queued) > _QUEUED_MAX:
             _queued.popitem(last=False)[1].done = True
-    elif status in ("started", "terminal"):
+    elif status in ("started", "unknown", "terminal"):  # ``unknown``: it started, then its turn was lost
         _resolve(tag, tag.disposition, time.monotonic())
+
+
+def note_busy_parked(event: Any) -> None:
+    """The handler is answering with a pause notice (``runtime_draining``, ``session_busy``,
+    ``unknown_execution``) while the message's row is still queued: it is saved, not dropped. It
+    counts only if this process later runs that row (``busy_turn_started``); a restart owes it to
+    the next process, which has no record of the arrival."""
+    tag = _tag(event)
+    if tag is not None:
+        tag.parked = True
 
 
 def busy_turn_started(admission_id: Any) -> None:
@@ -151,9 +162,9 @@ def busy_turn_started(admission_id: Any) -> None:
 def settle_busy_arrival(event: Any, *, discarded: bool = False) -> None:
     """The busy handler for ``event`` returned (or its held burst was dropped by /stop, /new):
     an arrival that reached admission and never ran was dropped. One stopped by a restart is not
-    counted: its committed row outlives this process."""
+    counted: its committed row outlives this process. A parked one stays owed (``note_busy_parked``)."""
     tag = _tag(event)
-    if tag is None:
+    if tag is None or (tag.parked and not discarded):
         return
     if tag.admission_id is not None:
         _queued.pop(tag.admission_id, None)
@@ -210,6 +221,17 @@ def _home_key(home: Any) -> str:
         except OSError:
             _resolved[raw] = raw
     return _resolved[raw]
+
+
+def note_running_chat_owner(runner: Any, session_key: str, source: Any) -> None:
+    """``session_key`` is being claimed outside its profile's scope (the startup auto-resume loop):
+    count it toward the profile that owns the session, resolved the way its turn will resolve it."""
+    try:
+        home = _home_key(runner._resolve_profile_home_for_source(source))
+        with _peak_lock:
+            _running[str(session_key)] = home
+    except Exception:
+        logger.debug("Running-chat owner not resolved", exc_info=True)
 
 
 def observe_running_chats(session_keys: Any) -> None:

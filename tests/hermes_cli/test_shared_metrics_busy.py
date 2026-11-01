@@ -188,3 +188,80 @@ def test_day_row_reports_each_profiles_peak_of_chats_running_at_once(tmp_path, m
         assert contract.counter_dimensions_are_valid(contract.ENGAGEMENT_DAY_METRIC, row)
         legacy = {k: v for k, v in row.items() if k != contract.BUSY_PEAK_FIELD}
         assert contract.counter_dimensions_are_valid(contract.ENGAGEMENT_DAY_METRIC, legacy)
+
+
+class _PausingAuthority:
+    """The admission surface ``admit_message`` reads: the row commits as ``queued``, then the FIFO
+    pauses (a runtime stop releases every waiter with ``runtime_draining``, a worker on the chat
+    with ``session_busy``) while the row stays queued for later."""
+
+    def __init__(self):
+        self.db, self.native_waiters, self.waiters = None, set(), {}
+        self.sessions = {"sid": SimpleNamespace(pause_notified=False, source=None)}
+
+    async def admit_native(self, event):
+        return SimpleNamespace(status="queued", admission_id="adm-p", ref=SimpleNamespace(session_id="sid"))
+
+
+@pytest.mark.parametrize("reason", ["runtime_draining", "session_busy"])
+def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, reason):
+    """The user is told the message is saved and its FIFO row stays ``queued``: no ``dropped``
+    row. When this process later runs that row (a ``session_busy`` pause lifting), it counts as
+    ``queued`` with its wait; after a restart the next process runs it and nothing is counted."""
+    import hermes_state_runtime
+    from gateway.session_ingress import admit_message
+    from hermes_state_runtime import RuntimeStoreError
+
+    monkeypatch.setattr(hermes_state_runtime, "get_session_admission",
+                        lambda db, admission_id: {"status": "queued"})
+    authority, replies = _PausingAuthority(), []
+
+    async def runner_admits(event):
+        busy.note_busy_admitting(event)
+        replies.append(await admit_message(authority, event))
+
+    async def scenario():
+        adapter = _Adapter(runner_admits)
+        adapter._busy_text_mode = "interrupt"  # not a debounced burst: straight to the runner
+        await dispatch_busy_burst(adapter, _message("b"), KEY)
+        await asyncio.sleep(0)
+        authority.waiters["adm-p"].set_exception(RuntimeStoreError(reason))
+        await asyncio.gather(*adapter._background_tasks)
+
+    asyncio.run(scenario())
+    assert "saved" in replies[0]
+    assert rows() == []
+    busy.busy_turn_started("adm-p")  # the pause lifted and this process ran the row
+    assert [(d["disposition"], d["wait_bucket"]) for _m, d in rows()] == [("queued", "lt_5s")]
+
+
+def test_an_auto_resumed_chat_counts_toward_its_owning_profiles_peak(tmp_path, monkeypatch):
+    """The startup auto-resume loop claims chats from the launch profile's scope; a resumed chat
+    of another profile counts toward that profile's peak, not the launch profile's."""
+    from gateway.session import SessionEntry
+    from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+
+    monkeypatch.setattr("gateway.run._write_runtime_status_quiet", lambda **_: None)
+    monkeypatch.setattr(busy, "_running", {})
+    monkeypatch.setattr(busy, "_peaks", {})
+    monkeypatch.setattr(busy, "_now", lambda: DAY1)
+    launch, beta = tmp_path / "launch", tmp_path / "beta"
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    runner, _adapter = make_restart_runner()
+    runner.session_authorities = []
+    runner._resolve_profile_home_for_source = lambda source: beta
+    entry = SessionEntry(session_key="agent:beta:telegram:dm:c", session_id="s-beta",
+                         created_at=datetime.now(), updated_at=datetime.now(),
+                         origin=make_restart_source(chat_id="c"), platform=Platform.TELEGRAM, chat_type="dm",
+                         resume_pending=True, resume_reason="restart_interrupted",
+                         last_resume_marked_at=datetime.now())
+    runner.session_store._entries = {entry.session_key: entry}
+
+    async def resume():
+        runner._run_startup_resume_event = lambda *a, **k: asyncio.sleep(0)
+        assert runner._schedule_resume_pending_sessions() == 1
+        await asyncio.sleep(0)
+
+    asyncio.run(resume())
+    day = busy._day(DAY1)
+    assert (busy.day_peak(beta, day), busy.day_peak(launch, day)) == (1, 0)

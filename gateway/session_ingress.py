@@ -8,7 +8,8 @@ from dataclasses import replace
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
 from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
-from hermes_cli.observability.shared_metrics_busy import busy_turn_started, note_busy_admitted, settle_busy_arrival
+from hermes_cli.observability.shared_metrics_busy import (
+    busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,8 @@ async def admit_message(authority, event):
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')
+        if row is not None:
+            note_busy_parked(event)  # still queued (saved): answered after the pause, not dropped
         return pause_notice(authority, receipt.ref, exc.reason)
     finally:
         if adopters.get(receipt.admission_id) is event:

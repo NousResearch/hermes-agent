@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 from hermes_cli import anon_auth
@@ -42,7 +43,7 @@ def _runner(monkeypatch, *, extra=None):
 
 
 def _event(**source_kwargs):
-    return SimpleNamespace(source=_source(**source_kwargs))
+    return MessageEvent(text="/login", source=_source(**source_kwargs))
 
 
 async def _finish_tasks(runner):
@@ -535,7 +536,7 @@ async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeyp
     states = [anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5), anon_auth.TimedOut()]
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter(states))
 
-    event = SimpleNamespace(source=_source(platform=Platform.LOCAL, chat_id="local-1"))
+    event = _event(platform=Platform.LOCAL, chat_id="local-1")
     assert await runner._handle_login_command(event) == anon_auth.UPGRADE_START
     await _finish_tasks(runner)
 

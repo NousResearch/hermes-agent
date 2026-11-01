@@ -1223,7 +1223,7 @@ display:
   resume_display: full    # full（恢复时显示之前的消息）| minimal（仅单行）
   bell_on_complete: false # 当 agent 完成时播放终端铃声（适合长任务）
   show_reasoning: false   # 在每次响应上方显示模型推理/思考（用 /reasoning show|hide 切换）
-  streaming: false        # 将 token 实时流式传输到终端
+  streaming: true         # 将 token 实时流式传输到终端
   show_cost: false        # 在 CLI 状态栏中显示估计 $ 成本
   timestamps: false       # 为 true 时，在 CLI/TUI 记录中为用户和 assistant 标签添加 [HH:MM] 时间戳前缀
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
@@ -1411,7 +1411,7 @@ streaming:
 **新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。设置 `fresh_final_after_seconds > 0` 可选择将旧预览作为全新的最终消息传递，并尽力删除旧预览。默认值为 `0`，始终就地最终化流式回复，避免某些客户端短暂显示重复消息再删除其中一条。
 
 :::note
-主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
+主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定，默认值由各平台适配器应用：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。
 :::
 
 ## 群聊会话隔离

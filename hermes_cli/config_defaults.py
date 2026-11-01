@@ -851,7 +851,7 @@ DEFAULT_CONFIG = {
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
-        "streaming": False,
+        "streaming": True,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
@@ -940,13 +940,13 @@ DEFAULT_CONFIG = {
         # 0 = disabled.
         "ephemeral_system_ttl": 0,
         # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
-        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
-        # flickers (off). Gap-fillers only: explicit user values win, and the global
-        # streaming.enabled master switch still gates everything.
+        # draft streaming and Slack native streaming are smooth (on); Discord edits flicker (off).
+        # Gap-fillers only: explicit user values win, each adapter's registry entry sets the runtime
+        # default (Slack's sets none: it follows the global), and streaming.enabled gates everything.
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
-            "slack": {"streaming": False},
+            "slack": {"streaming": True},
             # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
             "wecom": {"streaming": True},
         },

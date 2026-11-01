@@ -1624,7 +1624,7 @@ async def test_run_agent_queued_message_delivers_streamed_first_response_media(
         session_id="sess-queued-streamed-media",
         pending_text="queued follow-up",
         config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "display": {"tool_progress": "off", "interim_assistant_messages": False, "platforms": {"discord": {"streaming": True}}},
             "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
         },
         platform=Platform.DISCORD,

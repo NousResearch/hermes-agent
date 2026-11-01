@@ -7346,7 +7346,7 @@ def register(ctx) -> None:
         platform_hint=PLATFORM_HINT,
         display_tier="high",
         # "-# " subtext reads as metadata.
-        display_overrides={"reasoning_style": "subtext"},
+        display_overrides={"reasoning_style": "subtext", "streaming": False},
         env_overrides=gateway_env.ENV_OVERRIDES,
         env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

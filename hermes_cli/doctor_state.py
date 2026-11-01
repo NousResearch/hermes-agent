@@ -678,6 +678,27 @@ def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
                                f"memory.provider set), or keep it off with `hermes plugins disable {name}`")
 
 
+@doctor_check("")  # best-effort: an unreadable health record is skipped, never a doctor failure
+def _check_plugin_health(should_fix: bool, f: Finding) -> None:
+    """Load failures (deadline skips included) and hook failures that running Hermes processes
+    recorded for this home; before, they lived only in that process's log."""
+    from hermes_cli.plugins_health import describe, read_plugin_health
+    from hermes_constants import get_hermes_home
+    health = read_plugin_health(get_hermes_home())
+    problems = {key: lines for key, entry in sorted(health.items()) if (lines := describe(entry))}
+    if not problems:
+        return
+    _section("Plugin Health (running processes)")
+    for key, lines in problems.items():
+        pids = ", ".join(str(p) for p in health[key]["pids"])
+        for line in lines:
+            check_warn(f"{key}: {line}", f"(pid {pids})")
+        if health[key].get("load_error"):
+            f.manual_issues.append(f"Plugin '{key}' did not load in a running Hermes process: "
+                                   f"{health[key]['load_error']}. Fix the cause (a slow import can raise "
+                                   f"plugins.load_timeout_seconds), then restart Hermes")
+
+
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE

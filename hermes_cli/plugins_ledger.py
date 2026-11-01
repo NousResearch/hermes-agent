@@ -179,17 +179,22 @@ class PluginLedgerMixin:
                 else:
                     ledger.pop(plugin_key, None)
 
-    # -- dual-kind hook ownership -------------------------------------------------------------
+    # -- dual-kind registration ownership ------------------------------------------------------
     # A plugin dir loaded by general discovery AND as the configured memory provider calls
-    # ``register()`` twice against the same manager. General discovery owns the hook group; the
-    # memory loader's hooks are a fallback group keyed by (name, resolved source path) that is
-    # dropped once the same source loads through discovery. Groups, not callbacks, are replaced:
-    # one register() may deliberately create several closures for one hook.
+    # ``register()`` twice against the same manager. General discovery owns every registration
+    # (hooks, tools, prompt sections, ...); the memory loader's are a fallback group keyed by
+    # (name, resolved source path) that is dropped before the same source loads through discovery
+    # and before each re-collect. Groups, not callbacks, are replaced: one register() may
+    # deliberately create several closures for one hook.
 
     def _drop_fallback_hooks(self, hook_source: Optional[tuple]) -> None:
         if hook_source is not None:
             for handle in self._memory_hook_registrations.pop(hook_source, []):
                 handle.dispose()
+
+    def _source_owned_by_discovery(self, hook_source: tuple) -> bool:
+        return any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
+                   for loaded in self._plugins.values())
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
                                 callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
@@ -197,12 +202,32 @@ class PluginLedgerMixin:
         which case return an inert handle so the provider keeps its disposable-handle contract."""
         if hook_source is None:
             return context.register_hook(hook_name, callback, hold_stream=hold_stream)
-        owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
-                    for loaded in self._plugins.values())
-        handle = (context._track("hook", hook_name, lambda: None) if owned
+        handle = (context._track("hook", hook_name, lambda: None) if self._source_owned_by_discovery(hook_source)
                   else context.register_hook(hook_name, callback, hold_stream=hold_stream))
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
+
+    def _register_fallback(self, context: Any, hook_source: Optional[tuple], attr: str,
+                           args: tuple, kwargs: dict) -> Any:
+        """Forward one non-hook ``register_*`` call from the memory loader. When general discovery
+        already loaded the same source, its copy registered this too: skip it (a second prompt section
+        raised on every provider load, a second tool replaced the general copy's handler). Otherwise run
+        it and add what it leased to the source's fallback group. A skipped call returns an inert handle,
+        so a provider that disposes what it registered keeps working."""
+        method = getattr(context, attr)
+        if hook_source is None:
+            return method(*args, **kwargs)
+        group = self._memory_hook_registrations.setdefault(hook_source, [])
+        if self._source_owned_by_discovery(hook_source):
+            key = args[0] if args and isinstance(args[0], str) else ""
+            handle = context._track(attr.removeprefix("register_"), key, lambda: None)
+            group.append(handle)
+            return handle
+        start = len(self._registration_order)
+        try:
+            return method(*args, **kwargs)
+        finally:
+            group.extend(self._registration_order[start:])
 
     def _dispose_registrations(self, registrations: list[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""

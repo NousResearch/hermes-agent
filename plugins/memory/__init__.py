@@ -474,8 +474,10 @@ class _ProviderCollector:
             raise AttributeError(attr)
 
         def _forward(*args, **kwargs):
+            context = self._plugin_context()
             try:
-                return self._plugin_context().__getattribute__(attr)(*args, **kwargs)
+                with context._manager._discovery_lock:
+                    return context._manager._register_fallback(context, self._hook_source, attr, args, kwargs)
             except Exception as exc:
                 # A secondary registration must not cost the provider itself.
                 logger.warning("Memory provider '%s' failed to %s: %s", self.name, attr, exc)

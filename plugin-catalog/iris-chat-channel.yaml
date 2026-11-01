@@ -1,0 +1,27 @@
+name: iris-chat-channel
+title: Iris Chat
+repo: https://github.com/irislib/iris-chat-channels
+sha: 202a422c81eec3246bf19cb45657fc3513c2ac9a
+subdir: hermes
+description: >-
+  Chat with Hermes through Iris Chat: Signal-like messaging using Nostr Double
+  Ratchet end-to-end encryption, without phone numbers or signup. Iris also
+  supports nearby messaging over local networks and Bluetooth. The native
+  channel supports one approved contact, text replies, seen receipts and typing.
+  Disclosure — invokes the separately installed Iris CLI and runs its background
+  service when needed; Iris stores its own dedicated identity and message history
+  and connects to configured message servers/transports. Plaintext requests pass
+  through Hermes and its selected model. No telemetry, automatic software
+  downloads, imported personal keys, or added tools. Not filesystem isolation.
+maintainer: mmalmi
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/irislib/iris-chat-channels#hermes
+version: "0.1.1"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -63,6 +63,30 @@ def test_cache_survives_platform_empty_string_none_flapping(tmp_path):
         assert scan_count == 1  # Never rescanned
 
 
+def test_cache_rescans_when_a_skill_is_added_on_disk(tmp_path):
+    """A running backend must expose skills installed after its first scan."""
+    import agent.skill_commands as sc_mod
+
+    _make_skill(tmp_path, "first-skill")
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
+    ):
+        assert "/first-skill" in get_skill_commands()
+
+        _make_skill(tmp_path, "installed-later")
+
+        assert "/installed-later" in get_skill_commands()
+
+        skill_md = tmp_path / "first-skill" / "SKILL.md"
+        skill_md.write_text(skill_md.read_text().replace("name: first-skill", "name: renamed-skill"))
+
+        commands = get_skill_commands()
+        assert "/renamed-skill" in commands
+        assert "/first-skill" not in commands
+
+
 def test_cache_creates_multiple_slots_for_distinct_platform_or_home(tmp_path):
     """Each distinct (platform, home) identity gets its own cache slot.
 

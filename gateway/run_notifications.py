@@ -1936,4 +1936,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await self._send_watcher_message(
                     platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
                 )
+        await self._settle_process_receipt(watcher, session)
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)
+
+    async def _settle_process_receipt(self, watcher: dict, session) -> None:
+        """The watcher is done with the exited process (delivered, consumed, or nothing to send):
+        stop its receipt from re-arming a watcher at the next startup. The receipt lives in the
+        owning profile's home; recovered watchers run in the root scope."""
+        if session is None:
+            return  # Untracked: a pending receipt keeps the notification owed.
+        from tools.process_registry_results import mark_result_notified
+        async with self._completion_event_scope(watcher):
+            mark_result_notified(watcher["session_id"])

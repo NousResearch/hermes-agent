@@ -1,0 +1,6 @@
+name: temporal_context
+version: "1.0.0"
+description: "Injects a compact, ephemeral temporal header (current wall-clock time + how long since the user's previous turn) once per user turn, so long-running / return-from-idle sessions can ground relative time anchors ('just now', 'yesterday') and re-validate stale runtime state instead of trusting hours-old facts. Self-contained first implementation of the idea in RFC #99942, via the pre_llm_call hook — ephemeral, never persisted, never in the system prompt (prompt cache preserved). Opt-in: `hermes plugins enable temporal_context`."
+author: bsdnn
+provides_hooks:
+  - pre_llm_call

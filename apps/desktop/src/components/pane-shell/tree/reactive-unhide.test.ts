@@ -155,4 +155,31 @@ describe('reactive pane unhide', () => {
     // …but the tree's own toggle never moved, so the tree stays closed.
     expect(layout.$fileBrowserOpen.get()).toBe(false)
   })
+
+  it('closing Files hides only its tab when a plugin shares the right-side group', async () => {
+    const { tree, layout } = await setupWithFiles()
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    registry.register({
+      id: 'plugin:notes',
+      area: 'panes',
+      title: 'Notes',
+      data: { placement: 'right' },
+      render: () => null
+    })
+    tree.$layoutTree.set(
+      model.split('row', [model.group(['sessions']), model.group(['workspace']), model.group(['files', 'plugin:notes'])])
+    )
+    tree.bindPaneVisibility('files', layout.$fileBrowserOpen, layout.closeFileBrowserPane, () =>
+      layout.setFileBrowserOpen(true)
+    )
+
+    tree.closeTreePane('files')
+
+    expect(layout.$fileBrowserOpen.get()).toBe(false)
+    expect(tree.$hiddenTreePanes.get().has('files')).toBe(true)
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
+    expect(tree.isPaneVisible('plugin:notes')).toBe(true)
+  })
 })

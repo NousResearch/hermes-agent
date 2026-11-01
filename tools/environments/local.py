@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
+from agent.runtime_cwd import process_cwd
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -150,7 +151,7 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
     """Resolve the initial cwd to an absolute host path. A relative ``TERMINAL_CWD``
     naming the launch directory would otherwise make the wrapper ``cd`` *inside*
     the project; anchor it once so ``Popen(cwd=)`` and the in-shell ``cd`` agree."""
-    expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
+    expanded = os.path.expanduser(cwd) if cwd else (process_cwd() or os.path.expanduser("~"))
     if _IS_WINDOWS:
         expanded = _msys_to_windows_path(expanded)
         # ntpath explicitly: with _IS_WINDOWS patched on a POSIX host,
@@ -160,7 +161,7 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
     if os.path.isabs(expanded):
         return expanded
     candidate = os.path.abspath(expanded)
-    current = os.getcwd()
+    current = process_cwd()
     # Relative name matching the tail of the current dir: use the current dir.
     if not os.path.isdir(candidate):
         wanted, have = Path(expanded).parts, Path(current).parts

@@ -42,8 +42,9 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
     languages = _call(server, "i18n.languages", {})["result"]["languages"]
     ids = [row["id"] for row in languages]
     assert ids == ["en", *sorted(ids[1:])]
-    assert {"id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:hermes-lang-pl"} in languages
-    assert {"id": "ar", "endonym": "العربية", "rtl": True, "source": "bundled"} in languages
+    assert {"id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:hermes-lang-pl",
+            "surfaces": ["core", "tui", "desktop"]} in languages
+    assert {"id": "ar", "endonym": "العربية", "rtl": True, "source": "bundled", "surfaces": ["core", "tui"]} in languages
 
     core = _call(server, "i18n.catalog", {"lang": "pl"})["result"]
     assert core == {"lang": "pl", "surface": "core", "messages": {"approval.denied": "Odrzucono"}}
@@ -105,7 +106,7 @@ def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path,
     assert "ko" not in i18n_layers.pack_languages()  # nothing has loaded plugins in this home yet
     try:
         ko = next(row for row in _call(server, "i18n.languages", {})["result"]["languages"] if row["id"] == "ko")
-        assert ko["source"] == "plugin:hermes-lang-ko"
+        assert ko["source"] == "plugin:hermes-lang-ko" and "desktop" in ko["surfaces"]
         desktop = _call(server, "i18n.catalog", {"lang": "ko", "surface": "desktop"})["result"]
         assert desktop["messages"] == {"settings.appearance.modelPricingTitle": "모델 가격"}
     finally:
@@ -125,7 +126,7 @@ def test_failed_plugin_discovery_still_answers_with_bundled_languages(tmp_path, 
     i18n.reset_language_cache()
 
     languages = _call(server, "i18n.languages", {})["result"]["languages"]
-    assert {"id": "ko", "endonym": "한국어", "rtl": False, "source": "bundled"} in languages
+    assert {"id": "ko", "endonym": "한국어", "rtl": False, "source": "bundled", "surfaces": ["core", "tui"]} in languages
     assert _call(server, "i18n.catalog", {"lang": "ko", "surface": "desktop"})["result"]["messages"] == {}
 
 

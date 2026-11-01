@@ -21292,7 +21292,7 @@
       },
       "LanguageOption": {
         "additionalProperties": false,
-        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language. ``surfaces`` are the surfaces some\nlayer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface,\nsince picking it would only show English.",
         "properties": {
           "id": {
             "title": "Id",
@@ -21309,13 +21309,21 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/LocaleSurface"
+            },
+            "title": "Surfaces",
+            "type": "array"
           }
         },
         "required": [
           "id",
           "endonym",
           "rtl",
-          "source"
+          "source",
+          "surfaces"
         ],
         "title": "LanguageOption",
         "type": "object"

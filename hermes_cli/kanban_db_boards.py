@@ -10,6 +10,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 from typing import Optional
@@ -141,6 +142,55 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
             entries.append(meta)
             seen.add(normed)
     return entries
+
+
+def task_ids_on_any_board(ids) -> set[str]:
+    """Return requested task ids found in any active, pinned, or archived board.
+
+    Board databases are opened directly and read-only. In particular this must
+    not use ``connect()``, whose schema initialization can create or migrate a
+    board as a side effect.
+    """
+    requested = {str(task_id) for task_id in ids if task_id}
+    if not requested:
+        return set()
+
+    paths = [_kb.kanban_home() / "kanban.db", _kb.kanban_db_path()]
+    paths.extend(_kb.board_dir(meta["slug"]) / "kanban.db" for meta in list_boards())
+    paths.extend((_kb.boards_root() / "_archived").glob("*/kanban.db"))
+
+    unique_paths: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_paths.append(resolved)
+
+    found: set[str] = set()
+    placeholders = ",".join("?" for _ in requested)
+    for path in unique_paths:
+        if not path.is_file():
+            continue
+        try:
+            # A closed WAL database is fully checkpointed. ``immutable=1`` avoids
+            # SQLite creating fresh -wal/-shm sidecars for that read. A live WAL
+            # already has its sidecars and must use ordinary mode=ro so current
+            # committed WAL rows remain visible.
+            wal_path = path.with_name(path.name + "-wal")
+            immutable = "" if wal_path.exists() else "&immutable=1"
+            conn = sqlite3.connect(path.as_uri() + f"?mode=ro{immutable}", uri=True)
+            try:
+                rows = conn.execute(
+                    f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+                    tuple(requested),
+                ).fetchall()
+                found.update(str(row[0]) for row in rows)
+            finally:
+                conn.close()
+        except (OSError, sqlite3.Error):
+            continue
+    return found
 
 
 def remove_board(slug: str, *, archive: bool = True) -> dict:

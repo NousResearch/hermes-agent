@@ -12,13 +12,15 @@ from pathlib import Path
 import sqlite3
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
-    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    AvailableCommand, AvailableCommandsUpdate, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionInfoUpdate, SessionMode, SessionModeState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
 from acp_adapter.modes import (
-    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE, MODES,
+    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID,
+    EDIT_APPROVAL_POLICY_TO_MODE, MODES,
 )
+from acp_adapter.model_catalog import MODEL_CONFIG_ID
 
 logger = logging.getLogger(__name__)
 
@@ -78,17 +80,19 @@ def reasoning_choices() -> tuple[str, ...]:
     return ("default", "none", *VALID_REASONING_EFFORTS)
 
 
-def config_options(models: SessionModelState | None, info: dict, mode_id: str) -> list:
+def config_options(models: SessionConfigOptionSelect | None, info: dict, mode_id: str) -> list:
     """Zed renders its composer pickers only from ``configOptions``: the edit mode, the model
-    (``set_session_model``'s picker ids) and the reasoning effort (``session.info``'s level)."""
+    (the provider-qualified picker ids) and the reasoning effort (``session.info``'s level)."""
     def select(config_id, name, category, current, choices):
         return SessionConfigOptionSelect(id=config_id, name=name, category=category, type="select", current_value=current,
                                          options=[SessionConfigSelectOption(value=v, name=n) for v, n in choices])
     options = [select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Edits", "mode", MODES[mode_id][0],
                       [(policy, name) for policy, name, _ in MODES.values()])]
     if models is not None:
-        options.append(select("model", "Model", "model", models.current_model_id,
-                              [(m.model_id, m.name) for m in models.available_models]))
+        options.append(SessionConfigOptionSelect(
+            id=MODEL_CONFIG_ID, name="Model", category="model", type="select",
+            current_value=models.current_value, options=models.options,
+        ))
     # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
     # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
     levels = reasoning_choices()[1:]
@@ -98,7 +102,7 @@ def config_options(models: SessionModelState | None, info: dict, mode_id: str) -
     return options
 
 
-def model_state(info: dict) -> SessionModelState | None:
+def model_state(info: dict) -> SessionConfigOptionSelect | None:
     """The picker for the session's model (``session.info``), from the shared inventory; a single
     current-model row when nothing is listable, as main's ``_build_model_state``. Blocking."""
     from acp_adapter.auth import detect_provider
@@ -115,7 +119,16 @@ def model_state(info: dict) -> SessionModelState | None:
     if not model:
         return None
     choice = encode_model_choice(provider, model)
-    return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+    return SessionConfigOptionSelect(
+        id=MODEL_CONFIG_ID, name="Model", description="Active provider and model for the session.",
+        category="model_config", type="select", current_value=choice,
+        options=[SessionConfigSelectOption(value=choice, name=model)],
+    )
+
+
+def session_config_options(info: dict) -> list[SessionConfigOptionSelect]:
+    """Every selector, from the owner's committed model and edit policy. Blocking catalog read."""
+    return config_options(model_state(info), info, current_mode(info))
 
 
 def provenance_meta(db_path: Path, acp_session_id: str, session_id: str) -> dict | None:

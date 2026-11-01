@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { $previewTarget } from '@/store/preview'
@@ -14,7 +15,7 @@ import { useTheme } from '@/themes/context'
 import { $terminalInjection } from '../store'
 
 import { makeTerminalReader, registerTerminalReader } from './buffer'
-import { mirrorSelection } from './clipboard'
+import { installOsc52ClipboardHandler, mirrorSelection } from './clipboard'
 import { trackTerminalCwd } from './cwd-tracking'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { createReviveHistory } from './revive-history'
@@ -258,6 +259,11 @@ export function useTerminalSession({
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
+
+    // Full-screen CLIs such as Claude Code copy selections with OSC 52. Accept
+    // writes to the system clipboard, but never clipboard reads from the PTY.
+    const osc52Clipboard = installOsc52ClipboardHandler(term, writeClipboardText)
+    cleanup.push(() => osc52Clipboard.dispose())
 
     const stripBootGap = createBootGapFilter()
 

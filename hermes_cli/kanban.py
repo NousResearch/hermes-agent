@@ -363,6 +363,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
+            kind=getattr(args, "kind", "task"),
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
@@ -426,6 +427,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),
+            kind=getattr(args, "kind", None),
             workflow_template_id=args.workflow_template_id, current_step_key=args.current_step_key,
         )
     if _json_out(args, [_task_to_dict(t) for t in tasks]):

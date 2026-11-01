@@ -481,6 +481,27 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+One deliberate opt-in is `session_search`: it recalls past conversations
+straight from the session database with no model calls of its own:
+
+```yaml
+auxiliary:
+  background_review:
+    extra_tools:
+      - session_search
+```
+
+A review fork only sees the conversation it reviews, so on its own it cannot
+tell a one-off failure from a recurring one. With `session_search` the review
+can check whether the failure being reviewed has happened before, and how it
+was resolved last time, before it writes or patches a lesson. Keep three
+trade-offs in mind: search results enter the fork's transcript, so search
+calls count toward the same `max_input_tokens` cap; which sessions recall can
+reach depends on your deployment — on gateways it currently spans the profile
+rather than one channel, and scoping it to the current chat is proposed in
+#50030; and the tool widens what the review can read at all — any searchable
+past session, not just the one under review.
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

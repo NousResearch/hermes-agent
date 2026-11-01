@@ -37,7 +37,8 @@ from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
-    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+    COMMAND_ENV_VAR, bash_env_argv, client_env_with, load_hermes_env_vars, prepend_unset,
+    resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -1121,10 +1122,11 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
-
-        client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        # The command rides a name-only -e too, so neither the in-container shell nor the host
+        # docker client carries its text on argv (a `pkill -f` in it would kill its own shell).
+        env_values = {**env_values, COMMAND_ENV_VAR: prepend_unset(cmd_string, unset_names)}
+        cmd += ["-e", COMMAND_ENV_VAR, self._container_id, *bash_env_argv(login)]
+        return _popen_bash(cmd, stdin_data, env=self._docker_client_env(env_values))
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")

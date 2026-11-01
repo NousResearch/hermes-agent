@@ -20,7 +20,11 @@ export const TURN_DONE_BODY_FALLBACK = 'Message complete.'
  * every genuine reply, alert or recap carries text and still notifies.
  */
 export function shouldNotifyTurnDone(content: string | null | undefined): boolean {
-  return Boolean((content ?? '').trim())
+  const text = (content ?? '').trim()
+
+  // Older gateways can forward the bare control token even on a user-triggered
+  // silence test. Match the whole token only; prose mentioning it is real content.
+  return Boolean(text) && !/^\[SILENT\]$/i.test(text)
 }
 
 export function turnDoneNotificationBody(

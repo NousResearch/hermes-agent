@@ -77,6 +77,17 @@ describe('shouldNotifyTurnDone', () => {
     expect(shouldNotifyTurnDone(undefined)).toBe(false)
   })
 
+  it('suppresses a literal silent token from an older gateway or user-triggered test', () => {
+    expect(shouldNotifyTurnDone('[SILENT]')).toBe(false)
+    expect(shouldNotifyTurnDone('  [SILENT]\n')).toBe(false)
+  })
+
+  it('does not suppress prose mentioning silence, malformed tokens, or real errors', () => {
+    expect(shouldNotifyTurnDone('The [SILENT] test failed.')).toBe(true)
+    expect(shouldNotifyTurnDone('[SILEN]')).toBe(true)
+    expect(shouldNotifyTurnDone('Error: provider unavailable')).toBe(true)
+  })
+
   it('keeps notifying for any genuine reply, alert or recap', () => {
     expect(shouldNotifyTurnDone('Daily recap: all systems nominal.')).toBe(true)
     expect(shouldNotifyTurnDone('SMART failure on nas-disk2!')).toBe(true)

@@ -8,6 +8,7 @@ import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
+import { shouldNotifyTurnDone } from '@/lib/turn-done-notification-body'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
@@ -409,11 +410,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     flushQueuedDeltas(sessionId)
 
-    // Keyed by session so only one window beeps when several are open.
-    playCompletionSound(sessionId)
-    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
-
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+
+    // Quiet completions must not beep or light unread indicators either.
+    if (shouldNotifyTurnDone(finalText)) {
+      playCompletionSound(sessionId)
+      lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
+    }
 
     // The view mirrors this runtime only while bound to it (settled-turns.ts).
     noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)

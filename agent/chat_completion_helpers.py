@@ -3356,24 +3356,6 @@ class _StreamingCall(StreamingWaitMonitor):
 
     # ── anthropic_messages wire ─────────────────────────────────────────
 
-    @staticmethod
-    def _check_anthropic_message(message, *, tool_drop: bool = True):
-        """Raise EmptyStreamError for a message the stream never completed: no
-        content and no stop_reason (eventless -> retry), or with ``tool_drop`` a
-        ``tool_use`` block and no stop_reason — the SSE closed mid tool call and
-        its input is a partial snapshot (usually ``{}``), so raising blocks the
-        empty-args execution (bounded retry, or stub/continuation after text)."""
-        content = getattr(message, "content", None)
-        if not content and getattr(message, "stop_reason", None) is None:
-            raise EmptyStreamError(
-                "Provider returned an empty stream with no stop_reason (possible upstream error or malformed event stream).")
-        if tool_drop and getattr(message, "stop_reason", None) is None and any(
-            getattr(block, "type", None) == "tool_use" for block in content or []):
-            raise EmptyStreamError(
-                "Stream ended with no stop_reason while a tool_use block was still incomplete; "
-                "treating as a mid-tool-call stream drop (#80498).")
-        return message
-
     def _call_anthropic(self, request_client):
         """Stream an Anthropic Messages API response; fires delta callbacks but
         returns the native Message from get_final_message(). Runs on the
@@ -3383,6 +3365,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
         saw_stream_event = False
         saw_message_stop = False
+        saw_message_delta = False
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
@@ -3428,6 +3411,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 if event_type == "message_stop":
                     saw_message_stop = True
                 elif event_type == "message_delta":
+                    saw_message_delta = True
                     self._mark_finish_seen(_diag, getattr(getattr(event, "delta", None), "stop_reason", None))
                 elif event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
@@ -3483,11 +3467,12 @@ class _StreamingCall(StreamingWaitMonitor):
             message.stop_reason = "max_tokens"
             message._runaway_repetition = True  # same hand-off as the chat_completions wire
             return message
+        from agent.chat_completion_helpers_anthropic import check_anthropic_message, completed_or_drop_stub
         if base_final_message is not None:
-            self._check_anthropic_message(base_final_message, tool_drop=False)
+            check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
-                return self._check_anthropic_message(base_final_message)
-        return self._check_anthropic_message(accumulator.response(base_final_message))
+                return completed_or_drop_stub(check_anthropic_message(base_final_message), saw_message_delta)
+        return completed_or_drop_stub(check_anthropic_message(accumulator.response(base_final_message)), saw_message_delta)
 
     # ── retry loop ──────────────────────────────────────────────────────
 

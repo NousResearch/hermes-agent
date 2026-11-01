@@ -59,7 +59,7 @@ def _db():
 
 def _dispatch(tool, args):
     """Real registry dispatch, tolerant of str or dict handler results."""
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
     out = registry.dispatch(tool, args)
     return out if isinstance(out, dict) else json.loads(out)
@@ -237,12 +237,12 @@ def test_reassign_is_orchestrator_only(board_env, monkeypatch):
     assert "orchestrator-only" in out["error"]
     assert _state(kb, kbc, tid) == before
 
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     assert "kanban_reassign" in kt._ORCHESTRATOR_TOOLS
 
 
 def test_reassign_is_registered_in_the_kanban_toolset(board_env):
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
     from toolsets import TOOLSETS
 

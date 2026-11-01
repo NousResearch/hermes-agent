@@ -265,7 +265,7 @@ def test_archive_policy_holds_on_the_real_registry_dispatch(board_env):
     and archives a finished one with the shared policy."""
     import json as _json
 
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
     kb, kbc = _db()
 
@@ -507,7 +507,7 @@ def _archived_payloads(conn, tid):
 def test_archive_schema_requires_task_id_and_reason(board_env):
     """The contract starts in the schema the model actually sees: both
     arguments are ``required`` and ``reason`` is a string."""
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
 
     schema = registry.get_schema("kanban_archive")
@@ -534,7 +534,7 @@ def test_archive_rejects_an_invalid_reason_before_any_mutation(board_env, bad_ar
     """Missing / wrong-type / blank reasons fail on the real dispatch seam with
     the card's status, its events and its runs byte-for-byte unchanged — the
     validation runs before the board is even opened."""
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     kb, kbc = _db()
     tid = _blocked_task(kb, kbc)
 

@@ -1818,7 +1818,8 @@ def _profile_descriptor(profile_dir) -> dict:
         import hermes_yaml as yaml
 
         data = yaml.safe_load(raw)
-    except Exception as exc:  # noqa: BLE001 - every parser failure is "invalid"
+    # Every parser failure is "invalid": the descriptor is untrusted user content.
+    except Exception as exc:
         return {"status": "invalid", "detail": type(exc).__name__}
     if not isinstance(data, dict):
         return {"status": "invalid", "detail": "not-a-mapping"}
@@ -1827,9 +1828,10 @@ def _profile_descriptor(profile_dir) -> dict:
     # ``list_profiles()`` / the decomposer roster / ``hermes profile list`` use.
     from hermes_cli.profiles import read_profile_meta
 
+    # A malformed descriptor must not abort the roster, so the broad catch is deliberate.
     try:
         meta = read_profile_meta(profile_dir)
-    except Exception as exc:  # noqa: BLE001 - a malformed descriptor must not abort the roster
+    except Exception as exc:
         # The loader documents itself as never raising, but a syntactically
         # valid mapping can still carry a value it cannot normalise — a list
         # where ``role`` must be a scalar raises inside its ``PROFILE_ROLES``

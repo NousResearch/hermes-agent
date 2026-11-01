@@ -61,7 +61,7 @@ def _db():
 
 def _dispatch(tool, args):
     """Real registry dispatch, tolerant of str or dict handler results."""
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
     out = registry.dispatch(tool, args)
     return out if isinstance(out, dict) else json.loads(out)
@@ -70,7 +70,7 @@ def _dispatch(tool, args):
 def _discover_raw() -> dict:
     """``kanban_discover`` straight from the handler, bypassing the registry's
     own result normalization/redaction — so a leak here is this tool's leak."""
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     return json.loads(kt._handle_discover({}))
 
 
@@ -104,7 +104,7 @@ def _profile_dir_snapshot(home: Path):
 # --------------------------------------------------------------------------- kanban_create
 
 def test_create_rejects_an_unknown_assignee_before_any_side_effect(board_env):
-    kb, kbc = _db()
+    _db()
     db_path = board_env / "kanban.db"
     before = _board_fingerprint(db_path)
 
@@ -327,7 +327,7 @@ def test_discover_bounds_long_descriptors(board_env):
 
 
 def test_discover_is_read_only_never_opens_or_initializes_a_board(board_env):
-    kb, kbc = _db()
+    _db()
     _install_profile(board_env, "worker2")
     db_path = board_env / "kanban.db"
     before = _board_fingerprint(db_path)
@@ -354,7 +354,7 @@ def test_discover_is_scoped_to_the_hermes_home_root(board_env, tmp_path):
 
 
 def test_discover_schema_is_registered_with_no_required_arguments(board_env):
-    from tools import kanban_tools as kt  # noqa: F401  (registers the toolset)
+    from tools import kanban_tools as kt
     from tools.registry import registry
     from toolsets import TOOLSETS
 

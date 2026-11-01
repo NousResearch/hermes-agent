@@ -288,3 +288,33 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    @pytest.mark.parametrize("kind", ["mapping", "sequence"])
+    def test_rejects_excessively_nested_values(self, config_path, kind):
+        """Regression for #137060: deep settings values fail diagnostically, not recursively."""
+        from utils import atomic_roundtrip_yaml_save
+
+        nested = {"leaf": True} if kind == "mapping" else ["leaf"]
+        for _ in range(600):
+            nested = {"x": nested} if kind == "mapping" else [nested]
+
+        with pytest.raises(ValueError, match="nesting exceeds the maximum supported depth"):
+            atomic_roundtrip_yaml_save(config_path, {"model": {"default": "m"}, "deep": nested})
+
+        assert not config_path.exists()
+
+    def test_writes_reasonably_nested_values(self, config_path):
+        """Depth inside the budget still round-trips — the cap rejects pathology, not depth."""
+        from utils import atomic_roundtrip_yaml_save
+
+        nested = {"leaf": True}
+        for _ in range(100):
+            nested = {"x": nested}
+
+        atomic_roundtrip_yaml_save(config_path, {"deep": nested})
+
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        node = loaded["deep"]
+        for _ in range(100):
+            node = node["x"]
+        assert node == {"leaf": True}

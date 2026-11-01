@@ -4,11 +4,18 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { normalize } from '@/lib/text'
 import {
   $petInfo,
+  $petOwnerKey,
+  capturePetOwner,
   hasPetSpriteForMeta,
+  isCurrentPetOwner,
+  isPetOwnerChangedError,
   mergePetInfoMeta,
   type PetInfo,
   type PetInfoMeta,
-  petProfile,
+  PetOwnerChangedError,
+  type PetOwnerScope,
+  requestPet,
+  requestPetForFormerOwner,
   setPetInfo
 } from '@/store/pet'
 
@@ -58,11 +65,16 @@ export type GatewayRequest = <T>(
   signal?: AbortSignal
 ) => Promise<T>
 
-/** Profile-scoped pet RPC. Pets are per-profile, so every call carries the active
- *  profile (the gateway no-ops it for the launch profile). One chokepoint so no
- *  call site can forget it. */
+/** Typed pet RPC on a request that is already owner-wrapped. The owner routing
+ *  lives in `ownerRequest` → `requestPet` (store/pet.ts): every gallery action
+ *  wraps its request first, which stamps the visible owner's profile and drops a
+ *  reply that arrives after an owner switch. This helper adds neither. */
 const petRpc = <T>(request: GatewayRequest, method: string, params: Record<string, unknown> = {}): Promise<T> =>
-  request<T>(method, { ...params, profile: petProfile() })
+  request<T>(method, params)
+
+function ownerRequest(request: GatewayRequest, scope = capturePetOwner()): GatewayRequest {
+  return <T>(method: string, params: Record<string, unknown> = {}) => requestPet<T>(request, method, params, scope)
+}
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
 export const $petGallery = atom<PetGallery | null>(null)
@@ -86,6 +98,7 @@ let galleryLoad: Promise<void> | null = null
  * new profile's mascot, and the picker reloads its gallery on next mount.
  */
 export function resetPetGallery(): void {
+  flushPendingScale()
   galleryLoad = null
   thumbCache.clear()
   $petGallery.set(null)
@@ -95,6 +108,7 @@ export function resetPetGallery(): void {
 }
 
 export function loadPetThumb(request: GatewayRequest, slug: string, url?: string): Promise<string | null> {
+  request = ownerRequest(request)
   let pending = thumbCache.get(slug)
 
   if (!pending) {
@@ -121,6 +135,8 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
     return galleryLoad
   }
 
+  const scope = capturePetOwner()
+  request = ownerRequest(request, scope)
   galleryLoad = (async () => {
     if (!$petGallery.get()) {
       $petGalleryStatus.set('loading')
@@ -136,13 +152,17 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         syncInfo(request)
       ])
 
-      if (local) {
+      if (local && isCurrentPetOwner(scope)) {
         $petGallery.set(local)
         $petGalleryStatus.set('ready')
         $petGalleryError.set(null)
         localOk = true
       }
     } catch (e) {
+      if (isPetOwnerChangedError(e) || !isCurrentPetOwner(scope)) {
+        return
+      }
+
       if (isMissingRpcMethod(e)) {
         $petGalleryStatus.set('stale')
       } else if (!$petGallery.get()) {
@@ -152,16 +172,18 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
         $petGalleryError.set(e instanceof Error ? e.message : 'Could not reach the petdex gallery.')
       }
     } finally {
-      galleryLoad = null
+      if (isCurrentPetOwner(scope)) {
+        galleryLoad = null
+      }
     }
 
     // Phase 2: merge in the full petdex catalog in the background. A slow/failed
     // manifest fetch never hides the local pets shown in phase 1.
-    if (localOk) {
+    if (localOk && isCurrentPetOwner(scope)) {
       try {
         const full = await petRpc<PetGallery>(request, 'pet.gallery')
 
-        if (full) {
+        if (full && isCurrentPetOwner(scope)) {
           $petGallery.set(full)
           $petGalleryStatus.set('ready')
         }
@@ -177,6 +199,8 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
 // Push the live mascot state (cheap, local config read) without re-pulling the
 // network gallery — the floating pet repaints, the picker keeps its cache.
 async function syncInfo(request: GatewayRequest): Promise<void> {
+  const scope = capturePetOwner()
+
   try {
     let meta: PetInfoMeta | null = null
 
@@ -189,14 +213,14 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
 
       const info = await petRpc<PetInfo>(request, 'pet.info')
 
-      if (info) {
+      if (info && isCurrentPetOwner(scope)) {
         setPetInfo(info)
       }
 
       return
     }
 
-    if (!meta) {
+    if (!meta || !isCurrentPetOwner(scope)) {
       return
     }
 
@@ -220,7 +244,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
 
     const info = await petRpc<PetInfo>(request, 'pet.info')
 
-    if (info) {
+    if (info && isCurrentPetOwner(scope)) {
       setPetInfo(info)
     }
   } catch {
@@ -235,6 +259,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
  * wait on `pet.gallery`'s remote petdex manifest fetch.
  */
 export async function applyAdoptedPet(request: GatewayRequest, slug: string, displayName: string): Promise<void> {
+  request = ownerRequest(request)
   patchGallery(gallery => ({
     ...gallery,
     enabled: true,
@@ -292,17 +317,23 @@ async function mutate(
   busyKey: string,
   fallback: string,
   request: GatewayRequest,
-  run: () => Promise<void>
+  run: (request: GatewayRequest, scope: PetOwnerScope) => Promise<void>
 ): Promise<boolean> {
+  const scope = capturePetOwner()
+  request = ownerRequest(request, scope)
   $petBusy.set(busyKey)
   $petGalleryError.set(null)
 
   try {
-    await run()
+    await run(request, scope)
     await syncInfo(request)
 
-    return true
+    return isCurrentPetOwner(scope)
   } catch (e) {
+    if (isPetOwnerChangedError(e) || !isCurrentPetOwner(scope)) {
+      return false
+    }
+
     if (isMissingRpcMethod(e)) {
       $petGalleryStatus.set('stale')
     } else {
@@ -311,14 +342,21 @@ async function mutate(
 
     return false
   } finally {
-    $petBusy.set(null)
+    if (isCurrentPetOwner(scope)) {
+      $petBusy.set(null)
+    }
   }
 }
 
 /** Install (if needed) + activate a pet. Optimistically marks it active. */
 export function adoptPet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
-  return mutate(slug, fallback, request, async () => {
+  return mutate(slug, fallback, request, async (request, scope) => {
     await petRpc(request, 'pet.select', { slug })
+
+    if (!isCurrentPetOwner(scope)) {
+      throw new PetOwnerChangedError()
+    }
+
     patchGallery(g => ({
       ...g,
       enabled: true,
@@ -355,11 +393,15 @@ export function setPetEnabled(
     }
   }
 
-  return mutate(on ? TOGGLE_ON : TOGGLE_OFF, copy.fallback, request, async () => {
+  return mutate(on ? TOGGLE_ON : TOGGLE_OFF, copy.fallback, request, async (request, scope) => {
     if (on) {
       await petRpc(request, 'pet.select', { slug })
     } else {
       await petRpc(request, 'pet.disable')
+    }
+
+    if (!isCurrentPetOwner(scope)) {
+      throw new PetOwnerChangedError()
     }
 
     patchGallery(g => ({ ...g, enabled: on, active: on ? slug : g.active }))
@@ -388,7 +430,31 @@ export function nextScaleFromWheel(current: number | undefined, deltaY: number):
   return clampPetScale(base * Math.exp(-deltaY * WHEEL_SCALE_K))
 }
 
-let scalePersist: ReturnType<typeof setTimeout> | undefined
+interface PendingScale {
+  timer: ReturnType<typeof setTimeout>
+  request: GatewayRequest
+  scale: number
+  scope: PetOwnerScope
+}
+
+let pendingScale: PendingScale | undefined
+
+/** An owner switch inside the debounce window still persists the last resize,
+ *  to the owner it was made for; a reset never silently drops it. */
+function flushPendingScale(): void {
+  if (!pendingScale) {
+    return
+  }
+
+  const { timer, request, scale, scope } = pendingScale
+  clearTimeout(timer)
+  pendingScale = undefined
+  requestPetForFormerOwner(request, 'pet.scale', { scale }, scope).catch(() => {
+    // Cosmetic — the next resize on that owner writes its scale again.
+  })
+}
+
+$petOwnerKey.listen(() => resetPetGallery())
 
 /**
  * Resize the floating pet. Updates `$petInfo` synchronously so the on-screen pet
@@ -397,32 +463,46 @@ let scalePersist: ReturnType<typeof setTimeout> | undefined
  * or event needed — the pet already renders from `$petInfo.scale`.
  */
 export function setPetScale(request: GatewayRequest, scale: number): void {
+  const scope = capturePetOwner()
+  const raw = request
+  request = ownerRequest(request, scope)
   const next = clampPetScale(scale)
 
   setPetInfo({ ...$petInfo.get(), scale: next })
 
-  clearTimeout(scalePersist)
-  scalePersist = setTimeout(() => {
+  clearTimeout(pendingScale?.timer)
+
+  const timer = setTimeout(() => {
+    pendingScale = undefined
     petRpc<{ ok: boolean; scale?: number }>(request, 'pet.scale', { scale: next })
       .then(result => {
         // Reconcile with the server's clamp (cheap; only matters at the bounds).
-        if (typeof result?.scale === 'number' && result.scale !== $petInfo.get().scale) {
+        if (isCurrentPetOwner(scope) && typeof result?.scale === 'number' && result.scale !== $petInfo.get().scale) {
           setPetInfo({ ...$petInfo.get(), scale: result.scale })
         }
       })
       .catch(() => {
-        // Cosmetic — the pet already resized; persistence self-heals next write.
+        // Cosmetic — the pet already resized; the next resize on this owner
+        // writes its scale again. An owner switch first is flushed, not lost.
       })
   }, 200)
+
+  pendingScale = { timer, request: raw, scale: next, scope }
 }
 
 /** Export a pet as a `.zip` (pet.json + spritesheet) and save it via the browser. */
 export async function exportPet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
+  const scope = capturePetOwner()
+  request = ownerRequest(request, scope)
   $petBusy.set(slug)
   $petGalleryError.set(null)
 
   try {
     const res = await petRpc<{ ok: boolean; filename: string; zipBase64: string }>(request, 'pet.export', { slug })
+
+    if (!isCurrentPetOwner(scope)) {
+      return false
+    }
 
     if (!res?.ok || !res.zipBase64) {
       throw new Error(fallback)
@@ -438,11 +518,17 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
 
     return true
   } catch (e) {
+    if (isPetOwnerChangedError(e) || !isCurrentPetOwner(scope)) {
+      return false
+    }
+
     $petGalleryError.set(e instanceof Error ? e.message : fallback)
 
     return false
   } finally {
-    $petBusy.set(null)
+    if (isCurrentPetOwner(scope)) {
+      $petBusy.set(null)
+    }
   }
 }
 
@@ -459,6 +545,8 @@ export function renamePet(request: GatewayRequest, slug: string, name: string, f
     return Promise.resolve(false)
   }
 
+  const scope = capturePetOwner()
+  request = ownerRequest(request, scope)
   const prev = $petGallery.get()?.pets.find(p => p.slug === slug)?.displayName ?? ''
 
   // Optimistic: paint the new name now (slug reconciles when the RPC returns).
@@ -474,6 +562,10 @@ export function renamePet(request: GatewayRequest, slug: string, name: string, f
         slug,
         name: trimmed
       })
+
+      if (!isCurrentPetOwner(scope)) {
+        return false
+      }
 
       if (!res?.ok) {
         throw new Error(fallback)
@@ -494,6 +586,10 @@ export function renamePet(request: GatewayRequest, slug: string, name: string, f
 
       return true
     } catch (e) {
+      if (isPetOwnerChangedError(e) || !isCurrentPetOwner(scope)) {
+        return false
+      }
+
       // Roll the optimistic name back so the list reflects on-disk truth.
       patchGallery(g => ({
         ...g,
@@ -508,8 +604,13 @@ export function renamePet(request: GatewayRequest, slug: string, name: string, f
 
 /** Uninstall a pet; turns the mascot off if it was the active one. */
 export function removePet(request: GatewayRequest, slug: string, fallback: string): Promise<boolean> {
-  return mutate(slug, fallback, request, async () => {
+  return mutate(slug, fallback, request, async (request, scope) => {
     await petRpc(request, 'pet.remove', { slug })
+
+    if (!isCurrentPetOwner(scope)) {
+      throw new PetOwnerChangedError()
+    }
+
     // Evict the by-slug thumb cache so a reused slug doesn't render this pet's
     // stale thumbnail (the backend drops its disk thumb in parallel).
     thumbCache.delete(slug)

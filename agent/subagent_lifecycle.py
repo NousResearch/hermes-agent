@@ -59,6 +59,8 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    images: Optional[tuple[str, ...]] = None
+    output_schema: Optional[Mapping[str, Any]] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -246,7 +248,7 @@ def _coerce_request(request: Any) -> SubagentLaunchRequest:
     unknown = set(values) - {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
     if unknown:
         raise SubagentLifecycleError(f"Unknown request fields: {', '.join(sorted(map(str, unknown)))}.")
-    for name in ("allowed_toolsets", "blocked_tools"):
+    for name in ("allowed_toolsets", "blocked_tools", "images"):
         if isinstance(values.get(name), list):
             values[name] = tuple(values[name])
     try:
@@ -280,6 +282,7 @@ class SubagentLifecycleService:
             raise SubagentLifecycleError("No active Hermes parent session is available.")
         request = _coerce_request(request)
         self._validate_request(request, parent)
+        output_schema, images = self._native_task_contract(request)
         parent_session_id = _session_id_of(parent)
         if request.parent_session_id and request.parent_session_id != parent_session_id:
             raise SubagentLifecycleError("parent_session_id does not match the active session.")
@@ -299,12 +302,20 @@ class SubagentLifecycleService:
             creds = _resolve_delegation_credentials(routing_cfg, parent)
         except ValueError as exc:
             raise SubagentLifecycleError(str(exc)) from exc
+        child_context = request.context
+        if output_schema is not None:
+            from tools.delegation_output_schema import append_output_contract
+            child_context = append_output_contract(child_context, output_schema)
         child = _build_child_preserving_parent_tools(
-            task_index=0, goal=request.goal, context=request.context,
+            task_index=0, goal=request.goal, context=child_context,
             toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
             model=request.model or creds["model"], max_iterations=DEFAULT_MAX_ITERATIONS,
             task_count=1, parent_agent=parent, role=request.role, **_credential_overrides(creds, routing_cfg),
         )
+        if output_schema is not None:
+            child._delegate_output_schema = output_schema
+        if images:
+            child._delegate_images = images
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")
@@ -433,6 +444,9 @@ class SubagentLifecycleService:
                 usage_metadata={"api_calls": raw.get("api_calls", 0)} if is_dict else {},
                 tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0)} if is_dict else {},
             )
+            schema_receipt = {key: raw[key] for key in ("schema_valid", "schema_errors", "schema_note") if key in raw}
+            if schema_receipt:
+                fields["structured_payload"] = schema_receipt
         except Exception as exc:
             state = SubagentState.FAILED
             fields = dict(error_classification=type(exc).__name__, error_message=_clip(exc))
@@ -470,3 +484,19 @@ class SubagentLifecycleService:
         enabled = getattr(parent, "enabled_toolsets", None)
         if enabled is not None and not set(request.allowed_toolsets).issubset(set(enabled)):
             raise SubagentLifecycleError("Requested toolsets would broaden parent permissions.")
+
+    @staticmethod
+    def _native_task_contract(request: SubagentLaunchRequest) -> tuple[Optional[dict[str, Any]], Optional[list[str]]]:
+        """Validate public contract inputs through the same gate as ``delegate_task`` before a child exists."""
+        from tools.delegate_tool import _coerce_task_images, _coerce_task_schemas
+
+        task = {"goal": request.goal, "output_schema": request.output_schema}
+        if request.images is not None:
+            task["images"] = list(request.images) if isinstance(request.images, tuple) else request.images
+        schemas, error = _coerce_task_schemas([task], None)
+        if error:
+            raise SubagentLifecycleError(f"Task 0 output_schema invalid: {error.removeprefix('Task 0 output_schema invalid: ')}")
+        images, error = _coerce_task_images([task], None)
+        if error:
+            raise SubagentLifecycleError(error)
+        return schemas[0], images[0]

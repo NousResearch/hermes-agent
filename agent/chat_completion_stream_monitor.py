@@ -233,6 +233,14 @@ class StreamingWaitMonitor:
         return err
 
     def _monitor_loop(self) -> None:
+        try:
+            self._poll_until_done()
+        except Exception:
+            # A dying watchdog otherwise ends stale/cap/interrupt monitoring with no trace.
+            logger.error("stream watchdog monitor loop aborted abnormally", exc_info=True)
+            raise
+
+    def _poll_until_done(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
         self._mon = SimpleNamespace(
             last_heartbeat=time.time(), last_load_poll=0.0,
@@ -244,6 +252,8 @@ class StreamingWaitMonitor:
         sleep_watch = (SleepWatch(interval=0.3) if self.agent.base_url
                        and is_loopback_host(urlsplit(self.agent.base_url).hostname) else None)
         self._lifetime = StreamLifetime(resolve_stream_max_lifetime(self._stream_stale_timeout))
+        logger.debug("stream watchdog armed: stale=%.0fs cap=%.0fs model=%s", self._stream_stale_timeout,
+                     self._lifetime.cap, self.api_kwargs.get("model", "unknown"))
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
             if sleep_watch is not None:

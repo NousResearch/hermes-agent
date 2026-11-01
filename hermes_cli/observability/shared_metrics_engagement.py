@@ -201,6 +201,8 @@ def apply(
     if state is not None and not _valid_state(state):
         state = None
     if state is not None and state["day"] < today:
+        if busy_peak is not None:
+            _fold_busy_peak(state, busy_peak(state["day"]))  # a peak reached just before midnight
         # The only close path. A stored day ahead of the clock (a step back across midnight) keeps
         # the interaction: the stored day never moves backwards, so no day is re-opened or emitted twice.
         rows, state = close_day(state), None
@@ -219,9 +221,13 @@ def apply(
         key = " ".join(route)
         state["models"][key] = int(state["models"].get(key, 0)) + 1
     if busy_peak is not None:
-        stored = state.get(_BUSY_PEAK)
-        state[_BUSY_PEAK] = max(stored if isinstance(stored, int) else 0, busy_peak(today))
+        _fold_busy_peak(state, busy_peak(today))
     return state, rows
+
+
+def _fold_busy_peak(state: dict[str, Any], peak: int) -> None:
+    stored = state.get(_BUSY_PEAK)
+    state[_BUSY_PEAK] = max(stored if isinstance(stored, int) else 0, peak)
 
 
 def _primary(models: dict[str, Any]) -> tuple[str, str]:

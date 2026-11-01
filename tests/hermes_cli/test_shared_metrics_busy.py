@@ -208,6 +208,7 @@ def test_a_busy_message_saved_behind_a_pause_is_not_dropped(rows, monkeypatch, r
     """The user is told the message is saved and its FIFO row stays ``queued``: no ``dropped``
     row. When this process later runs that row (a ``session_busy`` pause lifting), it counts as
     ``queued`` with its wait; after a restart the next process runs it and nothing is counted."""
+    import gateway.session_authority  # binds the real reader before the patch below
     import hermes_state_runtime
     from gateway.session_ingress import admit_message
     from hermes_state_runtime import RuntimeStoreError
@@ -265,3 +266,164 @@ def test_an_auto_resumed_chat_counts_toward_its_owning_profiles_peak(tmp_path, m
     asyncio.run(resume())
     day = busy._day(DAY1)
     assert (busy.day_peak(beta, day), busy.day_peak(launch, day)) == (1, 0)
+
+
+def test_a_held_burst_dropped_by_stop_counts_under_its_own_profile_not_the_chats_last_one(rows, monkeypatch, tmp_path):
+    """Two profiles serve one Discord channel through different bots; the other profile ran the
+    chat's latest turn. A burst held for this profile's bot and dropped by /stop is recorded under
+    the profile its routing identity names, so that profile's collection setting decides."""
+    from gateway.session_identity import RoutingIdentity
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    homes = []
+    monkeypatch.setattr(rsm, "record_process_mark", lambda mark, data: homes.append(str(get_hermes_home())))
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    token = set_hermes_home_override(str(beta))
+    try:
+        smg.start_reply_clock(SessionSource(platform=Platform.DISCORD, chat_id="chan", user_id="9"))
+    finally:
+        reset_hermes_home_override(token)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chan", user_id="7")
+    source._identity = RoutingIdentity(transport_profile="alpha", runtime_profile="alpha",
+                                       authorization_home=alpha, runtime_home=alpha)
+
+    async def scenario():
+        adapter = _Adapter(handler=None)
+        adapter.platform = Platform.DISCORD
+        held = asyncio.create_task(dispatch_busy_burst(adapter, MessageEvent(text="x", source=source), KEY))
+        await asyncio.sleep(0)
+        discard_busy_burst(adapter, KEY)
+        await held
+
+    asyncio.run(scenario())
+    smg.drain()
+    assert homes == [str(alpha)]
+
+
+def test_a_closing_day_keeps_a_peak_reached_just_before_midnight(tmp_path, monkeypatch):
+    """A third chat starts at 23:59:30; its first engagement event lands after midnight, and a turn
+    boundary after midnight already started the new day. The closed day still reports 3."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr(busy, "_running", {})
+    monkeypatch.setattr(busy, "_peaks", {})
+    late = datetime(2026, 9, 27, 23, 59, 0, tzinfo=UTC).timestamp()
+    clock = {"now": late}
+    monkeypatch.setattr(busy, "_now", lambda: clock["now"])
+    monkeypatch.setattr(engagement, "_now", lambda: clock["now"])
+    home = tmp_path / "a"
+
+    def boundary(keys):
+        token = set_hermes_home_override(str(home))
+        try:
+            busy.observe_running_chats(keys)
+        finally:
+            reset_hermes_home_override(token)
+
+    boundary(["c1", "c2"])
+    engagement.record(_store(home), RESOURCE, surface="gateway", route=None)
+    clock["now"] = late + 30
+    boundary(["c1", "c2", "c3"])
+    clock["now"] = late + 90
+    boundary(["c3"])
+    engagement.record(_store(home), RESOURCE, surface="gateway", route=None)
+    [row] = [c["dimensions"] for c in _store(home).counter_snapshot()
+             if c["metric_name"] == contract.ENGAGEMENT_DAY_METRIC]
+    assert row[contract.BUSY_PEAK_FIELD] == "3_to_5"
+
+
+async def _real_runner(monkeypatch):
+    """Real GatewayRunner busy dispatch, real DiscordAdapter, real authority over a real SessionDB;
+    the drain is not scheduled, so a queued row waits until the test runs or cancels it."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.platforms.base import SendResult
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    runner = GatewayRunner(GatewayConfig())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    sent = []
+
+    async def send(chat_id, content, **_kwargs):
+        sent.append(content)
+        return SendResult(success=True, message_id=str(len(sent)))
+    monkeypatch.setattr(adapter, "send", send)  # no network: notices and acks land here
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    key = runner.session_store._generate_session_key(source)
+
+    class RunningAgent:
+        def interrupt(self, message=None):
+            pass
+
+    runner._session_state(key).turn.agent = RunningAgent()  # an earlier queued turn is running
+    return runner, authority, source, key
+
+
+def _busy_rows(rows):
+    return [(d["disposition"], d["wait_bucket"]) for metric, d in rows() if metric == busy.BUSY_ARRIVAL_METRIC]
+
+
+@pytest.mark.asyncio
+async def test_a_message_the_adapter_saw_idle_counts_when_it_waits_behind_a_running_fifo_turn(rows, monkeypatch):
+    """A's adapter task ended while queued B runs as a FIFO turn (outside the adapter's session
+    guard): C reaches the runner as a fresh message, is admitted behind B, and counts once when
+    its own turn starts."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_ingress_context import native_callback
+    from hermes_constants import get_hermes_home
+
+    runner, authority, source, key = await _real_runner(monkeypatch)
+    monkeypatch.setattr(runner, "_effective_busy_input_mode", lambda source: "queue")
+    late = MessageEvent(text="C", source=source, message_id="C")
+    with native_callback(runner, late, get_hermes_home()):
+        waiting = asyncio.create_task(runner._handle_message(late))
+        for _ in range(200):
+            if authority.waiters:
+                break
+            await asyncio.sleep(0.01)
+    assert authority.waiters and _busy_rows(rows) == []  # still waiting behind B: not yet known
+    runner._session_state(key).turn.agent = None  # B finished; the drain runs C
+
+    async def handle(event):
+        return "ran"
+    monkeypatch.setattr(runner, "_handle_message", handle)
+    owner = runner.session_store.peek_session_id(key)
+    await SessionAuthority._drain(authority, SessionRef(authority.profile_id, owner))
+    waiting.cancel()
+    await asyncio.gather(waiting, return_exceptions=True)
+    assert _busy_rows(rows) == [("queued", "lt_5s")]
+
+
+@pytest.mark.asyncio
+async def test_a_busy_message_cancelled_before_admission_reads_its_row_counts_as_dropped(rows, monkeypatch):
+    """/stop cancels the queued row while ``admit_message`` is still committing it: the re-read
+    finds it terminal ``cancelled``. It never reached the agent: ``dropped`` / ``never``."""
+    from gateway.session_ingress import admit_message
+    from gateway.session_ingress_context import native_callback
+    from hermes_constants import get_hermes_home
+
+    runner, authority, source, _key = await _real_runner(monkeypatch)
+    follow_up = MessageEvent(text="B", source=source, message_id="B")
+    busy.stamp_busy_arrival(runner.adapters[Platform.DISCORD], follow_up)
+    busy.note_busy_admitting(follow_up)
+    commit = authority.admit_native
+
+    async def commit_then_stop(event):
+        receipt = await commit(event)
+        stop = MessageEvent(text="/stop", source=source)
+        with native_callback(runner, stop, get_hermes_home()):
+            await runner._handle_message(stop)
+        return receipt
+
+    monkeypatch.setattr(authority, "admit_native", commit_then_stop)
+    with native_callback(runner, follow_up, get_hermes_home()):
+        assert await admit_message(authority, follow_up) is None
+    busy.settle_busy_arrival(follow_up)
+    assert _busy_rows(rows) == [("dropped", "never")]

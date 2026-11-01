@@ -1,12 +1,15 @@
 """Is the agent making people wait? Busy-chat arrivals and the day's peak of chats running at once.
 
 ``hermes.gateway.busy_arrival.count``: one row per human message that arrives while its chat's turn
-is still running (the adapter's busy path), recorded once its fate is known: it reached the agent
-(its own turn started, or it was steered into the running one), it was folded into another busy
-message, or it never ran. Commands, internal events, plain-text approval answers and plugin-consumed
-input are not counted. The arrival rides the event object itself (``_busy_arrival``), so the merge,
-admission and settle seams need no lookup; the durable FIFO's admission id links it to the turn that
-later runs the restored copy.
+is still running (the adapter's busy path, or the runner's running-turn check at FIFO admission for a
+message the adapter saw as idle because an earlier queued turn now runs outside its session guard),
+recorded once its fate is known: it reached the agent (its own turn started, or it was steered into
+the running one), it was folded into another busy message, or it never ran (cancelled by /stop or
+/new, refused before its turn, deleted with its chat). Commands, internal events, plain-text approval
+answers and plugin-consumed input are not counted. The arrival rides the event object itself
+(``_busy_arrival``), so the merge, admission and settle seams need no lookup; the durable FIFO's
+admission id links it to the turn that later runs the restored copy. It belongs to the profile that
+runs the chat's turns (the event's routing identity), never one inferred from the chat id.
 
 ``gateway_peak_busy_chats_bucket`` (on ``hermes.engagement.day.count``): the most distinct chats
 (session keys) that had a turn running at the same moment during the UTC day, per owning profile.
@@ -33,6 +36,9 @@ BUSY_ARRIVAL_METRIC = "hermes.gateway.busy_arrival.count"
 BUSY_ARRIVAL_DISPOSITIONS = frozenset({"queued", "steered", "interrupted", "merged", "dropped", "other"})
 BUSY_WAIT_BUCKETS = frozenset({"lt_5s", "5s_to_30s", "30s_to_2m", "2m_to_10m", "gte_10m", "never"})
 BUSY_PEAK_FIELD = "gateway_peak_busy_chats_bucket"
+# Terminal FIFO outcomes of a row that reached the agent; any other (``cancelled``, ``rejected``, a
+# deleted row) never ran.
+_REACHED_OUTCOMES = frozenset({"completed", "interrupted", "failed", "steered", "steering"})
 _WAIT_THRESHOLDS = ((5.0, "lt_5s"), (30.0, "5s_to_30s"), (120.0, "30s_to_2m"), (600.0, "2m_to_10m"))
 
 
@@ -80,15 +86,20 @@ def _tag(event: Any) -> _Arrival | None:
 
 
 def stamp_busy_arrival(adapter: Any, event: Any) -> None:
-    """A message reached the adapter while its chat is busy (``_handle_message_while_active`` hands
-    it to the shared runtime's busy dispatch, re-entered for the same event when a burst ends)."""
+    """A message reached its chat while the chat is busy: the adapter's busy dispatch
+    (``_handle_message_while_active``, re-entered for the same event when a burst ends), or the
+    runner admitting it to the FIFO while the chat's turn runs. Stamped once. Its home is the
+    routing identity's runtime profile (pinned at ingress), whose collection setting decides."""
     if getattr(event, "_busy_arrival", None) is not None or getattr(event, "internal", False) or event.get_command():
         return
     try:
-        from .shared_metrics_gateway import _chat_home, _source_platform
+        from gateway.session_identity import identity_of
 
-        chat_id = getattr(event.source, "chat_id", None)
-        event._busy_arrival = _Arrival(_source_platform(adapter, chat_id), _chat_home(adapter, chat_id))
+        from .shared_metrics_gateway import _source_platform
+
+        identity = identity_of(event.source)
+        home = str(identity.runtime_home) if identity is not None else None
+        event._busy_arrival = _Arrival(_source_platform(adapter, getattr(event.source, "chat_id", None)), home)
     except Exception:
         logger.debug("Busy arrival not stamped", exc_info=True)
 
@@ -128,8 +139,10 @@ def _bind_home(tag: _Arrival) -> None:
     tag.home = str(get_hermes_home())
 
 
-def note_busy_admitted(event: Any, admission_id: str, status: str) -> None:
-    """The row is committed; ``status`` as read right after. A drain that already claimed it ran it."""
+def note_busy_admitted(event: Any, admission_id: str, status: str, outcome: Any = None) -> None:
+    """The row is committed; ``status`` (and a terminal row's ``outcome``) as read right after. A
+    drain that already claimed it ran it; a row already cancelled (/stop, /new, a pre-claim refusal)
+    or deleted with its chat (``outcome`` None) never did."""
     tag = _tag(event)
     if tag is None:
         return
@@ -138,8 +151,22 @@ def note_busy_admitted(event: Any, admission_id: str, status: str) -> None:
         _queued[tag.admission_id] = tag
         while len(_queued) > _QUEUED_MAX:
             _queued.popitem(last=False)[1].done = True
-    elif status in ("started", "unknown", "terminal"):  # ``unknown``: it started, then its turn was lost
-        _resolve(tag, tag.disposition, time.monotonic())
+    elif status in ("started", "unknown") or (status == "terminal" and outcome in _REACHED_OUTCOMES):
+        _resolve(tag, tag.disposition, time.monotonic())  # ``unknown``: it started, then its turn was lost
+    elif status == "terminal":
+        _resolve(tag, "dropped", None)
+
+
+def busy_row_settled(admission_id: Any, outcome: str) -> None:
+    """A queued row left the FIFO without a turn of its own (``SessionAuthority._settle_cancelled``):
+    cancelled (/stop, /new, a refused head, an edit) never ran; a steered transfer reached the agent."""
+    tag = _queued.pop(str(admission_id), None)
+    if tag is None or tag.done:
+        return
+    if outcome == "steered":
+        _resolve(tag, "steered", time.monotonic())
+    else:
+        _resolve(tag, "dropped", None)
 
 
 def note_busy_parked(event: Any) -> None:
@@ -204,7 +231,8 @@ def _emit_busy_arrival(platform: Any, disposition: str, seconds: float | None) -
 
 _peak_lock = threading.Lock()
 _running: dict[str, str] = {}  # session key -> owning profile home (resolved)
-_peaks: dict[str, tuple[str, int]] = {}  # home -> (UTC day, most chats running at once that day)
+_peaks: dict[str, dict[str, int]] = {}  # home -> UTC day -> most chats running at once that day
+_PEAK_DAYS = 8  # a closing day's peak is kept until the profile's next interaction saves it
 _resolved: dict[str, str] = {}
 _now: Callable[[], float] = time.time  # test / live-probe seam
 
@@ -254,20 +282,21 @@ def observe_running_chats(session_keys: Any) -> None:
                 counts[owner] = counts.get(owner, 0) + 1
             today = _day(_now())
             for owner, count in counts.items():
-                day, peak = _peaks.get(owner, (today, 0))
-                _peaks[owner] = (today, count if day != today else max(peak, count))
+                days = _peaks.setdefault(owner, {})
+                days[today] = max(days.get(today, 0), count)
+                for stale in sorted(days)[:-_PEAK_DAYS]:
+                    del days[stale]
     except Exception:
         logger.debug("Running-chat peak not updated", exc_info=True)
 
 
 def day_peak(home: Any, day: str) -> int:
     """Most chats of ``home``'s profile running at once on UTC ``day``, as seen by this process.
-    A later stored day means ``day`` closed with what was folded before; chats still running when
-    the day turned count toward the new one."""
+    An earlier day keeps its own peak (the day closing after midnight reads it); chats still running
+    when the day turned also count toward the new one."""
     owner = _home_key(home)
     with _peak_lock:
         running = sum(1 for h in _running.values() if h == owner)
-        stored_day, peak = _peaks.get(owner, (day, 0))
-    if stored_day == day:
-        return max(peak, running)
-    return running if stored_day < day else 0
+        days = dict(_peaks.get(owner, {}))
+    peak = days.get(day, 0)
+    return max(peak, running) if not days or day >= max(days) else peak

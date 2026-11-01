@@ -448,7 +448,9 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# Separators are optional so camelCase spellings (``secretValue``, ``accessToken``) match too;
+# the field is IGNORECASE and anchored to the whole quoted key, so ``"secretKey"`` (a name) is left alone.
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_?token|refresh_?token|auth_?token|bearer|secret_?value|raw_?secret|secret_?input|key_?material)"
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
@@ -481,6 +483,11 @@ _PYTHON_REPR_SECRET_KEYS = frozenset({
     "secret_input",
     "key_material",
 })
+# Separator-free spellings of the exact keys, so camelCase / kebab-case
+# variants of a snake_case credential field (``secretValue``, ``privateKey``,
+# ``client-secret``) match the same entry. Exact-match only: ``secretary``
+# and ``token_count`` stay untouched.
+_PYTHON_REPR_SECRET_KEYS_COMPACT = frozenset(k.replace("_", "") for k in _PYTHON_REPR_SECRET_KEYS)
 _PYTHON_REPR_ENV_SUFFIXES = (
     "_API_KEY",
     "_TOKEN",
@@ -749,6 +756,8 @@ def _is_python_repr_secret_key(key: str) -> bool:
     """Return True for exact secret keys or credential-suffixed key names."""
     folded = key.casefold()
     if folded in _PYTHON_REPR_SECRET_KEYS:
+        return True
+    if folded.replace("_", "").replace("-", "") in _PYTHON_REPR_SECRET_KEYS_COMPACT:
         return True
     if key.isupper() and key.endswith(_PYTHON_REPR_ENV_SUFFIXES):
         return True

@@ -20,6 +20,9 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     // The shell's environment is context, not a launch option: a gateway predating it runs the session
     // with its own environment, as before.
     if (!contract.parameters.includes('client_env')) { delete params.client_env }
+    // Same for the launch-directory provenance flag: an older owner still accepts cwd, and
+    // refusing the whole create would block `hermes --tui` against that gateway.
+    if (!contract.parameters.includes('cwd_explicit')) { delete params.cwd_explicit }
     const unsupported = Object.keys(params).filter(key => !contract.parameters.includes(key))
 
     if (unsupported.length) { throw new Error(t('canonical.launch.unsupportedOptions', unsupported.join(', '))) }
@@ -107,6 +110,12 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   }
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
+
+  // `hermes --tui` sets HERMES_CWD to the directory the process was launched from
+  // (hermes_cli/main_tui_launch.py). That is a deliberate workspace, not the Desktop's
+  // inherited app-global default: mark it explicit so a named profile's terminal.cwd
+  // does not replace it, and the shared gateway does not fall back to $HOME (#84015, #52589).
+  if (options.cwd) { options.cwd_explicit = true }
 
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
 

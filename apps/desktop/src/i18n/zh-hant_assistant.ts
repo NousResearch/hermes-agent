@@ -152,8 +152,7 @@ export const zhHantAssistant = {
         },
         truncated: {
           title: '回覆被截斷',
-          body: (_provider, model) =>
-            `${model || '模型'}的回覆在完成前中斷了。按「繼續」即可從中斷處接續。`
+          body: (_provider, model) => `${model || '模型'}的回覆在完成前中斷了。按「繼續」即可從中斷處接續。`
         },
         invalid_response: {
           title: '無法讀取回覆',

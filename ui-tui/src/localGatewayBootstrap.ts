@@ -27,7 +27,12 @@ const resolvePython = () => {
   return process.platform === 'win32' ? 'python' : 'python3'
 }
 
-export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
+export interface LocalGatewayGrant {
+  url: string
+  protocols: string[]
+  profile_id: string
+  instance_id: string
+}
 
 /** gateway_bootstrap.py's verdict for an interpreter that cannot load Hermes or its dependencies. */
 // execFile's error text is `Command failed: …` followed by the child's stderr, hence the line match.
@@ -36,9 +41,16 @@ export const isTerminalBootstrapFailure = (message: string) => /^gateway unavail
 export const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
-  const { stdout } = await promisify(execFile)(resolvePython(),
+  const { stdout } = await promisify(execFile)(
+    resolvePython(),
     [pythonHelperPath('gateway_bootstrap.py', root), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
+    {
+      cwd: root,
+      env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root },
+      timeout: 40_000,
+      maxBuffer: 1024 * 1024
+    }
+  )
 
   return JSON.parse(stdout) as LocalGatewayGrant
 }

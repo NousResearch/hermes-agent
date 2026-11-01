@@ -14,7 +14,9 @@ export interface PreparedCanonicalGroupSend {
 }
 
 function journalKey(binding: CanonicalGroupBinding): string {
-  if (![binding.connectionId, binding.profile, binding.roomId].every(value => typeof value === 'string' && value.trim())) {
+  if (
+    ![binding.connectionId, binding.profile, binding.roomId].every(value => typeof value === 'string' && value.trim())
+  ) {
     throw new Error('Canonical group Send requires an explicit connection, profile and room')
   }
 
@@ -25,9 +27,7 @@ function journalKey(binding: CanonicalGroupBinding): string {
 async function readJournal(): Promise<Record<string, PreparedCanonicalGroupSend>> {
   const native = window.hermesDesktop?.preparedSubmissions
 
-  const parsed: unknown = JSON.parse(native
-    ? await native.read()
-    : window.localStorage.getItem(STORAGE_KEY) || '{}')
+  const parsed: unknown = JSON.parse(native ? await native.read() : window.localStorage.getItem(STORAGE_KEY) || '{}')
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid canonical group Send journal')
@@ -50,7 +50,9 @@ async function compareAndSet(
   // downgrade a native write failure to Chromium's deferred localStorage.
   if (native) {
     // An older preload has no atomic op: refuse rather than fall back to a racy read-then-write.
-    if (!native.compareAndSet) {throw new Error('Group Send needs an updated Desktop; restart Hermes Desktop')}
+    if (!native.compareAndSet) {
+      throw new Error('Group Send needs an updated Desktop; restart Hermes Desktop')
+    }
 
     return native.compareAndSet(key, expected, entry)
   }
@@ -59,10 +61,15 @@ async function compareAndSet(
   const journal = await readJournal()
   const current = Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null
 
-  if (current !== (expected === null ? null : JSON.stringify(JSON.parse(expected)))) {return { applied: false, current }}
+  if (current !== (expected === null ? null : JSON.stringify(JSON.parse(expected)))) {
+    return { applied: false, current }
+  }
 
-  if (entry === null) {delete journal[key]}
-  else {journal[key] = JSON.parse(entry)}
+  if (entry === null) {
+    delete journal[key]
+  } else {
+    journal[key] = JSON.parse(entry)
+  }
 
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
 
@@ -70,15 +77,23 @@ async function compareAndSet(
 }
 
 function validEntry(binding: CanonicalGroupBinding, key: string, entry: PreparedCanonicalGroupSend | undefined) {
-  if (entry && (journalKey(entry.binding) !== key || entry.params.room_id !== binding.roomId ||
-    !entry.params.event_id || !entry.params.payload || typeof entry.params.payload !== 'object')) {
+  if (
+    entry &&
+    (journalKey(entry.binding) !== key ||
+      entry.params.room_id !== binding.roomId ||
+      !entry.params.event_id ||
+      !entry.params.payload ||
+      typeof entry.params.payload !== 'object')
+  ) {
     throw new Error('Invalid canonical group Send entry')
   }
 
   return entry
 }
 
-export async function readCanonicalGroupSend(binding: CanonicalGroupBinding): Promise<PreparedCanonicalGroupSend | undefined> {
+export async function readCanonicalGroupSend(
+  binding: CanonicalGroupBinding
+): Promise<PreparedCanonicalGroupSend | undefined> {
   const key = journalKey(binding)
 
   return validEntry(binding, key, (await readJournal())[key])
@@ -94,18 +109,22 @@ export async function prepareCanonicalGroupSend(
 ): Promise<PreparedCanonicalGroupSend> {
   const existing = await readCanonicalGroupSend(binding)
 
-  if (existing) {return existing}
+  if (existing) {
+    return existing
+  }
 
   const eventId = randomUuid()
 
-  const entry: PreparedCanonicalGroupSend = JSON.parse(JSON.stringify({
-    binding,
-    params: {
-      room_id: binding.roomId,
-      event_id: eventId,
-      payload: { ...payload, thread_id: payload.thread_id ?? eventId }
-    }
-  }))
+  const entry: PreparedCanonicalGroupSend = JSON.parse(
+    JSON.stringify({
+      binding,
+      params: {
+        room_id: binding.roomId,
+        event_id: eventId,
+        payload: { ...payload, thread_id: payload.thread_id ?? eventId }
+      }
+    })
+  )
 
   const key = journalKey(binding)
   const { current } = await compareAndSet(key, null, JSON.stringify(entry))
@@ -119,5 +138,7 @@ export async function prepareCanonicalGroupSend(
 export async function retireCanonicalGroupSend(binding: CanonicalGroupBinding, eventId: string): Promise<void> {
   const entry = await readCanonicalGroupSend(binding)
 
-  if (entry?.params.event_id === eventId) {await compareAndSet(journalKey(binding), JSON.stringify(entry), null)}
+  if (entry?.params.event_id === eventId) {
+    await compareAndSet(journalKey(binding), JSON.stringify(entry), null)
+  }
 }

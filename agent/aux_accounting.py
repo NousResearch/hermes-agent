@@ -42,6 +42,15 @@ def reset_accounting_context(token) -> None:
         _accounting.set(None)
 
 
+def accounting_context_active() -> bool:
+    """Whether an ambient accounting context is bound (agent turn or title thread).
+
+    Headless aux callers use this to decide whether they must publish their own
+    session handles before the chokepoint silently drops their usage rows.
+    """
+    return _accounting.get() is not None
+
+
 def record_aux_usage(
     response: Any, task: Optional[str], *, provider: Optional[str] = None,
     base_url: Optional[str] = None,

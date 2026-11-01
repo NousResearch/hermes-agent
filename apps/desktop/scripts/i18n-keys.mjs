@@ -3,7 +3,8 @@
 //
 // `hermes plugins validate` checks a pack's `<lang>.desktop.yaml` keys against
 // `locales/_keys.desktop.json` (repo root, committed). This script derives that
-// file from `src/i18n/en.ts` — every leaf's dotted path, sorted; function-
+// file from `src/i18n/en.ts` plus the English bundles of in-tree plugins that
+// own their strings (under `plugins.<id>.`) — every leaf's dotted path, sorted; function-
 // valued entries are keys too (a pack overrides them with a positional
 // `{0}`/`{1}` string). Run via `npm run i18n:keys` and commit the result (`--check` verifies);
 // the build never writes it — a dirty checkout would break `hermes update`.
@@ -32,8 +33,16 @@ export function renderKeysFile(keys) {
   return `${JSON.stringify({ surface: SURFACE, keys }, null, 2)}\n`
 }
 
-/** Bundle en.ts (it imports app modules through the `@/` alias) into one ESM
- *  file the emitter can import in plain Node. */
+/** In-tree plugins that keep their strings in their own bundle
+ *  (`ctx.i18n.register`) instead of the app catalog. A pack addresses them as
+ *  `plugins.<id>.<path>`; their English keys are exported under that prefix. */
+export const PLUGIN_BUNDLES = [
+  { id: 'kanban', module: 'src/plugins/kanban/i18n.ts', name: 'KANBAN_LOCALES' },
+  { id: 'hermes-bots', module: 'src/plugins/hermes-bots/i18n.ts', name: 'BOTS_LOCALES' }
+]
+
+/** Bundle en.ts (it imports app modules through the `@/` alias) plus the
+ *  plugin bundles into one ESM file the emitter can import in plain Node. */
 async function loadEnglishCatalog(source) {
   const app = join(source, 'apps/desktop')
   const { build } = await import(pathToFileURL(workspaceTool(source, 'apps/desktop', 'esbuild')).href)
@@ -49,14 +58,35 @@ async function loadEnglishCatalog(source) {
     '@hermes/shared': join(source, 'apps/shared/src/index.ts'),
     '@': join(app, 'src')
   }
+  const entry = [
+    `export { en } from ${JSON.stringify(join(app, 'src/i18n/en.ts'))}`,
+    ...PLUGIN_BUNDLES.map(
+      ({ module, name }, index) => `export { ${name} as plugin${index} } from ${JSON.stringify(join(app, module))}`
+    )
+  ].join('\n')
   await build({
-    entryPoints: [join(app, 'src/i18n/en.ts')],
+    stdin: { contents: entry, resolveDir: app, loader: 'ts' },
     bundle: true,
     format: 'esm',
     platform: 'node',
     target: 'node22',
     jsx: 'automatic',
     alias,
+    // Plugin bundles import the SDK only for their React hook; the real SDK
+    // drags in the whole renderer, so it is stubbed — only the data matters.
+    plugins: [
+      {
+        name: 'plugin-sdk-stub',
+        setup(stub) {
+          stub.onResolve({ filter: /^@hermes\/plugin-sdk$/ }, () => ({ path: 'plugin-sdk', namespace: 'stub' }))
+          stub.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
+            contents: "export { atom } from 'nanostores'\nexport const usePluginI18n = () => key => key",
+            loader: 'js',
+            resolveDir: app
+          }))
+        }
+      }
+    ],
     // Stylesheets and assets some transitive app modules import are irrelevant
     // to the catalog's shape.
     loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty', '.woff2': 'empty' },
@@ -65,7 +95,8 @@ async function loadEnglishCatalog(source) {
   })
   try {
     const mod = await import(pathToFileURL(outfile).href)
-    return mod.en
+    const plugins = Object.fromEntries(PLUGIN_BUNDLES.map(({ id }, index) => [id, mod[`plugin${index}`].en]))
+    return { ...mod.en, plugins }
   } finally {
     rmSync(outfile, { force: true })
   }

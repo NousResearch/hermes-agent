@@ -13,7 +13,7 @@ import { useHermesConfig } from '../use-hermes-config'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
-import { formatHistory } from './slash-desktop-commands'
+import { formatHistory, saveRequest } from './slash-desktop-commands'
 
 // T11 (#134889): Desktop commands the shared gateway refused as `slash.exec`, or that Desktop never
 // offered, run on the owner's existing verbs instead.
@@ -564,5 +564,82 @@ describe('desktop command notices follow the app language', () => {
     expect(text).toContain(fr_.rollbackUsage)
     expect(text).toContain(fr_.historyEmpty)
     expect(text).not.toContain(copy.timestampsOff)
+  })
+})
+
+describe('/save --concise', () => {
+  it.each([
+    ['md --concise', { concise: true, format: 'md', redact: false }],
+    [
+      'md conversation.md --concise --redact',
+      { concise: true, filename: 'conversation.md', format: 'md', redact: true }
+    ],
+    ['--concise md notes.md redact', { concise: true, filename: 'notes.md', format: 'md', redact: true }],
+    ['md notes.md', { concise: false, filename: 'notes.md', format: 'md', redact: false }],
+    ['md redact.md', { concise: false, filename: 'redact.md', format: 'md', redact: false }],
+    ['', { concise: false, format: 'json', redact: false }]
+  ])('parses "%s" without taking a flag for the file name', (arg, expected) => {
+    expect(saveRequest(arg)).toEqual(expected)
+  })
+
+  it.each(['json --concise', 'html --concise', 'pdf --concise', 'md a.md b.md --concise'])('"%s" is usage', arg => {
+    expect(saveRequest(arg)).toBeNull()
+  })
+
+  it('asks the owner for the concise transcript and saves it on this machine', async () => {
+    const saveTextFileAs = vi.fn(async () => ({ saved: true, path: '/home/u/c.md' }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { saveTextFileAs }
+
+    const requestGateway = gateway(method =>
+      method === 'session.export'
+        ? { format: 'md', filename: 'hermes_session_s1.md', content: '# Conversation: x' }
+        : undefined
+    )
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save md c.md --concise')
+
+    expect(callsOf(requestGateway, 'session.export')).toEqual([
+      { concise: true, format: 'md', session_id: RUNTIME_SESSION_ID }
+    ])
+    expect(saveTextFileAs).toHaveBeenCalledWith(
+      expect.objectContaining({ content: '# Conversation: x', defaultPath: 'c.md' })
+    )
+  })
+
+  it('says so when the gateway predates --concise, and never falls back to a host-side save', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.export') {
+        throw new Error('invalid_params')
+      }
+    })
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save md --concise')
+
+    expect(renderedText(handle)).toContain(copy.conciseOutdated)
+    expect(callsOf(requestGateway, 'session.save')).toEqual([])
+  })
+
+  it('a gateway without session.export refuses --concise rather than writing raw JSON on its host', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.export') {
+        throw Object.assign(new Error('Method not found'), { code: -32601 })
+      }
+
+      if (method === 'session.save') {
+        return { file: '/gateway/saved/raw.json' }
+      }
+    })
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save md --concise')
+
+    expect(callsOf(requestGateway, 'session.save')).toEqual([])
+    expect(renderedText(handle)).toContain(copy.saveLegacyRefused)
   })
 })

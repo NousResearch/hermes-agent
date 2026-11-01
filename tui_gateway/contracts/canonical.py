@@ -274,6 +274,9 @@ class SessionExportParams(Params):
     profile: str | None = None
     format: str = "json"
     redact: bool = False
+    # md only: the visible user/assistant dialogue of the whole conversation (compaction-archived turns and
+    # the compression lineage included; tool logs, reasoning and internal records excluded). No model call.
+    concise: bool = False
 
 
 class SessionExportResult(Result):

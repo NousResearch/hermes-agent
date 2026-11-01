@@ -66,20 +66,63 @@ const SAVE_FILTERS: Record<string, { extensions: string[]; name: string }> = {
   md: { extensions: ['md'], name: 'Markdown' }
 }
 
-/** `/save` words → format, optional filename and redact flag (main's `/save` grammar); null = usage. */
+/** `/save` words → format, optional filename, redact and concise flags (main's `/save` grammar); null = usage.
+ *  `--concise` / `--redact` may sit anywhere; the legacy bare `redact` only as the last word. */
 export function saveRequest(
   arg: string
-): { filename?: string; format: 'html' | 'json' | 'md'; redact: boolean } | null {
-  const words = arg.trim().split(/\s+/).filter(Boolean)
-  const redact = words.length > 0 && ['redact', '--redact'].includes(words[words.length - 1].toLowerCase())
-  const rest = redact ? words.slice(0, -1) : words
-  const format = rest.length ? SAVE_FORMATS[rest[0].toLowerCase()] : 'json'
+): { concise: boolean; filename?: string; format: 'html' | 'json' | 'md'; redact: boolean } | null {
+  const lower = (w: string) => w.toLowerCase()
+  const all = arg.trim().split(/\s+/).filter(Boolean)
+  const concise = all.some(w => lower(w) === '--concise')
+  let words = all.filter(w => lower(w) !== '--concise')
+  let redact = words.some(w => lower(w) === '--redact')
 
-  if (!format || rest.length > 2) {
+  words = words.filter(w => lower(w) !== '--redact')
+
+  if (!redact && lower(words.at(-1) ?? '') === 'redact') {
+    redact = true
+    words = words.slice(0, -1)
+  }
+
+  const format = words.length ? SAVE_FORMATS[lower(words[0])] : 'json'
+
+  if (!format || words.length > 2 || (concise && format !== 'md')) {
     return null
   }
 
-  return { format, redact, ...(rest[1] ? { filename: rest[1] } : {}) }
+  return { concise, format, redact, ...(words[1] ? { filename: words[1] } : {}) }
+}
+
+type SaveRequest = NonNullable<ReturnType<typeof saveRequest>>
+
+/** What `/save` says when `session.export` failed. A gateway that predates `--concise` refuses the key; one that
+ *  predates `session.export` may only be asked for a plain `/save` (its `session.save` writes default-named,
+ *  unredacted JSON on the gateway host), and says where it wrote. */
+async function saveFailureText(
+  err: unknown,
+  request: SaveRequest,
+  sessionId: string,
+  requestGateway: GatewayRequest
+): Promise<string> {
+  if (request.concise && err instanceof Error && err.message === 'invalid_params') {
+    return copy().conciseOutdated
+  }
+
+  if (!isMissingRpcMethod(err)) {
+    return errorText(err)
+  }
+
+  if (request.redact || request.format !== 'json' || request.filename) {
+    return copy().saveLegacyRefused
+  }
+
+  try {
+    const saved = await requestGateway<{ file?: string }>('session.save', { session_id: sessionId })
+
+    return copy().savedOnHost(saved?.file ?? copy().unknownPath)
+  } catch (fallbackErr) {
+    return errorText(fallbackErr)
+  }
 }
 
 const isRemoteGateway = () => {
@@ -416,26 +459,11 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
         file = await requestGateway('session.export', {
           session_id: out.sessionId,
           format: request.format,
-          ...(request.redact ? { redact: true } : {})
+          ...(request.redact ? { redact: true } : {}),
+          ...(request.concise ? { concise: true } : {})
         })
       } catch (err) {
-        if (!isMissingRpcMethod(err)) {
-          return out.render(errorText(err))
-        }
-
-        // An older gateway without session.export: its session.save writes default-named, unredacted
-        // JSON on the gateway host, so only a plain /save may fall back to it.
-        if (request.redact || request.format !== 'json' || request.filename) {
-          return out.render(copy().saveLegacyRefused)
-        }
-
-        try {
-          const saved = await requestGateway<{ file?: string }>('session.save', { session_id: out.sessionId })
-
-          return out.render(copy().savedOnHost(saved?.file ?? copy().unknownPath))
-        } catch (fallbackErr) {
-          return out.render(errorText(fallbackErr))
-        }
+        return out.render(await saveFailureText(err, request, out.sessionId, requestGateway))
       }
 
       const save = window.hermesDesktop?.saveTextFileAs

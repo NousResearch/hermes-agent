@@ -4791,6 +4791,7 @@ export interface SessionExportParams {
   profile?: string | null
   format?: string
   redact?: boolean
+  concise?: boolean
 }
 /** ``gateway/session_tui_ops.py::export_session``: the rendered ``/save`` body and its default file name. The client writes it (the gateway may be remote); nothing is written on the host. */
 export interface SessionExportResult {

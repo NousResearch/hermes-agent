@@ -238,6 +238,9 @@ def _is_display_hidden_marker(role: str | None, text: str) -> bool:
 
 def _skill_scaffold_projection(content_text: str) -> str:
     """The invocation a slash-skill-expanded turn came from, else "" — UIs render ``/work fix the leak``."""
+    # Imported functions are not rebound onto server.py (method_ctx.bind_module): import here, so the
+    # projection also runs standalone (the concise transcript export, no stdio sidecar import).
+    from agent.skill_commands import describe_skill_invocation
     return describe_skill_invocation(content_text, separator=" ") or ""
 
 
@@ -297,6 +300,7 @@ def _remember_tool_call_args(tool_calls: list, tool_call_args: dict) -> None:
 def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: bool = True) -> list[dict]:
     """``image_urls=False`` is the ``inline_images=false`` projection (#116511): image parts render ``[image]``
     so a remote client's history read stays kilobytes instead of re-transmitting every stored attachment."""
+    from agent.compaction_display import project_compaction_message_for_display
     from agent.history_commentary import project_history_commentary
     from agent.message_metadata import withheld_prompt_text
 

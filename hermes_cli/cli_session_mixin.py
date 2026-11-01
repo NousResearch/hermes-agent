@@ -140,20 +140,28 @@ def _print_save_refusal(error) -> None:
     print(t("cli.session.save_nothing") if str(error) == "not_found" else t("cli.session.save_failed", error=error))
 
 
-def _export_on_gateway(connection, session_id, fmt, filename, redact):
+def _export_on_gateway(connection, session_id, fmt, filename, redact, concise=False):
     """The owner's ``/save`` rendering of its stored row (``session.export``: the snapshot ``hermes
     sessions export`` writes, with title, metadata and archived rows), never this process's
     in-memory history. Nothing is written on the gateway host, so a remote owner's disk is never
     taken for this machine's. None when refused (printed), and also None when an older gateway
     without ``session.export`` was handed to ``_save_on_older_gateway`` (which may save on the
-    gateway host and prints its own outcome)."""
+    gateway host and prints its own outcome). ``concise`` asks for the dialogue-only transcript; a
+    gateway that predates it refuses the key, which is reported, never answered from local rows."""
     from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+    extra = {"concise": True} if concise else {}
     try:
         content = (connection.call("session.export", session_id=session_id, format=fmt,
-                                   redact=redact) or {}).get("content")
+                                   redact=redact, **extra) or {}).get("content")
     except GatewayClientError as e:
         if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
-            _print_save_refusal(e)
+            if concise and str(e) == "invalid_params":
+                print(t("cli.session.concise_gateway_outdated"))
+            else:
+                _print_save_refusal(e)
+            return None
+        if concise:
+            print(t("cli.session.concise_gateway_outdated"))
             return None
         _save_on_older_gateway(connection, session_id, fmt, filename, redact)
         return None
@@ -694,20 +702,44 @@ class CLISessionMixin:
         self._handle_resume_command(f"/resume {index}")
         return True
 
+    def _concise_transcript_text(self, redact: bool = False):
+        """The whole conversation's concise Markdown from this process's own session store (never the
+        live model context): None, with the reason printed, when there is nothing to export."""
+        from hermes_cli.session_export import load_concise_transcript, render_concise_markdown
+        from hermes_state import SessionExportTooLargeError
+        _db = getattr(self, "_session_db", None)
+        _sid = getattr(self, "session_id", None)
+        if not (_db and _sid):
+            print(t("cli.session.concise_needs_store"))
+            return None
+        try:
+            _db.assert_export_safe(_sid)
+            data = load_concise_transcript(_db, _sid, get_hermes_home())
+        except SessionExportTooLargeError as e:
+            print(f"(._.) {e}")
+            return None
+        except Exception as e:  # health: allow BLE001 -- the user boundary of /save and /copy all
+            print(t("cli.session.save_failed", error=e))
+            return None
+        if not data or not data["messages"]:
+            print(t("cli.session.save_nothing"))
+            return None
+        if redact:
+            from hermes_cli.session_export_md import redact_session_data
+            data = redact_session_data(data)
+        return render_concise_markdown(data)
+
     def save_conversation(self, cmd: str = "/save"):
-        """Handle ``/save [json|md|html] [filename] [redact]``.
+        """Handle ``/save [json|md|html] [filename] [redact] [--concise]``.
 
         A convenience export only — every message is already persisted to the session DB, so
         the live session stays resumable regardless. ``redact`` runs the force-mode secret
         redaction pass before writing.
         """
         from hermes_cli.session_export import (
-            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, normalize_save_format, parse_save_args, render_session_for_save)
 
-        parts = cmd.split()[1:]
-        redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
-        if redact:
-            parts = parts[:-1]
+        parts, redact, concise = parse_save_args(cmd.split()[1:])
         if not parts:
             print(SAVE_USAGE)
             return
@@ -717,6 +749,9 @@ class CLISessionMixin:
             print(f"(._.) {e}")
             print(SAVE_USAGE)
             return
+        if concise and fmt != "md":
+            print(t("cli.session.concise_md_only"))
+            return
         filename = parts[1] if len(parts) > 1 else None
         from hermes_cli.gateway_tools_notify import gateway_store
         store = gateway_store(self)
@@ -724,7 +759,13 @@ class CLISessionMixin:
             if not self.conversation_history:  # as Ink: nothing said yet, nothing exported
                 print(t("cli.session.save_nothing"))
                 return
-            content = _export_on_gateway(store.connection, self.session_id, fmt, filename, redact)
+            content = _export_on_gateway(store.connection, self.session_id, fmt, filename, redact, concise)
+            if content is not None:
+                _write_save(self.session_id, fmt, filename, lambda: content)
+            return
+
+        if concise:  # this process owns the session: read its stored display history, as the owner would
+            content = self._concise_transcript_text(redact)
             if content is not None:
                 _write_save(self.session_id, fmt, filename, lambda: content)
             return

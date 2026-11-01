@@ -88,24 +88,32 @@ async def export_session(connection, ref, params):
     """``session.export``: the ``/save`` transcript rendered for the CLIENT to write (json/md/html,
     optional force-redaction). Nothing is written on the gateway host, so a remote Desktop and a
     local Ink both save to the user's own disk (T10/T11)."""
-    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact'}, 'session:read')
+    _live_ref(connection, ref, params, {'session_id', 'profile', 'format', 'redact', 'concise'}, 'session:read')
     fmt, redact = params.get('format', 'json'), params.get('redact', False)
-    if not isinstance(fmt, str) or not isinstance(redact, bool):
+    concise = params.get('concise', False)
+    if not isinstance(fmt, str) or not isinstance(redact, bool) or not isinstance(concise, bool):
         raise RuntimeStoreError('invalid_params')
     from hermes_cli.session_export import default_save_filename, normalize_save_format
     try:
         fmt = normalize_save_format(fmt)
     except ValueError:
         raise RuntimeStoreError('invalid_params') from None
+    if concise and fmt != 'md':  # the dialogue-only transcript is Markdown; json/html keep their meaning
+        raise RuntimeStoreError('invalid_params')
     authority = connection.authority
     from gateway.session_ancillary import physical_target
     target = physical_target(authority, ref)
 
     def render():
-        from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+        from hermes_cli.session_export import (
+            load_concise_transcript, load_save_snapshot, render_concise_markdown, render_session_for_save)
         from hermes_state import SessionExportTooLargeError
         try:
-            data = load_save_snapshot(authority.db, target, fmt)
+            if concise:
+                authority.db.assert_export_safe(target)  # refuse past the cap, never silently truncate
+                data = load_concise_transcript(authority.db, target, _profile_home(authority))
+            else:
+                data = load_save_snapshot(authority.db, target, fmt)
         except SessionExportTooLargeError as exc:
             raise RuntimeStoreError('export_too_large') from exc
         if not data:
@@ -113,7 +121,7 @@ async def export_session(connection, ref, params):
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             data = redact_session_data(data)
-        return render_session_for_save(data, fmt)
+        return render_concise_markdown(data) if concise else render_session_for_save(data, fmt)
     content = await asyncio.to_thread(render)
     return {'format': fmt, 'filename': default_save_filename(target, fmt), 'content': content}
 

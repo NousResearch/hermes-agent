@@ -2839,6 +2839,7 @@ export interface Translations extends NoticeTranslations {
       unreadFailed: string
       copyId: string
       export: string
+      copyConcise: string
       branchFrom: string
       rename: string
       archive: string
@@ -4202,6 +4203,11 @@ export interface Translations extends NoticeTranslations {
     hydrationSyncing: (profile: string) => string
     sessionExported: string
     sessionExportFailed: string
+    conciseTranscriptCopied: string
+    conciseTranscriptFailed: string
+    conciseTranscriptEmpty: string
+    conciseTranscriptNeedsOpenSession: string
+    conciseTranscriptOutdated: string
     imageSaved: string
     downloadStarted: string
     restartToUseSaveImage: string

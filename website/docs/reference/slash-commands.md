@@ -39,7 +39,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history (respects `/timestamps`) |
-| `/save` | Save the current conversation |
+| `/save <json\|md\|html> [filename] [redact] [--concise]` | Export the current conversation. `md --concise` writes only the visible user/assistant dialogue of the whole conversation (see [Concise transcript](../user-guide/sessions.md#concise-transcript)). |
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |
@@ -141,7 +141,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/update` | Update Hermes Agent to the latest version. |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/paste` | Attach a clipboard image |
-| `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
+| `/copy [number\|all]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). `/copy all` copies the whole conversation as a [concise transcript](../user-guide/sessions.md#concise-transcript). CLI and TUI. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |

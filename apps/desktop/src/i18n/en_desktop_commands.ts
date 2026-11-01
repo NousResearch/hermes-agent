@@ -28,7 +28,8 @@ export const enDesktopCommands: DesktopCommandNotices = {
   historyEmpty: 'No messages yet.',
   historyYou: 'You',
   historyHermes: 'Hermes',
-  saveUsage: 'usage: /save [json|md|html] [filename] [redact]',
+  saveUsage: 'usage: /save [json|md|html] [filename] [redact] [--concise]',
+  conciseOutdated: 'Not saved: this gateway is too old for --concise. Update it to export the concise transcript.',
   saveLegacyRefused:
     'Not saved: this gateway cannot export a redacted, named or non-JSON copy. Update the gateway, or run /save with no options to write raw JSON on the gateway host.',
   savedOnHost: path => `Saved on the gateway host: ${path}`,

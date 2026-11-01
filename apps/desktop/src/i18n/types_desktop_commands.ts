@@ -28,6 +28,7 @@ export interface DesktopCommandNotices {
   historyHermes: string
   saveUsage: string
   saveLegacyRefused: string
+  conciseOutdated: string
   savedOnHost: (path: string) => string
   unknownPath: string
   saveUnsupported: string

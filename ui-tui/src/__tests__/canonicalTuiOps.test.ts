@@ -2,10 +2,13 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
+import * as ClipboardModule from '../lib/clipboard.js'
+import * as Osc52Module from '../lib/osc52.js'
+import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 // The shared gateway serves Ink's /save, /reload, /agents pause|resume and /rollback through the
 // owner verbs in gateway/session_tui_ops.py: each command reaches its verb and renders main's text.
@@ -48,6 +51,10 @@ const notices = (sys: ReturnType<typeof vi.fn>) => sys.mock.calls.map(([text]) =
 beforeEach(() => {
   resetUiState()
   patchUiState({ sid: 'owner' })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 it('/save renders through session.export and Ink writes the file itself (T10)', async () => {
@@ -232,4 +239,119 @@ it('/rollback restore names the hand-edits it kept, oversize skips and failed de
     '↷ Kept (too large for checkpoints, no stored copy to revert to): big.bin',
     '⚠️ Could not remove (left in place): locked.txt'
   ])
+})
+
+// --- concise transcript: `/copy all` and `/save md --concise` ask the OWNER, the clipboard is THIS machine's ---
+
+const CONCISE = { content: '# Conversation: T\n\n## User\n\nhello\n', filename: 'x.md', format: 'md' }
+
+it('/save md --concise asks the owner for the concise transcript and the flag is not the file name', async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'ink-concise-'))
+
+  try {
+    const { request, slash } = harness({ 'session.export': CONCISE, 'shared_metrics.slash_command': {} })
+
+    slash(`/save md ${join(dir, 'c.md')} --concise`)
+    await flush()
+    await flush()
+    expect(request).toHaveBeenCalledWith('session.export', {
+      concise: true,
+      format: 'md',
+      redact: false,
+      session_id: 'owner'
+    })
+    expect(readFileSync(join(dir, 'c.md'), 'utf8')).toBe(CONCISE.content)
+    expect(readdirSync(dir)).toEqual(['c.md'])
+  } finally {
+    rmSync(dir, { force: true, recursive: true })
+  }
+})
+
+it('/save json --concise is refused locally: concise is Markdown only', async () => {
+  const { request, slash, sys } = harness({ 'session.export': CONCISE })
+
+  slash('/save json --concise')
+  await flush()
+  expect(request).not.toHaveBeenCalledWith('session.export', expect.anything())
+  expect(notices(sys).join('\n')).toMatch(/only applies to Markdown/)
+})
+
+it('a plain /save sends no concise key (existing exports keep their meaning)', async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'ink-plain-'))
+
+  try {
+    const { request, slash } = harness({ 'session.export': { content: 'X', filename: 'x.md', format: 'md' } })
+
+    slash(`/save md ${join(dir, 'p.md')}`)
+    await flush()
+    await flush()
+    expect(request).toHaveBeenCalledWith('session.export', { format: 'md', redact: false, session_id: 'owner' })
+  } finally {
+    rmSync(dir, { force: true, recursive: true })
+  }
+})
+
+it('/copy all copies the owner-rendered concise transcript to the local clipboard', async () => {
+  const write = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+  const osc = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+  vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+  const { request, slash, sys } = harness({ 'session.export': CONCISE, 'shared_metrics.slash_command': {} })
+
+  slash('/copy all')
+  await flush()
+  await flush()
+  expect(request).toHaveBeenCalledWith('session.export', {
+    concise: true,
+    format: 'md',
+    redact: false,
+    session_id: 'owner'
+  })
+  expect(write).toHaveBeenCalledWith(CONCISE.content)
+  expect(osc).not.toHaveBeenCalled()
+  expect(notices(sys).join('\n')).toMatch(/copied the concise transcript/)
+})
+
+it('/copy all says too-large instead of truncating when only OSC 52 is left', async () => {
+  vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(false)
+  const osc = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+  vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+  const big = 'x'.repeat(80_000)
+  const { slash, sys } = harness({ 'session.export': { ...CONCISE, content: big }, 'shared_metrics.slash_command': {} })
+
+  slash('/copy all')
+  await flush()
+  await flush()
+  expect(osc).not.toHaveBeenCalled()
+  expect(notices(sys).join('\n')).toMatch(/too large/)
+})
+
+it('/copy all never claims success when the owner is too old or the write failed', async () => {
+  const write = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+  const { request, slash, sys } = harness({ 'shared_metrics.slash_command': {} })
+
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.export') {
+      throw new Error('invalid_params')
+    }
+
+    return {}
+  })
+  slash('/copy all')
+  await flush()
+  await flush()
+  expect(write).not.toHaveBeenCalled()
+  expect(notices(sys).join('\n')).toMatch(/too old/)
+  expect(notices(sys).join('\n')).not.toMatch(/copied the concise/)
+})
+
+it('/copy and /copy N still copy the assistant message, not the transcript', async () => {
+  const write = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+  vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+  const { request, slash } = harness({ 'shared_metrics.slash_command': {} })
+
+  slash('/copy')
+  await flush()
+  await flush()
+  expect(write).toHaveBeenCalledWith('hi there')
+  expect(request).not.toHaveBeenCalledWith('session.export', expect.anything())
 })

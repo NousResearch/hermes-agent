@@ -37183,6 +37183,11 @@
             "default": false,
             "title": "Redact",
             "type": "boolean"
+          },
+          "concise": {
+            "default": false,
+            "title": "Concise",
+            "type": "boolean"
           }
         },
         "required": [

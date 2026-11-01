@@ -76,10 +76,10 @@ import {
   updateSelection
 } from './selection.js'
 import {
+  isSyncOutputSupported,
   needsAltScreenResizeScrollbackClear,
   skipKittyKeyboardProtocol,
   supportsExtendedKeys,
-  SYNC_OUTPUT_SUPPORTED,
   type Terminal,
   writeDiffToTerminal
 } from './terminal.js'
@@ -1014,8 +1014,8 @@ export default class Ink {
       // DECSTBM needs BSU/ESU atomicity — without it the outer terminal
       // renders the scrolled-but-not-yet-repainted intermediate state.
       // tmux is the main case (re-emits DECSTBM with its own timing and
-      // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
-      SYNC_OUTPUT_SUPPORTED
+      // doesn't implement DEC 2026, so this reads false).
+      isSyncOutputSupported()
     )
 
     const diffMs = performance.now() - tDiff
@@ -1228,8 +1228,9 @@ export default class Ink {
       // the stream with their own timing, so the markers buy no atomicity and
       // stale frames get pushed into main-screen scrollback as repeated
       // chrome (#66490). Supported terminals keep today's behavior on both
-      // screens (skip=false → BSU/ESU wrapped).
-      !SYNC_OUTPUT_SUPPORTED,
+      // screens (skip=false → BSU/ESU wrapped). Read per-frame: the DECRQM
+      // probe may upgrade this shortly after startup (notably over SSH).
+      !isSyncOutputSupported(),
       trackDrain
         ? () => {
             // Callback fires once Node has flushed the chunk to the OS.

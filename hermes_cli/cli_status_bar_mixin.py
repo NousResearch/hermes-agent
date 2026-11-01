@@ -194,9 +194,10 @@ class CLIStatusBarMixin:
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
         model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
+        active_provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
         # Friendly display: reverse-alias from config ``model_aliases:`` first (turns long
         # Palantir RIDs into the user's short name), else slash/length truncation.
-        model_short = _reverse_alias_for_display(model_name)
+        model_short = _reverse_alias_for_display(model_name, active_provider)
         if model_short == model_name:
             model_short = model_name.split("/")[-1] if "/" in model_name else model_name
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.

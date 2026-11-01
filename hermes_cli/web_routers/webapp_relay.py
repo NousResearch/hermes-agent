@@ -183,6 +183,9 @@ async def relay_token(request: Request):
                                      proof=body["proof"])
     except PermissionError as exc:
         return JSONResponse({"error": "invalid_grant", "detail": str(exc)}, status_code=400, headers=_NO_STORE)
+    except relay.StoreUnreadable as exc:
+        return JSONResponse({"error": "temporarily_unavailable", "detail": str(exc)}, status_code=503,
+                            headers=_NO_STORE)
     return JSONResponse(grant, headers=_NO_STORE)
 
 
@@ -203,7 +206,10 @@ async def relay_revoke_grant(request: Request, grant_id: str):
         identity = _identity(request)
         if not any(row["id"] == grant_id for row in grants.list_grants(_home(request), identity)):
             raise HTTPException(404, "No such grant")
-    grants.revoke(_home(request), grant_id)
+    try:
+        grants.revoke(_home(request), grant_id)
+    except relay.StoreUnreadable as exc:
+        raise HTTPException(503, f"Nothing was revoked: {exc}") from None
     return JSONResponse({"revoked": True}, headers=_NO_STORE)
 
 
@@ -239,6 +245,8 @@ async def relay_start_pairing(request: Request):
                                 callback_url=f"{base}/webapp/relay/callback")
     except hub.PairingError as exc:
         raise HTTPException(400, str(exc)) from None
+    except relay.StoreUnreadable as exc:
+        raise HTTPException(503, f"Nothing was started: {exc}") from None
     return JSONResponse({"authorize_url": url}, headers=_NO_STORE)
 
 
@@ -273,6 +281,8 @@ async def relay_unpair(request: Request, gateway_id: str, forget: bool = False):
         removed = await hub.unpair(_home(request), _own_login(request), gateway_id, _client(request), forget=forget)
     except hub.RevokeUnconfirmed as exc:
         return JSONResponse({"removed": False, "detail": str(exc)}, headers=_NO_STORE)
+    except relay.StoreUnreadable as exc:
+        raise HTTPException(503, f"The gateway list here was not changed: {exc}") from None
     if not removed:
         raise HTTPException(404, "No such gateway")
     from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets

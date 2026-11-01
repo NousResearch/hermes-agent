@@ -85,15 +85,18 @@ def _path(home) -> Path:
 
 
 def _read(home) -> dict[str, dict[str, Any]]:
+    """Every grant on file. Raises relay.StoreUnreadable: what writes the file must see all of it."""
+    grants = relay.read_store(_path(home), "grants", dict)
+    return {gid: grant for gid, grant in grants.items() if isinstance(grant, dict)}
+
+
+def _lookup(home) -> dict[str, dict[str, Any]]:
+    """The grants a read that changes nothing sees: none while the file cannot be read."""
     try:
-        stored = json.loads(_path(home).read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError) as exc:  # unreadable: no grant stands until the user pairs again
+        return _read(home)
+    except relay.StoreUnreadable as exc:
         _log.warning("Gateway relay grants could not be read: %s", exc)
         return {}
-    grants = stored.get("grants") if isinstance(stored, dict) else None
-    return {gid: grant for gid, grant in (grants or {}).items() if isinstance(grant, dict)}
 
 
 def _write(home, grants: dict[str, dict[str, Any]]) -> None:
@@ -114,7 +117,7 @@ def _stands(grant: dict[str, Any]) -> bool:
 def grant_for(home, grant_id: str) -> Optional[dict[str, Any]]:
     """The standing grant *grant_id*, with its id, or None."""
     with _lock:
-        grant = _read(home).get(grant_id)
+        grant = _lookup(home).get(grant_id)
     if grant is None or not _stands(grant):
         return None
     return {**grant, "id": grant_id}
@@ -123,7 +126,7 @@ def grant_for(home, grant_id: str) -> Optional[dict[str, Any]]:
 def list_grants(home, identity: dict[str, str]) -> list[dict[str, Any]]:
     """The standing grants *identity* approved, without their keys, newest first."""
     with _lock:
-        grants = _read(home)
+        grants = _lookup(home)
     rows = [{"id": gid, "hub_name": g.get("hub_name", ""), "hub_origin": g.get("hub_origin", ""),
              "scopes": g.get("scopes", []), "created_at": g.get("created_at", 0)}
             for gid, g in grants.items() if _stands(g) and _same_identity(g, identity)]

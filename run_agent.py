@@ -332,6 +332,10 @@ class AIAgent(
                 profile_for_session = None
             # Carry the gateway routing identity: when the gateway SessionStore degraded to JSONL (corrupt
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
+            kanban_task_id = None
+            if source == "kanban":
+                from agent.delegation_context import owned_kanban_task
+                kanban_task_id = owned_kanban_task() or None
             self._session_db.create_session(
                 session_id=self.session_id, source=source, model=self.model,
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
@@ -341,6 +345,7 @@ class AIAgent(
                 display_name=getattr(self, "_chat_name", None) or getattr(self, "_user_name", None),
                 origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
+                kanban_task_id=kanban_task_id,
             )
             self._session_db_created = True
         except Exception as e:

@@ -35,8 +35,10 @@ def release_channel(tag: str) -> str:
 
     The tag decides, never a caller flag, so a stable candidate can never write a canary feed or
     the reverse (scripts/termux/deb_version.py and scripts/releases/r2.py key on it the same way)."""
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
 
+    if is_commit_tag(tag):
+        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
@@ -61,6 +63,11 @@ def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict |
     if (stamp.get("commit") != commit or stamp.get("tag") != tag
             or stamp.get("baseVersion") != release_version(tag)):
         raise ValueError("Built package provenance does not match the release")
+    from hermes_cli.update_channel import is_commit_tag
+
+    # A commit build's packages refuse every update (source commit-build); a release's never do.
+    if (stamp.get("source") == "commit-build") != is_commit_tag(tag):
+        raise ValueError("Built package update ownership does not match the release kind")
 
 
 def single(items):

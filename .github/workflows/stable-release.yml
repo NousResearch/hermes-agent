@@ -1,6 +1,6 @@
 name: Stable Release
 # The stable title is what the sequencer and release.py match runs by (stable.claim_run_title).
-run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || 'Stable' }} release ${{ inputs.tag }}
+run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || startsWith(inputs.tag, 'commit.') && 'Commit' || 'Stable' }} release ${{ inputs.tag }}
 
 # Dispatch on the default branch: workflows and scripts come from main and Actions caches
 # live in main's scope. The claim tag is an input. Admission resolves it to a commit and
@@ -40,8 +40,10 @@ permissions:
 # PR-controlled code and must stay secret-free.
 # A canary takes hours; it must never queue a stable release behind it, nor share the stable
 # publication reconciler's lock.
+# Commit builds publish nowhere and never share state, so each runs on its own (its claim tag is
+# the group).
 concurrency:
-  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || 'stable-release' }}
+  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || startsWith(inputs.tag, 'commit.') && inputs.tag || 'stable-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -61,7 +63,8 @@ jobs:
       version: ${{ steps.admit.outputs.version }}
       release-id: ${{ steps.admit.outputs.release-id }}
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
-      # stable | canary: selects the publication jobs (lanes.POLICY_JOBS), never a build or test job.
+      # stable | canary | commit: selects the publication jobs (lanes.POLICY_JOBS), never a build or
+      # test job.
       policy: ${{ steps.admit.outputs.policy }}
       # The versioned image tag: the claim tag, or a canary tag with its `+` as `-`.
       docker-tag: ${{ steps.admit.outputs.docker-tag }}
@@ -73,6 +76,9 @@ jobs:
       # Whether the policy's publication job also waits for acceptance (every suite green).
       # Always true for a stable release; a canary claim chooses (release.py --[no-]require-green).
       require-green: ${{ steps.admit.outputs.require-green }}
+      # A commit build's baked bundle defaults (its claim's bundleEnv); `{}` for every release.
+      # Each candidate call passes it on and its validate re-checks it against the claim.
+      bundle-env: ${{ steps.admit.outputs.bundle-env }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -189,6 +195,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: darwin-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -212,6 +219,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: darwin-x64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -233,6 +241,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: win32-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -257,6 +266,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: win32-x64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -283,6 +293,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: win32-bundle
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -308,6 +319,7 @@ jobs:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
+      bundle_env: ${{ needs.admit.outputs.bundle-env }}
       release-phase: candidate
       jobs: termux
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -457,6 +469,8 @@ jobs:
           cache-python: false
       - id: manifest
         run: python -m scripts.releases.stable candidate-manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   windows-packaged:
     name: Windows signed-package acceptance
@@ -687,10 +701,51 @@ jobs:
             --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
             "${args[@]}"
 
+  publish-commit:
+    name: Render the commit build's page
+    # Commit policy only (lanes.POLICY_JOBS). A commit build publishes nowhere: no channel, feed,
+    # Docker tag, GitHub release or Store. Its packages already sit in its claim archive
+    # (releases/tag/<claim>/); this job lists the accepted candidate there as the builds page
+    # (releases/tag/<claim>/index.html) and in the run summary. Like publish-canary its claim decides
+    # what it waits for: with require-green, every suite green; without, the accepted candidate.
+    needs: [admit, candidate-manifest, acceptance]
+    if: >-
+      !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-commit']
+      && needs.candidate-manifest.result == 'success'
+      && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: release-signing
+    env:
+      RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
+      RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+      CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+      # The admitted claim's bundle defaults, listed on the page (stable verify bound every
+      # candidate leg's bundle env to the same claim).
+      CLAIM_BUNDLE_ENV: ${{ needs.admit.outputs.bundle-env }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Render the builds page from the accepted candidate
+        run: |
+          python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --archive "$RELEASE_CLAIM_TAG" --r2-base-url "$CLOUDFLARE_R2_PUBLIC_URL" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
+            --bundle-env-json "$CLAIM_BUNDLE_ENV" --summary-out "$GITHUB_STEP_SUMMARY"
+
   publication:
     name: All artifact publication succeeded
     if: always()
-    needs: [admit, acceptance, publish-docker, publish-bundles, publish-canary]
+    needs: [admit, acceptance, publish-docker, publish-bundles, publish-canary, publish-commit]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -699,7 +754,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles publish-canary
+      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles publish-canary publish-commit
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
@@ -768,6 +823,7 @@ jobs:
         if: fromJSON(needs.admit.outputs.lanes).bundles
         run: python -m scripts.releases.stable complete
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
@@ -779,6 +835,7 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
+        # Canary and commit pages are rendered by their own publication jobs.
         if: needs.admit.outputs.policy == 'stable' && fromJSON(needs.admit.outputs.lanes)['bundles']
         # The builds table is presentation: a render failure warns and the release still
         # publishes (rc.14-v0.21.7 passed every gate, then died here on missing env).

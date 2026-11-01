@@ -1060,6 +1060,8 @@ class SessionSchemaMixin:
         # only for source archaeology; unreachable while SCHEMA_VERSION >= 23.
         if current_version < 16:
             # v16: tag delegate subagent rows so pickers stay clean after parent deletes orphan them.
+            # Only rows that still record a parent are tagged; parentless roots are never guessed to be
+            # orphaned delegates, since a short untitled tool-using CLI session looks the same.
             with contextlib.suppress(sqlite3.OperationalError):
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
@@ -1067,16 +1069,6 @@ class SessionSchemaMixin:
                     f"WHERE parent_session_id IS NOT NULL "
                     f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
                     f"AND {_ephemeral_child_sql('sessions')}"
-                )
-                cursor.execute(
-                    "UPDATE sessions SET model_config = json_set("
-                    "COALESCE(model_config, '{}'), '$._delegate_from', '__orphaned__') WHERE parent_session_id IS NULL "
-                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
-                    f"AND {_sql_json_extract('model_config', '$._branched_from')} IS NULL "
-                    "AND title IS NULL AND message_count <= 25 AND EXISTS (SELECT 1 FROM messages m "
-                    "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
-                    "AND NOT EXISTS (SELECT 1 FROM sessions ch "
-                    "                WHERE ch.parent_session_id = sessions.id)"
                 )
         if current_version < 18:
             # v18: best-effort gateway metadata backfill from sessions.json.

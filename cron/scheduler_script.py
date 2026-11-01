@@ -140,7 +140,8 @@ exec(code, main.__dict__)
 
 def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     """POSIX managed-store installs run cron ``.py`` scripts on the selected dependency venv's
-    interpreter: the store Python has the repo and managed site-packages only on its in-process
+    interpreter (or, when PM recorded none and the process runs on its own venv, on that
+    interpreter): the store Python has the repo and managed site-packages only on its in-process
     ``sys.path``, so its children import neither (#123044). No ``PYTHONPATH``: everything the
     script spawns would inherit it and a foreign interpreter would load the store's compiled
     extensions (#123440). The venv resolves Hermes from its generation's workspace snapshot,
@@ -157,6 +158,10 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     # commit runs on its OWN interpreter here, so there is no ABI mix (#122183).
     python = project_python(repo)
     if not python.is_file():
+        # A process on its own complete venv (an externally built release PM never recorded a
+        # dependency environment for) already carries its packages: run on it.
+        if sys.prefix != sys.base_prefix:
+            return [sys.executable, str(script)], {"HERMES_DISABLE_LAZY_INSTALLS": "1"}
         # The caller's interpreter is the bare store Python here — the #123044 failure mode.
         raise RuntimeError(f"dependency environment interpreter is missing: {python}")
     return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],

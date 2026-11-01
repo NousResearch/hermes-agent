@@ -1,3 +1,6 @@
+import type * as FsPromises from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const { client } = vi.hoisted(() => ({
@@ -10,9 +13,17 @@ const { client } = vi.hoisted(() => ({
     allowDowngrade: true,
     currentVersion: { version: '9.9.9' },
     on: vi.fn(),
+    removeListener: vi.fn(),
     setFeedURL: vi.fn(),
-    checkForUpdates: vi.fn(async () => null)
+    checkForUpdates: vi.fn(async () => null),
+    downloadUpdate: vi.fn(async (): Promise<string[]> => []),
+    quitAndInstall: vi.fn()
   }
+}))
+
+vi.mock('node:fs/promises', async importOriginal => ({
+  ...(await importOriginal<typeof FsPromises>()),
+  stat: vi.fn()
 }))
 
 vi.mock('electron', () => ({ autoUpdater: {} }))
@@ -27,6 +38,9 @@ vi.mock('electron-updater', () => ({
 }))
 
 import { createMacStrategy } from './mac-client'
+
+// The client is built in Electron's main process, which reports its version here.
+Object.defineProperty(process.versions, 'electron', { value: '40.10.2', configurable: true })
 
 afterEach((): void => {
   vi.clearAllMocks()
@@ -116,5 +130,20 @@ describe('macOS client wiring', () => {
     })
     expect(client.allowPrerelease).toBe(true)
     expect(() => createMacStrategy(deps('http://untrusted.example'))).toThrow('HTTPS')
+  })
+
+  it('refuses a 1 GiB update zip while Electron bundles the buffering Squirrel.Mac', async (): Promise<void> => {
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      const info = { version: '0.29.0', files: [], releaseDate: '', path: '', sha512: '' }
+
+      return { isUpdateAvailable: true, updateInfo: info, versionInfo: info }
+    })
+    client.downloadUpdate.mockResolvedValueOnce(['/cache/update.zip'])
+    vi.mocked(stat).mockResolvedValueOnce({ size: 2 ** 30 } as Awaited<ReturnType<typeof stat>>)
+    const options = deps()
+
+    await expect(createMacStrategy(options).apply()).rejects.toThrow('too large for the built-in macOS installer')
+    expect(options.beforeInstall).not.toHaveBeenCalled()
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
   })
 })

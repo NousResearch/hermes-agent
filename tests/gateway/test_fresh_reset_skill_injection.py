@@ -16,8 +16,8 @@ Before the fix:
 After the fix:
     ``reset_session`` stamps the new entry with ``is_fresh_reset=True``.
     ``_handle_message_with_agent`` ORs this into ``_is_new_session`` and
-    consumes the flag immediately after the check, so subsequent messages
-    are treated as continuing the session and the flag does not leak.
+    retains the flag until a successful human turn is persisted, so aborted
+    preparation cannot spend the session's bootstrap.
 
 We use ``was_auto_reset`` for surprise resets (idle/daily/suspended) and
 ``is_fresh_reset`` for user-initiated resets because the former also drives
@@ -92,10 +92,10 @@ class TestVanillaBehaviorUnaffected:
     def test_ongoing_session_not_flagged_as_new(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
-        store.get_or_create_session(source)
+        entry = store.get_or_create_session(source)
+        store.complete_session_bootstrap(entry.session_key, entry.session_id)
 
-        # Second message on the same session — updated_at bumps,
-        # is_fresh_reset was never set
+        # A completed first turn consumes bootstrap before the next activity-clock bump.
         entry = store.get_or_create_session(source)
         assert entry.is_fresh_reset is False
         assert _is_new_session(entry) is False

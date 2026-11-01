@@ -98,6 +98,9 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
         return unmatched
     FAILURE_CLASS.set("staged")
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    if record.get("error"):
+        FAILURE_CLASS.set("gate_refused")
+        return tool_error(f"Memory write not staged: {record['error']}. Nothing was saved.", success=False)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 
@@ -205,6 +208,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             summary=(f"background review consolidation ({'batch' if operations is not None else action} "
                      f"on {target}): {detail}")[:200],
             origin=wa.current_origin())
+        if record.get("error"):
+            raise OSError(record["error"])
         return json.dumps({
             "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
             "message": ("Background review may not delete memory entries unattended. The proposed "

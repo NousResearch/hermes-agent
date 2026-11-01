@@ -42,12 +42,19 @@ def _make_invite_event(
     room_id="!dm_room:example.org",
     sender="@alice:example.org",
     is_direct=True,
+    state_key="@hermes:example.org",
 ):
-    """Create a fake invite event with is_direct in content."""
+    """Create a fake invite event with is_direct in content.
+
+    ``state_key`` is the invite target (a real m.room.member invite event is
+    always addressed to the invitee's user id); it defaults to the bot's own
+    user id so these events model invites addressed to the bot.
+    """
     content = SimpleNamespace(is_direct=is_direct)
     return SimpleNamespace(
         room_id=room_id,
         sender=sender,
+        state_key=state_key,
         content=content,
     )
 

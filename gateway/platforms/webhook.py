@@ -915,15 +915,20 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _render_prompt(self, template: str, payload: dict, event_type: str, route_name: str) -> str:
         """Render a prompt template with dot-notation payload access (``{pull_request.title}``);
-        ``{__raw__}`` dumps the whole payload as indented JSON (truncated to 4000 chars)."""
+        ``{__raw__}`` dumps the whole payload as indented JSON.
+
+        LOCAL PATCH (auto-reapplied by reapply_local_patches.py): the 4,000-char ``__raw__``
+        cap and the 2,000-char dict/list placeholder cap were removed — they silently dropped
+        content from route payloads. See hermes-integrations → references/local-core-patches.md
+        """
         if not template:
-            truncated = json.dumps(payload, indent=2)[:4000]
-            return f"Webhook event '{event_type}' on route '{route_name}':\n\n```json\n{truncated}\n```"
+            dumped = json.dumps(payload, indent=2)
+            return f"Webhook event '{event_type}' on route '{route_name}':\n\n```json\n{dumped}\n```"
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
             if key == "__raw__":
-                return json.dumps(payload, indent=2)[:4000]
+                return json.dumps(payload, indent=2)
             if key == "event_type":
                 return event_type
             value: Any = payload
@@ -931,7 +936,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 if not isinstance(value, dict):
                     return f"{{{key}}}"
                 value = value.get(part, f"{{{key}}}")
-            return json.dumps(value, indent=2)[:2000] if isinstance(value, (dict, list)) else str(value)
+            return json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
 
         return _TEMPLATE_KEY_RE.sub(_resolve, template)
 

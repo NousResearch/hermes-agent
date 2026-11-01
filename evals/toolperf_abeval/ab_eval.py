@@ -41,6 +41,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+import psutil
+
 ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
 
@@ -167,7 +169,7 @@ mode = "overwrite"
 
 
 def wait_for_gateway(process, home: Path, timeout=60):
-    """Wait only for the foreground child we launched, never attach to another owner."""
+    """Accept only our child or its interpreter worker (Windows venv launchers)."""
     deadline = time.monotonic() + timeout
     while process.poll() is None and time.monotonic() < deadline:
         try:
@@ -176,8 +178,14 @@ def wait_for_gateway(process, home: Path, timeout=60):
             )
         except (OSError, ValueError):
             state = {}
-        if state.get("pid") == process.pid and state.get("gateway_state") == "running":
-            return
+        if state.get("gateway_state") == "running":
+            try:
+                launcher = psutil.Process(process.pid)
+                for owner in [launcher, *launcher.children(recursive=True)]:
+                    if owner.pid == state.get("pid") and owner.is_running():
+                        return owner
+            except psutil.NoSuchProcess:
+                break
         try:
             process.wait(timeout=0.1)
         except subprocess.TimeoutExpired:
@@ -188,21 +196,38 @@ def wait_for_gateway(process, home: Path, timeout=60):
     )
 
 
+def kill_gateway_child(process, owner=None):
+    """Reap only the launched tree, including a worker left behind by its launcher."""
+    children = []
+    if process.poll() is None:
+        try:
+            children = psutil.Process(process.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            pass
+    if owner is not None and owner.pid != process.pid and owner not in children:
+        children.append(owner)
+    for child in reversed(children):
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            pass
+    # Let a launcher reap its interpreter before terminating the launcher itself.
+    _, alive = psutil.wait_procs(children, timeout=10)
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=10)
+    if alive:
+        raise RuntimeError("Evaluation gateway workers did not stop")
+
+
 @contextmanager
 def batch_gateway(env, work: Path):
     # Keep the arm's code and Relay destination fixed for the whole batch. Never borrow
     # a daemon that may have loaded another checkout or exporter configuration.
-    if os.name != "posix":
-        # Windows venv launchers may report a different PID from their interpreter child.
-        raise RuntimeError(
-            "ToolPerf gateway ownership currently requires Linux, macOS, or WSL"
-        )
     command = [
         sys.executable,
         "-m",
         "hermes_cli.main",
-        "--profile",
-        "default",
         "gateway",
         "run",
         "--quiet",
@@ -212,19 +237,18 @@ def batch_gateway(env, work: Path):
         process = subprocess.Popen(
             command, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log
         )
-        ready = False
+        owner = None
         try:
-            wait_for_gateway(process, Path(env["HERMES_HOME"]))
-            ready = True
+            owner = wait_for_gateway(process, Path(env["HERMES_HOME"]))
             yield process
             if process.poll() is not None:
                 raise RuntimeError(
                     f"Evaluation gateway exited unexpectedly; see {work / 'gateway.log'}"
                 )
         finally:
-            if process.poll() is None:
+            if process.poll() is None or (owner is not None and owner.is_running()):
                 try:
-                    if ready:
+                    if owner is not None:
                         # Hermes' PID-bound stop marker is watched on every OS, including Windows.
                         # Do not use `gateway stop`, which can act on an installed service.
                         subprocess.run(
@@ -234,7 +258,7 @@ def batch_gateway(env, work: Path):
                                 "import sys; from gateway.status import "
                                 "write_planned_stop_marker; sys.exit(0 if "
                                 "write_planned_stop_marker(int(sys.argv[1])) else 1)",
-                                str(process.pid),
+                                str(owner.pid),
                             ],
                             cwd=work,
                             env=env,
@@ -244,9 +268,11 @@ def batch_gateway(env, work: Path):
                             timeout=15,
                         )
                     else:
-                        process.terminate()
+                        kill_gateway_child(process)
                     process.wait(timeout=60)
-                    if ready and process.returncode != 0:
+                    if owner is not None and owner.pid != process.pid:
+                        owner.wait(timeout=10)
+                    if owner is not None and process.returncode != 0:
                         raise RuntimeError(
                             "Evaluation gateway failed during shutdown; batch not recorded"
                         )
@@ -254,9 +280,9 @@ def batch_gateway(env, work: Path):
                     OSError,
                     subprocess.TimeoutExpired,
                     subprocess.CalledProcessError,
+                    psutil.Error,
                 ):
-                    process.kill()
-                    process.wait(timeout=10)
+                    kill_gateway_child(process, owner)
                     raise RuntimeError(
                         "Evaluation gateway failed to flush and stop; batch not recorded"
                     ) from None
@@ -306,8 +332,6 @@ def run_trial(work: Path, env, query: str, model: str):
             sys.executable,
             "-m",
             "hermes_cli.main",
-            "--profile",
-            "default",
             "chat",
             "--query",
             query,
@@ -331,8 +355,8 @@ def run_trial(work: Path, env, query: str, model: str):
     (work / "chat.stdout").write_text(result.stdout or "", encoding="utf-8")
     (work / "chat.stderr").write_text(result.stderr or "", encoding="utf-8")
     if result.returncode:
-        raise RuntimeError(
-            f"Chat failed (exit={result.returncode}); see {work / 'chat.stderr'}"
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, output=result.stdout, stderr=result.stderr
         )
     return result.stdout.strip(), elapsed
 
@@ -358,6 +382,8 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
         **os.environ,
         "PYTHONPATH": str(Path(pythonpath).resolve()),
         "HERMES_HOME": str(HOME),
+        # Existing CLI mechanism: honor this exact home even with a saved active profile.
+        "HERMES_GATEWAY_PROFILE_PIN": "1",
         "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
     }
     completed = []
@@ -375,7 +401,18 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
                 out, elapsed = run_trial(
                     work, env, task.replace("{WORK}", str(work)), model
                 )
-            except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            except subprocess.CalledProcessError as exc:
+                failure = failure or exc
+                print(
+                    f"[{arm}/{model}] {run_id} CHAT-FAILED exit={exc.returncode}; "
+                    f"not recorded, see {work / 'chat.stderr'}",
+                    flush=True,
+                )
+                # Windows reports Ctrl+C as the unsigned STATUS_CONTROL_C_EXIT value.
+                if exc.returncode < 0 or exc.returncode in (130, 143, 0xC000013A):
+                    break
+                continue
+            except (OSError, subprocess.TimeoutExpired) as exc:
                 failure = exc
                 break
             rec = {

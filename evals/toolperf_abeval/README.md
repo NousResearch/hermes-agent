@@ -35,9 +35,12 @@ in real production traffic.
   `session_uuid` (distinct from the CLI session ID) is saved in `meta.jsonl`
   and checked again when reporting.
 - **Resume-safe.** Only trials with a successful CLI exit and verified trace
-  enter `meta.jsonl`. A startup, chat, shutdown, or trace failure stops the
-  battery with an error. Earlier successful chats can be recorded after a
-  failed chat if their traces validate and the gateway stops cleanly. Results
+  enter `meta.jsonl`. A completed chat with a nonzero exit is excluded and the
+  runner continues with later trials while its gateway remains alive. Timeouts,
+  interrupted chats, gateway startup/shutdown failures, and invalid traces stop
+  the batch. Valid trials are recorded after a clean shutdown, then any chat
+  failure is reported with a nonzero batch exit. Failed trials remain eligible
+  for resume. Results
   are committed after batch shutdown; a hard interruption can require rerunning
   unrecorded trials. Recorded entries are revalidated before being skipped.
   Missing, malformed, ambiguous, and incomplete traces are errors, never
@@ -45,9 +48,11 @@ in real production traffic.
 
 ## Setup
 
-The runner currently supports Linux, macOS, and WSL. Native Windows is refused
-before starting a gateway: a Windows virtual-environment launcher can have a
-different PID from the gateway, so this runner cannot yet prove ownership.
+The runner handles Linux, macOS, WSL, and native Windows process layouts. A
+Windows virtual-environment launcher can have a different PID from the gateway;
+the runner verifies the gateway is its child or a descendant of that child,
+and targets the actual gateway worker for graceful shutdown. Native platform
+validation runs in the corresponding OS test lanes.
 
 1. Create a dedicated Hermes home with credentials for the models under test:
 
@@ -66,6 +71,14 @@ different PID from the gateway, so this runner cannot yet prove ownership.
    and run one battery at a time. If another gateway already owns the home,
    the runner refuses to attach; it only shuts down the child it started.
    Do not point `ABEVAL_HOME` at your everyday Hermes home.
+
+   `ABEVAL_HOME` may also select a dedicated named profile such as
+   `/tmp/abeval-home/profiles/eval`. Both gateway and chat commands stay on that
+   exact home, regardless of the saved active profile. The runner does not
+   change the saved profile selection. On Hermes versions that normally serve
+   named profiles through a shared host gateway, the dedicated evaluation
+   profile must opt into its own gateway with `gateway.standalone: true` in
+   its `config.yaml`. The runner preserves Hermes's existing ownership guards.
 
    The runner writes a per-batch Relay `plugins.toml` using the observability
    schema supported by the pinned Relay 0.10 runtime (version 4). No Hermes

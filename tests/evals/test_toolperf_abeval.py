@@ -4,8 +4,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tomllib
+import venv
+from pathlib import Path
 
+import psutil
 import pytest
 
 from evals.toolperf_abeval import ab_eval
@@ -126,8 +130,9 @@ def fake_cli(tmp_path):
     (package / "__init__.py").touch()
     (package / "main.py").write_text(
         """
-import json, os, signal, sys, tomllib, uuid
+import json, os, sys, tomllib, uuid
 from pathlib import Path
+from threading import Event
 home = Path(os.environ["HERMES_HOME"])
 state = home / "gateway_state.json"
 if "gateway" in sys.argv:
@@ -144,7 +149,7 @@ if "gateway" in sys.argv:
     trace = Path(sink["output_directory"]) / sink["filename"]
     with (home / "starts.jsonl").open("a") as output:
         output.write(json.dumps({"pid": os.getpid(), "tree": str(Path(__file__).parent.parent)}) + "\\n")
-    def stop(*args):
+    def stop():
         pending = home / "pending.json"
         if pending.exists():
             with trace.open("a") as output:
@@ -152,10 +157,18 @@ if "gateway" in sys.argv:
             pending.unlink()
         lock.unlink()
         sys.exit(0)
-    signal.signal(signal.SIGTERM, stop)
     state.write_text(json.dumps({"pid": os.getpid(), "gateway_state": "running", "trace": str(trace), "tree": str(Path(__file__).parent.parent)}))
+    stop_file = home / "stub-stop.json"
     while True:
-        signal.pause()
+        if stop_file.exists():
+            try:
+                target = json.loads(stop_file.read_text())["pid"]
+            except (OSError, ValueError):
+                target = None
+            if target == os.getpid():
+                stop_file.unlink()
+                stop()
+        Event().wait(0.05)
 else:
     info = json.loads(state.read_text())
     root = str(uuid.uuid4())
@@ -181,18 +194,29 @@ else:
     gateway.mkdir()
     (gateway / "__init__.py").touch()
     (gateway / "status.py").write_text(
-        "import os, signal\ndef write_planned_stop_marker(pid):\n"
-        "    os.kill(pid, signal.SIGTERM)\n    return True\n",
+        "import json, os\nfrom pathlib import Path\n"
+        "def write_planned_stop_marker(pid):\n"
+        "    (Path(os.environ['HERMES_HOME']) / 'stub-stop.json').write_text(json.dumps({'pid': pid}))\n"
+        "    return True\n",
         encoding="utf-8",
     )
     return tree
 
 
 @pytest.mark.spawns_gateway_lookalike
-@pytest.mark.platforms("posix")  # the fixture gateway uses POSIX signals
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("python_kind", ["current", "venv"])
 def test_batch_reuses_gateway_switches_code_arms_and_flushes_before_recording(
-    tmp_path, monkeypatch, fake_cli
+    tmp_path, monkeypatch, fake_cli, python_kind
 ):
+    if python_kind == "venv":
+        venv.EnvBuilder(with_pip=False).create(tmp_path / "venv")
+        python = (
+            tmp_path
+            / "venv"
+            / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        )
+        monkeypatch.setattr(sys, "executable", str(python))
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
@@ -271,9 +295,10 @@ def test_shared_trace_requires_unambiguous_complete_trial(tmp_path, damage):
 
 
 @pytest.mark.spawns_gateway_lookalike
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("exit_code", [1, 130, 0xC000013A])
 def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
-    tmp_path, monkeypatch, fake_cli
+    tmp_path, monkeypatch, fake_cli, exit_code
 ):
     home = tmp_path / "home"
     home.mkdir()
@@ -284,24 +309,31 @@ def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
 
     def fail_second_chat(command, **kwargs):
         if "chat" in command and kwargs["cwd"].name.endswith("-r1"):
-            return subprocess.CompletedProcess(command, 1, "partial answer", "failed")
+            return subprocess.CompletedProcess(
+                command, exit_code, "partial answer", "failed"
+            )
         return real_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fail_second_chat)
-    with pytest.raises(RuntimeError, match="Chat failed"):
-        ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
+    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+        ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
     result = tmp_path / "results/model/baseline"
     records = [
         json.loads(line) for line in (result / "meta.jsonl").read_text().splitlines()
     ]
-    assert [record["run_id"] for record in records] == ["err_case_search-r0"]
+    expected = (
+        ["err_case_search-r0", "err_case_search-r2"]
+        if exit_code == 1
+        else ["err_case_search-r0"]
+    )
+    assert [record["run_id"] for record in records] == expected
     assert len((home / "starts.jsonl").read_text().splitlines()) == 1
     assert not (home / "stub-owner").exists()
     assert ab_eval.score_run(result / "err_case_search-r0.atof.jsonl")["llm"] == 2
 
 
 @pytest.mark.spawns_gateway_lookalike
-@pytest.mark.platforms("posix")  # the fixture gateway uses POSIX signals
+@pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("fail_chat", [False, True])
 def test_cleanup_owns_only_its_child_and_failed_trials_are_not_recorded(
     tmp_path, monkeypatch, fake_cli, fail_chat
@@ -323,15 +355,18 @@ def test_cleanup_owns_only_its_child_and_failed_trials_are_not_recorded(
         monkeypatch.setattr(ab_eval, "HOME", home)
         monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
         real_run = subprocess.run
+        attempted = []
 
         def timeout_chat(command, **kwargs):
             if "chat" in command:
+                attempted.append(kwargs["cwd"])
                 raise subprocess.TimeoutExpired(command, 600)
             return real_run(command, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", timeout_chat)
         with pytest.raises(subprocess.TimeoutExpired):
-            ab_eval.run("baseline", "model", 1, str(fake_cli), ["err_case_search"])
+            ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
+        assert len(attempted) == 1
         assert not (tmp_path / "results/model/baseline/meta.jsonl").exists()
     else:
         with ab_eval.batch_gateway(env, work):
@@ -339,9 +374,7 @@ def test_cleanup_owns_only_its_child_and_failed_trials_are_not_recorded(
             with pytest.raises(RuntimeError, match="dedicated, idle home"):
                 with ab_eval.batch_gateway(env, tmp_path):
                     pytest.fail("must not attach to an existing gateway")
-            os.kill(
-                owner, 0
-            )  # the rejected contender did not terminate the existing owner
+            assert psutil.Process(owner).is_running()
     assert not (home / "stub-owner").exists()
 
 
@@ -369,8 +402,139 @@ def test_waits_for_pending_trace_writes_and_bounds_missing_evidence(tmp_path):
         ab_eval.wait_for_trace(trace, tmp_path, Gateway(), timeout=0)
 
 
-@pytest.mark.platforms("windows")
-def test_windows_launcher_is_refused_before_spawning(tmp_path):
-    with pytest.raises(RuntimeError, match="ownership currently requires"):
-        with ab_eval.batch_gateway({}, tmp_path):
-            pytest.fail("unsupported launcher must not be started")
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos", "windows")
+def test_gateway_worker_can_be_a_launcher_descendant(tmp_path):
+    # Exercise a real launcher/worker chain on every host, including Windows venv shims.
+    worker = (
+        "import json, os, sys; from pathlib import Path; from threading import Event; "
+        "Path(sys.argv[1]).write_text(json.dumps({'pid': os.getpid(), 'gateway_state': 'running'})); "
+        "Event().wait(30)"
+    )
+    launcher = "import subprocess, sys; sys.exit(subprocess.call([sys.executable, '-c', *sys.argv[1:]]))"
+    process = subprocess.Popen(
+        [sys.executable, "-c", launcher, worker, str(tmp_path / "gateway_state.json")]
+    )
+    try:
+        owner = ab_eval.wait_for_gateway(process, tmp_path, timeout=3)
+        state = json.loads((tmp_path / "gateway_state.json").read_text())
+        assert owner.pid == state["pid"]
+        assert owner.pid != process.pid
+    finally:
+        children = psutil.Process(process.pid).children(recursive=True)
+        for child in reversed(children):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        process.kill()
+        process.wait(timeout=10)
+        psutil.wait_procs(children, timeout=10)
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("named", [False, True])
+def test_batch_and_chat_preserve_selected_home_with_real_cli_bootstrap(
+    tmp_path, monkeypatch, fake_cli, named
+):
+    root = tmp_path / "home"
+    root.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for name in ("eval", "other"):
+        profile = root / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    (root / "active_profile").write_text("other\n", encoding="utf-8")
+    home = root / "profiles" / "eval" if named else root
+    monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
+    monkeypatch.setattr(ab_eval, "HOME", home)
+    monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    real_popen = subprocess.Popen
+    checked = []
+
+    def check_bootstrap(command, **kwargs):
+        if command[1:3] == ["-m", "hermes_cli.main"]:
+            probe = (
+                "import os, sys; sys.argv = ['hermes', *sys.argv[1:]]; "
+                "import hermes_cli.main; print('SELECTED_HOME=' + os.environ['HERMES_HOME'])"
+            )
+            env = {
+                **kwargs["env"],
+                "PYTHONPATH": str(Path(ab_eval.__file__).parents[2]),
+            }
+            with real_popen(
+                [sys.executable, "-c", probe, *command[3:]],
+                env=env,
+                cwd=tmp_path,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ) as child:
+                stdout, stderr = child.communicate(timeout=30)
+                assert child.returncode == 0, stderr
+                assert f"SELECTED_HOME={home}" in stdout
+            checked.append("gateway" if "gateway" in command else "chat")
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", check_bootstrap)
+    ab_eval.run("baseline", "model", 1, str(fake_cli), ["err_case_search"])
+    assert checked == ["gateway", "chat"]
+    assert (home / "starts.jsonl").exists()
+    assert not (root / "profiles" / "other" / "gateway_state.json").exists()
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("startup_failure", [False, True])
+def test_batch_stops_owned_worker_behind_launcher(
+    tmp_path, monkeypatch, fake_cli, startup_failure
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "batch"
+    work.mkdir()
+    config = work / "relay.toml"
+    ab_eval.write_relay_config(config, work / "trace.jsonl")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(fake_cli),
+        "HERMES_HOME": str(home),
+        "HERMES_NEMO_RELAY_PLUGINS_TOML": str(config),
+    }
+    real_popen, real_wait = subprocess.Popen, ab_eval.wait_for_gateway
+    workers = []
+
+    def launch(command, **kwargs):
+        if "gateway" in command:
+            command = [
+                sys.executable,
+                "-c",
+                "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))",
+                *command,
+            ]
+        return real_popen(command, **kwargs)
+
+    def wait(process, home):
+        owner = real_wait(process, home, timeout=3)
+        workers.extend(psutil.Process(process.pid).children(recursive=True))
+        if startup_failure:
+            raise RuntimeError("fixture startup failure")
+        return owner
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(ab_eval, "wait_for_gateway", wait)
+    try:
+        if startup_failure:
+            with pytest.raises(RuntimeError, match="fixture startup failure"):
+                with ab_eval.batch_gateway(env, work):
+                    pytest.fail("startup must fail")
+        else:
+            with ab_eval.batch_gateway(env, work):
+                assert workers
+            assert not (home / "stub-owner").exists()
+        assert not psutil.wait_procs(workers, timeout=3)[1]
+    finally:
+        for worker in workers:
+            if worker.is_running():
+                worker.kill()

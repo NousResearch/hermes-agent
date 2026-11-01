@@ -80,6 +80,14 @@ export function validateRouteDraft(
     errors.child_timeout_seconds = 'seconds'
   }
 
+  if (turns && !errors.max_iterations && !Number.isSafeInteger(Number(turns))) {
+    errors.max_iterations = 'turns'
+  }
+
+  if (seconds && !errors.child_timeout_seconds && !Number.isSafeInteger(Number(seconds))) {
+    errors.child_timeout_seconds = 'seconds'
+  }
+
   return errors
 }
 

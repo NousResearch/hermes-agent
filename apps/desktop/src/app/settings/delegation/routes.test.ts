@@ -108,6 +108,24 @@ describe('route max_iterations', () => {
   })
 })
 
+describe('route limit edge cases', () => {
+  const base = { name: 'scout', description: 'd', provider: 'p', model: 'm' }
+
+  it('rejects digit strings beyond safe integers', () => {
+    const draft = draftFromRoute(base)
+    expect(validateRouteDraft({ ...draft, max_iterations: '99999999999999999999' }, []).max_iterations).toBe('turns')
+    expect(
+      validateRouteDraft({ ...draft, child_timeout_seconds: '99999999999999999999' }, []).child_timeout_seconds
+    ).toBe('seconds')
+  })
+
+  it('accepts and saves a padded turn limit', () => {
+    const draft = { ...draftFromRoute(base), max_iterations: ' 15 ' }
+    expect(validateRouteDraft(draft, []).max_iterations).toBeUndefined()
+    expect(routeFromDraft(draft).max_iterations).toBe(15)
+  })
+})
+
 describe('route child_timeout_seconds', () => {
   const base = { name: 'scout', description: 'd', provider: 'p', model: 'm' }
 

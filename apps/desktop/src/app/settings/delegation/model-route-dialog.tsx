@@ -222,11 +222,9 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
                 placeholder={r.turnsPlaceholder}
                 value={draft.max_iterations}
               />
-              {errorFor('max_iterations') ? (
-                <FieldHint error>{errorFor('max_iterations')}</FieldHint>
-              ) : (
-                <FieldHint>{r.turnsHint}</FieldHint>
-              )}
+              <FieldHint error={Boolean(errorFor('max_iterations'))}>
+                {errorFor('max_iterations') ?? r.turnsHint}
+              </FieldHint>
             </Field>
             <Field htmlFor="delegation-route-timeout" label={r.timeoutLabel} optional optionalLabel={r.optional}>
               <Input
@@ -238,11 +236,9 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
                 placeholder={r.timeoutPlaceholder}
                 value={draft.child_timeout_seconds}
               />
-              {errorFor('child_timeout_seconds') ? (
-                <FieldHint error>{errorFor('child_timeout_seconds')}</FieldHint>
-              ) : (
-                <FieldHint>{r.timeoutHint}</FieldHint>
-              )}
+              <FieldHint error={Boolean(errorFor('child_timeout_seconds'))}>
+                {errorFor('child_timeout_seconds') ?? r.timeoutHint}
+              </FieldHint>
             </Field>
           </div>
 

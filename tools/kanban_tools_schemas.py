@@ -448,6 +448,11 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "— a specifier profile is expected to flesh out "
                 "the body before work starts."
         )),
+        "auto_decompose": _prop("boolean", (
+                "Whether the background dispatcher may automatically decompose this task "
+                "while it is in triage. Defaults to true; set false to keep a governed or "
+                "operator-authored card unchanged. Manual decompose remains available."
+        )),
         "idempotency_key": _prop("string", (
                 "If a non-archived task with this key already "
                 "exists, return that task's id instead of creating "

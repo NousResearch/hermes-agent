@@ -89,6 +89,35 @@ async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
 
 
 @pytest.mark.asyncio
+async def test_slack_channel_not_found_marks_target_dead_then_short_circuits(isolate):
+    """Scoped follow-up: classify_send_error's table was Telegram-only, so a permanently-dead
+    Slack channel (deleted / bot never invited) was misclassified 'unknown' and retried forever
+    instead of being short-circuited like the Telegram Forbidden case above."""
+    adapter_calls_message = "SlackApiError: The server responded with: {'ok': False, 'error': 'channel_not_found'}"
+
+    class SlackDeadChannelAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, chat_id, content, metadata=None):
+            self.calls.append(chat_id)
+            raise RuntimeError(adapter_calls_message)
+
+    slack_adapter = SlackDeadChannelAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.SLACK: slack_adapter})
+    target = DeliveryTarget.parse("slack:C123")
+
+    res1 = await router.deliver("hi", [target])
+    assert res1["slack:C123"]["success"] is False
+    assert router.dead_targets.is_dead("slack", "C123") is True
+    assert slack_adapter.calls == ["C123"]
+
+    res2 = await router.deliver("hi again", [target])
+    assert res2["slack:C123"]["skipped"] == "dead_target"
+    assert slack_adapter.calls == ["C123"]  # short-circuited: adapter not called again
+
+
+@pytest.mark.asyncio
 async def test_shared_registry_is_used_when_injected(isolate):
     shared = DeadTargetRegistry()
     shared.mark_dead("telegram", "500", "pre-existing")

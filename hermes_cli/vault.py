@@ -4,8 +4,8 @@ Subcommands:
 - ``hermes vault add``   interactive wizard; the password is read via
   getpass (never echoed, never accepted as argv). The login identifier is
   visible metadata and prompted normally.
-- ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
-  handles. Passwords are never shown.
+- ``hermes vault list``  metadata — labels, kinds, identifiers, origins
+  (or "any site" for a card saved for any site), handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
 - ``hermes vault key``   where the vault key lives; ``key migrate --to keychain|file`` moves it.
 
@@ -24,6 +24,31 @@ def _console():
     from rich.console import Console
 
     return Console()
+
+
+def _origin_label(meta) -> str:
+    return meta.origin or ("any site" if meta.any_site else "-")
+
+
+def _ask_checkout_origin(c, kind: str) -> tuple[str | None, str]:
+    """The origin a card/address may be filled on, and its ``origin_match``. A card may instead be saved for any
+    site, but only when the user types ``any`` and confirms; a blank answer always asks again."""
+    question = ("Site origin the card may be filled on (e.g. https://shop.example.com), or 'any' for any site you "
+                "confirm at each fill: " if kind == "payment"
+                else "Site origin the item may be filled on (e.g. https://shop.example.com): ")
+    while True:
+        origin = input(question).strip()
+        if kind == "payment" and origin.lower() == "any":
+            c.print("[yellow]Hermes will ask you to confirm the exact site before every fill. An exact site is "
+                    "safer: a look-alike shop is then refused without asking.[/]")
+            if input("Save this card for any site? [y/N]: ").strip().lower() in ("y", "yes"):
+                c.print("[dim]The card is filled on the https page you confirm, one fill at a time; card values "
+                        "are read hidden.[/]")
+                return None, "any_site"
+            continue
+        if origin:
+            c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
+            return origin, "exact"
 
 
 def _cmd_add(args) -> None:
@@ -88,10 +113,7 @@ def _cmd_add(args) -> None:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
             fields = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
-            origin = ""
-            while not origin:
-                origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
-            c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
+            origin, origin_match = _ask_checkout_origin(c, kind)
             secret = {}
             for field in fields:
                 required = field in REQUIRED_FIELDS[kind]
@@ -102,12 +124,13 @@ def _cmd_add(args) -> None:
                     value = read(prompt).strip()
                 if value:
                     secret[field] = value
-            meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)
+            meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin,
+                                              origin_match=origin_match)
     except VaultError as exc:
         c.print(f"[red]Error:[/] {exc}")
         return
 
-    c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={meta.origin or '-'}")
+    c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={_origin_label(meta)}")
 
 
 def _cmd_list(args) -> None:
@@ -132,7 +155,7 @@ def _cmd_list(args) -> None:
         for col in ("Handle", "Source", "Kind", "Label", "Identifier", "Origin"):
             table.add_column(col, style="bold" if col == "Handle" else None)
         for source, meta in rows:
-            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
+            table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", _origin_label(meta))
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
     for name in locked:

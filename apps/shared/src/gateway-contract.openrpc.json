@@ -45814,6 +45814,17 @@
             "default": null,
             "title": "Has Otp"
           },
+          "origin_match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultOriginMatch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "backend": {
             "title": "Backend",
             "type": "string"
@@ -45893,6 +45904,14 @@
         },
         "title": "VaultLockResult",
         "type": "object"
+      },
+      "VaultOriginMatch": {
+        "enum": [
+          "exact",
+          "any_site"
+        ],
+        "title": "VaultOriginMatch",
+        "type": "string"
       },
       "VaultRemoveParams": {
         "additionalProperties": false,

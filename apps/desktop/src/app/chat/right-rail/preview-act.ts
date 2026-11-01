@@ -296,6 +296,8 @@ ${preamble()}
     try {
       var out = act({ kind: 'elements' });
       watch('sweep');
+      // Navigation replaces the armed witness; a missed click leaves it present but null.
+      out.navigated = !Object.prototype.hasOwnProperty.call(w, '__hermesHit');
       out.hit = w.__hermesHit || null;
       return JSON.stringify(out);
     } catch (err) {
@@ -677,12 +679,13 @@ async function driveAction(
     return { acted, note: NAVIGATED, success: true }
   }
 
-  const { hit, ...result } = after.result as PreviewActResult & { hit?: { tag: string; trusted: boolean } | null }
+  const { hit, navigated, ...result } = after.result as PreviewActResult & {
+    hit?: { tag: string; trusted: boolean } | null
+    navigated?: boolean
+  }
 
-  // The witness the locate trip armed. No record means the input never reached
-  // the document, which the agent must hear about — every other signal here
-  // travels on the script channel and would report success regardless.
-  if (!hit && CLICKS.indexOf(action.kind) !== -1) {
+  // A new document cannot retain the old document's pointerdown witness.
+  if (!hit && !navigated && CLICKS.indexOf(action.kind) !== -1) {
     return {
       ...result,
       error: 'The pointer input never reached the page, so nothing was ' + acted.split(' ')[0] + '.',
@@ -690,7 +693,12 @@ async function driveAction(
     }
   }
 
-  return { ...result, acted, note: hitNote(hit), success: true }
+  return {
+    ...result,
+    acted,
+    note: navigated ? 'The page navigated after the input. The inventory is from the new page.' : hitNote(hit),
+    success: true
+  }
 }
 
 /** Flag a click the overlay intercepted, which would otherwise look like a page

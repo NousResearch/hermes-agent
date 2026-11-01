@@ -141,6 +141,95 @@ class TestCreateJob:
 
 
     @pytest.mark.asyncio
+    async def test_create_job_passes_script_fields_through(self, adapter):
+        """POST /api/jobs with script, no_agent and workdir reaches create_job with them."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "digest",
+                    "schedule": "0 18 * * 0",
+                    "script": "digest.py",
+                    "no_agent": True,
+                    "workdir": "/tmp/digest",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["script"] == "digest.py"
+                assert call_kwargs["no_agent"] is True
+                assert call_kwargs["workdir"] == "/tmp/digest"
+                assert call_kwargs["prompt"] == ""
+
+    @pytest.mark.asyncio
+    async def test_create_job_without_script_fields_passes_none_of_them(self, adapter):
+        """An agent job's create call carries no script, no_agent or workdir."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert not {"script", "no_agent", "workdir"} & set(call_kwargs)
+
+    @pytest.mark.asyncio
+    async def test_create_job_rejects_non_boolean_no_agent(self, adapter):
+        """POST /api/jobs with no_agent as a string is a 400, like a non-boolean paused."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "digest",
+                    "schedule": "0 18 * * 0",
+                    "script": "digest.py",
+                    "no_agent": "yes",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "no_agent" in data["error"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_job_rejects_non_string_script(self, adapter):
+        """POST /api/jobs with a non-string script is a 400 instead of a silently dropped script."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "digest",
+                    "schedule": "0 18 * * 0",
+                    "prompt": "summarize",
+                    "script": ["digest.py"],
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "script" in data["error"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):
         """A failed external registration is a structured partial failure."""
         from cron.scheduler import CronSchedulerRegistrationError
@@ -240,6 +329,64 @@ class TestUpdateJob:
                 assert "name" in sanitized
                 assert "evil_field" not in sanitized
                 assert "__proto__" not in sanitized
+
+    @pytest.mark.asyncio
+    async def test_update_job_passes_script_fields_through(self, adapter):
+        """PATCH /api/jobs/{id} — script, no_agent and workdir are updatable fields."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "script": "digest.py", "no_agent": True}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"script": "digest.py", "no_agent": True, "workdir": "/tmp/digest"},
+                )
+                assert resp.status == 200
+                sanitized = mock_update.call_args[0][1]
+                assert sanitized == {
+                    "script": "digest.py", "no_agent": True, "workdir": "/tmp/digest",
+                }
+
+    @pytest.mark.asyncio
+    async def test_update_job_rejects_non_boolean_no_agent(self, adapter):
+        """PATCH refuses a string no_agent like create; stored, "false" would read as true."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}", json={"no_agent": "false"})
+                assert resp.status == 400
+                data = await resp.json()
+                assert "no_agent" in data["error"]
+                mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_job_rejects_non_string_script(self, adapter):
+        """PATCH refuses a non-string script like create; update_job stores it unnormalized."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}", json={"script": 42})
+                assert resp.status == 400
+                data = await resp.json()
+                assert "script" in data["error"]
+                mock_update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

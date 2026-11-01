@@ -19,6 +19,10 @@ load into that home's own layer, so one process serving several profiles
 plugins override bundled plugins on name collision, so third parties can
 monkey-patch or replace any built-in profile without editing the repo.
 
+A safe worker (``--safe-mode``) loads only the bundled profiles: they are part of
+Hermes, not user customization, and carry each provider's endpoint and wire rules.
+User, pip and legacy profiles, and any later ``register_provider()``, are skipped.
+
 For backward compatibility, ``providers/*.py`` files (other than ``base.py``
 and ``__init__.py``) are still discovered via ``pkgutil.iter_modules``.
 This lets out-of-tree users drop a single-file profile into an editable
@@ -105,6 +109,9 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
+# True while the bundled discovery step imports plugins in this context: the only registrations a
+# safe worker accepts, so a registration from any other thread is never mistaken for one.
+_BUNDLED_IMPORT: ContextVar[bool] = ContextVar("_provider_bundled_import", default=False)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -137,6 +144,11 @@ def _sync_auth_registry() -> None:
             logger.debug("%s sync skipped: %s", module, exc)
 
 
+def _safe_worker() -> bool:
+    from agent.safe_worker_policy import safe_worker_enabled
+    return safe_worker_enabled()
+
+
 def register_provider(profile: ProviderProfile) -> None:
     """Register a provider profile by name and aliases.
 
@@ -153,6 +165,8 @@ def register_provider(profile: ProviderProfile) -> None:
     only = _REGISTRATION_ONLY.get()
     if only is not None and profile.name not in only:
         return
+    if not _BUNDLED_IMPORT.get() and _safe_worker():
+        return  # a safe worker registers the bundled profiles only
     _REGISTRY_GENERATION += 1
     layer = _REGISTRATION_TARGET.get()
     if layer is not None:
@@ -220,10 +234,6 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
-        return None
     if not _discovered:
         _discover_providers()
     layer, home, key = _bound_home_layer()
@@ -250,7 +260,8 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     # ``providers:`` / ``custom_providers:`` but lack an explicit profile entry
     # also share the generic wire policy. The helper is memoized (see
     # ``_has_named_custom_provider``) so the miss path stays cheap for per-model loops.
-    if profile is None and isinstance(name, str) and not is_custom_route:
+    # A safe worker has no user-configured providers, and this check reads the live config backend.
+    if profile is None and isinstance(name, str) and not is_custom_route and not _safe_worker():
         if _has_named_custom_provider(name, home, key):
             profile = lookup("custom")
     return profile
@@ -333,11 +344,10 @@ def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | N
     ``$HERMES_HOME`` plugin installed after import (or in another profile) is seen; memoized per
     (home, host) until the registry changes, because wire paths ask on every request.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
     from utils import base_url_hostname
 
     host = base_url_hostname(url) if url else ""
-    if not host or safe_worker_enabled():
+    if not host:
         return None
     if not _discovered:
         _discover_providers()
@@ -361,10 +371,6 @@ def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | N
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
-        return []
     global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
@@ -454,10 +460,8 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     without making every model lookup perform two filesystem stats.
     """
     now = time.monotonic()
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    # Safe mode fires zero user customization: same gate as ``_discover_providers``.
-    if home is None or safe_worker_enabled() or not (
+    # A safe worker never loads ``$HERMES_HOME`` plugins (only the bundled step runs).
+    if home is None or _safe_worker() or not (
         force
         or layer.stamp_checked_at is None
         or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
@@ -831,10 +835,6 @@ def bundled_profiles() -> list[ProviderProfile]:
     order), WITHOUT config and without touching the registry: each bundled plugin is executed into
     a private module whose registrations are collected. For descriptive catalogs, which must not
     depend on config or on discovery having run."""
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():  # a safe worker loads no plugin code, bundled included (as list_providers)
-        return []
     collected: list[ProviderProfile] = []
     token = _COLLECT.set(collected)
     try:
@@ -868,22 +868,33 @@ def _discover_providers() -> None:
     module-level. Later steps win on name collision. ``$HERMES_HOME`` plugins are
     per profile home and load through :func:`_home_layer` at lookup time.
     """
-    from agent.safe_worker_policy import safe_worker_enabled
-
-    if safe_worker_enabled():
-        return
     global _discovered, _discovering
     if _discovered:
         return
     _discovered = True
     _discovering = True
     try:
-        _run_discovery_steps()
+        # A safe worker runs bundled plugins only: no pip, legacy or user provider code.
+        (_discover_bundled_providers if _safe_worker() else _run_discovery_steps)()
     finally:
         _discovering = False
         # hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
         # partial profile list — hand it the complete one (no-op unless auth is already loaded).
         _sync_auth_registry()
+
+
+def _discover_bundled_providers() -> None:
+    """Import every bundled plugin at ``<repo>/plugins/model-providers/<name>/``."""
+    if not _BUNDLED_PLUGINS_DIR.is_dir():
+        return
+    token = _BUNDLED_IMPORT.set(True)
+    try:
+        for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
+            if not child.is_dir() or child.name.startswith(("_", ".")):
+                continue
+            _import_plugin_dir(child, "bundled")
+    finally:
+        _BUNDLED_IMPORT.reset(token)
 
 
 def _run_discovery_steps() -> None:
@@ -905,11 +916,7 @@ def _run_discovery_steps() -> None:
     _discover_entry_point_providers()
 
     # 1. Bundled plugins — shipped with hermes-agent.
-    if _BUNDLED_PLUGINS_DIR.is_dir():
-        for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
-            _import_plugin_dir(child, "bundled")
+    _discover_bundled_providers()
 
     # 2. Legacy single-file profiles at providers/<name>.py. Kept for
     #    back-compat — if someone drops a ``providers/foo.py`` into an

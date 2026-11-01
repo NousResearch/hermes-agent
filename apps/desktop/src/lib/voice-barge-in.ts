@@ -237,6 +237,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       let wasPlaying = false
       let playbackSeen = false
       let lastPlayingAt = 0
+      let playbackStoppedAt = -Infinity
       let graceUntil = 0
       let tripped = false
       let trippedAt = 0
@@ -270,14 +271,23 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         // Playback is observed at delivery, not when a queued audio sample was
         // captured. Historical samples must not backdate playback-onset grace.
         const playbackNow = audioContext.currentTime * 1_000
+
+        if (!playing && wasPlaying) {
+          playbackStoppedAt = playbackNow
+        }
+
+        // Delayed speaker bleed must not become quiet-room speech just because
+        // playback stopped before the capture queue drained.
+        const capturedDuringPlayback = playing || now <= playbackStoppedAt
+
         // Calibrate from quiet samples, then hold the floor through playback.
         if (!floorLocked) {
-          if (!playing) {
+          if (!capturedDuringPlayback) {
             calibratedSince ??= now
             pushFloorSample(level)
           }
 
-          if (playing || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
+          if (capturedDuringPlayback || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
             floorLocked = true
           }
         }
@@ -299,12 +309,12 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
         let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * floorMultiplier)
 
-        if (playing) {
+        if (capturedDuringPlayback) {
           trigger = Math.min(Math.max(trigger, playbackMinTrigger), TRIGGER_CEILING_LEVEL)
         }
 
         // Track ambient drift while quiet and below trigger.
-        if (floorLocked && !playing && level < trigger) {
+        if (floorLocked && !capturedDuringPlayback && level < trigger) {
           pushFloorSample(level)
         }
 

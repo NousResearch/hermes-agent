@@ -81,7 +81,9 @@ that its queued successors have not reported yet. Cancellation and meter-failure
 cleanup do not wait for a fresh sample.
 Playback state is observed at delivery time: use the current audio clock for
 playback-onset grace and gap bookkeeping, never a queued sample's historical
-timestamp. Speech windows still use capture time.
+timestamp. Queued samples preceding the observed stop retain the playback
+threshold; new quiet-room speech uses the ordinary lower threshold. Speech
+windows still use capture time.
 
 The worklet is a Vite-emitted local asset, not a blob/data-URL fallback or a
 reason to weaken CSP. This removes a paint-clock dependency, not the main

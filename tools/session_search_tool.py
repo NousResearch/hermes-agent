@@ -150,6 +150,13 @@ def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
     return int(parsed.timestamp())
 
 
+def _started_sort_key(value: Any) -> float:
+    """Sub-second start time for ordering sessions (``_coerce_started_ts`` truncates to seconds)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return float(_coerce_started_ts(value) or 0)
+
+
 def _coerce_started_ts(value: Any) -> Optional[int]:
     """``sessions.started_at`` as an int unix timestamp (numeric or ISO text); None if unusable."""
     if value is None or value == "" or isinstance(value, bool):
@@ -366,9 +373,11 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
+    # Rank by relevance inside the scan window; ``sort`` re-orders the chosen sessions afterwards.
+    # A time-ordered scan window fills with the newest weak matches and drops the relevant session.
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
-        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+        exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=None,
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
@@ -414,6 +423,9 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
+    if sort in ("newest", "oldest"):
+        seen_sessions = dict(sorted(seen_sessions.items(), reverse=(sort == "newest"),
+                                    key=lambda kv: _started_sort_key(kv[1].get("session_started"))))
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue

@@ -21,7 +21,7 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-
 # snapshot lacks AND derivation regresses.
 _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({
     "-z", "--oneshot", "-m", "--model", "--provider", "--reasoning", "-t", "--toolsets",
-    "-r", "--resume", "-s", "--skills", "--usage-file", "--in",
+    "-r", "--resume", "-s", "--skills", "--usage-file", "--in", "--session-id",
 })
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 
@@ -87,6 +87,34 @@ def _inherited_flag(parser, *args, **kwargs):
     return action
 
 
+def _session_id_type(value: str) -> str:
+    """argparse ``type=`` validator for ``--session-id``.
+
+    Rejects ids that no Hermes surface could ever mint/recognize (``is_known_session_id`` is the
+    recognition side of the minting contract in ``hermes_state_ids``) so an orchestrator that
+    pre-registers a routing key gets a clean parse-time error instead of an unresumable /
+    unsalvageable session id. ``ArgumentTypeError`` messages are surfaced verbatim — no traceback.
+    """
+    from hermes_state_ids import is_known_session_id
+
+    if not is_known_session_id(value):
+        raise argparse.ArgumentTypeError(
+            "invalid --session-id value: not a recognized Hermes session-id shape "
+            "(e.g. 20260225_143052_a1b2c3, or a uuid4)"
+        )
+    return value
+
+
+# Shared help for the top-level + chat declarations of --session-id. The runtime conflict check is
+# main._reject_session_id_conflict (argparse groups can't span the top/sub parser pair —
+# ``hermes --resume X chat --session-id Y`` parses both without either parser seeing the other).
+_SESSION_ID_HELP = (
+    "Start a FRESH session whose session_id is exactly this value (a known Hermes id shape, "
+    "e.g. 20260225_143052_a1b2c3). For orchestrators that pre-register the id as a routing key "
+    "before spawning the process. Cannot be combined with --resume/-r/-c/--continue; honored by "
+    "the classic REPL (incl. chat -q single-query), IGNORED by --tui and -z/--oneshot.")
+
+
 _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
@@ -97,6 +125,7 @@ Examples:
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
     hermes --resume latest        Resume the most recent session (same as -c)
+    hermes chat --session-id ID   Start a FRESH session with a pre-registered id (no resume)
     hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
@@ -175,6 +204,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
     add("--resume", "-r", metavar="SESSION", default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))
+    add("--session-id", metavar="SESSION_ID", dest="session_id", default=None,
+        type=_session_id_type, help=_SESSION_ID_HELP)
     add("--no-restore-cwd", action="store_true", default=False,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=None, help=(
@@ -275,6 +306,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
     add("--resume", "-r", metavar="SESSION_ID", default=SUPPRESS, help=(
         "Resume a previous session by ID (shown on exit), or 'latest' "
         "for the most recent session"))
+    # SUPPRESS like every flag mirrored from the top level: a plain None default here would
+    # clobber `hermes --session-id X chat` (test_argparse_flag_propagation.py).
+    add("--session-id", metavar="SESSION_ID", dest="session_id", default=SUPPRESS,
+        type=_session_id_type, help=_SESSION_ID_HELP)
     add("--no-restore-cwd", action="store_true", default=SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.")
     add("--in", dest="in_dir", metavar="DIR", default=SUPPRESS, help=(

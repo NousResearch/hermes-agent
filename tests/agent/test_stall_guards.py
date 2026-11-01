@@ -485,3 +485,43 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_chinese_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Verbatim tails from a real zh session (#114082) where every promoted reasoning-only stop
+    # went undetected: Chinese reasoning never writes "let me"/"I'll", it writes "让me"/"执行。".
+    # Markdown bold around the tail is the norm in these monologues, hence the trailer allowance.
+    for tail in (
+        "**执行。**\n\n**好。**",
+        "**回复。**",
+        "**嗯，让me write the files first.**\n\n**执行。**",
+        "**已查:只有 3 个内置盘。U 盘完全不在。**\n\n**所以:拔插是必须的。**\n\n**告诉用户拔插 U 盘。**",
+        "**先测 vision(用户关心这个)。**\n\n**执行。**",
+        "**💡 简洁 + 操作指引。**\n\n**回复。**",
+        "让我看一下日志。",
+        "我先检查配置文件。",
+        "下一步：跑测试。",
+        "现在就去查。",
+    ):
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_chinese_stated_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "已经完成。测试全部通过，报告已写入 /tmp/report.md",
+        "分析结果如下：磁盘还有 12GB 可用空间，建议先清理缓存。",
+        # A plan marker followed by a real sentence is a stated answer, not an announcement.
+        "执行完成后，结果会写入日志文件，然后你需要重启服务。",
+        "下一步操作：删除缓存目录，然后重启服务。",
+        "接下来我会说明三个方案的区别：第一个成本最低。",
+        "回复用户之前，请确认他已经收到上一封邮件。",
+        "好。",
+        "The answer is 42.",
+        "",
+        None,
+    ):
+        assert not promoted_reasoning_announces_action(text), text

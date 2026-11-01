@@ -897,7 +897,21 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        task = kb.get_task(conn, tid)
+        pr_handoff_keys = tuple(
+            key for key in ("pr", "pr_url", "published_pr")
+            if metadata and metadata.get(key) not in (None, "", False)
+        )
+        _check(not (
+            task and task.completion_contract == "local-only" and pr_handoff_keys
+        ), (
+            "cannot request PR review while completion_contract='local-only': "
+            f"metadata declares {', '.join(pr_handoff_keys)}. The task is still running "
+            "under the implementer with no state change. Create the PR-delivery card with "
+            "completion_contract=OWNER/REPO or the exact GitHub PR URL, then hand that "
+            "card to review."
+        ))
+        _goal_gate("kanban_request_review", task, tid, summary)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,

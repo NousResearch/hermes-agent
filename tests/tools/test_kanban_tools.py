@@ -297,6 +297,42 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
         assert (task.status, task.assignee) == ("review", "verifier")
 
 
+@pytest.mark.parametrize("pr_metadata", [
+    {"pr": 1366},
+    {"pr_url": "https://github.com/acme/demo/pull/1366"},
+    {"published_pr": "https://github.com/acme/demo/pull/1366"},
+])
+def test_request_review_rejects_pr_handoff_for_local_only_contract(
+    monkeypatch, worker_env, pr_metadata,
+):
+    """A PR handoff on a local-only card must fail before ownership moves.
+
+    Otherwise the inconsistency is discovered only after a reviewer claims the
+    card, turning an implementer correction into a capability block.
+    """
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        before = kb.get_task(conn, worker_env)
+        before_events = kb.list_events(conn, worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(before.current_run_id))
+
+    out = json.loads(kt._handle_request_review({
+        "summary": "PR ready for review.",
+        "metadata": pr_metadata,
+    }))
+
+    assert "completion_contract='local-only'" in out["error"]
+    with kbc.connect() as conn:
+        after = kb.get_task(conn, worker_env)
+        assert (after.status, after.assignee, after.current_run_id) == (
+            "running", "test-worker", before.current_run_id,
+        )
+        assert kb.list_events(conn, worker_env) == before_events
+
+
 def test_unbound_worker_cannot_mutate_card(monkeypatch, worker_env):
     """A dispatcher-spawned worker that cannot resolve its run id must be refused
     on every run-lifecycle mutation. ``expected_run_id=None`` would silently skip

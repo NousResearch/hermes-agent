@@ -48,3 +48,22 @@ def test_thin_and_result_is_filled_from_the_or_ranking(db):
 def test_explicit_boolean_queries_keep_exact_semantics(db):
     # Explicit OR/NOT means the caller chose the semantics: no extra fill.
     assert _sessions(db, "kestrel NOT rollback") == ["s_answer"]
+
+
+def test_fill_counts_lineages_not_raw_sessions(tmp_path):
+    """Compression children share their root's lineage, and discovery dedupes by lineage. A gate that
+    counted raw session ids saw a "full" AND result made of one conversation and skipped the fill."""
+    d = SessionDB(tmp_path / "state.db")
+    d.create_session("root", source="cli")
+    d.append_message("root", role="user", content="kestrel deploy codename rollback window")
+    d.end_session("root", "compression") if hasattr(d, "end_session") else None
+    for i in range(3):  # three continuations of the same conversation, each holding every term
+        d.create_session(f"cont{i}", source="cli", parent_session_id="root" if i == 0 else f"cont{i-1}")
+        d.append_message(f"cont{i}", role="assistant", content="kestrel deploy codename rollback window noted")
+    d.create_session("s_answer", source="cli")
+    d.append_message("s_answer", role="assistant", content="Kestrel deploy codename TEAL-HERON-4417; revert window 30 minutes.")
+    try:
+        got = _sessions(d, "kestrel deploy codename rollback window", limit=3)
+        assert "s_answer" in got
+    finally:
+        d.close()

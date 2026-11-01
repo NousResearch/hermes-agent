@@ -66,6 +66,30 @@ def test_must_echo_pads_and_aliased_gemini_keeps_its_signature():
     assert gemini_alias["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
 
 
+def test_cross_provider_gemini_step_after_last_user_injects_skip_thought_signature():
+    from tests.fakes.providers.vertex import _check_signatures
+
+    msgs = [
+        deepcopy(_BARE),  # before last user -> untouched
+        {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        deepcopy(_BARE),  # after last user without signature -> gets skip_thought_signature_validator
+        deepcopy(_TURN),  # after last user with signature -> preserves existing signature
+    ]
+    assert "missing a thought_signature" in (_check_signatures(msgs, {"sig"}) or "")
+    out = ChatCompletionsTransport().convert_messages(
+        msgs,
+        model="google/gemini-3.8-flash",
+        base_url="https://aiplatform.googleapis.com/v1beta1/projects/uop-atlas/locations/global/endpoints/openapi",
+        provider="vertex",
+    )
+    assert "extra_content" not in out[0]["tool_calls"][0]
+    assert out[2]["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "skip_thought_signature_validator"}
+    }
+    assert out[3]["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "sig"}}
+    assert _check_signatures(out, {"sig"}) is None
+
+
 class _Rejection(Exception):
     status_code = 400
 

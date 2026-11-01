@@ -57,6 +57,7 @@ MISSING_SIGNATURE_MESSAGE = (
     "correctly, and missing thought_signature may lead to degraded model performance. Additional data, function "
     "call `default_api:{name}` , position {pos}. Please refer to https://ai.google.dev/gemini-api/docs/"
     "thought-signatures for more details.")
+SKIP_SIGNATURES = frozenset({"skip_thought_signature_validator", "context_engineering_is_the_way_to_go"})
 # HTTP status -> google.rpc canonical status name (https://cloud.google.com/apis/design/errors).
 GRPC_STATUS = {400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND",
                429: "RESOURCE_EXHAUSTED", 500: "INTERNAL", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED"}
@@ -270,7 +271,7 @@ def _check_signatures(messages: list[dict[str, Any]], issued: set[str]) -> str |
             continue
         for pos, tc in enumerate(calls):
             sig = _first_signature(tc)
-            if sig is not None and sig not in issued:
+            if sig is not None and sig not in issued and sig not in SKIP_SIGNATURES:
                 return "Corrupted thought signature."
             if i > last_user and pos == 0 and sig is None:
                 return MISSING_SIGNATURE_MESSAGE.format(name=tc.get("function", {}).get("name"), pos=step + 1)

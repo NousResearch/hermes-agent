@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent import context_compressor_tool_summary as tool_summaries
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
@@ -38,7 +39,7 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
-    elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
+    elide_keeping_skill_safety_rule, with_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -834,11 +835,6 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
-
-
-def _is_summary_stub(content: str) -> bool:
-    """True for a ``[tool] ... (N chars)`` summary (a prune-only one may carry the rule) or a lean-tail demotion stub."""
-    return (s := without_skill_safety_rule(content)).startswith("[") and " chars)" in s and len(s) < 400 or is_demoted_stub(s)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -1720,7 +1716,7 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
     failed = _result_failure_suffix(content) or (" FAILED" if _skill_view_failed(content) else "")
     # Re-summarizing a stub (fallback summary) keeps that stub's own verdict instead of re-deciding blind.
-    keep = SKILL_PRUNED_MARKER_PREFIX in content if _is_summary_stub(content) else not failed
+    keep = SKILL_PRUNED_MARKER_PREFIX in content if tool_summaries.is_summary_stub(content) else not failed
     marker = " " + _skill_pruned_marker(str(skill)) if skill != "?" and keep else ""
     return f"[skill_view] name={skill}{failed} ({content_len:,} chars)" + marker
 
@@ -2018,8 +2014,8 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
-    first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
+    return tool_summaries.summarize_unknown_tool_result(tool_name, args, content)
+
 
 
 def _model_threshold_key_rank(key: str, model: str, provider: str) -> tuple[int, int] | None:
@@ -3201,7 +3197,7 @@ class ContextCompressor(
         if (
             not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
             or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
+            or tool_summaries.is_summary_stub(content) or len(content) <= min_prune_chars
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))

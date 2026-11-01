@@ -4,6 +4,20 @@ from hermes_cli.status import show_status
 import subprocess
 
 
+def test_show_status_reports_matrix_home_room_without_printing_access_token(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "matrix-access-token-must-not-appear")
+    monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "!home:example.org")
+
+    show_status(SimpleNamespace(full=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Matrix        ✓ configured (home: !home:example.org)" in output
+    assert "matrix-access-token-must-not-appear" not in output
+
+
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"

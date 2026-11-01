@@ -38,6 +38,12 @@ def stop_child_tree(child: subprocess.Popen) -> None:
         raise RuntimeError(f"TUI children still alive: {[p.pid for p in descendants]}")
 
 
+def first_screen_ready(plain: bytes) -> bool:
+    # A blank install reaches either the Ink setup screen or, when no provider is
+    # configured, the classic first-run guard (hermes_cli.main._first_run_setup_guard).
+    return (b"Setup Required" in plain and b"/model" in plain) or b"Run setup now?" in plain
+
+
 def tui_smoke(launcher: Path, env: dict[str, str], cwd: Path) -> None:
     import fcntl
     import pty
@@ -64,14 +70,14 @@ def tui_smoke(launcher: Path, env: dict[str, str], cwd: Path) -> None:
                     break
                 captured.extend(chunk)
                 plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(captured))
-                if b"Setup Required" in plain and b"/model" in plain:
+                if first_screen_ready(plain):
                     ready = True
                     break
             if child.poll() is not None:
                 break
         if not ready:
-            raise RuntimeError("TUI never reached its real setup screen:\n" + captured.decode(errors="replace"))
-        print("TUI_SETUP_SCREEN_OK", flush=True)
+            raise RuntimeError("TUI never reached its first-run screen:\n" + captured.decode(errors="replace"))
+        print("FIRST_RUN_SCREEN_OK", flush=True)
     finally:
         try:
             stop_child_tree(child)

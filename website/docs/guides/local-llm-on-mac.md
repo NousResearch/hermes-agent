@@ -216,7 +216,7 @@ Tested on October 31, 2026, on an **Apple M5 Pro with 64 GB unified memory**, ru
 
 Replayed five consecutive model calls from each of 10 fixed [Hermes reasoning traces](https://huggingface.co/datasets/lambda/hermes-agent-reasoning-traces/tree/b92885e4f0161d4b2536512710e004d4892cac6e) (`kimi` configuration), once at concurrency 1 and 4: **50 requests per engine per concurrency**. Inputs were 1,584–21,268 tokens, with thinking enabled and a 2,048-token output cap. Each call used the same recorded history and tool results across engines.
 
-All servers allowed four concurrent requests with a 65,536-token context limit and RAM prefix caching. KV caches were unquantized; KV offloading and speculative decoding were disabled. Engines ran sequentially, restarting between concurrency levels. Warmups and model loading were excluded. All **300/300 requests** completed successfully.
+All servers allowed four concurrent requests with a 65,536-token context limit and RAM prefix caching. KV caches were unquantized; KV offloading and speculative decoding were disabled.
 
 ### Results
 

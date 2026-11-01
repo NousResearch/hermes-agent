@@ -1,5 +1,5 @@
 """gpt-6-astra (and its ``-900k`` picker alias) is native-compaction eligible only on official
-Codex OAuth (#103720).
+Codex OAuth (#103720); gpt-6.1-sol and gpt-6-luna ride the same OAuth-only clause (#137704).
 
 Both the destination capability (``resolve_native_compaction_capabilities``) and the
 per-request gate (``native_compaction_context_management``) must agree, and the request
@@ -32,6 +32,17 @@ _CODEX = "https://chatgpt.com/backend-api/codex"
     ("gpt-6-astra", "openai-codex", None, False),
     ("gpt-6-astra-mini", "openai-codex", _CODEX, False),
     ("gpt-6-other", "openai-codex", _CODEX, False),
+    # Sol 6.1 / Luna: verified on official Codex OAuth only; -900k picker alias follows
+    # the slug, the direct API and relays stay excluded, and the unverified gpt-6-sol
+    # (no .1) is not swept in by the substring markers (#137704).
+    ("gpt-6.1-sol", "openai-codex", _CODEX, True),
+    ("gpt-6-luna", "openai-codex", "https://chatgpt.com:443/backend-api/codex/", True),
+    ("gpt-6.1-sol-900k", "openai-codex", _CODEX, True),
+    ("gpt-6-luna-900k", "openai-codex", _CODEX, True),
+    ("gpt-6.1-sol", "openai", "https://api.openai.com/v1", False),
+    ("gpt-6-luna", "openai-codex", "https://relay.example/v1", False),
+    ("gpt-6.1-sol", "openai-codex", None, False),
+    ("gpt-6-sol", "openai-codex", _CODEX, False),
     ("gpt-5.6", "openai", "https://api.openai.com/v1", True),
     ("gpt-5.6", "openai-codex", _CODEX, True),
 ])

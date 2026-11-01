@@ -25,7 +25,7 @@ export interface SaveTextFileDeps {
     filters?: Array<{ extensions: string[]; name: string }>
     properties?: Array<'createDirectory' | 'showOverwriteConfirmation'>
     title: string
-  }) => Promise<{ canceled: boolean; filePath?: string }>
+  }, parentWindow?: any) => Promise<{ canceled: boolean; filePath?: string }>
   writeFile?: (filePath: string, content: string) => Promise<void>
 }
 
@@ -71,7 +71,8 @@ function suggestedName(value: unknown): string | undefined {
 
 export async function saveTextFileAs(
   request: SaveTextFileRequest,
-  deps: SaveTextFileDeps
+  deps: SaveTextFileDeps,
+  parentWindow?: any
 ): Promise<SaveTextFileResult> {
   if (typeof request?.content !== 'string') {
     throw new Error('Invalid content')
@@ -91,7 +92,7 @@ export async function saveTextFileAs(
     filters: safeFilters(request.filters),
     // Linux dialogs replace an existing file silently unless asked to confirm.
     properties: ['createDirectory', 'showOverwriteConfirmation']
-  })
+  }, parentWindow)
 
   if (result.canceled || !result.filePath) {
     return { saved: false, canceled: true }
@@ -104,18 +105,26 @@ export async function saveTextFileAs(
 }
 
 /** Native save-location picker (profile export etc.): only picks the path; the write happens elsewhere. */
-export async function selectSavePath(options: any, deps: SaveTextFileDeps): Promise<null | string> {
+export async function selectSavePath(options: any, deps: SaveTextFileDeps, parentWindow?: any): Promise<null | string> {
   const result = await deps.showSaveDialog({
     title: options?.title || 'Save',
     defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
     filters: Array.isArray(options?.filters) ? options.filters : undefined
-  })
+  }, parentWindow)
 
   return result.canceled || !result.filePath ? null : result.filePath
 }
 
 /** `hermes:selectSavePath` (path only) and `hermes:saveTextFileAs` (dialog + main-process write). */
-export function registerSaveDialogIpc(ipcMain: IpcMainLike, deps: SaveTextFileDeps): void {
-  ipcMain.handle('hermes:selectSavePath', (_event, options = {}) => selectSavePath(options, deps))
-  ipcMain.handle('hermes:saveTextFileAs', (_event, request) => saveTextFileAs(request || {}, deps))
+export function registerSaveDialogIpc(
+  ipcMain: IpcMainLike,
+  deps: SaveTextFileDeps,
+  resolveWindow?: (event: unknown) => any
+): void {
+  ipcMain.handle('hermes:selectSavePath', (event, options = {}) =>
+    selectSavePath(options, deps, resolveWindow?.(event))
+  )
+  ipcMain.handle('hermes:saveTextFileAs', (event, request) =>
+    saveTextFileAs(request || {}, deps, resolveWindow?.(event))
+  )
 }

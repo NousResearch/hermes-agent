@@ -5,12 +5,13 @@ type MainWindowLike = {
 }
 
 type ActivatableWindow = MainWindowLike & {
-  isMinimized: () => boolean
-  isVisible: () => boolean
-  isFocused: () => boolean
-  restore: () => void
-  show: () => void
-  focus: () => void
+  isMinimized?: () => boolean
+  isVisible?: () => boolean
+  isFocused?: () => boolean
+  restore?: () => void
+  show?: () => void
+  moveTop?: () => void
+  focus?: () => void
 }
 
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
@@ -83,17 +84,22 @@ export function activateWindow(window: ActivatableWindow | null | undefined): vo
     return
   }
 
-  if (window.isMinimized()) {
-    window.restore()
+  if (typeof window.isMinimized === 'function' && window.isMinimized()) {
+    window.restore?.()
   }
 
-  // Re-read visibility after the restore: a tray-hidden window reports
-  // invisible until it is shown.
-  if (!window.isVisible()) {
-    window.show()
+  // Bringing a window to the front requires show() even when already visible:
+  // in multi-window environments (multiple profiles, secondary windows,
+  // notification click), calling focus() alone on macOS only issues makeKeyWindow
+  // without reordering the window above others (makeKeyAndOrderFront). Calling
+  // show() raises it to the front and emits 'show' to clear minimize-to-tray state.
+  window.show?.()
+
+  if (typeof window.moveTop === 'function') {
+    window.moveTop()
   }
 
   if (shouldFocusToTakeKeyboard(window)) {
-    window.focus()
+    window.focus?.()
   }
 }

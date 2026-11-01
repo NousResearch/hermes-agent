@@ -153,6 +153,22 @@ def _target_mirror_eligible(
     return False
 
 
+def _target_is_dm(origin: dict, platform_name: str, chat_id) -> bool:
+    """Whether a delivery target is a DM, for the seed's chat_type and the in_channel gate. The
+    origin's chat_type decides when there is one; an origin-less job (a manifest-defined or
+    explicitly targeted one) reads the id: Slack DM ids start with "D", and a Telegram private
+    chat's id is the user's, always positive (groups and channels are negative). A wrong answer
+    seeds a ``group`` row a DM-topic reply never resolves to."""
+    from gateway.delivery import looks_like_telegram_private_chat_id
+    origin_chat_type = str((origin or {}).get("chat_type") or "").lower()
+    if origin_chat_type:
+        return origin_chat_type == "dm"
+    if str(chat_id).startswith("D"):
+        return True
+    return (str(platform_name).lower() == "telegram"
+            and looks_like_telegram_private_chat_id(str(chat_id)))
+
+
 def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     """Whether the flat in_channel seed may run. Group keys are user-isolated
     (``…:group:<chat_id>:<user_id>``): seeding without a real user_id creates an orphan session no
@@ -1666,10 +1682,8 @@ def _prepare_target_delivery(
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
-    # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
-    origin_chat_type = str(origin.get("chat_type") or "").lower()
-    is_dm_target = origin_chat_type == "dm" or (
-        not origin_chat_type and str(chat_id).startswith("D"))
+    # DM shape for BOTH the flatten gate and seed chat_type.
+    is_dm_target = _target_is_dm(origin, platform_name, chat_id)
 
     # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
     # session land in different places. Origin qualifies unconditionally; others only when the

@@ -1,18 +1,31 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour } from './en_app_tour'
-import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
+import { enCatalog } from './en_catalog'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enCronControl } from './en_cron_control'
+import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
+import { enErrorCodes } from './en_error_codes'
+import { enErrorLayers } from './en_error_layers'
+import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
+import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
+import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
+import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
+import { enPluginPreviewAccess } from './en_plugin_preview_access'
+import { enPluginUpdate } from './en_plugin_update'
+import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -21,16 +34,7 @@ import { enUpdateChannel } from './en_update_channel'
 import type { Translations } from './types'
 
 export const en: Translations = {
-  externalOpenFailed: {
-    title: 'Couldn’t open this link',
-    message: 'No browser is registered to open this address. Copy the link and open it manually.',
-    copyUrl: 'Copy link',
-    close: 'Close',
-    missing: {
-      title: 'File not found',
-      message: 'This file does not exist — it may have been deleted or moved, or it lives on another machine.'
-    }
-  },
+  externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,
   firstRun: enFirstRun,
@@ -38,6 +42,7 @@ export const en: Translations = {
   intro: { stock: {}, custom: () => [] },
   connectors: enConnectorCard,
 
+  catalog: enCatalog,
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
@@ -451,6 +456,8 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
+      microphoneNeedsHttps:
+        'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
@@ -770,6 +777,8 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
+      enable: 'Enable',
+      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
@@ -788,6 +797,17 @@ export const en: Translations = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
         latestCommit: 'Latest commit',
+        sourceMoved: sha =>
+          sha
+            ? `The repository changed since you reviewed it. Review the new version (commit ${sha}) before installing it.`
+            : 'The repository changed since you reviewed it. Reading the new version…',
+        legacyBackendConfirm:
+          'This backend is older than this app, so it cannot guarantee that the version you reviewed is the one that gets installed: if the repository changed since, the newer version installs instead. Update the backend to get that guarantee.',
+        installAnyway: 'Install anyway',
+        partialInstall: sha =>
+          sha
+            ? `Only part of this plugin is installed: the agent half is in at commit ${sha}, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.`
+            : 'Only part of this plugin is installed: the agent half is in, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.',
         nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
@@ -908,51 +928,7 @@ export const en: Translations = {
         masterPasswordPlaceholder: 'Master password'
       }
     },
-    notifications: {
-      title: 'Notifications',
-      intro: 'OS notifications (not in-app toasts). Per device.',
-      enableAll: 'Enable notifications',
-      enableAllDesc: 'Off silences every notification below.',
-      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
-      kinds: {
-        approval: {
-          label: 'Approval needed',
-          description: 'A command is waiting for you to approve or reject it.'
-        },
-        input: {
-          label: 'Input needed',
-          description: 'Hermes asked a question or needs a password or secret.'
-        },
-        turnDone: {
-          label: 'Response ready',
-          description: 'A turn finished while Hermes was in the background.'
-        },
-        turnError: {
-          label: 'Turn failed',
-          description: 'Background turn errors.'
-        },
-        backgroundDone: {
-          label: 'Background task finished',
-          description: 'A backgrounded terminal command completed.'
-        },
-        credits: {
-          label: 'Credit alerts',
-          description: 'Credit access is paused or restored.'
-        },
-        plugin: {
-          label: 'Plugin notifications',
-          description: 'A desktop plugin sent a notification while Hermes was in the background.'
-        }
-      },
-      test: 'Send test notification',
-      testTitle: 'Hermes',
-      testBody: 'Notifications are working.',
-      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
-      testUnsupported: 'This system does not support native notifications.',
-      completionSoundTitle: 'Completion Sound',
-      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview'
-    },
+    notifications: enNotifications,
     sections: {
       model: 'Model',
       chat: 'Chat',
@@ -1141,6 +1117,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1381,9 +1358,7 @@ export const en: Translations = {
     },
     gateway: {
       loading: 'Loading gateway settings...',
-      unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc:
-        'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+      ...enGatewayHost,
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
@@ -1587,64 +1562,7 @@ export const en: Translations = {
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
       deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
     },
-    model: {
-      setupProviderFallback: 'provider',
-      setUpProvider: name => `Set up ${name}`,
-      staleAuxBefore: (count, names) => `${count} auxiliary task${count === 1 ? '' : 's'} (${names}) still run on `,
-      staleAuxAfter: ', not your main model.',
-      staleAuxOtherProviders: 'other providers',
-      moaEnabled: 'Enabled',
-      moaSetDefault: 'Set default',
-      moaNewPresetPlaceholder: 'new preset',
-      moaAddPreset: 'Add preset',
-      customModel: 'Custom model…',
-      customModelPlaceholder: 'Model id',
-      chooseFromList: 'Choose from list',
-      moaDefault: 'Default:',
-      moaReferenceToggle: (enabled, index) => `${enabled ? 'Disable' : 'Enable'} reference ${index}`,
-      moaReferenceTitle: index => `Reference ${index}`,
-      moaAddReference: 'Add reference model',
-      loading: 'Loading model configuration...',
-      appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
-      provider: 'Provider',
-      model: 'Model',
-      applying: 'Applying...',
-      mainAppliedTitle: 'Main model updated',
-      mainAppliedMessage: model => `New sessions will use ${model}.`,
-      defaultsLabel: 'Defaults',
-      reasoning: 'Reasoning',
-      reasoningOff: 'Off',
-      speed: 'Speed',
-      speedStandard: 'Standard',
-      defaultsFailed: 'Failed to save model defaults',
-      loadFailed: 'Could not load models',
-      restartRequired: 'This backend is running old code after an update. Restart it to load the new code.',
-      restartBackend: 'Restart backend',
-      restartingBackend: 'Restarting backend...',
-      restartFailed: 'Could not restart the backend',
-      auxiliaryTitle: 'Auxiliary models',
-      resetAllToMain: 'Reset all to main',
-      staleAuxDismiss: "Don't show again",
-      auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
-      setToMain: 'Set to main',
-      change: 'Change',
-      autoUseMain: 'auto · use main model',
-      inheritMainEffort: 'inherit · main model effort',
-      inheritsFrom: task => `inherits ${task}`,
-      followTask: task => `Follow ${task}`,
-      providerDefault: '(provider default)',
-      fallbackAdd: 'Add fallback',
-      fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
-      notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
-      moaTitle: 'Mixture of Agents',
-      moaPreset: 'Preset',
-      moaDescription:
-        'Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the acting model — it runs every step of the tool loop, and almost all of the run’s cost is billed to its provider. References only advise once per user turn by default.',
-      moaAggregator: 'Aggregator',
-      moaAggregatorBilled: 'acting model · billed for the run',
-      moaReferenceHint: 'advises once per turn by default',
-      tasks: enAuxTasks
-    },
+    model: enModelSettings,
     localModels: enLocalModels,
     billing: {
       perMonth: amount => `${amount}/mo`,
@@ -1748,6 +1666,15 @@ export const en: Translations = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `Change to ${targetName} — takes effect ${effectiveAt}. No charge now; you keep your current plan until then.${creditsDelta ? ` Monthly credits change: ${creditsDelta}.` : ''}`
       },
+      keepGoingOnCredits: {
+        title: 'Keep going on credits',
+        description: 'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
+        approveInBrowser: 'Approve Remote Spending in your browser to change this. It applies as soon as you approve.',
+        openAgain: 'Open again',
+        cancel: 'Cancel',
+        approvedRetry: "Remote Spending is approved, but the change didn't save.",
+        tryAgain: 'Try again'
+      },
       autoReload: {
         threshold: 'Threshold',
         thresholdAria: 'Auto-refill threshold',
@@ -1825,6 +1752,20 @@ export const en: Translations = {
             captionDefault: 'Default ceiling',
             captionSpending: 'Monthly remote spending',
             valueUsed: (spent, limit) => `${spent} of ${limit} used`
+          },
+          window: {
+            today: 'Today',
+            week: 'This week',
+            month: 'This month',
+            topTier: 'Large models (monthly)',
+            barLabel: title => `${title} included usage used`,
+            captionPaused: 'Paused: subscription payment failed',
+            captionPausedOther: 'Paused: see Billing in the Portal',
+            captionTopTierUsedUp: 'Monthly allowance used up, credits cover the rest',
+            captionTopTierUsedUpKeepGoingOff: 'Monthly allowance used up, other included models still work',
+            captionResetsIn: duration => `Resets in ${duration}`,
+            captionIncluded: 'Included usage',
+            valueUsed: percent => `${percent} used`
           }
         },
         planCard: {
@@ -1971,7 +1912,8 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultDirUpdated: shortcut =>
+        `Default project directory updated — start a new chat${shortcut ? ` (${shortcut})` : ''} for it to take effect`,
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -2101,17 +2043,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2214,25 +2146,13 @@ export const en: Translations = {
         unsupported_gpu: 'GPU not supported',
         unknown: 'status unknown'
       },
-      catalogTitle: 'Plugin catalog',
-      catalogBrowse: 'Browse',
-      catalogHide: 'Hide the catalog browser',
-      catalogHint:
-        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
       alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
       catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
       pinnedProvenance: (sha: string) =>
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
-      tierOfficial: 'official',
-      tierCommunity: 'community',
-      updateToPin: (sha: string) => `Update to ${sha}`,
-      updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
-      updateConsentTitle: (name: string) => `${name} asks for more`,
-      updateConsentBody: (name: string, sha: string) =>
-        `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
-      updateConsentConfirm: 'Apply update',
+      ...enPluginUpdate,
+      ...enPluginPreviewAccess,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
@@ -2256,6 +2176,7 @@ export const en: Translations = {
         saved: (name: string) => `${name} settings saved.`,
         saveFailed: (name: string) => `Could not save ${name} settings`,
         required: 'Required',
+        optional: '(optional)',
         secretSet: '•••••••• (set)',
         secretStoredAs: (env: string) =>
           `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
@@ -2351,6 +2272,7 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  gatewayGroupOpen: enGatewayGroupOpen,
   agents: {
     extendedTranscript: 'Extended transcript',
     transcriptTruncated: 'Showing the latest 16 KiB',
@@ -2563,9 +2485,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,
@@ -2863,8 +2782,11 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
+    exportNeedsHost: name =>
+      `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
+    notServedHere: 'Not served here',
     switchToProfile: name => `Switch to ${name}`,
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,
@@ -3013,6 +2935,7 @@ export const en: Translations = {
   },
 
   cron: {
+    control: enCronControl,
     close: 'Close cron',
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
@@ -3083,8 +3006,7 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
-    // Queued trigger feedback in Run History: the backend accepted the trigger
-    // but has not materialized the run session yet (#70826).
+    // Queued trigger feedback in Run History: the backend accepted the trigger but has not materialized the run session yet (#70826).
     queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -3492,7 +3414,7 @@ export const en: Translations = {
       '/init': 'Generate or update AGENTS.md project instructions from a repo scan',
       '/suggestions': 'Review suggested automations (accept/dismiss)',
       '/blueprint': 'Set up an automation from a blueprint template',
-      '/browser': 'Manage the agent browser [connect|disconnect|status|use]',
+      '/browser': 'Manage the agent browser [connect|disconnect|status]',
       '/palette': 'Open the fuzzy command palette (also Ctrl+P)',
       '/usage': 'Show token usage and rate limits; `reset` redeems a banked Codex limit reset',
       '/subscription': 'View your Nous plan and change it in the browser',
@@ -3538,7 +3460,8 @@ export const en: Translations = {
     restoreImageDraft: 'Restore image draft',
     queueCancelFailed: "Couldn't remove the queued turn",
     queueLostDiscard: 'Discard',
-    queueLostDiscardTip: 'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
+    queueLostDiscardTip:
+      'The gateway restarted mid-turn and cannot finish this one. Discard it so the queued turns behind it run.',
     queueResume: 'Resume',
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
@@ -3576,43 +3499,6 @@ export const en: Translations = {
     snippetsDesc: 'Pick a starter prompt to drop into the composer.',
     dropFiles: 'Drop files to attach',
     dropSession: 'Drop to link this chat',
-    mcpSuggestions: {
-      label: server => `Add ${server}`,
-      tip: keyword => `Suggested because you mentioned “${keyword}” — click to connect`,
-      connecting: server => `Connecting ${server}…`,
-      cancelTip: 'Click to cancel',
-      added: server => `Added ${server}`,
-      addedTip: 'Connected — its tools are ready in this chat',
-      connectFailed: server => `Could not connect ${server}`
-    },
-    skillSuggestions: {
-      label: skill => `Use skill: ${skill}`,
-      tip: skill => `You mentioned “${skill}” — click to lead with that skill`,
-      done: skill => `Added /${skill}`,
-      doneTip: 'The skill loads when you send'
-    },
-    githubSuggestions: {
-      label: 'Set up GitHub',
-      tip: 'GitHub works through the gh CLI skills here — click to connect your account',
-      done: 'Added /github-auth',
-      doneTip: 'Send the message and the agent walks you through GitHub sign-in'
-    },
-    repairSuggestions: {
-      label: server => `Reconnect ${server}`,
-      tip: server => `A ${server} call just failed with a connection error`,
-      working: server => `Reconnecting ${server}…`,
-      workingTip: 'Click to cancel',
-      done: server => `Reconnected ${server}`,
-      doneTip: 'Fresh credentials are live in this chat',
-      failed: server => `Could not reconnect ${server}`
-    },
-    cronSuggestions: {
-      label: 'Schedule this',
-      tip: phrase => `“${phrase}” sounds recurring — run it on a schedule instead`,
-      prefix: 'Set this up as a scheduled job:',
-      done: 'Marked for scheduling',
-      doneTip: 'Send it and the agent creates the job'
-    },
     snippets: {
       codeReview: {
         label: 'Code review',
@@ -3719,7 +3605,7 @@ export const en: Translations = {
       heartbeatEveryHours: hours => `every ${hours}h`,
       heartbeatEverySeconds: seconds => `every ${seconds}s`,
       heartbeatNext: time => `next ${time}`,
-      heartbeatDueWaitingForIdle: 'due — waiting for idle',
+      dueWaitingForIdle: 'due — waiting for idle',
       heartbeatActions: 'Heartbeat actions',
       pauseHeartbeat: 'Pause heartbeat',
       resumeHeartbeat: 'Resume heartbeat',
@@ -3927,6 +3813,8 @@ export const en: Translations = {
     versionDetailsTitle: 'Version details',
     versionDetailsBody: 'This install is managed outside the app. Update it the same way you installed it.',
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'This device',
+    versionDetailsBackend: 'Connected backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build Origin',
     versionDetailsDistribution: 'Distribution',
@@ -4044,28 +3932,25 @@ export const en: Translations = {
     signIn: 'Sign in',
     signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',
-    codeBody: 'Enter this code in your browser to finish signing in.',
-    copyLink: 'Copy link',
-    doNotShare: 'Do not share this code.',
+    finishInBrowser: 'Finish in your browser',
+    doNotShare: 'Do not share it.',
+    openPageAgain: 'Open page again',
     waiting: 'Waiting for sign-in…',
     finishingHeading: 'Finishing sign-in…',
     finishingBody: 'Approved in the browser. Collecting your account tokens.',
-    signedInAs: email => `Signed in as ${email}`,
+    signedInAsLabel: 'Signed in as',
     signedIn: 'Signed in.',
     completedBody: 'Your account now carries inference and tools.',
+    reconnect: 'Reconnect',
+    openConnectors: 'Open Connectors',
     defaultModel: 'Default model',
     change: 'Change',
     done: 'Done',
     notNow: 'Not now',
     tryAgain: 'Try again',
-    startAgain: 'Start again',
     didNotComplete: "Sign-in didn't finish",
-    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
-    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
     timedOutHeading: 'That sign-in link has expired',
     timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
-    retiredBody:
-      "Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you're ready.",
     errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
     busyHeading: 'Almost there',
     busyBody: wait =>
@@ -4121,7 +4006,27 @@ export const en: Translations = {
     wasPrice: 'was',
     customModel: 'Custom model',
     addCustomModelAction: 'Add custom model…',
-    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
+    customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5',
+    today: 'Today',
+    week: 'Week',
+    month: 'Month',
+    topTier: 'Large models (monthly)',
+    included: 'Every model below is included',
+    pausedRenewal: 'paused: renewal unpaid',
+    pausedOther: 'paused',
+    includedUsedUp: 'Included usage used up',
+    limitReached: name => `${name.charAt(0).toUpperCase()}${name.slice(1)} limit reached`,
+    limitNames: { day: 'daily', month: 'monthly', top_tier: 'monthly large-model', week: 'weekly' },
+    limitThenCredits: 'paid models now use your credits (pay as you go)',
+    limitThenCreditsLarge: 'Large models now use your credits (pay as you go)',
+    limitThenWait: 'only Free models until then',
+    limitThenWaitLarge: 'Large models paused until then',
+    percentUsed: percent => `${percent} used`,
+    resetsIn: duration => `resets in ${duration}`,
+    usageLevels: { free: 'Free', top_tier: 'Large' },
+    sectionRecommended: 'Recommended',
+    sectionOther: 'Other models',
+    largeFootnote: 'Large models also use your monthly large-model limit.'
   },
 
   modelVisibility: {
@@ -4240,6 +4145,9 @@ export const en: Translations = {
       toggleWorkspace: 'Workspace',
       cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
       tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
+      togglePlanUsage: 'Plan usage',
+      planUsageTitle: (used, resetsIn) =>
+        `${used} of your plan's usage used${resetsIn ? ` · resets in ${resetsIn}` : ''} · open Billing`,
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',
@@ -4340,6 +4248,12 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalDropUploadFailed: name => `Could not upload ${name}`,
+    terminalDropTooLargeTitle: 'Too large to upload',
+    terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
+    terminalDropControlTitle: 'Not typed into the terminal',
+    terminalDropControl: paths => `These names hold control characters the shell would act on as keys: ${paths}`,
+    terminalDropUnquotable: (shell, paths) => `No safe way to type these names in ${shell}: ${paths}`,
     addToChat: 'Add to chat'
   },
 
@@ -4405,60 +4319,7 @@ export const en: Translations = {
       sentTitle: 'Sent to chat',
       sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
     },
-    web: {
-      appFailedToBoot: 'Preview app failed to boot',
-      serverNotFound: 'Server not found',
-      remoteLoopback:
-        'This address points at the machine running your agent, not this one. The browser pane loads pages locally, so a remote dev server needs a port forward or a reachable hostname.',
-      failedToLoad: 'Preview failed to load',
-      tryAgain: 'Try again',
-      restarting: 'Hermes is restarting...',
-      askRestart: 'Ask Hermes to restart the server',
-      lookingRestart: taskId => `Hermes is looking for a preview server to restart (${taskId})`,
-      restartingTitle: 'Restarting preview server',
-      restartingMessage: 'Hermes is working in the background. Watch the preview console for progress.',
-      startRestartFailed: message => `Could not start server restart: ${message}`,
-      restartFailed: 'Server restart failed',
-      hideConsole: 'Hide preview console',
-      showConsole: 'Show preview console',
-      hideDevTools: 'Hide preview DevTools',
-      openDevTools: 'Open preview DevTools',
-      goBack: 'Back',
-      goForward: 'Forward',
-      reload: 'Reload page',
-      address: 'Address',
-      addressPlaceholder: 'Enter address',
-      blankPageBody: 'Type an address above to browse, or ask Hermes to open a page.',
-      finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Server restart failed: ${message}`,
-      unknownError: 'unknown error',
-      restartedTitle: 'Preview server restarted',
-      reloadingNow: 'Reloading the preview now.',
-      restartFailedTitle: 'Preview restart failed',
-      restartFailedMessage: 'Hermes could not restart the server.',
-      stillWorking:
-        'Hermes is still working, but no restart result has arrived yet. The server command may be running in the foreground.',
-      workspaceReloading: 'Workspace changed, reloading preview',
-      fileChanged: url => `File changed, reloading preview: ${url}`,
-      filesChanged: (count, url) => `${count} file changes, reloading preview: ${url}`,
-      watchFailed: message => `Could not watch preview file: ${message}`,
-      moduleMimeDescription:
-        'Module scripts are being served with the wrong MIME type. This usually means a static file server is serving a Vite/React app instead of the project dev server.',
-      loadFailedConsole: (code, message) => `Load failed${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'The preview page could not be reached.',
-      openTarget: url => `Open ${url}`,
-      fallbackTitle: 'Preview',
-      annotate: 'Annotate',
-      annotateOn: 'Stop annotating',
-      annotateNeedPage: 'Open a page in the in-app browser first.',
-      annotateFailed: 'Could not start annotation mode',
-      commenting: 'Commenting',
-      addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
-      commentPlaceholder: 'Add a comment...',
-      commentTitle: n => `Comment ${n}`,
-      saveComment: 'Save',
-      cancelComment: 'Cancel comment'
-    }
+    web: enPreviewWeb
   },
 
   interfaceMode: {
@@ -4522,7 +4383,8 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tabs`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`,
+    tabActions: title => `Actions for ${title}`
   },
 
   contextMenu: {
@@ -4574,187 +4436,44 @@ export const en: Translations = {
       react: 'React',
       dismissError: 'Dismiss error',
       responseStopped: 'Response stopped',
-      errorLayers: {
-        auth: 'Sign-in problem',
-        billing: 'Out of credits',
-        disk: 'Disk full',
-        endpoint: "Can't reach your model server",
-        gateway: 'Hermes hit a problem',
-        generic: "Hermes couldn't finish this reply",
-        provider: 'The AI service returned an error',
-        runtime: 'Hermes hit a problem',
-        streaming: 'The reply was cut off'
-      },
-      errorLayerBodies: {
-        auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
-        billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
-        disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
-        endpoint:
-          "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
-        gateway:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
-        provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
-        runtime:
-          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
-        streaming: 'The connection dropped before the reply finished. Retry to send it again.'
-      },
-      errorCodes: {
-        auth: {
-          title: provider => `${provider} rejected your sign-in`,
-          body: provider =>
-            `The credentials saved for ${provider} were not accepted. Fix them in Settings or switch provider, then send your message again.`
-        },
-        auth_permanent: {
-          title: provider => `${provider} rejected your sign-in`,
-          body: provider =>
-            `The credentials saved for ${provider} are invalid or were revoked. Update them or switch provider, then send your message again.`
-        },
-        billing: {
-          title: 'Out of credits',
-          body: provider => `Your ${provider} account has no credits left. Top up or switch provider, then send again.`
-        },
-        rate_limit: {
-          title: 'The AI service is busy',
-          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
-        },
-        upstream_rate_limit: {
-          title: 'The AI service is busy',
-          body: provider => `${provider} is limiting requests right now. Wait a minute, then retry.`
-        },
-        overloaded: {
-          title: 'The AI service is overloaded',
-          body: provider => `${provider} is having problems right now. Retry in a moment or switch provider.`
-        },
-        server_error: {
-          title: 'The AI service had a problem',
-          body: provider => `${provider} returned a server error. Retry in a moment or switch provider.`
-        },
-        timeout: {
-          title: 'Could not reach the AI service',
-          body: provider =>
-            `${provider} could not be reached or did not answer in time. Check your internet connection, then retry.`
-        },
-        stream_drop: {
-          title: 'The reply was cut off',
-          body: 'The connection dropped before the reply finished. Retry to send it again.'
-        },
-        no_reply: {
-          title: "The reply didn't finish",
-          body: 'Hermes ended this turn without a reply. Retry to send it again.'
-        },
-        upstream_blocked: {
-          title: 'A firewall blocked the request',
-          body: provider =>
-            `A firewall or CDN in front of ${provider} blocked the request before it reached the model — your key is probably fine. Set a User-Agent header via the provider's extra_headers in Settings, or switch provider, then send your message again.`
-        },
-        ssl_cert_verification: {
-          title: 'Secure connection failed',
-          body: provider =>
-            `Hermes could not verify the secure connection to ${provider}. Check your network or proxy settings, or switch provider, then send your message again.`
-        },
-        context_overflow: {
-          title: 'This conversation is too long',
-          body: 'The conversation no longer fits the model. Compress it or start a new chat, then send again.'
-        },
-        payload_too_large: {
-          title: 'This message is too large',
-          body: 'The request was too big for the model. Compress the conversation or start a new chat, then send again.'
-        },
-        model_not_found: {
-          title: 'This model is not available',
-          body: provider =>
-            `${provider} does not offer this model on your account. Choose another model, then send your message again.`
-        },
-        provider_policy_blocked: {
-          title: 'This model is blocked by your account settings',
-          body: provider =>
-            `${provider} would not route this request under your account's data or privacy settings. Choose another model or switch provider.`
-        },
-        content_policy_blocked: {
-          title: 'The AI service declined this request',
-          body: provider => `${provider} would not answer this message. Edit it and send again.`
-        },
-        format_error: {
-          title: 'The AI service rejected the request',
-          body: provider =>
-            `${provider} did not accept how this request was built. Switch provider or send diagnostics so we can look into it.`
-        },
-        truncated: {
-          title: 'The reply was cut short',
-          body: 'The model stopped before finishing. Retry to get a complete reply.'
-        },
-        invalid_response: {
-          title: 'The AI service sent an unreadable reply',
-          body: provider => `${provider} returned something Hermes could not read. Retry in a moment.`
-        },
-        empty_response: {
-          title: 'The AI service sent an empty reply',
-          body: provider => `${provider} returned nothing for this message. Retry in a moment.`
-        },
-        loop_error: {
-          title: 'Hermes got stuck in a loop',
-          body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
-        },
-        SESSION_NOT_OWNED: {
-          title: 'This chat is open somewhere else',
-          body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
-        },
-        disk_full: {
-          title: 'Disk full',
-          body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
-        },
-        // Nous free tier. The body is normally the backend's own sentence (it names the wait
-        // and the way forward); these bodies stand in for an older backend that sent none.
-        free_tier_disabled: {
-          title: 'Using Hermes without signing in is switched off right now',
-          body: "Sign in with a Nous account to keep chatting, it's free."
-        },
-        free_tier_rate_limited: {
-          title: "You've used up the allowance for chatting without signing in",
-          body: "It refreshes shortly. Sign in with a Nous account for a bigger allowance, it's free."
-        },
-        free_tier_at_capacity: {
-          title: 'Chatting without signing in is really busy right now',
-          body: "Sign in to skip the queue, it's free, or try again in a little while."
-        },
-        free_tier_model_not_free: {
-          title: "That model isn't available without signing in",
-          body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
-        },
-        free_tier_route: {
-          title: "Hermes couldn't reach the free model on this route",
-          body: "Sign in with a Nous account, it's free, or check the NOUS_INFERENCE_BASE_URL setting."
-        },
-        free_tier_outage: {
-          title: 'The free model is having trouble responding right now',
-          body: 'Try sending your message again in a minute.'
-        },
-        free_tier_refused: {
-          title: "Hermes couldn't send that without signing in",
-          body: 'Signing in with a Nous account is free.'
-        }
-      },
+      ...enErrorLayers,
+      errorCodes: enErrorCodes,
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} rejected your API key`,
-          body: provider => `The key saved for ${provider} is invalid or was revoked. Update it, then retry.`
+          body: () => 'The saved key is invalid or was revoked. Update it, then send your message again.'
         },
         oauth: {
-          title: provider => `Your ${provider} sign-in expired`
+          title: provider => `Sign in to ${provider} again`
         }
       },
-      errorDetails: 'Details',
+      errorDetails: 'View error details',
+      errorHideDetails: 'Hide error details',
+      errorDetailsCopy: 'Copy details',
+      errorCopyRaw: 'Copy error',
+      errorContinue: 'Continue',
+      errorOpenProviderSettings: provider => `Open ${provider} settings`,
+      errorOpenSetupGuide: 'Open setup guide',
+      errorSetupGuideLink: 'Setup guide',
+      errorOpenModelSettings: 'Open model settings',
+      errorStartNewChatLink: 'Start a new chat',
+      errorChooseModelLink: 'Choose another model',
+      errorRetryAtResetShort: time => `Retry at ${time}`,
+      errorRateLimitResetBody: (provider, time) => `You've hit ${provider}'s rate limit. It resets at ${time}.`,
       errorGenericProvider: 'The AI service',
       errorToastTitle: "Hermes couldn't finish the reply",
       errorRetry: 'Retry',
-      errorLimitResets: time => `Limit resets at ${time}`,
-      errorRetryAtReset: time => `Retry when the limit resets (${time})`,
       errorRetryScheduled: (time, wait) => `Retrying at ${time} — in ${wait}`,
       errorRetryScheduledCancel: 'Cancel',
       errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
       errorChooseModel: 'Choose a model',
+      errorSwitchToModel: (model, note) => (note ? `Switch to ${model} (${note})` : `Switch to ${model}`),
+      errorSwitchModelFailed: 'Could not switch model',
+      errorUseCredits: 'Turn on Keep going on credits',
+      errorUseCreditsFailed: 'Could not turn on Keep going on credits',
+      errorAddCredits: 'Add credits',
+      errorOpenBillingSettings: 'Open billing settings',
       errorCompressConversation: 'Compress conversation',
       errorCompressFailed: 'Could not compress the conversation',
       errorOpenHermesFolder: 'Open Hermes folder',
@@ -4762,12 +4481,10 @@ export const en: Translations = {
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
       errorSignInFreeTier: 'Sign in with a Nous account',
-      errorOauthExpired: provider =>
-        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
+      errorOauthExpired: provider => `Your ${provider} sign-in expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
-      errorCopyDiagnostics: 'Copy error details',
       errorSendDiagnostics: 'Send diagnostics',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',
@@ -5062,6 +4779,7 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    attachFailed: 'Attach failed',
     pastedContent: 'Pasted content',
     pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
@@ -5069,6 +4787,7 @@ export const en: Translations = {
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
     dropFiles: 'Drop files',
+    dropFilesMore: (count: number) => `and ${count} more`,
     handoff: {
       pickPlatform: 'Choose a destination',
       success: platform => `Handed off to ${platform}. Resume here anytime.`,

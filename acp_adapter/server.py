@@ -32,6 +32,7 @@ from acp_adapter.events import (
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
+from acp_adapter import modes as _modes
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
@@ -233,23 +234,13 @@ class _TurnCallbacks:
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
-    _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
-    _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
-    _MODE_DEFAULT = "default"
-    # mode id -> (edit approval policy, display name, description)
-    _MODES: dict[str, tuple[str, str, str]] = {
-        "default": ("ask", "Default", "Ask before edits."),
-        "accept_edits": (
-            "workspace_session",
-            "Accept Edits",
-            "Auto-allow workspace and temp-dir edits; still asks for sensitive paths.",
-        ),
-        "dont_ask": (
-            "session", "Don't Ask", "Auto-allow file edits for this session except sensitive paths."
-        ),
-    }
-    _MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in _MODES.items()}
-    _EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in _MODES.items()}
+    # mode id -> (edit approval policy, display name, description): ``acp_adapter/modes.py``
+    _EDIT_APPROVAL_POLICY_CONFIG_ID = _modes.EDIT_APPROVAL_POLICY_CONFIG_ID
+    _EDIT_APPROVAL_POLICY_DEFAULT = _modes.DEFAULT_EDIT_APPROVAL_POLICY
+    _MODE_DEFAULT = _modes.DEFAULT_MODE
+    _MODES = _modes.MODES
+    _MODE_TO_EDIT_APPROVAL_POLICY = _modes.MODE_TO_EDIT_APPROVAL_POLICY
+    _EDIT_APPROVAL_POLICY_TO_MODE = _modes.EDIT_APPROVAL_POLICY_TO_MODE
 
     def __new__(cls, session_manager=None):
         if session_manager is None:
@@ -454,13 +445,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
+            from agent.delegation_backends import saved_backend
+            agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
@@ -660,11 +653,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             state.cancel_event.set()
             try:
                 if state.agent:
-                    request_hard_interrupt(state.agent)
-                    # Background delegations are detached from the turn's fan-out; they end with the cancel.
-                    from tools.async_delegation import interrupt_for_session
-                    interrupt_for_session(parent_session_id=str(getattr(state.agent, "session_id", "") or ""),
-                                          reason="acp_cancel")
+                    request_hard_interrupt(state.agent)  # this turn only: background delegations keep running
             except Exception:
                 logger.debug("Failed to interrupt ACP session %s", session_id, exc_info=True)
         logger.info("Cancelled session %s", session_id)

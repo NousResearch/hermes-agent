@@ -19,6 +19,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
+    (workspace / 'pyproject.toml').write_text('[project]\nname = "task"\n')  # a code worktree
     from contextlib import closing
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
@@ -31,7 +32,8 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor, native_owner=True)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     from gateway.session_kanban import build_kanban_policy
-    config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal', 'file']}}
+    config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal', 'file']},
+              'agent': {'coding_context': 'focus'}}  # the worktree must not collapse a worker into the coding posture
     policy, _secrets = build_kanban_policy(connection, params, config)
     context = json.loads(policy.kanban_json)
     assert policy.source == 'kanban' and policy.cwd == str(workspace)
@@ -129,7 +131,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
             kb.claim_task(conn, task_id)
         return SimpleNamespace(session_id='owner-session', profile_id=str(tmp_path))
     monkeypatch.setattr('gateway.session_local.create_local_session', create_local_session)
-    async def submit(actor, submission):
+    async def submit(actor, submission, **kwargs):
         calls.append(('submit', submission))
     async def resume(ref, params):
         calls.append(('resume', ref))

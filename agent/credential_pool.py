@@ -56,16 +56,13 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml read-only, returning None on any error.
-
-    ``load_config_readonly()`` skips the deepcopy ``load_config()`` pays per
-    call; the picker calls ``load_pool()`` once per provider row, which made
-    that copy the dominant cost of ``model.options``.
-    """
+    """Read-only config (``load_config_readonly`` skips the per-row deepcopy), None on any error.
+    Inside ``frozen_runtime_config`` it is the session's frozen config: a key rotated in config.yaml
+    must never seed a frozen session's pool."""
     try:
         from hermes_cli.config import load_config_readonly
-
-        return load_config_readonly()
+        from hermes_cli.runtime_provider import _FROZEN_RUNTIME_CONFIG
+        return _FROZEN_RUNTIME_CONFIG.get() or load_config_readonly()
     except Exception:
         return None
 
@@ -523,26 +520,11 @@ def custom_provider_pool_key_candidates(
     skipped for the ``no-key-required`` placeholder. ``config`` is a frozen route's config: ITS
     entry owns the endpoint, so a live edit of that entry's URL neither drops nor redirects the pool.
     """
-    if not base_url:
-        return []
-    normalized_url = _norm_url(base_url)
-    requested_aliases = _requested_custom_name_aliases(provider_name) if provider_name else set()
-
-    if requested_aliases:
-        for norm_name, entry in _iter_custom_providers(config):
-            if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
-                # A named pool holds credentials for its configured endpoint only: a launch-
-                # overridden base_url must not inherit them (R2-M1), nor borrow a sibling's by URL.
-                entry_url = _norm_url(entry.get("base_url"))
-                if entry_url and entry_url != normalized_url:
-                    return []
-                return _pool_keys_for_custom_entry(norm_name, entry)
-
-    for norm_name, entry in _iter_custom_providers(config):
-        entry_url = _norm_url(entry.get("base_url"))
-        if entry_url and entry_url == normalized_url:
-            return _pool_keys_for_custom_entry(norm_name, entry)
-    return []
+    # A named pool holds credentials for its configured endpoint only: a launch-overridden base_url
+    # must not inherit them (R2-M1), nor borrow a sibling's by URL.
+    from agent.custom_entry_pool import custom_entry_for_endpoint
+    match = custom_entry_for_endpoint(base_url, provider_name, config)
+    return _pool_keys_for_custom_entry(*match) if match else []
 
 
 def get_custom_provider_pool_key(base_url: Optional[str], provider_name: Optional[str] = None) -> Optional[str]:
@@ -2650,77 +2632,33 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
     })
 
 
-# Warn once per token per process when Copilot exchange degrades to raw token (#114740).
-_COPILOT_RAW_DEGRADATION_WARNED: set[str] = set()
-
-
-def _warn_copilot_raw_degradation_once(token: str) -> None:
-    """WARN once per token per process when Copilot exchange degrades to raw token (#114740)."""
-    fingerprint = fingerprint_secret_value(token) or "unknown"
-    if fingerprint in _COPILOT_RAW_DEGRADATION_WARNED:
+def _seed_profile_singleton(seed: _Seeder) -> None:
+    """Rows a provider profile seeds itself (``seed_pool_credentials``): ambient/env tokens it
+    validates or exchanges. The profile gates its own work on suppression and explicit config."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(seed.provider)
+    if profile is None or not _profile_seeds_pool(seed.provider):
         return
-    _COPILOT_RAW_DEGRADATION_WARNED.add(fingerprint)
-    logger.warning(
-        "Copilot token exchange degraded to RAW token (exchange "
-        "unavailable); enterprise-only models may 400 with "
-        "model_not_available_for_integrator until exchange recovers."
-    )
-
-
-def _reset_copilot_raw_degradation_warned() -> None:
-    """Clear the degradation warning cache (for test isolation)."""
-    _COPILOT_RAW_DEGRADATION_WARNED.clear()
-
-
-def _seed_copilot_singleton(seed: _Seeder) -> None:
-    # Copilot tokens are resolved dynamically via `gh auth token` or env vars
-    # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
-    try:
-        from hermes_cli.copilot_auth import (
-            COPILOT_ENV_VARS,
-            resolve_copilot_token,
-            get_copilot_api_token,
-        )
-        # All-sources gate BEFORE any work: resolve_copilot_token() shells out
-        # and the exchange retries 3x with backoff (~35s worst case); a user
-        # who suppressed every copilot source must not pay that on every pool
-        # load. The source space here matches credential_sources._remove_copilot_gh.
-        copilot_sources = ["gh_cli"] + [f"env:{v}" for v in COPILOT_ENV_VARS]
-        if all(seed.is_suppressed(seed.provider, s) for s in copilot_sources):
-            return
-        token, source = resolve_copilot_token()
-        if not token:
-            return
-        # Exact match: a substring test would classify GH_TOKEN/GITHUB_TOKEN
-        # as gh_cli and bypass a user's per-env-var suppression.
-        source_name = "gh_cli" if source == "gh auth token" else f"env:{source}"
-        # Per-source gate BEFORE the (~35s worst case) network exchange.
-        if seed.is_suppressed(seed.provider, source_name):
-            return
-        from hermes_cli.auth import is_provider_explicitly_configured
-        if not is_provider_explicitly_configured(seed.provider):
-            # Copilot is only discovered here (ambient gh CLI login), not selected anywhere: no
-            # model will be routed to it, so the network exchange — and its degradation warning on
-            # every pool load — buys nothing (#114740). Seed the raw token; the load that follows
-            # the user selecting copilot re-seeds and exchanges.
-            api_token, enterprise_base_url = token, None
-        else:
-            api_token, enterprise_base_url = get_copilot_api_token(token)
-            # get_copilot_api_token falls back to the RAW token when the exchange
-            # fails; the Copilot API then routes it to the fallback
-            # "copilot-language-server" integrator whose allowlist omits
-            # enterprise-only models -> HTTP 400 on every turn. Surface it once.
-            if api_token == token and not enterprise_base_url:
-                _warn_copilot_raw_degradation_once(token)
-        pconfig = PROVIDER_REGISTRY.get(seed.provider)
-        seed.upsert(source_name, {
+    from hermes_cli.auth import is_provider_explicitly_configured, suppressed_credential_sources
+    rows = profile.seed_pool_credentials(  # values, not callbacks: a hosted profile gets plain JSON
+        suppressed_sources=suppressed_credential_sources(seed.provider),
+        explicitly_configured=is_provider_explicitly_configured(seed.provider))
+    pconfig = PROVIDER_REGISTRY.get(seed.provider)
+    for row in rows or ():
+        seed.upsert(row["source"], {
             "auth_type": AUTH_TYPE_API_KEY,
-            "access_token": api_token,
-            "base_url": enterprise_base_url or (pconfig.inference_base_url if pconfig else ""),
-            "label": source,
+            "access_token": row["access_token"],
+            "base_url": row.get("base_url") or (pconfig.inference_base_url if pconfig else ""),
+            "label": row.get("label") or row["source"],
         })
-    except Exception as exc:
-        logger.debug("Copilot token seed failed: %s", exc)
+
+
+def _profile_seeds_pool(provider: str) -> bool:
+    """Whether the provider's profile owns pool seeding (the generic env loop must not overwrite it)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+    profile = get_provider_profile(provider)
+    return profile is not None and type(profile).seed_pool_credentials is not ProviderProfile.seed_pool_credentials
 
 
 def _seed_qwen_singleton(seed: _Seeder) -> None:
@@ -2807,8 +2745,6 @@ def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tup
         _seed_anthropic_singletons(seed)
     elif provider == "nous":
         _seed_nous_singleton(seed, auth_store)
-    elif provider == "copilot":
-        _seed_copilot_singleton(seed)
     elif provider == "qwen-oauth":
         _seed_qwen_singleton(seed)
     elif provider == "minimax-oauth":
@@ -2819,6 +2755,8 @@ def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tup
         if provider == "openai-codex" and seed.is_suppressed(provider, "device_code"):
             return seed.result
         _seed_tokens_singleton(seed, auth_store)
+    else:
+        _seed_profile_singleton(seed)
     return seed.result
 
 
@@ -2921,11 +2859,9 @@ def _env_key_var_candidates(env_vars: list[str], entries: list[PooledCredential]
 
 def _seed_from_env(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     seed = _Seeder(provider, entries)
-    # Copilot's singleton branch exchanges the raw ghu_ OAuth token for the
-    # api token via `get_copilot_api_token`; the generic loop would re-read
-    # COPILOT_GITHUB_TOKEN and overwrite it with the RAW token, causing 400s
-    # ("not available for integrator copilot-language-server").
-    if provider == "copilot":
+    # A profile that seeds its own rows may exchange the raw env token for a runtime one; the
+    # generic loop would re-read the same env var and overwrite it with the RAW token.
+    if _profile_seeds_pool(provider):
         return seed.result
 
     if provider == "openrouter":

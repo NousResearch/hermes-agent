@@ -36,6 +36,7 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { GoalBar } from './goalBar.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
+import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
@@ -414,6 +415,7 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <GoalBar cols={Math.max(1, composer.cols - 2)} />
+      <LoopBar cols={Math.max(1, composer.cols - 2)} />
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />
       <StatusRulePane at="top" composer={composer} nativeMode={nativeMode} status={status} />
       <AmbientDock placement="dock-top" />

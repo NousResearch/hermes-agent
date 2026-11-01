@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 def ensure_exit_code(result) -> int:
     if result.reason_code == "deadline":
         return 5
-    if result.reason_code in {"authorization", "profile_mismatch"}:
+    if result.reason_code in {"authorization", "profile_mismatch", "gateway_elevated", "gateway_other_session"}:
         return 4
     return {"ready": 0, "incompatible": 3, "draining": 6,
             "inaccessible": 7, "conflict": 7, "starting": 5, "absent": 5}[result.state]

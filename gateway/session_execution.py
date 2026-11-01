@@ -154,14 +154,17 @@ class GatewaySessionAgentMixin:
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
+        from gateway.session_worker_construct import session_prefill
         policy = policy_for_source(runner, src)
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=not bool(policy and policy.verbose), verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
-            prefill_messages=runner._prefill_messages or None,
+            prefill_messages=(session_prefill(active_authority(runner), policy, src.chat_id) if policy
+                              else runner._prefill_messages) or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
@@ -218,9 +221,17 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
-            agent = self._build_fresh_agent(
-                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
-            )
+            from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+            # delegation.gateway_mode from this turn's own (profile-scoped) config and the chat's resolved interim
+            # setting (never muted for a heartbeat turn, which shares the user's session and its cached agent);
+            # read once, by the agent's first tool build, then carried by its delegate_task schema and pin.
+            inline = gateway_delegation_inline(
+                ctx.user_config, platform_key, interim_enabled=ctx.interim_assistant_messages_enabled)
+            with gateway_delegation_inline_scope(inline):
+                agent = self._build_fresh_agent(
+                    turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                    skip_context_files,
+                )
             if cache_lock and cache is not None:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard

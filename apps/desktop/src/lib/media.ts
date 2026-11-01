@@ -1,9 +1,10 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { fileUrlToNativePath, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
-import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope, sessionFileOwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { hostHas } from '@/lib/host-capabilities'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
@@ -116,8 +117,14 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
 
   // An explicit local owner is this device, even with a remote foreground.
   // Keep the native reader and its configured size cap; the backend preview
-  // endpoint has a separate fixed limit.
-  if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
+  // endpoint has a separate fixed limit. A browser page's local connection is
+  // the serving backend instead, whose bridge reads follow the foreground
+  // profile; it takes the owner-pinned read below.
+  if (
+    owner?.connectionId === LOCAL_CONNECTION_ID &&
+    hostHas('nativeHostFiles') &&
+    window.hermesDesktop?.readFileDataUrl
+  ) {
     const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 
     if (isReadFileErrorResult(dataUrl)) {
@@ -230,33 +237,53 @@ export function rememberMediaImageFailure(key: string): void {
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
-// remote URLs untouched and route filesystem paths through the Electron media
-// protocol. Its main-process handler reads local files directly or proxies a
-// remote gateway with the connection's bearer/cookie/token authentication.
-export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+// remote URLs untouched. The Webapp supplies an authenticated HTTP source;
+// Electron's media protocol reads local files or proxies remote gateways.
+export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope, sessionId?: string): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    if (window.hermesDesktop.getGatewayFileStreamUrl) {
+      const conn = $connection.get()
+      // A Docker agent's /workspace is its session's own sandbox. The session id goes only with
+      // the profile that owns it; with no known owner the clip names no session.
+      const session = sessionId ? sessionFileOwnerScope(sessionId) : null
+      const via = session ?? owner
+
+      // A tile keeps its owner's profile for every ticket, renewals included, as its image reads do.
+      return window.hermesDesktop.getGatewayFileStreamUrl({
+        connectionId: via?.connectionId || conn?.connectionId,
+        // The gateway OS owns file-URI conversion, including drive letters and UNC hosts.
+        path,
+        profile: via?.profile || conn?.profile,
+        ...(session ? { sessionId } : {})
+      })
+    }
+
     return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
   }
 
-  return resolveMediaDisplaySrc(path)
+  return resolveMediaDisplaySrc(path, owner)
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
+// The browser-hosted Desktop's token grants host shells and never enters a
+// URL: its gateway files save through the ticketed bridge
+// (downloadGatewayMediaFile) instead. A data: or blob: URL is no gateway
+// path: it stays as it is, on every host.
 export function mediaExternalUrl(path: string): string {
-  if (/^https?:/i.test(path)) {
+  if (/^(?:https?|data|blob):/i.test(path)) {
     return path
   }
 
   if (isRemoteGateway()) {
     const conn = $connection.get()
 
-    if (conn?.baseUrl && conn.token) {
+    if (conn?.baseUrl && conn.token && hostHas('urlTokenAuth')) {
       const file = encodeURIComponent(filePathFromMediaPath(path))
 
       return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
@@ -274,7 +301,7 @@ export function mediaGatewayStreamUrl(path: string): string {
   const conn = $connection.get()
 
   if (isRemoteGateway()) {
-    const file = encodeURIComponent(filePathFromMediaPath(path))
+    const file = encodeURIComponent(path)
 
     const scope = [
       conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
@@ -308,16 +335,16 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// A drive or UNC URL becomes its Windows path (`C:\…`, `\\host\share\…`): the
+// desktop fs bridge and the gateway's fs routes open those on Windows, while
+// the URL's own `/C:/…` pathname opens nothing there. A URL that does not
+// decode, or encodes a separator, keeps its text undecoded.
 export function filePathFromMediaPath(path: string): string {
-  if (!path.startsWith('file:')) {
+  if (!/^file:/i.test(path)) {
     return path
   }
 
-  try {
-    return decodeURIComponent(new URL(path).pathname)
-  } catch {
-    return path.replace(/^file:\/\//, '')
-  }
+  return fileUrlToNativePath(path) ?? path.replace(/^file:\/\//i, '')
 }
 
 // True when this desktop shell is wired to a remote gateway. Local media paths
@@ -376,11 +403,11 @@ export interface GatewayFileOrigin {
   suggestedName?: string
 }
 
-// Replacement for opening gateway-local file paths with file://. The file lives
-// on the gateway, so ask the Electron main process to fetch the bytes through
-// the authenticated backend connection and save them locally. This avoids
-// browser/OS downloads losing OAuth cookies and avoids the data-URL cap used by
-// preview endpoints. Every renderer gateway-file save resolves its backend here.
+// Replacement for opening gateway-local file paths with file://. The host bridge
+// handles authentication and saving: Electron uses its native save dialog, while
+// the Webapp uses the browser's download manager. Neither path loads the file
+// through the capped data-URL preview endpoint. Every renderer gateway-file save
+// resolves its backend here.
 export async function downloadGatewayMediaFile(
   path: string,
   origin: GatewayFileOrigin = {}

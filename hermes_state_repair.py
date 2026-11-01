@@ -534,7 +534,19 @@ def _backup_db_file(db_path: Path) -> tuple[Optional[Path], Optional[str]]:
         return None, f"backup copy failed: {exc}"
 
 
-def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> None:
+def _rw_or_vanished(p: Path) -> bool:
+    """True when *p* is read-write for this user OR no longer exists.
+
+    The preflight lists the files first and checks them after, and a live sibling connection's last ``close()``
+    unlinks ``-wal``/``-shm`` in between (a concurrent quarantine can rename ``state.db`` aside the same way).
+    ``os.access`` on the vanished path returns False, which is "gone", not "read-only". The final re-check covers
+    a sidecar that vanished and was recreated by the next opener before ``exists()`` ran.
+    """
+    mode = os.R_OK | os.W_OK
+    return os.access(p, mode) or not p.exists() or os.access(p, mode)
+
+
+def preflight_db_writability(db_path: Path, *, db_label: str = "state.db", directory_only: bool = False) -> None:
     """Refuse-or-repair read-only DB files BEFORE the first connection opens.
 
     A stray read-only ``state.db`` / ``-wal`` / ``-shm`` (sudo run, restored backup, copied dotfiles) otherwise
@@ -553,8 +565,9 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         home = Path(get_hermes_home()).resolve()
     # SQLite needs a writable directory in every journal mode (WAL/SHM sidecars, or the DELETE-mode journal).
     sidecars = (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm"))
-    for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
-        if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
+    files = () if directory_only else tuple((p, False) for p in (db_path, *sidecars) if p.is_file())
+    for p, is_dir in [(db_path.parent, True), *files]:
+        if (is_dir and not p.is_dir()) or _rw_or_vanished(p):
             continue
         x = "x" if is_dir else ""
         in_scope = False

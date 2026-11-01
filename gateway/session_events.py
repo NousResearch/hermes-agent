@@ -35,11 +35,12 @@ class SessionEvents:
                 self.sequence = 0
             return self.epoch, self.sequence
 
-    def publish(self, session_id, payload, *, event_type="message.complete"):
+    def publish(self, session_id, payload, *, event_type="message.complete", execution=None):
+        # ``execution`` stamps this frame alone; the shared stamp is read without the lock elsewhere.
         with self.lock:
             self.watermark()
             frame = {'jsonrpc': '2.0', 'method': 'event', 'params': {
-                **self.execution, 'type': event_type, 'session_id': self._key,
+                **(self.execution if execution is None else execution), 'type': event_type, 'session_id': self._key,
                 'payload': deepcopy(payload), 'replay_epoch': self.epoch}}
             event_replay._stamp_event(frame)
             if frame['params']['seq'] <= self.sequence:
@@ -72,6 +73,18 @@ class SessionEvents:
             # True when a live viewer or observer took the frame; the replay ring alone is not
             # delivery (a detached finite viewer reads nothing until it reattaches).
             return delivered
+
+    def catch_up(self, transport, epoch, sequence):
+        """Caller holds ``lock``, before *transport* joins ``fanout``: write it the frames after the
+        cursor its connection's replay answered. A reconnect asks ``session.events.since`` and then
+        ``session.resume``; whatever the session published in between went to no live peer of this
+        socket, and the replay was already over, so a reply's tail and ``message.complete`` were lost
+        and the view stayed on its first chunk. Under the lock nothing can publish ahead of them."""
+        replay = self.since(epoch, sequence)
+        if replay['snapshot_required']:
+            return
+        for frame in replay['events']:
+            transport.write({'jsonrpc': '2.0', 'method': 'event', 'params': frame})
 
     def since(self, epoch, sequence):
         with self.lock:

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -11,7 +12,31 @@ import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const LEGACY = ['session.title', 'session.undo', 'session.usage', 'slash.exec', 'tools.configure']
 
-function harness() {
+function harness(rewindRefusal?: Error) {
+  let voiceMode = 'off'
+
+  // T9/T10 owner verbs, one answer per method (kept out of the request ladder below).
+  const ownerVerb = (method: string, params: any): unknown => {
+    const answers: Record<string, () => unknown> = {
+      'config.get:full': () => ({ config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }),
+      'config.get:voice': () => ({ value: voiceMode }),
+      'process.stop': () => ({ killed: 0 }),
+      'reload.mcp': () =>
+        params.confirm
+          ? { message: 'MCP servers reconciled (no server changes)', status: 'reloaded' }
+          : { message: 'Reloading MCP refreshes every chat of this profile.', status: 'confirm_required' },
+      'slash.exec:voice': () => {
+        voiceMode = params.command === 'voice on' ? 'voice_only' : params.command === 'voice off' ? 'off' : voiceMode
+
+        return { output: `voice: ${voiceMode}`, type: 'exec' }
+      }
+    }
+
+    const sub = method === 'config.get' ? params.key : method === 'slash.exec' ? String(params.command).split(' ')[0] : ''
+
+    return (answers[sub ? `${method}:${sub}` : method] ?? (() => undefined))()
+  }
+
   const messages = [
     { role: 'user', content: 'first', row_id: 11 },
     { role: 'assistant', content: 'a1', row_id: 12 },
@@ -19,7 +44,7 @@ function harness() {
     { role: 'assistant', content: 'a2', row_id: 14 }
   ]
 
-  const request = vi.fn(async (method: string, params: any) => {
+  const reply = async (method: string, params: any) => {
     if (method === 'session.resume') {
       return { session_id: 'owner', revision: 7, execution_generation: 3, messages }
     }
@@ -65,6 +90,12 @@ function harness() {
       }
     }
 
+    const owned = ownerVerb(method, params)
+
+    if (owned !== undefined) {
+      return owned
+    }
+
     if (method === 'config.get') {
       return { value: params.key === 'skin' ? 'default' : 'auto' }
     }
@@ -81,19 +112,25 @@ function harness() {
       return { type: 'exec', output: '🎭 **Available Personalities**' }
     }
 
-    if (method === 'slash.exec' && params.command === 'voice tts') {
-      return { type: 'exec', output: 'Auto-TTS enabled.' }
-    }
-
     throw new Error(`unknown_method: ${method}`)
-  })
+  }
+
+  // A refused rewind (the owner's typed busy refusal) replaces only the rewind reply.
+  const request = vi.fn(async (method: string, params: any) =>
+    rewindRefusal && method === 'session.mutate' && params.operation === 'rewind'
+      ? Promise.reject(rewindRefusal)
+      : reply(method, params)
+  )
 
   const sys = vi.fn()
   const send = vi.fn()
   const panel = vi.fn()
   const page = vi.fn()
 
+  const voice = { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
+
   const ctx = {
+    voice,
     slashFlightRef: { current: 0 },
     gateway: { gw: { isCanonical: true, request }, rpc: request },
     transcript: { page, panel, send, sys, setHistoryItems: vi.fn(), trimLastExchange: (items: unknown[]) => items },
@@ -102,8 +139,33 @@ function harness() {
     composer: { enqueue: vi.fn() }
   }
 
-  return { page, panel, request, send, slash: createSlashHandler(ctx as any), sys }
+  return { page, panel, request, send, slash: createSlashHandler(ctx as any), sys, voice }
 }
+
+it('/voice on|off|status run on the owner and mirror its per-session voice mode, never voice.toggle (T9)', async () => {
+  const { request, slash, sys, voice } = harness()
+
+  slash('/voice on')
+  await flush()
+  await flush()
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice on', session_id: 'owner' })
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 'owner' })
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(true)
+  expect(voice.setVoiceTts).toHaveBeenLastCalledWith(false)
+
+  slash('/voice status')
+  await flush()
+  await flush()
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(true)
+
+  slash('/voice off')
+  await flush()
+  await flush()
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(false)
+
+  expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text))).toContain('voice: voice_only')
+})
 
 beforeEach(() => {
   resetUiState()
@@ -145,6 +207,39 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   // Main's /retry resubmits the rewound turn's own text.
   expect(send).toHaveBeenCalledWith('second question')
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+})
+
+it('/undo and /retry while a turn runs print main\'s stop-first text, not the bare reason code', async () => {
+  const busy = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+  const { send, slash, sys } = harness(busy)
+
+  for (const command of ['undo', 'retry']) {
+    slash(`/${command}`)
+    await flush()
+    expect(sys).toHaveBeenLastCalledWith(
+      `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`
+    )
+  }
+
+  expect(sys.mock.calls.some(([line]) => String(line).includes('error: session_busy'))).toBe(false)
+  expect(send).not.toHaveBeenCalled()
+})
+
+it('/undo and /retry while a compression holds the session say to wait for it', async () => {
+  const compressing = new JsonRpcGatewayError('session_busy', {
+    code: 4001,
+    data: { field: 'compression', reason: 'session_busy' }
+  })
+
+  const { send, slash, sys } = harness(compressing)
+
+  for (const command of ['undo', 'retry']) {
+    slash(`/${command}`)
+    await flush()
+    expect(sys).toHaveBeenLastCalledWith(`session busy — a /compress is running; run /${command} when it finishes.`)
+  }
+
+  expect(send).not.toHaveBeenCalled()
 })
 
 it("/usage renders main's session totals from session.stats and /tools lists the owner's tools.show", async () => {
@@ -222,29 +317,27 @@ it('/status reads through the gateway', async () => {
   expect(request.mock.calls.map(([method]) => method)).not.toContain('session.status')
 })
 
-it('/stop is session-scoped; process-global /reload-mcp refuses on the shared gateway', async () => {
+it('/stop is session-scoped; /reload-mcp runs the owner\'s session-scoped reload.mcp (T10)', async () => {
   const { request, slash, sys } = harness()
 
-  for (const cmd of ['/stop', '/reload-mcp now']) {
+  for (const cmd of ['/stop', '/reload-mcp', '/reload-mcp now', '/reload-mcp always']) {
     slash(cmd)
+    await flush()
   }
-
-  await flush()
 
   // dokterdok N2: a sessionless process.stop was the owner-wide kill_all.
   expect(request).toHaveBeenCalledWith('process.stop', { session_id: 'owner' })
-
-  const methods = request.mock.calls.map(([method]) => method)
-
-  for (const method of ['reload.mcp']) {
-    expect(methods).not.toContain(method)
-  }
+  // The owner's reload reconciles only this profile's servers; `always` has no owner-side
+  // opt-out (the owner always asks), so it confirms once like `now`.
+  expect(request).toHaveBeenCalledWith('reload.mcp', { session_id: 'owner' })
+  expect(request.mock.calls.filter(([m, p]) => m === 'reload.mcp' && p.confirm === true)).toHaveLength(2)
+  expect(request.mock.calls.every(([m, p]) => m !== 'reload.mcp' || !('always' in p))).toBe(true)
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['reload-mcp']) {
-    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
-  }
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(notices).toContain('Reloading MCP refreshes every chat of this profile.')
+  expect(notices).toContain('MCP servers reconciled (no server changes)')
 })
 
 it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /skin reads still work', async () => {
@@ -265,14 +358,16 @@ it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /s
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
 })
 
-it('/voice tts sets the session\'s voice state through the owner\'s /voice handler', async () => {
+it('/voice tts refuses by name: the owner never speaks a TUI reply', async () => {
   const { request, slash, sys } = harness()
 
   slash('/voice tts')
   await flush()
 
-  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
-  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['Auto-TTS enabled.'])
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec' || method === 'voice.toggle')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual([
+    '/voice tts is not available on the shared gateway yet'
+  ])
 })
 
 it('bare /personality lists through the owner\'s /personality handler', async () => {
@@ -352,4 +447,53 @@ it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); 
   expect(notices.some(line => /high/.test(line))).toBe(true)
   expect(notices.some(line => /not available/.test(line))).toBe(false)
   expect(getUiState().showReasoning).toBe(true)
+})
+
+it('/config pages the owner\'s presentation config (config.get full), never slash.exec (T10)', async () => {
+  const { page, request, slash, sys } = harness()
+
+  slash('/config')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'full', session_id: 'owner' })
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text)).some(line => /not available|unsupported/.test(line))).toBe(false)
+  const [text, title] = page.mock.calls[0]!
+  expect(title).toBe('Config')
+  expect(text).toContain('display:')
+  expect(text).toContain('  skin: ares')
+  expect(text).toContain('  record_key: ctrl+b')
+})
+
+it('/timestamps toggles display.timestamps on the owner (config.set) and the transcript at once (T10)', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/timestamps on')
+  await flush()
+  expect(getUiState().timestamps).toBe(true)
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'timestamps', value: 'on' })
+
+  slash('/ts')
+  await flush()
+  expect(getUiState().timestamps).toBe(false)
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'timestamps', value: 'off' })
+
+  slash('/timestamps status')
+  await flush()
+  const notices = sys.mock.calls.map(([text]) => String(text))
+  expect(notices).toContain('timestamps off')
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec')).toBe(false)
+
+  // A backend that refuses the write reports it instead of a silent `timestamps on`.
+  request.mockImplementation(async (method: string) => {
+    if (method === 'config.set') {
+      throw new Error('unknown config key: timestamps')
+    }
+
+    return {}
+  })
+  slash('/timestamps on')
+  await flush()
+  expect(sys.mock.calls.map(([text]) => String(text))).toContain('error: unknown config key: timestamps')
 })

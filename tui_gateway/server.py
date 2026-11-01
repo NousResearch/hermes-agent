@@ -12,6 +12,7 @@ import logging
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -27,8 +28,13 @@ from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, s
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
+from hermes_cli import config_backend as _config_backend
+from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import file_signature, is_truthy_value
+# The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
+from utils import is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
@@ -38,7 +44,7 @@ from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-from tui_gateway import git_probe
+from tui_gateway import git_probe, stream_segments
 from tui_gateway.checkpoints import (_load_checkpoints_enabled, _resolve_checkpoint_hash,
                                      resolve_checkpoints_enabled as _resolve_checkpoints_enabled)
 from tui_gateway._env import env_float, env_int
@@ -232,145 +238,6 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 # Detached websocket sessions use a drop sink instead of stdio: Desktop embeds the gateway in-process
 # and captures stdout into logs, so stale frames must not fall through while a session awaits resume/reap.
 _detached_ws_transport = _DropTransport()
-
-
-def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
-    """Prepend managed bin (managed-first policy for the Browser Use CLI), venv bin and
-    ~/.local/bin to PATH so slash_worker children resolve Hermes-managed CLIs under the Desktop's minimal PATH.
-    The PM store dirs go in front of all of them: a user's node/uv in ~/.local/bin never wins."""
-    managed_bin = ""
-    with contextlib.suppress(Exception):
-        managed_bin = str(Path(get_hermes_home()) / "bin")
-    venv_bin = str(Path(sys.executable).parent)  # <venv>/bin (POSIX) or <venv>/Scripts (Windows)
-    parts = [p for p in (managed_bin, venv_bin, str(Path.home() / ".local" / "bin"), env.get("PATH") or "") if p]
-    env["PATH"] = os.pathsep.join(parts)
-    with contextlib.suppress(Exception):
-        import pm
-
-        env["PATH"] = pm.store_first_path(env["PATH"])
-    return env
-
-
-class _SlashWorker:
-    """Persistent HermesCLI subprocess for slash commands."""
-
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
-                 provider: str | None = None):
-        self._lock = threading.Lock()
-        self._seq = 0
-        self.stderr_tail: list[str] = []
-        self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
-        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
-        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
-                "--parent-pid", str(os.getpid())] \
-            + (["--model", model] if model else []) \
-            + (["--provider", provider] if provider else [])
-        self._closed = False
-        from hermes_cli._subprocess_compat import windows_hide_flags
-        # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
-        # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
-        # worker must resolve config/skills/state against the session's profile home, not the gateway's
-        # launch HERMES_HOME (#40677).
-        from tools.environments.local import served_profile_child_env
-        from agent.secret_scope import is_multiplex_active
-
-        # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
-        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself. The launch profile is a profile too: once the process hosts
-        # a second home (multiplex flipped), its worker must name its own home or the fail-closed
-        # no-target/no-scope path raises UnscopedSecretError (#115427).
-        env = _prepend_tool_paths(served_profile_child_env(
-            target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
-            inherit_credentials=True))
-        # Internal slash workers must import the same checkout as their parent.
-        module_root = str(Path(__file__).resolve().parent.parent)
-        env["PYTHONPATH"] = os.pathsep.join(
-            part for part in (module_root, env.get("PYTHONPATH", "")) if part
-        )
-        # start_new_session: otherwise the worker inherits the gateway's pgid and mcp_tool's orphan
-        # sweep, racing the spawn, killpg()s the TUI parent itself. errors="replace": bytes invalid
-        # in the system locale (GBK Windows) must not raise UnicodeDecodeError in the drain threads.
-        # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so slash_worker child processes
-        # can resolve Hermes-managed CLIs (browser-use, uvx) even when the parent gateway was launched with
-        # a minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
-        self.proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", bufsize=1, cwd=os.getcwd(), env=env,
-            creationflags=windows_hide_flags(), start_new_session=True)
-        threading.Thread(target=self._drain_stdout, daemon=True).start()
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
-
-    def _drain_stdout(self):
-        for line in self.proc.stdout or []:
-            with contextlib.suppress(json.JSONDecodeError):
-                self.stdout_queue.put(json.loads(line))
-        self.stdout_queue.put(None)
-
-    def _drain_stderr(self):
-        for line in self.proc.stderr or []:
-            if text := line.rstrip("\n"):
-                self.stderr_tail = (self.stderr_tail + [text])[-80:]
-
-    def run(self, command: str) -> str:
-        """Run one command; return its output text.
-
-        A command like /prompt may also have parked a next-turn prompt (a "seed")
-        on the worker CLI; it rides back on the reply's ``seed`` field and is
-        retrieved separately via ``pop_seed()``.
-        """
-        if self.proc.poll() is not None:
-            raise RuntimeError("slash worker exited")
-        with self._lock:
-            self._seq += 1
-            rid = self._seq
-            self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
-            self.proc.stdin.flush()
-            while True:
-                try:
-                    msg = self.stdout_queue.get(timeout=_SLASH_WORKER_TIMEOUT_S)
-                except queue.Empty:
-                    raise RuntimeError("slash worker timed out")
-                if msg is None:
-                    break
-                if msg.get("id") != rid:
-                    continue
-                if not msg.get("ok"):
-                    raise RuntimeError(msg.get("error", "slash worker failed"))
-                self._last_seed = str(msg.get("seed", "") or "")
-                return str(msg.get("output", "")).rstrip()
-            raise RuntimeError(
-                f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
-
-    def pop_seed(self) -> str:
-        """Return and clear the seed from the last ``run()`` (empty when none)."""
-        seed, self._last_seed = getattr(self, "_last_seed", ""), ""
-        return seed
-
-    def close(self):
-        if getattr(self, "_closed", False):
-            return
-        self._closed = True
-        proc = self.proc
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=1)
-                except Exception:
-                    proc.kill()
-                    with contextlib.suppress(Exception):
-                        proc.wait(timeout=1)  # reap the zombie SIGKILL leaves behind
-        except Exception:
-            with contextlib.suppress(Exception):
-                proc.kill()
-                proc.wait(timeout=1)
-        finally:
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                with contextlib.suppress(Exception):
-                    stream.close()
 
 
 def _display_cfg() -> dict:
@@ -673,10 +540,13 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
     """
     if profile_home is None:
         return None
-    with contextlib.suppress(Exception):
-        from hermes_cli.config_effective import load_user_config_effective
-        p = Path(profile_home) / "config.yaml"
-        return _configured_cwd_from_cfg(load_user_config_effective(p)) if p.exists() else None
+    try:
+        with contextlib.suppress(Exception):
+            from hermes_cli.config_effective import load_user_config_effective
+            p = Path(profile_home) / "config.yaml"
+            return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
+    except ConfigBackendUnavailable as exc:  # a SystemExit: the agent build reports it; the cwd is a hint
+        logger.warning("terminal.cwd of %s unavailable: %s", profile_home, exc.code)
     return None
 
 
@@ -724,7 +594,7 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     from agent.notification_presentation import event_presentation_muted
     if event_presentation_muted(event, sid):
         return False
-    return write_json(_event_frame(event, sid, payload))
+    return write_json(_event_frame(event, sid, stream_segments.stamp_session_frame(_sessions.get(sid), event, payload)))
 
 
 from tui_gateway import server_requests as _server_requests
@@ -997,16 +867,20 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
+    from hermes_cli.config_backend import config_cache_version, config_exists
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.config_read_errors import FailedConfigRead
     try:
         p = _active_config_path()
-        sig = file_signature(p.stat()) if p.exists() else None
+        try:
+            sig = config_cache_version(p)
+        except FileNotFoundError:  # absent; any other stat error is a failed read, never "no config"
+            sig = None
         with _cfg_lock:
             if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
-        data = read_user_config_raw(p) if p.exists() else {}
-    except Exception as exc:
+        data = read_user_config_raw(p) if config_exists(p) else {}
+    except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- served as a FailedConfigRead, refused by _save_cfg
         return FailedConfigRead(error=exc)  # readable as {}, refused by _save_cfg
     with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
         _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
@@ -1027,14 +901,26 @@ def _load_cfg() -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import atomic_config_replace
+    from hermes_cli.config_backend import config_cache_version, supports_file_tooling
     path = _active_config_path()
     atomic_config_replace(path, cfg)
+    if not supports_file_tooling():
+        # The backend saves what it accepts (a bulk save omits locked keys), not what was proposed:
+        # drop the cache so the next raw read returns the accepted document.
+        _drop_cfg_cache()
+        return
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_sig = file_signature(path.stat())
+            _cfg_sig = config_cache_version(path)
         except Exception:
             _cfg_sig = None
+
+
+def _drop_cfg_cache() -> None:
+    global _cfg_cache, _cfg_sig, _cfg_path
+    with _cfg_lock:
+        _cfg_cache, _cfg_sig, _cfg_path = None, None, None
 
 
 def _session_for_key(session_key: str) -> dict | None:
@@ -1052,7 +938,6 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         resolved = cwd if cwd is not None else (str(sess.get("cwd") or "") if sess is not None else "")
         source = _resolve_session_platform()
         profile = _current_profile_name()
-        browser_control_principal = browser_control_transport_family = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
@@ -1061,16 +946,9 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             # App-global backends multiplex profiles: prefer the live session's own home.
             profile = profile_name_for_home(sess.get("profile_home")) or profile
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
-            identity = getattr(sess.get("transport"), "auth_identity", None)
-            if _methods_browser_control._is_authenticated_identity(identity):
-                browser_control_principal = _methods_browser_control._principal_digest(identity)
-                browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
-            profile=profile,
-            browser_control_principal=browser_control_principal,
-            browser_control_transport_family=browser_control_transport_family, cwd=resolved,
-            ui_session_id=ui_session_id, cron_session="")
+            profile=profile, cwd=resolved, ui_session_id=ui_session_id, cron_session="")
     return []
 
 
@@ -1338,15 +1216,38 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         logger.warning("failed to persist model switch marker", exc_info=True)
 
 
+def _write_config_changes(sets: dict, unsets: tuple = ()) -> None:
+    """Explicit keyed edits through a config backend without a file (remote): ONE write that sets
+    and unsets exactly these dotted keys and refuses a locked one (ConfigLockedError) instead of
+    the bulk save's silent omission, so a setter never reports a refused value as saved. Nothing is
+    applied when it raises. The file backend keeps its raw round-trip (callers branch on
+    ``supports_file_tooling()``)."""
+    try:
+        _config_backend.get_config_backend().write_changes(_active_config_path().parent, Changes(set=dict(sets), unset=tuple(unsets)))
+    finally:
+        _drop_cfg_cache()
+
+
 def _write_config_key(key_path: str, value):
+    _write_config_keys({key_path: value})
+
+
+def _write_config_keys(updates: dict) -> None:
+    """Set related dotted keys together: ONE backend write without a config file (remote), so a
+    refused key changes none of them; one raw round-trip save with the file backend."""
+    if not supports_file_tooling():
+        _write_config_changes(updates)
+        return
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
-    cfg = current = _load_cfg_raw()
-    *parents, leaf = key_path.split(".")
-    for key in parents:
-        if not isinstance(current.get(key), dict):
-            current[key] = {}
-        current = current[key]
-    current[leaf] = value
+    cfg = _load_cfg_raw()
+    for key_path, value in updates.items():
+        current = cfg
+        *parents, leaf = key_path.split(".")
+        for key in parents:
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current[leaf] = value
     _save_cfg(cfg)
 
 
@@ -1421,6 +1322,10 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
+    from gateway.session_usage import plan_gauge
+    if (gauge := plan_gauge(agent)) is not None:
+        usage["plan_gauge"] = gauge
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count
@@ -1522,8 +1427,10 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
              or getattr(agent, "model", "") or override.get("model"))
+    agent_provider = getattr(agent, "provider", "")
+    agent_provider = _scoped_session_provider(agent, session) if agent_provider == "custom" else agent_provider
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
-                or getattr(agent, "provider", "") or override.get("provider"))
+                or agent_provider or override.get("provider"))
     default = ("", "") if model else _session_default_route(session)
     return str(model or default[0]), str(provider or default[1])
 
@@ -1576,10 +1483,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
     provider = mirror.get("provider", getattr(agent, "provider", ""))
     if provider == "custom" and "provider" not in mirror and agent is not None:
-        # Clients reuse this identity for new chats without carrying the endpoint or key.
-        # Broadcast/resume callers need not be bound to this session's profile.
-        with _profile_build_scope(sess.get("profile_home") or _hermes_home):
-            provider = _runtime_model_config(agent).get("provider", provider)
+        provider = _scoped_session_provider(agent, sess)
     model = pending_model or mirror.get("model", getattr(agent, "model", ""))
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
@@ -1727,9 +1631,10 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
         if db is not None:
             row = db.get_session(key) if hasattr(db, "get_session") else None
             if row and _resumable_stored_cwd(row.get("cwd"), profile_home):
-                # An ssh session's stored cwd is its workspace: explicit, so the remote terminal uses it instead of
-                # the profile's ~. Other backends keep main's semantics (resolved outside the sessions lock: I/O).
-                remote = _cwd_is_remote(profile_home)
+                # An ssh or sandbox session's stored cwd is its workspace: explicit, so the remote terminal uses it
+                # instead of the backend default (an unpicked launch dir is never persisted for them). Host backends
+                # keep main's semantics (resolved outside the sessions lock: I/O).
+                remote = not _host_cwd_is_terminal_cwd(profile_home)
                 with _sessions_lock:
                     if sid in _sessions:
                         _sessions[sid]["cwd"] = row["cwd"]
@@ -1766,43 +1671,6 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 # breaking the (cosmetic) pet surface.
 _pet_payload_cache_lock = threading.Lock()
 _pet_payload_cache: dict[tuple, dict] = {}
-
-
-def _pet_sheet_revision(spritesheet) -> str:
-    """Stable revision id for one spritesheet file."""
-    with contextlib.suppress(Exception):
-        stat = spritesheet.stat()
-        return f"{stat.st_mtime_ns}:{stat.st_size}"
-    return "0:0"
-
-
-def _clone_pet_payload(payload: dict) -> dict:
-    """Shallow-clone cached payloads so callers can't mutate shared state."""
-    out = dict(payload)
-    for key, kind in (("framesByState", dict), ("framesByRow", dict), ("stateRows", list)):
-        if isinstance(payload.get(key), kind):
-            out[key] = kind(payload[key])
-    return out
-
-
-def _pet_row_frame_counts(spritesheet) -> dict:
-    """Real frame count per concrete spritesheet row name."""
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        from agent.pet import constants, render
-        with Image.open(spritesheet) as opened:
-            image = opened.convert("RGBA")
-        W, H = constants.FRAME_W, constants.FRAME_H
-        cols = max(1, image.width // W)
-        row_count = max(1, image.height // H)
-        rows = constants.state_rows_for_grid(row_count)
-        out: dict[str, int] = {}
-        for row_idx, name in enumerate(rows[:row_count]):
-            top = row_idx * H
-            blank = lambda col: render._frame_is_blank(image.crop((col * W, top, col * W + W, top + H)))
-            out[name] = next((col for col in range(cols) if blank(col)), cols)  # frames before the first blank cell
-        return out
-    return {}
 
 
 def _pet_cfg() -> dict:
@@ -1869,17 +1737,6 @@ def _pet_active_selection():
     enabled = is_truthy_value(pet_cfg.get("enabled"), default=False)
     pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if enabled else None
     return enabled, pet, float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-
-
-def _pet_state_rows(spritesheet) -> list[str]:
-    """Row taxonomy for the concrete sheet (legacy 8-row or current 9-row atlas), in the renderer's `PetState` names."""
-    from agent.pet import constants
-    with contextlib.suppress(Exception):
-        from PIL import Image
-        with Image.open(spritesheet) as image:
-            row_count = max(1, image.height // constants.FRAME_H)
-        return list(constants.state_rows_for_grid(row_count))
-    return list(constants.STATE_ROWS)
 
 
 def _pet_gen_root():
@@ -2145,7 +2002,7 @@ from hermes_state import _BARE_BILLING_PROVIDERS
 
 from . import (
     session_registry as _session_registry, agent_factory as _agent_factory,
-    methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
+    slash_worker_client as _slash_worker_client, methods_voice as _methods_voice, methods_browser as _methods_browser, methods_slash as _methods_slash,
     methods_complete_helpers as _methods_complete_helpers, session_auto_continue as _session_auto_continue,
     plugin_inject as _plugin_inject,
     rpc_dispatch as _rpc_dispatch,
@@ -2156,7 +2013,7 @@ from . import (
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
     session_transports as _session_transports, prompt_turn as _prompt_turn, billing_view as _billing_view,
-    methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
+    methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
@@ -2170,12 +2027,12 @@ from . import (
     methods_shared_metrics as _methods_shared_metrics, methods_plugin_catalog as _methods_plugin_catalog)
 
 for _m in (
-    _session_registry, _agent_factory,
+    _session_registry, _agent_factory, _slash_worker_client,
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
-    _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
+    _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_tools_plugin_servers, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,

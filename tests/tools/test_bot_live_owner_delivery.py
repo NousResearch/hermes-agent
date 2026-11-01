@@ -63,6 +63,21 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_mailbox_lock_continues_when_directory_hardening_is_denied(tmp_path, monkeypatch, caplog):
+    """An inherited Windows ACL may deny chmod without making the mailbox unusable."""
+    real_chmod = Path.chmod
+
+    def deny_mailbox_chmod(path, mode, *, follow_symlinks=True):
+        if path == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", deny_mailbox_chmod)
+    with mailbox._locked(tmp_path) as root:
+        assert root == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    assert "could not harden mailbox directory" in caplog.text
+
+
 def test_cancel_queued_delivery_cancels_only_an_unadmitted_receipt(tmp_path, monkeypatch):
     """main's cancel fence on the owner seam: a legacy unadmitted queued receipt is cancelled
     once (idempotent); an authority admission is never cancelled from the mailbox."""
@@ -271,3 +286,105 @@ def test_receipt_wait_polls_the_local_receipt_and_outlives_an_unreachable_owner(
     settled = mailbox.await_delivery(tmp_path, key, 5)
     assert (settled["status"], settled["reply"]) == ("settled", "PONG")
     assert dials == []
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_mailbox_lock_refuses_a_dir_another_uid_owns_when_chmod_is_denied(tmp_path, monkeypatch):
+    """On POSIX chmod fails only for a dir this uid doesn't own: that mailbox is refused, not used."""
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    real_chmod = Path.chmod
+
+    def deny(target, mode, *, follow_symlinks=True):
+        if Path(target) == root:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", deny)
+    monkeypatch.setattr(os, "getuid", lambda: root.stat().st_uid + 1)
+    with pytest.raises(PermissionError):
+        with mailbox._locked(tmp_path):
+            pass
+
+
+def test_authority_delivery_dials_from_a_thread_with_a_running_loop(tmp_path, monkeypatch):
+    """A gateway-hosted message_agent call runs on a thread that already has a running loop;
+    the authority request must still execute rather than die in asyncio.run() before dialing."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from hermes_cli import gateway_runtime
+
+    probed = []
+
+    def discover(home, timeout):
+        probed.append(Path(home))
+        return SimpleNamespace(state="stopped", endpoint=None)
+
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", discover)
+
+    async def tool_call_on_loop():
+        return mailbox.authority_delivery(tmp_path, {"id": "0" * 64, "message": "probe"})
+
+    with pytest.raises(mailbox.PreDialError, match="profile authority is not ready"):
+        asyncio.run(tool_call_on_loop())
+    assert probed == [tmp_path.resolve()]
+
+
+def _spy_dm_files(bot_mode_dm, monkeypatch):
+    dm_files = []
+    real_write = bot_mode_dm._write_dm_file
+
+    def spy_write(content):
+        path = real_write(content)
+        dm_files.append(path)
+        return path
+
+    monkeypatch.setattr(bot_mode_dm, "_write_dm_file", spy_write)
+    return dm_files
+
+
+def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypatch):
+    """#139303: a dial that dies before ``bot_relay.deliver`` reached the socket admits
+    nothing — the pinned intent is dropped and the sender hears 'safe to resend',
+    instead of the old 'ambiguous / do not resend' that stranded the DM."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def refused(home, params):
+        raise live.PreDialError("dial refused before the RPC went out")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: _owner(tmp_path))
+    monkeypatch.setattr(live, "authority_delivery", refused)
+    dm_files = _spy_dm_files(bot_mode_dm, monkeypatch)
+
+    payload = json.loads(bot_mode_dm._start_delivery(
+        ["hermes", "-p", "researcher"], "hello", "@researcher",
+        stdin_file=False, task_id=None, agent=None, profile_home=tmp_path))
+
+    assert payload["reason"] == "runtime_unavailable"
+    assert "safe to resend" in payload["error"]
+    assert "Do not resend" not in payload["error"]
+    dm_file = Path(dm_files[0])
+    assert not dm_file.exists()  # nothing was admitted: no evidence to retain
+    assert not Path(str(dm_file) + ".live.json").exists()  # the pinned intent can never settle
+
+
+def test_pre_dial_failure_on_a_retried_intent_stays_ambiguous(tmp_path, monkeypatch):
+    """An intent pinned by an earlier attempt may already be admitted: a later pre-dial death
+    proves nothing about that attempt, so the outcome stays unknown and the evidence is kept."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def refused(home, params):
+        raise live.PreDialError("dial refused before the RPC went out")
+
+    dm_file = bot_mode_dm._write_dm_file("hello")
+    intent = Path(bot_mode_dm._live_intent_file(dm_file))
+    intent.write_text(json.dumps(dict(owner=_owner(tmp_path), message="hello",
+                                      delivery_id=bot_mode_dm._dm_delivery_id(dm_file))), encoding="utf-8")
+    monkeypatch.setattr(live, "authority_delivery", refused)
+
+    with pytest.raises(live.PreDialError):
+        bot_mode_dm._admit_live_dm(None, dm_file)
+    assert intent.exists() and Path(dm_file).exists()

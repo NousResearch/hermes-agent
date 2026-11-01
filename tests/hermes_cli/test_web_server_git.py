@@ -1,4 +1,5 @@
 import asyncio
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -251,6 +252,9 @@ def test_worktree_add_existing_remote_branch_tracks_not_detaches(client, repo_wi
         cwd=tree, check=True, capture_output=True, text=True,
     ).stdout.strip()
     assert upstream == "origin/feature"
+    # Registered for the periodic sweep like every other worktree-creation path.
+    from hermes_cli.worktree_registry import registered_repos
+    assert os.path.realpath(repo_with_remote) in registered_repos()
 
 
 def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):

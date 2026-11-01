@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, canonicalProfile, canonicalSessionKey, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -43,7 +43,17 @@ export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 // the same `onRequest` registry as a request whose `respond` issues the RPC.
 const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'approval.request': 'approval', 'clarify.request': 'clarify' }
 
-const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel', 'session.rewind'])
+const ATTACH_REQUIRED = new Set([
+  'prompt.submit',
+  'approval.respond',
+  'clarify.respond',
+  'session.interrupt',
+  'prompt.cancel',
+  'session.rewind',
+  'prompt.steer_queued',
+  'prompt.replace_queued'
+])
+
 // A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row
 // that was never opened) has no cached revision, so attach it first to learn one. Move to project
 // (`session_key`) is the same CAS mutation on a sidebar row.
@@ -68,8 +78,18 @@ function legacyParams(method: string, params: Record<string, unknown>): Record<s
   return Object.fromEntries(Object.entries(params).filter(([key]) => !strip.includes(key)))
 }
 
+// A caller timeout of 0 (or less) means no deadline, as in the shared channel, which arms no timer
+// for it. Callers that wait on a way-out offer instead (onboarding.state / onboarding.start) pass 0.
+function requestDeadline(timeoutMs: number | undefined): number {
+  const budget = timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+
+  return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
+}
+
 function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
   signal?.throwIfAborted()
+
+  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
   const remaining = deadline - Date.now()
 
   if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
@@ -115,16 +135,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (this.deliveredPrompts.has(id)) { return }
     this.deliveredPrompts.set(id, { sessionId: sid, profile })
-    const choices = Array.isArray(p.choices) ? p.choices : []
-
-    // The question card reads one `questions[]` shape. A canonical clarify prompt is one
-    // question (the shared gateway asks a batch one card at a time), so its prompt id doubles
-    // as the qid that `clarify.lock` answers with (see `request` below).
-    const params: Record<string, unknown> = kind === 'clarify'
-      ? { session_id: sid, answers: p.answers,
-          questions: Array.isArray(p.questions) ? p.questions : [{ qid: id, question: p.question, choices, multi_select: p.multi_select }] }
-      : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
-          allow_permanent: choices.includes('always'), edit: p.edit }
+    const params = canonicalPromptParams(kind, sid, p)
 
     let settled = false
 
@@ -316,6 +327,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
   }
 
+  protected override isDesktopLocal(): boolean {
+    return this.canonical
+  }
+
   override async connect(wsUrl: string): Promise<void> {
     this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
@@ -375,7 +390,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
     const generation = this.connectionGeneration
-    const deadline = Date.now() + (timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
+    const deadline = requestDeadline(timeoutMs)
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
@@ -403,11 +418,34 @@ export class HermesGateway extends JsonRpcGatewayClient {
     // implicit route. Its revision and generation are cached under that owner.
     params = this.routeCanonicalParams(method, params)
 
+    // Answered locally only once the owner's route is known: a named launch profile's
+    // retained rewind is keyed under its name, which a redial forgets until the attach.
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
+
+    // The clarify card answers a whole question set as one form: declared, the owner asks the
+    // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
+    // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
+    if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
+
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
-      const result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      let result: T
+
+      try {
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      } catch (error) {
+        if (!this.protocol.retryableFence(prepared, error)) { throw error }
+        // The refusal carried the owner's current fences: one retry at them, never a loop.
+        this.protocol.failure(prepared, error)
+        this.requireConnectionGeneration(generation)
+        prepared = this.protocol.prepare(method, params)
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      }
+
       this.requireConnectionGeneration(generation)
 
       if (['session.resume', 'session.create', 'session.activate'].includes(method)) {
@@ -495,17 +533,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       onUnhandledRequest: request =>
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
-      socketFactory: url => {
-        const parsed = new URL(url)
-
-        if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
-        const ticket = parsed.searchParams.get('ticket')
-
-        if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
-        parsed.searchParams.delete('ticket')
-
-        return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
-      }
+      socketFactory: openGatewaySocket
     })
     this.onEvent(event => {
       if (!this.canonical) { return }
@@ -785,4 +813,33 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     connectionId,
     ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
   }
+}
+
+/** The backend a gateway FILE request naming session `id` must go to: the owner's
+ *  backend-facing profile, plus its connection when that is not the ambient one.
+ *  Null when no owner profile is known. A file route looks `session_id` up in
+ *  the profile the request names, so the id must never travel with another
+ *  profile: a caller that gets null names no session at all. */
+export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    const profile = owner.trim()
+
+    return profile ? { profile } : null
+  }
+
+  const profile = String(owner.targetProfile || owner.profile || '').trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
 }

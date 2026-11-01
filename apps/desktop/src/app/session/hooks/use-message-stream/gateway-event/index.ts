@@ -17,6 +17,7 @@ import { isSessionGone } from '@/store/session-gone-latch'
 import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
+import { handleDeferredPickEvent } from './deferred-pick'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
@@ -26,7 +27,7 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent } from './tools'
+import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -87,8 +88,10 @@ const HANDLERS: GatewayEventHandler[] = [
   handleFreeTierEvent,
   handleOnboardingEvent,
   handleSessionInfoEvent,
+  handleDeferredPickEvent,
   handleControlEvent,
   handleMessageStreamEvent,
+  handleToolProgressEvent,
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,
@@ -296,6 +299,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last one force-settles a dead turn, partial payload included.
         if (sessionId) {
           noteSessionEvent(sessionId)
+          retireTurnToolProgress(event.type, sessionId)
         }
       }
     },

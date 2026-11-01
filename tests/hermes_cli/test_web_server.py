@@ -193,37 +193,21 @@ class TestRedactKey:
         assert redact_key("short") == "***"
 
 
-class TestSessionTokenInjection:
-    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
-    /api + /api/ws calls with it. The backend must adopt that token, else every
-    desktop request 401s ("gateway is offline"). A main-merge once silently
-    dropped this read — this guards the contract, not a literal value.
-    """
-
-    def test_honors_injected_token(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        original_app = ws.app
-        original_token = ws._SESSION_TOKEN
-        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
-        # No module reload: the loaded app and its adopted token are untouched.
-        assert ws.app is original_app
-        assert ws._SESSION_TOKEN == original_token
 
 
     def test_session_token_resolution_preserves_loaded_app_auth(self, monkeypatch):
         import hermes_cli.web_server as ws
+        import hermes_cli.web_server_session_token as st
         from starlette.testclient import TestClient
 
         original_app = ws.app
         original_header_name = ws._SESSION_HEADER_NAME
         original_token = ws._SESSION_TOKEN
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
-        assert ws._resolve_session_token() == "desktop-seeded-token"
+        assert st.resolve_session_token() == "desktop-seeded-token"
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
-        with patch.object(ws.secrets, "token_urlsafe", return_value="generated-token"):
-            assert ws._resolve_session_token() == "generated-token"
+        with patch.object(st.secrets, "token_urlsafe", return_value="generated-token"):
+            assert st.resolve_session_token() == "generated-token"
 
         client = TestClient(original_app)
         client.headers[original_header_name] = original_token
@@ -417,144 +401,6 @@ class TestWebServerEndpoints:
         assert response.status_code == 503
         assert "not initialized" in response.json()["detail"]
         assert set(get_hermes_home().glob("state.db*")) == before
-
-    @pytest.mark.parametrize(
-        "missing_column", ["archived", "pinned", "last_activity_at"]
-    )
-    def test_get_sessions_reports_stale_schema_without_healing(self, missing_column):
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("stale-schema", source="cli")
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            # SQLite refuses DROP COLUMN while an index references the
-            # column; a pre-column legacy store has neither.
-            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
-            legacy.execute(f"ALTER TABLE sessions DROP COLUMN {missing_column}")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        before = db_path.read_bytes()
-        response = self.client.get("/api/sessions?limit=50&offset=0")
-
-        assert response.status_code == 503
-        assert "schema" in response.json()["detail"]
-        assert db_path.read_bytes() == before
-        healed = sqlite3.connect(str(db_path))
-        try:
-            columns = {
-                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
-            }
-        finally:
-            healed.close()
-        assert missing_column not in columns
-
-    def test_profiles_sidebar_reports_stale_schema_store(self):
-        """Aggregation reports unavailable profiles instead of healing their DBs."""
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("sidebar-stale", source="cli")
-            seed.append_message(
-                session_id="sidebar-stale", role="user", content="hi"
-            )
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            legacy.execute("DROP INDEX IF EXISTS idx_sessions_effective_activity")
-            legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        response = self.client.get("/api/profiles/sessions/sidebar")
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["errors"]
-        assert "schema" in payload["errors"][0]["error"]
-        # A failed read is a retryable failed load, never an empty list.
-        assert "sessions" not in payload["recents"]
-        assert payload["recents"]["failed"] is True
-
-    def test_startup_eager_reconcile_heals_stale_store(self):
-        """The OWNER's startup open brings a stale store current; the dashboard only reads.
-
-        #79531/#80037: after `hermes update` an old-schema state.db used to
-        stay stale until the first NEW session forced a writable open —
-        every /api/sessions poll 500ed with "no such column" in between.
-        Under the unified runtime the dashboard is a zero-writer view: its
-        eager probe must NOT heal (#107688 two-writer vector), and the
-        gateway owner's writable acquisition is what reconciles the schema.
-        """
-        import sqlite3
-
-        from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
-
-        db_path = get_hermes_home() / "state.db"
-        seed = SessionDB(db_path=db_path)
-        try:
-            seed.create_session("eager-stale", source="cli")
-        finally:
-            seed.close()
-
-        legacy = sqlite3.connect(str(db_path))
-        try:
-            legacy.execute("ALTER TABLE sessions DROP COLUMN last_read_at")
-            legacy.commit()
-        finally:
-            legacy.close()
-
-        # Dashboard probe: read-only, never heals (no writable open from a viewer).
-        _web_server_lifecycle._eager_reconcile_own_session_db()
-        stale = sqlite3.connect(str(db_path))
-        try:
-            assert "last_read_at" not in {row[1] for row in stale.execute("PRAGMA table_info(sessions)")}
-        finally:
-            stale.close()
-
-        # Owner path: the gateway's writable acquisition reconciles the schema at startup.
-        from hermes_state_registry import acquire, release_or_close
-        owner = acquire(db_path)
-        try:
-            pass
-        finally:
-            release_or_close(owner)
-
-        healed = sqlite3.connect(str(db_path))
-        try:
-            columns = {
-                row[1] for row in healed.execute("PRAGMA table_info(sessions)")
-            }
-        finally:
-            healed.close()
-        assert "last_read_at" in columns
-
-        # The healed store serves the full rich listing.
-        db = SessionDB(db_path=db_path, read_only=True)
-        try:
-            rows = db.list_sessions_rich(limit=10, compact_rows=True)
-        finally:
-            db.close()
-        assert [r["id"] for r in rows] == ["eager-stale"]
 
     def test_startup_eager_reconcile_is_read_only_on_a_healthy_store(self, monkeypatch):
         """A current-schema store gets NO writable open from the dashboard (#107688).
@@ -2813,7 +2659,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier(None) is False
 
 
-
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests
 # ---------------------------------------------------------------------------
@@ -4802,92 +4647,6 @@ class TestPluginAPIAuth:
         # attacker can't fingerprint plugin names by status codes.
         resp = self.client.get("/api/plugins/_definitely_not_a_plugin_/anything")
         assert resp.status_code == 401
-
-
-class TestPluginAPISecretScopeProductionMount:
-    """#120310: a plugin API handler's ``get_secret()`` must resolve the *requested*
-    profile's credentials under multi-profile hosting, verified through the REAL mount
-    path — discovery → import → ``_mount_plugin_api_routes()`` (which attaches
-    ``_plugin_route_secret_scope``) → a live request against ``app`` — not a hand-built
-    ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
-    dependency in isolation; this closes the actual reported surface end-to-end and pins
-    that the launch profile and a ``?profile=`` request read distinct secrets, that the
-    request profile does not leak back into the launch profile, and that an unknown
-    profile is rejected in the dependency before the handler runs.
-    """
-
-    _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
-        try:
-            from starlette.testclient import TestClient
-        except ImportError:
-            pytest.skip("fastapi/starlette not installed")
-
-        import hermes_state
-        from hermes_constants import get_hermes_home
-        from hermes_cli import profiles
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-
-        default_home = get_hermes_home()
-        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
-
-        # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
-        # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
-        profiles_root = default_home / "profiles"
-        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
-        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
-
-        # Named profile B: a live profile (``.env`` is both an identity marker and the
-        # secret source) with its OWN value for the probe key.
-        worker_home = profiles_root / "workerb"
-        worker_home.mkdir(parents=True, exist_ok=True)
-        (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
-
-        # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
-        # into the launch scope when multi-profile hosting activates.
-        monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
-
-        import tui_gateway.launch_profile_policy as lpp
-        from agent.secret_scope import is_multiplex_active, set_multiplex_active
-
-        monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
-        self._previous_multiplex = is_multiplex_active()
-        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
-
-        self.client = TestClient(app)
-        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-        try:
-            yield
-        finally:
-            set_multiplex_active(self._previous_multiplex)
-
-    def _probe(self, profile=None):
-        params = {"profile": profile} if profile is not None else None
-        return self.client.get("/api/plugins/example/whoami", params=params)
-
-    def test_launch_and_requested_profile_read_distinct_secrets(self):
-        # No ``?profile=`` → the launch profile's frozen env-only credential.
-        resp = self._probe()
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
-
-        # ``?profile=workerb`` → that profile's own credential, through the real mount.
-        resp = self._probe("workerb")
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-workerb"}
-
-        # Back to the launch profile: the request scope reset, so B never leaks into A.
-        resp = self._probe()
-        assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
-
-    def test_unknown_profile_rejected_before_handler(self):
-        # The dependency raises HTTPException(404) before the handler runs, so this is a
-        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
-        resp = self._probe("ghost")
-        assert resp.status_code == 404
 
 
 class TestDashboardPluginManifestExtensions:

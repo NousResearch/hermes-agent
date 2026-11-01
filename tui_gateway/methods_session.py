@@ -222,11 +222,6 @@ def _billing_invalid(rid, message: str, error: str = "invalid_request") -> dict:
     return _ok(rid, {"ok": False, "error": error, "message": message})
 
 
-def _billing_pick(result: dict, **fields) -> dict:
-    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
-    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
-
-
 def _billing_pending_change(result: dict) -> dict:
     return {"ok": True, "message": result.get("message"), "payload": result}
 
@@ -1451,29 +1446,9 @@ def _(rid, params: dict, session: dict) -> dict:
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
     # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    with contextlib.suppress(Exception):
-        from agent.account_usage import nous_credits_lines
-        if credits := nous_credits_lines():
-            usage["credits_lines"] = credits
-    # Provider account limits (e.g. Codex quota windows) — the same block the CLI and gateway /usage
-    # render, so the Desktop usage feed is not the one surface that omits them. Fail-open.
-    with contextlib.suppress(Exception):
-        if account := _account_usage_lines(session):
-            usage["account_lines"] = account
+    from agent.account_usage import nous_credits_usage_fields  # never raises (fail-open inside)
+    usage.update(nous_credits_usage_fields(session.get("agent")))
     return _ok(rid, usage)
-
-
-def _account_usage_lines(session: dict) -> list[str]:
-    """Rendered account-limit lines for the session's route: the live agent's provider/endpoint when
-    built, else the configured ``model.provider`` (on-disk credentials suffice, e.g. Codex OAuth)."""
-    from agent.account_usage import fetch_account_usage, render_account_usage_lines
-    agent = session.get("agent")
-    provider = getattr(agent, "provider", None) or _config_model_target()[1]
-    if not provider:
-        return []
-    snapshot = fetch_account_usage(
-        provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None))
-    return render_account_usage_lines(snapshot)
 
 
 @_session_method("session.context_breakdown")
@@ -1835,9 +1810,10 @@ def _(rid, params: dict) -> dict:
 # ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
 # return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
 def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
-    """Read-only view RPC (no scope required): ``serializer(module.builder())``, ``fallback`` on any error.
+    """Profile-bound read-only view: ``serializer(module.builder())``, ``fallback`` on any error.
     The view module stays a lazy import (startup budget); the serializer is a server global."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         try:
             from importlib import import_module
@@ -1847,8 +1823,9 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
 
 
 @method("billing.state")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
+    """Profile-bound read-only billing view; fail-open. The Nous free tier has no account to
     bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
     round-trip that could only fail."""
     try:
@@ -1869,6 +1846,7 @@ _billing_view("subscription.state", "agent.subscription_view", "build_subscripti
 
 
 @method("subscription.preview")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
     from agent.subscription_view import subscription_change_preview_from_payload
@@ -1885,6 +1863,7 @@ def _billing_route(name: str, call, *, invalid=None, message: str = "", error: s
     → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
     mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
     @method(name)
+    @_profile_scoped
     def _(rid, params: dict) -> dict:
         import hermes_cli.nous_billing as nb
         if invalid is not None and invalid(params):
@@ -1931,9 +1910,12 @@ def _auto_reload(nb, p: dict, _key) -> dict:
 
 _billing_route("billing.auto_reload", _auto_reload, message="threshold and top_up_amount are required",
                invalid=lambda p: p.get("threshold") is None or p.get("top_up_amount") is None)
+_billing_route("billing.keep_going_on_credits", lambda nb, p, _k: _billing_pick(nb.patch_keep_going_on_credits(enabled=p["enabled"])),
+               invalid=lambda p: not isinstance(p.get("enabled"), bool), message="enabled (bool) is required")  # window plans
 
 
 @method("billing.step_up")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """billing:manage step-up device flow → {ok, granted} (false when the server downscopes). Pooled (blocks
     for minutes); URL/code reach the TUI via ``billing.step_up.verification`` (stdout is the RPC pipe) and the

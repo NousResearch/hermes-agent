@@ -122,6 +122,43 @@ async def _initialize(authority, owner, tmp_path, db):
     await initialize_session_authority(authority.runner, profile_id='owned', instance_id='second')
 
 
+async def _initialize_adoption(authority, owner, tmp_path, db):
+    """Boot and hot-profile activation (``serve_profile_runtime`` -> ``_build_profile_authority``)
+    recover through ``initialize_session_authority`` while the loop serves the other profiles."""
+    from hermes_state_local import local_receipt
+    from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
+    ref = _local(authority, owner, tmp_path)
+    _compact_like_0_22_2(db, ref.session_id, 'classic-child')
+    await _initialize(authority, owner, tmp_path, db)
+    assert local_receipt(db, ref.session_id)['entry']['session_id'] == 'classic-child'
+
+
+async def _first_read_adoption(authority, owner, tmp_path, db):
+    """A cold owner's first read (``session.resume``) of a session its boot recovery never reached."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    import hermes_state_runtime as rt
+    from tests.gateway.test_local_receipt_untracked_compression import _compact_like_0_22_2
+    ref = _local(authority, owner, tmp_path)
+    _compact_like_0_22_2(db, ref.session_id, 'classic-child')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(**vars(authority.runner))
+    runner.session_store, runner._session_db, runner.adapters = store, store._db, {}
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    cold = SessionAuthority(runner, profile_id='owned', instance_id='cold', db=store._db,
+                            epoch=rt.begin_runtime_epoch(store._db, instance_id='cold'))
+    reader = AuthorityConnection(cold, object(), {'user_id': 'human'})
+    try:
+        reply = await reader.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
+        assert 'error' not in reply, reply
+        assert reply['result']['messages'][-1]['content'] == 'after compression into classic-child', reply
+    finally:
+        await reader.close()
+        store.close_all_db_handles()
+
+
 # (case, module holding the write's name, name, driver): the writer lock is taken just before
 # the named call runs.
 CASES = [
@@ -132,6 +169,10 @@ CASES = [
     ('create-title-hidden', 'gateway.session_local_title', 'title_new_session', _create_titled_hidden),
     ('native-register', 'gateway.session.SessionStore', 'get_or_create_session', _native_register),
     ('initialize-epoch', 'gateway.session_authority', 'begin_runtime_epoch', _initialize),
+    ('initialize-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+     _initialize_adoption),
+    ('first-read-compression-adoption', 'hermes_state_local_lineage', 'adopt_untracked_compression',
+     _first_read_adoption),
 ]
 
 

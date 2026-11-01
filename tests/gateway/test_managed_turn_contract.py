@@ -144,6 +144,7 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
     class Worker:
         def __init__(self, process):
             self.stop = asyncio.Event()
+            self.stop_cause = None
         def interrupt(self):
             self.stop.set()
         async def next_frame(self, *args, **kwargs):

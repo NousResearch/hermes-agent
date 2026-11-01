@@ -1,7 +1,4 @@
-import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { resolve } from 'node:path'
-import { promisify } from 'node:util'
 
 import type { GatewayEvent } from '@hermes/shared/gateway-events'
 import {
@@ -26,6 +23,7 @@ import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { bootstrapLocalGateway, isTerminalBootstrapFailure, type LocalGatewayGrant } from './localGatewayBootstrap.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -67,26 +65,6 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-const resolvePython = () => {
-  // Trust HERMES_PYTHON only. The launcher guarantees it: hermes_cli/main.py
-  // validates it and falls back to its own sys.executable, and the Nix
-  // wrapper sets it too. So a TUI started the normal way already knows its
-  // interpreter, and scanning VIRTUAL_ENV / .venv here can only find a
-  // DIFFERENT python than the parent process runs on — with the pm store,
-  // a stale venv path is actively dangerous (the interpreter a gateway
-  // child gets must match the one that spawned it).
-  const configured = process.env.HERMES_PYTHON?.trim()
-
-  if (configured) {
-    return configured
-  }
-
-  // The one case with no launcher above it: `npm run dev` / `npm start`
-  // straight out of ui-tui/. A developer doing that runs inside their own
-  // activated environment, so PATH is the right question there.
-  return process.platform === 'win32' ? 'python' : 'python3'
-}
-
 // Matches `<scheme>://user:pass@host…` style user-info segments in
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
@@ -119,8 +97,6 @@ const redactUrl = (raw: string): string => {
   }
 }
 
-export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
-
 // Reconnects after the first launch are discovery-only, except that a bounded number per window
 // re-ensure an owner that is not ready (gateway_bootstrap.py --recover): crashed, idle-exited,
 // stopped with `hermes gateway stop` while this TUI is open, or an older Hermes's gateway. Main's
@@ -128,16 +104,6 @@ export interface LocalGatewayGrant { url: string; protocols: string[]; profile_i
 // owner from being respawned without pause.
 export const OWNER_RECOVERY_LIMIT = 3
 export const OWNER_RECOVERY_WINDOW_MS = 60_000
-
-const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
-  const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
-
-  const { stdout } = await promisify(execFile)(resolvePython(),
-    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
-
-  return JSON.parse(stdout) as LocalGatewayGrant
-}
 
 
 export interface AttachHold { sid: string; frames: AnyGatewayEvent[] }
@@ -189,6 +155,7 @@ export class GatewayClient extends EventEmitter {
   isCanonical = false
   private creationContract?: CreationContract
   private describedSkin?: Record<string, unknown>
+  private runtimeCapabilities: string[] = []
   private describeFlight?: Promise<void>
   private attachHold: AttachHold | null = null
   // The last session.create whose outcome is in doubt (see createCanonical).
@@ -271,6 +238,7 @@ export class GatewayClient extends EventEmitter {
    * failure (B2-21): drop the socket onto the backoff path, which redials and re-describes. */
   private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
     this.describeFlight = undefined
+    this.runtimeCapabilities = []
     void this.describeRuntime().then(() => {
       // The owner's resolved profile skin (`runtime.describe.skin`, main's `gateway.ready.skin`)
       // unless the listener's own ready already carried one.
@@ -541,11 +509,18 @@ export class GatewayClient extends EventEmitter {
 
   hydrateSharedPrompts(snapshot: unknown) {
     if (!this.isCanonical) { return }
-    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>>;
+      open_requests?: Array<{ id: string; method: string; params?: Record<string, unknown> }> | null }
 
     for (const prompt of result.prompts ?? []) {
       this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
         payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+
+    // The channel delivered these before the reply resolved, and the caller's reset has since cleared
+    // them (a batch clarify form): deliver again under the same id, before held frames are released.
+    for (const req of result.open_requests ?? []) {
+      this.channel.deliverRequest(req.id, req.method, req.params ?? {}, true)
     }
   }
 
@@ -605,6 +580,15 @@ export class GatewayClient extends EventEmitter {
         python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
       } })
       this.channel.detach(this.bootstrapError)
+
+      // The helper's interpreter cannot load Hermes (gateway_bootstrap.py `gateway unavailable:`):
+      // no reconnect fixes that, so report it once instead of retrying every 30 s forever (#138878).
+      if (isTerminalBootstrapFailure(this.bootstrapError.message)) {
+        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${this.bootstrapError.message.match(/^gateway unavailable: .*$/m)?.[0]}`)
+
+        return
+      }
+
       this.scheduleReconnect()
     })
   }
@@ -770,6 +754,7 @@ export class GatewayClient extends EventEmitter {
       // Each explicit connection negotiates its wire from the listener's ready frame.
       this.isCanonical = false
       this.creationContract = undefined
+      this.runtimeCapabilities = []
       this.startAttachedGateway(attachUrl)
 
       return
@@ -877,13 +862,22 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
+  /** Only an owner advertising `clarify-batch-v1` knows `clarify_batch`: an older owner's
+   * closed submit params would refuse every prompt carrying it. */
+  get clarifyBatch(): boolean {
+    return this.isCanonical && this.runtimeCapabilities.includes('clarify-batch-v1')
+  }
+
   /** The owner's session.create contract. A failed read is not cached: the next
    * session.create asks again instead of reporting an outdated gateway forever. */
   private describeRuntime(): Promise<void> {
     if (!this.describeFlight) {
-      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
+      const flight: Promise<void> = this.requestOverWebSocket<{ capabilities?: unknown; session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
         description => {
           this.creationContract = description.session_create
+          this.runtimeCapabilities = Array.isArray(description.capabilities)
+            ? description.capabilities.filter((c): c is string => typeof c === 'string')
+            : []
           this.describedSkin = description.skin && typeof description.skin === 'object' ? description.skin : undefined
         },
         error => {

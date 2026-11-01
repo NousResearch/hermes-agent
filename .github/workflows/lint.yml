@@ -39,11 +39,11 @@ jobs:
   lint-diff:
     name: ruff + ty diff
     if: inputs.event_name == 'pull_request' && inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0 # need full history for merge-base + worktree
@@ -56,7 +56,7 @@ jobs:
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.82
+          command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)" ty==0.0.89
 
       - name: Determine base ref
         id: base
@@ -146,11 +146,11 @@ jobs:
     # the diff comment even when enforcement fails.
     name: ruff enforcement (blocking)
     if: inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -184,11 +184,11 @@ jobs:
     # parent (current main), so an improvement that lands on main is locked in at once.
     name: code health ratchet (blocking)
     if: inputs.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
@@ -220,11 +220,11 @@ jobs:
     # See scripts/check-windows-footguns.py for the full rule list.
     name: Windows footguns (blocking)
     if: inputs.python
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 
@@ -247,10 +247,21 @@ jobs:
       - name: Forbid literal /tmp paths outside the baseline
         run: python scripts/check_no_tmp_literals.py
 
+      # A child in its own session/group (start_new_session, os.setsid/setpgid) does not die with
+      # a SIGKILLed Hermes. Long-lived children start through process_identity.spawn_owned; a line
+      # that must stay detached says why with `detached-spawn: ok — <why>`.
+      - name: Forbid detached spawns outside the owned-child helper
+        run: python scripts/check_detached_spawns.py
+
       # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
       # (#92554, regressed repeatedly). All writers go through the hermes_cli.config writer seam.
       - name: Forbid config.yaml writers that bypass the comment-preserving writer
         run: python scripts/check_config_yaml_writers.py
+
+      # Every read of a user config.yaml goes through hermes_cli.config_backend, so a non-file
+      # config backend (config-config design §4.1) sees every reader.
+      - name: Forbid config.yaml readers that bypass the config backend
+        run: python scripts/check_config_yaml_readers.py
 
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on

@@ -210,6 +210,16 @@ def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     return False
 
 
+def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
+    """Observe a pending approval without replacing its existing settle hook."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.observers.append(observer)
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
@@ -835,8 +845,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
-            allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -1043,7 +1053,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in ("modal", "daytona", "vercel_sandbox"):
         return True
     # Plugin backends declare the same classification through the provider ABI (#94400);
     # fail-soft to False so an unknown or raising backend — or a raising registry
@@ -1200,6 +1210,19 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
+def _is_local_viewer_turn() -> bool:
+    """A local session's turn its viewer submitted, with that viewer there to answer: its frozen launch policy is
+    local-interactive, the admission is the viewer's own prompt (not a plugin injection or another producer
+    admission) and a viewer holding ``session:approve`` is attached now, it is not a delegate_task child (sync or
+    async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
+    session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
+    key, none registered) apart; it does not show anyone is attached."""
+    from agent.delegation_context import is_delegated_child_process_context
+    return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
+            and not is_delegated_child_process_context()
+            and _gateway_notify_cb(get_current_session_key()) is not None)
+
+
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1245,7 +1268,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
-    if not is_gateway and not is_ask:
+    # A gateway-run local CLI/TUI/Desktop session's own turns keep that interactive-CLI rule: the script's terminal()
+    # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
+    # gate (cron/-q resolved above; messaging/API unchanged).
+    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
 
     session_key = get_current_session_key()

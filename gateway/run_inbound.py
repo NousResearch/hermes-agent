@@ -22,11 +22,11 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
-from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
@@ -45,6 +45,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# ``RelayMediaClient.download`` temp-file prefix: the rest of such a basename is random, not a name.
+_RELAY_MEDIA_PREFIX = "relay_media_"
+_UNKNOWN_ATTACHMENT_NAME = "(original filename unknown)"
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -68,7 +72,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -81,7 +85,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # Rate-limit ALL pairing responses (code or rejection) so a burst of DMs doesn't spam.
         if pairing_store._is_rate_limited(platform_name, source.user_id):
             return
-        code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
+        # Off the event loop: the store edit waits on a cross-process lock (dashboard, CLI).
+        try:
+            code = await asyncio.to_thread(
+                pairing_store.generate_code, platform_name, source.user_id, source.user_name or "",
+            )
+        except (OSError, TimeoutError):
+            logger.warning("Could not record a pairing code on %s", platform_name, exc_info=True)
+            return
         adapter = self._delivery_adapter_for(source)
         if code:
             reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
@@ -102,7 +113,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         pairing_store = self._pairing_store_for(source)
         if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
             return
-        pairing_store.record_decline(platform_name, source.user_id)
+        # Off the event loop (the stamp waits on a cross-process lock); no stamp → no dedupe → silent.
+        try:
+            await asyncio.to_thread(pairing_store.record_decline, platform_name, source.user_id)
+        except (OSError, TimeoutError):
+            logger.warning("Could not record an unauthorized-DM decline on %s", platform_name, exc_info=True)
+            return
         adapter = self._delivery_adapter_for(source)
         if not adapter:
             return
@@ -154,10 +170,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if getattr(_config, "multiplex_profiles", False):
             self._canonicalize(source)
         if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
+            from gateway.parked_route_refusal import drop_rejected_route
+            _intake = None
+            with suppress(Exception):
+                _intake = self._intake_adapter_for(source)
+            drop_rejected_route(_intake, source)  # a parked target is also refused to the sender
             return None
 
         is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications
@@ -179,16 +196,22 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
+        # An admission the authority is executing is already ordered by its durable FIFO; parking it
+        # here would settle the row with no turn and replay the input outside it (GW-2).
+        from gateway.session_ingress import executing_admission
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
+            and not executing_admission.get()
         ):
             self._queue_startup_restore_event(event)
             return None
 
         if is_internal:
             return event, source, True
+        if getattr(event, "_fifo_only", False):  # a slash command's queued turn: its command passed ingress
+            return event, source, False
 
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
@@ -490,6 +513,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 if _resolved_idle is not None:
                     _stale_idle = _resolved_idle
                     _activity_summary_valid = True
+                    # Host sleep is not idleness: share the turn poll loop's meter (same event loop).
+                    _awake_idle = getattr(_quick_state.turn.ctx, "awake_idle", None)
+                    if _awake_idle is not None:
+                        _stale_idle = _awake_idle.measure(_stale_idle)
                 _stale_detail = (
                     f" | last_activity={_sa_d.get('last_activity_desc', 'unknown')} "
                     f"({_stale_idle:.0f}s ago) "
@@ -597,6 +624,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
         if not sid or sid not in authority.sessions:
+            if authority is not None:
+                # The chat's first input, and a command's turn, not committed yet never commit.
+                authority.fence_route(_quick_key)
             return
         from gateway.session_contract import Principal, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -607,6 +637,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
         # promised the queued followers stay saved, so a /new from the chat leaves them queued.
         paused = any(row['status'] == 'unknown' for row in rows)
+        if not paused:
+            # Input (and a command's turn) that arrived before this and is not committed yet never
+            # commits after it; one that committed before the fence is in the second listing and
+            # cancelled below. A paused FIFO keeps both, like its queued followers.
+            authority.fence_route(_quick_key)
+            rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         for row in [] if paused else rows:
             if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
                 # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
@@ -718,6 +754,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
+        if not _handled:
+            _handled, _result = await self._busy_skill_turn(event, source, _quick_key)
         if _handled:
             return _result
 
@@ -1097,8 +1135,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Replies owned by in-flight work: pending /update prompt, clarify, slash-confirm.
-        Only events that may control the gateway (``allow_gateway_control``) can answer them."""
-        if not event.allow_gateway_control:
+        Only events that may control the gateway (``allow_gateway_control``) can answer them, never
+        an admitted turn: it was offered here before its commit, or a slash command queued it."""
+        from gateway.session_ingress import executing_admission
+        if not event.allow_gateway_control or getattr(event, "_fifo_only", False) or executing_admission.get():
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
         if _reply is None:
@@ -1110,7 +1150,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
     async def _hm_dispatch_idle_commands(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> tuple[bool, Optional[str]]:
-        """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent."""
+        """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent.
+        A command rewritten into a turn keeps the /stop and /new epoch it arrived under, read before
+        the (slow, off-loop) rewrite, so a reset during it drops the command, as on the busy path."""
+        stop_epoch = self._route_stop_epoch(_quick_key)
         _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
@@ -1124,6 +1167,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             _result = await self._run_in_executor_with_context(
                 self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
+        if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
+            _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)
         return _handled, _result
 
     def _hm_rescue_orphaned_fifo(
@@ -1178,13 +1223,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 # its whole request timeout.
                 # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
                 # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
-                if self._is_session_running(_quick_key) and (
+                # A turn a slash command produced (``/queue yes``) is never live typing.
+                if self._is_session_running(_quick_key) and not getattr(event, "_fifo_only", False) and (
                         await self._route_plaintext_approval_while_busy(event, _quick_key)
                         or await self._hm_busy_preempt(event, source, _quick_key)):
                     return True, None
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
                     return True, _consumer_reply
+                if getattr(event, "_fifo_only", False) and event._stop_epoch != self._route_stop_epoch(_quick_key):
+                    return True, None  # a /stop or /new came after its command, as it clears the slot
+                # A failed admit stays the authority's answer (refusal notice or turn error), never a
+                # pending legacy turn: that would run unadmitted, outside the FIFO's order.
                 return True, await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
@@ -1444,23 +1494,41 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         return message_text
 
     @staticmethod
-    def _inbound_attachment_display_name(path: str) -> tuple[str, str]:
-        """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
-        path is translated to the in-container mount under a Docker backend."""
+    def _inbound_attachment_display_name(path: str, original_name: str = "") -> tuple[str, str]:
+        """``(display_name, agent_visible_path)``. The display name is the adapter-supplied
+        original name when known (``MessageEvent.media_filenames``), else parsed from the native
+        cache filename ``<id>_<id>_<original>``. A relay temp file (``relay_media_<random>``)
+        carries no name, so it is labelled unknown rather than shown as the random basename.
+        The path is translated to the in-container mount under a Docker backend."""
         from tools.credential_files import to_agent_visible_cache_path
         basename = os.path.basename(path)
-        parts = basename.split("_", 2)
-        return re.sub(r'[^\w.\- ]', '_', parts[2] if len(parts) >= 3 else basename), to_agent_visible_cache_path(path)
+        name = clean_attachment_filename(original_name)
+        if not name and basename.startswith(_RELAY_MEDIA_PREFIX):
+            return _UNKNOWN_ATTACHMENT_NAME, to_agent_visible_cache_path(path)
+        if not name:
+            parts = basename.split("_", 2)
+            name = parts[2] if len(parts) >= 3 else basename
+        return re.sub(r'[^\w.\- ]', '_', name), to_agent_visible_cache_path(path)
+
+    @staticmethod
+    def _inbound_original_names(event: MessageEvent) -> dict[str, str]:
+        """``{path: original_name}`` for the attachments whose original name the adapter kept."""
+        names = getattr(event, "media_filenames", None) or []
+        return {p: n for p, n in zip(event.media_urls or [], names) if n}
 
     @classmethod
-    def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
+    def _prepend_inbound_media_file_notes(
+        cls, message_text: str, audio_file_paths: list[str], video_paths: list[str],
+        original_names: Optional[dict[str, str]] = None,
+    ) -> str:
         """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
+        names = original_names or {}
         for kind, noun, verb, tool, paths in (
             ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
             ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
         ):
             for _path in paths:
-                _display, _agent_path = cls._inbound_attachment_display_name(_path)
+                _display, _agent_path = cls._inbound_attachment_display_name(_path, names.get(_path, ""))
                 message_text = (
                     f"[The user sent {kind}: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
@@ -1486,6 +1554,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
 
         _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
+        names = getattr(event, "media_filenames", None) or []
         for i, path in enumerate(event.media_urls):
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
             # reaches the agent; only genuine non-media files get a note.
@@ -1497,7 +1566,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 mtype = "text/plain" if _is_text else (_mimetypes.guess_type(path)[0] or "application/octet-stream")
             # Every accepted file gets a note — a non-text/non-application MIME (font/*, model/*)
             # must still tell the agent the file exists.
-            display_name, agent_path = cls._inbound_attachment_display_name(path)
+            display_name, agent_path = cls._inbound_attachment_display_name(
+                path, names[i] if i < len(names) else "")
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
@@ -1626,7 +1696,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
-        message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
+        message_text = self._prepend_inbound_media_file_notes(
+            message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
         message_text = self._prepend_inbound_document_notes(event, message_text)
         from gateway.session_context_refs import turn_references
         message_text = await turn_references(self, event, source, session_key, message_text)
@@ -1755,7 +1826,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
@@ -1794,150 +1865,3 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             return user_text
         prefix = "\n\n".join(enriched_parts)
         return f"{prefix}\n\n{user_text}" if user_text else prefix
-
-    _EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
-
-    @classmethod
-    def _prepend_media_prefix(cls, prefix: str, user_text: str) -> str:
-        """``prefix`` + the user's text; the Discord empty-content placeholder is dropped as redundant."""
-        if user_text and user_text.strip() != cls._EMPTY_TEXT_PLACEHOLDER:
-            return f"{prefix}\n\n{user_text}"
-        return prefix
-
-    @staticmethod
-    def _untranscribed_audio_note(path: str) -> str:
-        """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
-        steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
-        agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-        return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
-
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
-        transcript = result["transcript"]
-        # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
-        # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
-        # See #41603.
-        if not (transcript or "").strip():
-            return None, (
-                "[The user sent a voice message but it came through "
-                "empty or inaudible — speech-to-text returned no "
-                "words. Do not guess at the content; ask the user "
-                "to resend or type it out.]"
-            )
-        # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
-        # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
-
-    async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: list[str]
-    ) -> tuple[str, list[str]]:
-        """Transcribe voice clips with the configured STT provider and prepend the transcripts →
-        ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
-        failed or STT is disabled) let callers echo them back before the agent loop."""
-        from gateway.run import _probe_audio_duration
-        audio_paths = list(dict.fromkeys(audio_paths))
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                suffix = f" (duration: {duration_str})" if duration_str else ""
-                notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
-            return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
-
-        try:
-            from tools.transcription_tools import (
-                transcribe_audio, transcribe_audio_local_fallback
-            )
-        except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
-            return self._prepend_media_prefix("[voice message could not be transcribed]", user_text), []
-
-        enriched_parts = []
-        successful_transcripts: list[str] = []
-        for path in audio_paths:
-            try:
-                logger.debug("Transcribing user voice: %s", path)
-                transcript, note = await self._transcribe_one_clip(
-                    path, transcribe_audio, transcribe_audio_local_fallback,
-                )
-                if transcript is not None:
-                    successful_transcripts.append(transcript)
-                enriched_parts.append(note)
-            except Exception as e:
-                logger.error("Transcription error: %s", e)
-                enriched_parts.append(self._untranscribed_audio_note(path))
-
-        if enriched_parts:
-            user_text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text)
-        return user_text, successful_transcripts
-
-    def _pending_event_audio_paths(self, event) -> list[str]:
-        """Return STT-eligible paths from a pending voice message."""
-        from gateway.run import _event_media_is_stt_input
-        return [
-            path for i, path in enumerate(getattr(event, "media_urls", None) or [])
-            if _event_media_is_stt_input(event, i)
-        ]
-
-    async def _transcribe_pending_audio_event_once(
-        self, event, user_text: Optional[str] = None
-    ) -> tuple[str | None, list[str]]:
-        """Transcribe a pending audio event once and cache the result on the event: the interrupt
-        monitor and the pending-drain path both need it — one STT call and one echo per message."""
-        if hasattr(event, "_gateway_pending_stt_text"):
-            return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
-        audio_paths = self._pending_event_audio_paths(event)
-        if not audio_paths:
-            return user_text if user_text is not None else (getattr(event, "text", None) or None), []
-        text = user_text if user_text is not None else (getattr(event, "text", "") or "")
-        enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
-        event._gateway_pending_stt_text = enriched_text
-        event._gateway_pending_stt_transcripts = list(successful_transcripts)
-        return enriched_text, successful_transcripts
-
-    async def _echo_pending_stt_transcripts_once(
-        self, event, adapter, source, transcripts: list[str], *, metadata=None,
-        log_context: str = "Transcript",
-    ) -> None:
-        """Echo pending-event STT transcripts to the chat at most once. Tracked as a COUNT (not a
-        set — identical transcripts are distinct deliveries): ``merge_pending_message_event`` can
-        append a second voice note and invalidate the cache; the re-run returns earlier transcripts
-        as a prefix, so only the unsent tail is echoed."""
-        if not transcripts or not self._should_echo_stt_transcripts() or adapter is None:
-            return
-        already_echoed = int(getattr(event, "_gateway_pending_stt_echoed", 0) or 0)
-        event._gateway_pending_stt_echoed = max(already_echoed, len(transcripts))
-        await self._echo_stt_transcripts(
-            adapter, source, transcripts[already_echoed:], metadata=metadata, log_context=log_context,
-        )
-
-    async def _transcribe_and_echo_pending_voice(
-        self, event, adapter, source, text: str, *, log_context: str, metadata=_UNSET
-    ) -> tuple[str, list[str]]:
-        """Transcribe a pending voice event and echo transcripts once → ``(enriched_text,
-        transcripts)`` for ``agent.interrupt()`` or the pending-drain flow; ``(text, [])`` when there
-        is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback)."""
-        if not self._pending_event_audio_paths(event):
-            return text, []
-        try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
-            if metadata is _UNSET:
-                metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-            await self._echo_pending_stt_transcripts_once(
-                event, adapter, source, transcripts, metadata=metadata, log_context=log_context
-            )
-            return enriched_text or text, transcripts
-        except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
-            return text, []

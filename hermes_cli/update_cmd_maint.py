@@ -134,15 +134,14 @@ def _print_fts_optimize_available_notice() -> None:
     if size_gb < 0.5:
         return
     db = None
-    needs_upgrade = False
+    legacy_inline = False
+    drift: list[str] = []
     try:
         db = SessionDB(db_path=db_path, read_only=True)
         # read_only opens skip schema init; probe the stored layout directly.
-        row = db._conn.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'messages_fts'"
-        ).fetchone()
-        needs_upgrade = bool(row) and db._db_needs_fts_storage_upgrade(db._conn)
+        from hermes_state_fts import fts_layout_drift
+        drift = fts_layout_drift(db._conn)
+        legacy_inline = db._db_has_legacy_inline_fts(db._conn)
         # Interrupted optimize-storage: v23 table shape but backfill markers / trash
         # tables remain. Re-running resumes it, so offer the command again.
         interrupted = bool(
@@ -165,7 +164,7 @@ def _print_fts_optimize_available_notice() -> None:
         if db is not None:
             with suppress(Exception):
                 db.close()
-    if not needs_upgrade and not interrupted:
+    if not drift and not interrupted:
         return  # current layout already present (fresh/optimized)
 
     if interrupted:
@@ -179,22 +178,34 @@ def _print_fts_optimize_available_notice() -> None:
         print("    hermes sessions optimize-storage")
         return
 
-    est_reclaim = size_gb * 0.6
     print()
-    if mode == "require":
-        print("◆ Session database upgrade required")
-        print(
-            f"  Your search index uses the OLD storage layout and should be "
-            f"upgraded. The new layout typically frees ~60% of state.db "
-            f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
-            f"required for continued optimal operation."
-        )
+    if legacy_inline:
+        # The ~60% figure was measured for this transition only (inline copies of every message dropped).
+        est_reclaim = size_gb * 0.6
+        if mode == "require":
+            print("◆ Session database upgrade required")
+            print(
+                f"  Your search index uses the OLD storage layout and should be "
+                f"upgraded. The new layout typically frees ~60% of state.db "
+                f"(≈{est_reclaim:.1f} GB of your current {size_gb:.1f} GB) and is "
+                f"required for continued optimal operation."
+            )
+        else:
+            print("◆ Reclaim ~60% of your session database disk")
+            print(
+                f"  Your search index uses the old storage layout. Upgrading it "
+                f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
+                f"of your current {size_gb:.1f} GB."
+            )
     else:
-        print("◆ Reclaim ~60% of your session database disk")
+        if mode == "require":
+            print("◆ Search index rebuild required by your notice policy")
+        else:
+            print("◆ Search index update available")
         print(
-            f"  Your search index uses the old storage layout. Upgrading it "
-            f"typically frees ~60% of state.db — about {est_reclaim:.1f} GB "
-            f"of your current {size_gb:.1f} GB."
+            "  Your search index is on the compact layout from an earlier "
+            "optimization, but a later release changed it. Running the "
+            "command again rebuilds it in the current layout."
         )
     print("  Run when convenient:  hermes sessions optimize-storage")
     print(
@@ -273,7 +284,8 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
-    already restarted, so a Serve-only install isn't restarted a second time here.
+    already handled (restarted, declined, or failed; each already reported), so a Serve-only
+    install isn't restarted a second time here and a declined or failed unit isn't retried (#141021).
 
     See #83595.
     """
@@ -878,8 +890,8 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give the install its optional default tools: the PM defaults (agent-browser +
-    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
+    """Give the install its optional default tools: the PM defaults (Chromium,
+    cua-driver). browser_exec's engine (browser-harness) is a venv dependency.
 
     Runs at the end of both the installers (via the source completion) and
     ``hermes update``: a source update re-syncs only the venv, so a tool that became
@@ -976,6 +988,8 @@ def _run_post_update_maintenance(
                 followups.append((name, reason))
 
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
+    from hermes_cli.update_windows_acl import repair_windows_home_acl
+    owed_step("windows_home_acl", repair_windows_home_acl)
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
     # With the post-#73681 identifier-pinned DR, new grants survive rebuilds — but a grant made to a pre-fix
@@ -1014,6 +1028,10 @@ def _run_post_update_maintenance(
     except (OSError, subprocess.SubprocessError) as exc:
         detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
         print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
+    with _best_effort('Commit-graph refresh failed to start: %s'):
+        from hermes_cli.git_commit_graph import spawn_commit_graph_refresh
+        spawn_commit_graph_refresh(Path(_m().PROJECT_ROOT))
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):

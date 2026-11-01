@@ -106,9 +106,14 @@ class GatewayGoalsMixin:
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        ``replace_source`` keeps the receiving-adapter provenance native admission reads.
         """
-        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
+        from gateway.session_identity import replace_source
+        source = replace_source(source, message_id=None) if getattr(source, "message_id", None) else source
+        return MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, internal=internal,
+            inherit_channel_pin=True,
+        )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
         """Track the canonical route and start the restart-recoverable poller."""
@@ -141,8 +146,14 @@ class GatewayGoalsMixin:
             session_id = current
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
-        if adapter is None or not adapter._message_handler:
+        from gateway.session_local import LocalSessionAdapter
+        from gateway.session_viewer_automation import viewer_driven
+        local = isinstance(adapter, LocalSessionAdapter)
+        # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
+        if adapter is None or not (adapter._message_handler or local):
             return
+        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
+            return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
@@ -285,7 +296,8 @@ class GatewayGoalsMixin:
         if not sid:
             return None
         await self._warm_goals_session_db(label)
-        return factory(sid)
+        # The manager loads its state from state.db on construction: off the loop, in this scope.
+        return await asyncio.to_thread(factory, sid)
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
@@ -360,15 +372,37 @@ class GatewayGoalsMixin:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
+        # still needs to be released and rescheduled. A failed turn with text (a refusal: its
+        # folder is gone) is no evidence either (the TUI's hook skips it the same way): the tick is
+        # released with no text, so a --until judge never grades it.
+        failed = self._turn_failed()
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        if final_text.strip() and not failed:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text)
+                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+        await self._publish_local_control(source, only_if_present=True)
+
+    async def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
+        """A local (Desktop/Ink) session's goal or loop state just moved here: repaint its viewers' cards,
+        whose loop countdown runs off the snapshot's ``next_due_at``."""
+        if getattr(source, "platform", None) != Platform.LOCAL:
+            return
+        from gateway.session_authorities import active_authority
+        from gateway.session_control_actions import publish_async
+        await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
+
+    @staticmethod
+    def _turn_failed() -> bool:
+        """Whether the owner recorded this turn's result as failed (``session_ingress`` captures it
+        around ``_handle_message``; turns outside an owner capture nothing)."""
+        from gateway.session_results import execution_result
+        captured = execution_result.get() or {}
+        result = captured.get('terminal_result', captured.get('result'))
+        return isinstance(result, dict) and bool(result.get('failed'))
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
@@ -491,6 +525,8 @@ class GatewayGoalsMixin:
             logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
             with suppress(Exception):
                 mgr.abandon_tick()
+        # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
+        await self._publish_local_control(source)
 
     async def _loop_wakeup_watcher(self, interval: float = 15.0) -> None:
         """Fire due /loop wakeups for idle gateway sessions: a coarse ticker scans persisted loops

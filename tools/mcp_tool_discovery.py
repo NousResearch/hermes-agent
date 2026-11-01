@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -690,7 +691,7 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
             "pending": sorted(connecting - wanted)}
 
 
-def _awaiting_connect(wanted: set[str], scope) -> list[str]:
+def _unregistered(wanted: set[str], scope) -> set[str]:
     with _core._lock:
         # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
         # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
@@ -699,11 +700,52 @@ def _awaiting_connect(wanted: set[str], scope) -> list[str]:
         known = {name for name in wanted
                  if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
                  or key in _core._server_connecting or key in _core._lazy_server_configs}
+    return wanted - known
+
+
+def _awaiting_connect(wanted: set[str], scope) -> list[str]:
     # A configured server that is not live is retried — the only way one whose FIRST connect
     # failed comes back (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
     # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
     # waiting when another process holds it) and logs a failed pass, every call, for nothing.
-    return sorted(name for name in wanted - known if not _connect_cooldown_active(name))
+    return sorted(name for name in _unregistered(wanted, scope) if not _connect_cooldown_active(name))
+
+
+def _enabled_config_names() -> set[str]:
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+    return {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
+
+
+def _not_connected(wanted: set[str], scope) -> set[str]:
+    with _core._lock:
+        # A parked task stays registered (it self-probes) but serves nothing, as does one whose connect
+        # recorded an error since its last success, and a lazy registration whose first-use connect failed
+        # (a timed-out one leaves no task; one that never started has no error).
+        serving_nothing = {name for name in wanted
+                           if ((key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                               and (key in _core._server_connect_errors
+                                    or getattr(_core._servers[key], "_park_reason", None) is not None))
+                           or (key in _core._lazy_server_configs and key in _core._server_connect_errors)}
+    return _unregistered(wanted, scope) | serving_nothing
+
+
+def mcp_servers_not_connected() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
+    registration for, in connect cooldown or not, or whose registration (lazy included) is parked or
+    failed its connect: after a reload, the servers that did not connect."""
+    return sorted(_not_connected(_enabled_config_names(), _core._mcp_registry_scope()))
+
+
+def mcp_servers_ready() -> list[str]:
+    """Enabled ``mcp_servers`` entries the current registry scope serves now: live, or lazily registered
+    and not failed on its first use."""
+    wanted, scope = _enabled_config_names(), _core._mcp_registry_scope()
+    with _core._lock:
+        registered = {name for name in wanted
+                      if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                      or key in _core._lazy_server_configs}
+    return sorted(registered - _not_connected(wanted, scope))
 
 
 def mcp_servers_awaiting_connect() -> list[str]:
@@ -711,10 +753,51 @@ def mcp_servers_awaiting_connect() -> list[str]:
     registration for, whose connect cooldown has lapsed: added to config since the last discovery
     run, or one whose earlier connect failed. Read-only — what the next :func:`discover_mcp_tools`
     would connect."""
-    with _owner_secret_scope():
-        servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
-    return _awaiting_connect(wanted, _core._mcp_registry_scope())
+    return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
+
+
+# One settings-driven reconnect at a time (see restart_mcp_servers_with_new_inputs).
+_RESTART_LOCK = threading.Lock()
+
+
+def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
+    """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
+    HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
+    saved a new ``${VAR}`` its ``env`` passes through. A server whose inputs did not change keeps
+    its connection. Returns the names restarted.
+
+    Serialized: a second save waits for the first reconnect, then compares against what THAT one
+    connected with, so a newer key is never lost to an older in-flight start. A connection this
+    profile only borrows (same inputs as another profile's) is left running for its owner; this
+    profile just detaches and connects its own."""
+    with _RESTART_LOCK:
+        scope = _core._mcp_registry_scope()
+        owned, borrowed = [], []
+        with _owner_secret_scope():
+            servers = _config._load_mcp_config()
+            for name in sorted(names):
+                config = servers.get(name)
+                with _core._lock:
+                    key = _resolve_server_key(name, scope, current=False)
+                    server = _core._servers.get(key)
+                recorded = getattr(server, "_resolved_identity", None)
+                if config is None or recorded is None or not mcp_server_enabled(config):
+                    continue
+                # Render as the connect path does (plugin servers join the config after load's render pass).
+                if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                    (owned if key == _server_key(name, scope, current=False) else borrowed).append((name, key))
+        if not owned and not borrowed:
+            return []
+        changed = sorted(name for name, _key in owned + borrowed)
+        logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
+        if owned:
+            _lifecycle.shutdown_mcp_servers(scope=scope, names={name for name, _key in owned})
+        for _name, key in borrowed:
+            _registration._remove_server_scope(key, scope)
+        for name in changed:
+            _clear_connect_failure(name)
+        discover_mcp_tools()
+        return changed
 
 
 def _forget_lazy_server(key) -> None:

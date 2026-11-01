@@ -15,6 +15,8 @@ def _agent(created):
     async def rpc(method, **params):
         if method == 'runtime.describe':
             return {'session_create': {'sources': ['acp']}, 'capabilities': ['acp-editor-policy-v1']}
+        if method == 'config.set':  # the new session's live-reasoning flag (#134889 ACP-4)
+            return {'key': params['key'], 'value': params['value'], 'scope': 'session'}
         assert method == 'session.create', method
         created.append(params)
         return {'session_id': 's', 'info': {'cwd': params['cwd']}}

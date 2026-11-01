@@ -160,9 +160,11 @@ describe('requestModelOptions', () => {
       params?: Record<string, unknown>
     ) => Promise<T>
 
-    await expect(requestModelOptions({ gateway: gateway as never, request, sessionId: 'tile-1' })).resolves.toBe(
-      routedPayload
-    )
+    // The window's ambient profile must not ride along: the backend lets an
+    // explicit profile override the session the owner already resolves.
+    await expect(
+      requestModelOptions({ gateway: gateway as never, profile: 'default', request, sessionId: 'tile-1' })
+    ).resolves.toBe(routedPayload)
 
     expect(request).toHaveBeenCalledWith('model.options', { explicit_only: true, session_id: 'tile-1' })
     expect(gateway.request).not.toHaveBeenCalled()

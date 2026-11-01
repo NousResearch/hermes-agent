@@ -145,13 +145,15 @@ class SlashCommandsMixin:
         current_provider, target_provider, new_model = self._switch_model(state, args)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+        from hermes_cli.model_picker_usage import large_model_notice
+        notice = large_model_notice(new_model, target_provider or "", lang="en")  # window plans only; cache-only read; ACP text is English
+        return f"Model switched to: {new_model}\nProvider: {provider_label}" + (f"\n⚠ {notice}" if notice else "")
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
             from types import SimpleNamespace
-            from agent.memory_manager import inject_memory_provider_tools
+            from agent.memory_manager_tools import inject_memory_provider_tools
 
             toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
             tools = get_tool_definitions(

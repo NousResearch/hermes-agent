@@ -24,12 +24,31 @@ def legacy_account_label(row):
     return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
 
 
-def validate_legacy_row(db, row):
+def login_owned_by(row, subject):
+    """Whether *subject* owns the login stamp a served dashboard put on this row.
+
+    Older ``hermes serve`` builds stamped the WS-upgrade login as ``<provider>:<user id>``
+    (tui_gateway/session_transports.py), and the gateway stored a Webapp login as its
+    ``auth:v1:[...]`` subject. Hermes is single-user and sign-in is owner-only, so both name the
+    machine owner: the host owner's subject adopts them (gateway.owner_identity.same_owner).
+    """
+    user_id = row.get('user_id')
+    if not isinstance(user_id, str) or not subject:
+        return False
+    from gateway.owner_identity import same_owner
+    return same_owner(user_id, subject)
+
+
+def validate_legacy_row(db, row, *, subject=None):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
+    # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
+    # stamp equal to ``subject`` itself names that principal: it is already its history by
+    # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    user_id = row.get('user_id')
     if (row['source'] not in LEGACY_LOCAL_SOURCES
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
-            or (row.get('user_id') and not legacy_account_label(row))
+            or (user_id and not legacy_account_label(row) and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 
@@ -41,10 +60,10 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row))
-    from hermes_state_mutation_binding import BINDING_PREFIX
+    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
-    if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:
+    if imported and not binding_names(imported[0], receipt['profile_id'], receipt['principal_id']):
         raise RuntimeStoreError('permission_denied')
     from hermes_state_compression import _CHAIN_STEP_SQL
     if conn.execute(_CHAIN_STEP_SQL, (target,)).fetchone() is not None:

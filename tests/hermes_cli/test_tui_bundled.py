@@ -1,3 +1,14 @@
+import json
+from pathlib import Path
+
+
+def test_bundled_tui_package_marker_marks_entry_as_esm():
+    """The wheel-bundled entry.js needs a package marker for Node 18."""
+    package_json = (
+        Path(__file__).parents[2] / "hermes_cli" / "tui_dist" / "package.json"
+    )
+
+    assert json.loads(package_json.read_text(encoding="utf-8")) == {"type": "module"}
 
 
 def test_tui_finds_bundled_entry_js(tmp_path):

@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # tool-using turns aren't killed mid-flight.
 WAKE_TURN_TIMEOUT_SECONDS = 600.0
 
+# Connects fail fast: a response-wait timeout means the turn is already running server-side
+# (re-POSTing would run it again, #146361), while a connect timeout means nothing started.
+_WAKE_CONNECT_TIMEOUT_SECONDS = 10.0
+
 # Backoff between retries on transient failures. The API server has no per-session lock (concurrent
 # turns are last-writer-wins) but DOES enforce a global max_concurrent_runs cap via HTTP 429, which
 # is worth waiting out.
@@ -276,7 +280,8 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
         if attempt:
             await asyncio.sleep(_RETRY_DELAYS_SECONDS[attempt - 1])
         try:
-            timeout = aiohttp.ClientTimeout(total=WAKE_TURN_TIMEOUT_SECONDS)
+            timeout = aiohttp.ClientTimeout(total=WAKE_TURN_TIMEOUT_SECONDS,
+                                            sock_connect=_WAKE_CONNECT_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as http:
                 async with http.post(url, json=payload, headers=headers) as resp:
                     if resp.status == 429:  # concurrency cap — transient; back off and retry
@@ -293,7 +298,21 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                     await resp.read()
                     logger.info("wake self-post delivered for session %s (attempt %d)", session_id, attempt + 1)
                     return
+        except aiohttp.ConnectionTimeoutError as exc:
+            # Never connected, so the server saw nothing: safe to retry.
+            last_err = exc
+            logger.warning("wake self-post connect timeout for session %s (attempt %d/%d): %s",
+                           session_id, attempt + 1, attempts, exc)
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            if isinstance(exc, TimeoutError):
+                # Response wait on a turn-running POST: the server is already executing this
+                # wake; re-POSTing would run the same agent turn again (#146361). The turn
+                # will complete server-side, so treat the wake as delivered.
+                logger.warning(
+                    "wake self-post response timeout for session %s (attempt %d/%d): %s — "
+                    "the turn is already running server-side, not retrying",
+                    session_id, attempt + 1, attempts, exc)
+                return
             last_err = exc
             logger.warning("wake self-post transient failure for session %s (attempt %d/%d): %s",
                            session_id, attempt + 1, attempts, exc)

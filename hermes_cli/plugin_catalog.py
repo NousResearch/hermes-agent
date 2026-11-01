@@ -225,13 +225,25 @@ def get_catalog_entry(name: str, catalog_dir: Optional[Path] = None) -> Optional
     return next((e for e in load_catalog(catalog_dir) if e.name == name), None)
 
 
+def search_haystacks(entry: PluginCatalogEntry) -> tuple[str, ...]:
+    """The fields one catalog entry is searchable by.
+
+    Keep in step with the Desktop catalog search (``web/src/pages/PluginsPage.tsx``), which matches
+    the same set: a query that finds an entry in the app must find it through ``filter_entries`` too,
+    and typing a maintainer's handle is how people name a plugin they cannot remember the name of.
+    ``repo`` is deliberately absent — 599 of the catalog's 600 entries sit on one git host, so the
+    URL would make that host's own name match nearly the entire catalog.
+    """
+    return (entry.name, entry.description, entry.maintainer, *entry.capabilities.provides_tools)
+
+
 def filter_entries(entries: list[PluginCatalogEntry], query: str) -> list[PluginCatalogEntry]:
-    """Case-insensitive substring match over name, description and declared tools; empty query = all."""
+    """Case-insensitive substring match over name, description, maintainer and declared tools;
+    empty query = all."""
     q = (query or "").strip().lower()
     if not q:
         return entries
-    return [e for e in entries
-            if any(q in h.lower() for h in (e.name, e.description, *e.capabilities.provides_tools))]
+    return [e for e in entries if any(q in h.lower() for h in search_haystacks(e))]
 
 
 def search_catalog(query: str) -> list[PluginCatalogEntry]:

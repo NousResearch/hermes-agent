@@ -52,10 +52,38 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import signal
 import subprocess
 import sys
 import time
+
+try:
+    import resource
+except ImportError:  # POSIX-only; the mock also runs on Windows CI legs
+    resource = None
+
+
+def suppress_core_dump():
+    """Zero the soft RLIMIT_CORE so a deliberate abort cannot file a core.
+
+    systemd-coredump treats each SIGABRT like a real runtime crash (~1 MB per
+    dump, several per full-suite run on a dev host); zeroing the limit keeps
+    the signal semantics (``WIFSIGNALED``, ``WTERMSIG`` == SIGABRT) while the
+    dump never reaches the crash collector.  The resulting soft limit is
+    written to ``MOCK_LSP_CORE_LIMIT_LOG`` when set, so tests can observe it.
+    """
+    if resource is None:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError):
+        pass
+    log_path = os.environ.get("MOCK_LSP_CORE_LIMIT_LOG")
+    if log_path:
+        pathlib.Path(log_path).write_text(
+            str(resource.getrlimit(resource.RLIMIT_CORE)[0]), encoding="utf-8"
+        )
 
 
 def _push_by_content(params, is_change, error_diag):
@@ -141,6 +169,8 @@ def main():
             "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n"
         )
         sys.stderr.flush()
+        # A deliberate SIGABRT must not reach the host's crash collector.
+        suppress_core_dump()
         os.abort()
 
     if script == "large_stderr":

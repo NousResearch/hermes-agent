@@ -34,6 +34,16 @@ class TestResolveSttLanguage:
         assert _resolve_stt_language("groq", cfg) == "hu"
 
 
+    @pytest.mark.parametrize("value", ["auto", "AUTO", " Auto "])
+    def test_auto_means_auto_detect(self, value):
+        # "auto" is not a language code (faster-whisper raises on it); it must behave like an unset language
+        assert _resolve_stt_language("local", {"language": value}) is None
+        assert _resolve_stt_language("groq", {"groq": {"language": value}, "language": "he"}) is None
+
+    def test_auto_from_env_means_auto_detect(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "auto")
+        assert _resolve_stt_language("local", {}) is None
+
     def test_value_is_stripped(self):
         cfg = {"language": " ja "}
         assert _resolve_stt_language("local", cfg) == "ja"

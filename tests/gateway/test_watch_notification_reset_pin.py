@@ -96,8 +96,36 @@ async def test_notice_pinned_to_a_reset_session_is_dropped_once(monkeypatch, cap
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert len(warnings) == 1, warnings
         assert 'permanently gone' in warnings[0]
+        assert f'session {retired} was reset (session_reset)' in warnings[0]
         assert retired in warnings[0] and live in warnings[0] and 'admission_conflict' in warnings[0]
         assert not _queued_admissions(authority, live)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pin, cause', [
+    ('no-such-session', 'session no-such-session no longer exists'),
+    ('worker', 'session worker is a subagent transcript with no owning conversation'),
+])
+async def test_notice_pinned_to_a_non_owner_is_dropped_with_its_cause(monkeypatch, caplog, pin, cause):
+    """A pinned row the store no longer has, or a subagent transcript with no ``_delegate_from`` owner,
+    is as gone as a closed session; the warning names that cause instead of blaming a /new."""
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        if pin == 'worker':
+            runner.session_store._db_for_key(entry.session_key).create_session('worker', source='subagent')
+        pending = queue.Queue()
+        pending.put(_notice(entry, pin))
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.empty()
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1, warnings
+        assert 'permanently gone' in warnings[0] and cause in warnings[0]
+        assert 'user boundary' not in warnings[0]
     finally:
         authority.db.close()
 
@@ -291,5 +319,95 @@ async def test_foreign_pinned_completion_spends_nothing_across_restarts(monkeypa
             await _run_async_watcher(runner, monkeypatch, clock, ticks=150)
         row = delegation.get_durable_delegation('foreign-1')
         assert (row['delivery_state'], row['delivery_attempts']) == ('pending', 0)
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_caller_still_gets_the_refusal_for_a_gone_pin(monkeypatch, caplog):
+    """Completion and delegation callers refund their claim on ``WakeNotAccepted`` after their own
+    pre-flight; the gone-pin drop is the watch drain's alone and never swallows that refusal."""
+    from gateway.wake import WakeNotAccepted
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        retired = entry.session_id
+        runner.session_store.reset_session(entry.session_key)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            with pytest.raises(WakeNotAccepted, match='admission_conflict'):
+                await runner._inject_watch_notification(
+                    'notice', _notice(entry, retired), raise_not_accepted=True)
+
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_refused_notice_pinned_to_a_compression_ancestor_is_retried(monkeypatch, caplog):
+    """A compression ancestor is not gone: whatever refused its notice, the notice stays queued."""
+    from gateway import session_automation
+    from hermes_state_runtime import RuntimeStoreError
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        parent, child = entry.session_id, entry.session_id + '-compressed'
+        runner.session_store._db_for_key(entry.session_key).publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source='discord',
+            require_compression_lease=False, model='offline', model_config={},
+            system_prompt='offline', messages=[{'role': 'user', 'content': 'retained'}],
+        )
+        assert runner.session_store.advance_compression_session(entry.session_key, parent, child)
+
+        async def refuse(*_args):
+            raise RuntimeStoreError('admission_conflict')
+        monkeypatch.setattr(session_automation, 'admit_process_notice', refuse)
+        notice = _notice(entry, parent)
+        pending = queue.Queue()
+        pending.put(notice)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.get_nowait() is notice
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_unpinned_refusal_requeues(monkeypatch, caplog):
+    """A notice that names no pinned session proves nothing gone: its refusal is retried."""
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        notice = _notice(entry, '')
+        pending = queue.Queue()
+        pending.put(notice)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.get_nowait() is notice
+        assert notice['_watch_retry_step'] == 1
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_unproven_heartbeat_refusal_requeues_the_original_tick(monkeypatch, caplog):
+    """A liveness tick keeps its own lifecycle: a refusal the pre-flight cannot prove permanent puts
+    the original tick back (a later tick folds from it); only a gone pin drops it."""
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        tick = _notice(entry, await _foreign_pin(runner), 'heartbeat')
+        pending = queue.Queue()
+        pending.put(tick)
+
+        with caplog.at_level(logging.WARNING, logger='gateway.run'):
+            await runner._drain_watch_notifications(pending)
+
+        assert pending.get_nowait() is tick
+        assert not [r for r in caplog.records if 'permanently gone' in r.getMessage()]
+        assert not _queued_admissions(authority, entry.session_id)
     finally:
         authority.db.close()

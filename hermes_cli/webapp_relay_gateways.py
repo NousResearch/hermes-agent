@@ -51,15 +51,18 @@ def _path(home) -> Path:
 
 
 def _read(home) -> list[dict[str, Any]]:
+    """Every gateway on file. Raises relay.StoreUnreadable: what writes the file must see all of it."""
+    rows = relay.read_store(_path(home), "gateways", list)
+    return [row for row in rows if isinstance(row, dict) and row.get("id") and row.get("url")]
+
+
+def _lookup(home) -> list[dict[str, Any]]:
+    """The gateways a read that changes nothing sees: none while the file cannot be read."""
     try:
-        stored = json.loads(_path(home).read_text(encoding="utf-8-sig"))
-    except FileNotFoundError:
-        return []
-    except (OSError, ValueError) as exc:
+        return _read(home)
+    except relay.StoreUnreadable as exc:
         _log.warning("Gateway relay registry could not be read: %s", exc)
         return []
-    rows = stored.get("gateways") if isinstance(stored, dict) else None
-    return [row for row in (rows or []) if isinstance(row, dict) and row.get("id") and row.get("url")]
 
 
 def _write(home, rows: list[dict[str, Any]]) -> None:
@@ -80,7 +83,7 @@ def _owned_by(row: dict[str, Any], identity: dict[str, str]) -> bool:
 def gateways_for(home, identity: dict[str, str]) -> list[dict[str, Any]]:
     """The gateways *identity* paired this hub with, in the order they were added."""
     with _lock:
-        rows = _read(home)
+        rows = _lookup(home)
     return [row for row in rows if _owned_by(row, identity)]
 
 
@@ -196,6 +199,20 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
             message += (f" The grant it made could not be revoked: {failure}. Revoke it there in "
                         "Settings → Gateways.")
         raise PairingError(f"{message} Sign in to both gateways with the same account and pair again.")
+    try:
+        row = _record(home, pairing, grant, identity)
+    except OSError as exc:  # unreadable or unwritable: nobody here could use or revoke the grant
+        failure = await _revoke_remote(home, key, pairing["url"], grant, client)
+        message = f"This gateway could not save the pairing: {exc}."
+        if failure is not None:
+            message += (f" The grant {pairing['url']} made could not be revoked: {failure}. Revoke it there "
+                        "in Settings → Gateways.")
+        raise PairingError(message) from None
+    _log.info("Gateway relay: paired with %s as %s", pairing["url"], row["id"])
+    return row
+
+
+def _record(home, pairing: dict[str, Any], grant: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
     with _lock:
         rows = _read(home)
         row = {"id": _slug(pairing["label"], {r["id"] for r in rows}), "label": pairing["label"],
@@ -205,7 +222,6 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
                "added_at": int(time.time())}
         rows.append(row)
         _write(home, rows)
-    _log.info("Gateway relay: paired with %s as %s", pairing["url"], row["id"])
     return row
 
 

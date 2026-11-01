@@ -31,12 +31,13 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import json
 import logging
 import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +59,26 @@ _CONFIG_TTL_SECONDS = 5.0
 
 class RelayAuthError(Exception):
     """A relayed request's signature, time or nonce did not check out; ``str()`` says which."""
+
+
+class StoreUnreadable(OSError):
+    """A relay store file is there but could not be read. Each holds every account's records, so a
+    change that needs it fails and leaves the file as it is rather than write it back without them."""
+
+
+def read_store(path: Path, key: str, kind: type) -> Any:
+    """The *key* collection of the relay store at *path*, an empty one when there is no file. Raises
+    StoreUnreadable when the file cannot be read or does not hold one."""
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return kind()
+    except (OSError, ValueError) as exc:
+        raise StoreUnreadable(f"{path.name} could not be read ({exc})") from exc
+    held = stored.get(key) if isinstance(stored, dict) else None
+    if not isinstance(held, kind):
+        raise StoreUnreadable(f"{path.name} does not hold its {key}")
+    return held
 
 
 def b64url(raw: bytes) -> str:

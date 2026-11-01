@@ -1,13 +1,14 @@
 type Listener = (ev: unknown) => void
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
-// touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
+// touches: readyState, add/removeEventListener, close(), and readiness frames.
 export class FakeWebSocket {
   static OPEN = 1
   static CLOSED = 3
-  // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
-  // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  // Flipped by the test: 'open' emits transport open + gateway.ready; 'fail'
+  // errors (a dead remote); 'reject' opens then closes during the handshake.
+  static mode: 'fail' | 'open' | 'reject' = 'open'
+  static rejectCode = 4401
   static instances: FakeWebSocket[] = []
   // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
   // the request (the half-open-socket simulation — connection looks OPEN but
@@ -21,13 +22,25 @@ export class FakeWebSocket {
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
-    const willOpen = FakeWebSocket.mode === 'open'
-    // Resolve on the next microtask/macrotask so connect()'s promise wiring is
-    // in place before open/error fires (matches real async socket handshake).
+    const mode = FakeWebSocket.mode
+    // Resolve on the next task so connect()'s promise wiring is in place before
+    // open/error/close/readiness fires (matches the real async handshake).
     setTimeout(() => {
-      if (willOpen) {
+      if (mode === 'open') {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+        this.emit('message', {
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type: 'gateway.ready' }
+          })
+        })
+      } else if (mode === 'reject') {
+        this.readyState = FakeWebSocket.OPEN
+        this.emit('open', {})
+        this.readyState = FakeWebSocket.CLOSED
+        this.emit('close', { code: FakeWebSocket.rejectCode })
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -45,13 +58,13 @@ export class FakeWebSocket {
 
   close() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1005 })
   }
 
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
   drop() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1006 })
   }
 
   send(data: string) {

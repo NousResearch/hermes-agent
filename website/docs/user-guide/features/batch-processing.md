@@ -156,7 +156,7 @@ The batch runner has robust checkpointing for fault tolerance:
 
 - **Checkpoint file:** Saved after each batch completes, tracking which prompt indices are done
 - **Content-based resume:** On `--resume`, the runner scans existing batch files and matches completed prompts by their actual text content (not just indices), enabling recovery even if the dataset order changes
-- **Failed prompts:** Only successfully completed prompts are marked as done — failed prompts will be retried on resume
+- **Failed prompts:** Only successfully completed prompts are marked as done — failed prompts, including runs that end on a provider error (exhausted credits, rate limits, outages), will be retried on resume
 - **Batch merging:** On completion, all batch files (including from previous runs) are merged into a single `trajectories.jsonl`
 
 ### How Resume Works

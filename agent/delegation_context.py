@@ -164,6 +164,21 @@ def kanban_path_is_fenced(path: os.PathLike[str] | str) -> bool:
         return False
     return True
 
+def scrub_gateway_spawn_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Strip worker identity and the delegation write fence from a gateway child env.
+
+    A gateway hosts its profile's Kanban dispatcher and cron scheduler: it is the
+    board-owning lineage, never a worker or delegate descendant. ``hermes gateway
+    start/restart`` invoked from a worker's terminal (or any subprocess carrying a
+    scrubbed delegate env) would otherwise hand the long-lived gateway
+    ``HERMES_DELEGATED_CHILD_CONTEXT``/``HERMES_KANBAN_TASK``, fencing every board
+    mutation process-wide: dispatcher reclaim, notifier subscriptions, and cron
+    script subprocesses all fail with PermissionError until the gateway restarts.
+    Board LOCATION vars (``HERMES_KANBAN_DB``/``HERMES_KANBAN_BOARD``) are kept,
+    matching ``scrub_kanban_env``'s retain-location rule.
+    """
+    return {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS and k != DELEGATED_CHILD_ENV_MARKER}
+
 
 @overload
 def delegated_child_subprocess_env(env: Mapping[str, str]) -> dict[str, str]: ...

@@ -491,6 +491,31 @@ def _title_turn(platform, message="Fix the login button"):
     return titler
 
 
+@pytest.mark.parametrize("source", ["", "tui", "desktop", "oneshot"])
+def test_oneshot_skips_title_dispatch_thread_and_model(monkeypatch, source):
+    from agent import title_generator, turn_context
+
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", source)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+    with patch("agent.title_generator.maybe_auto_title", wraps=title_generator.maybe_auto_title) as titler, \
+            patch("agent.memory_provider.spawn_context_thread") as spawn, \
+            patch("agent.title_generator.call_llm") as model:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("cli"), [{"role": "user", "content": "Explain this function"}])
+    titler.assert_not_called()
+    spawn.assert_not_called()
+    model.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["tui", "desktop", "a2a"])
+def test_explicit_oneshot_source_override_preserves_title_path(monkeypatch, source):
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", source)
+    monkeypatch.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
+    _title_turn("cli").assert_called_once()
+
+
 @pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
 def test_prologue_titles_the_surfaces_a_person_reads(platform):
     assert _title_turn(platform).called

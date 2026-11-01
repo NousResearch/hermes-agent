@@ -824,10 +824,12 @@ compression:
   # ratio threshold rarely fires, so bulky tool outputs (terminal dumps, file
   # reads, web extracts) ride along in history and get re-billed every turn.
   # When re-sent history exceeds this many tokens, the prune dedupes identical
-  # results, summarizes older oversized ones, and truncates large tool-call
-  # arguments — protecting the most recent `protect_last_n` messages and never
-  # calling the model. Try 48000 to enable. Built-in compressor engine only;
-  # other context engines inherit a safe no-op.
+  # results, demotes older oversized ones to summaries, and leaves tool-call
+  # arguments byte-exact — they are execution records and are never rewritten;
+  # the summary model bounds its own copy of them with a separate serializer.
+  # It protects the most recent `protect_last_n` messages and never calls the
+  # model. Try 48000 to enable. Built-in compressor engine only; other context
+  # engines inherit a safe no-op.
   # NOTE: a committed prune rewrites already-sent history, which invalidates
   # the provider's prompt-cache prefix — the min_reclaim gate below keeps
   # those cache breaks episodic (like a compression boundary) instead of

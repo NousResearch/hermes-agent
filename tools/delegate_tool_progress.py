@@ -180,6 +180,7 @@ _NESTED_CHILDREN_NOTE = (
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
     max_spawn_depth: int = 2, child_depth: int = 1,
+    instructions: Optional[str] = None,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
@@ -216,6 +217,8 @@ def _build_child_system_prompt(
             + f"NOTE: You are at depth {child_depth}. The delegation tree is capped at max_spawn_depth={max_spawn_depth}. "
             + child_note
         )
+    if instructions and instructions.strip():
+        parts.append(f"\nROUTE INSTRUCTIONS:\n{instructions}")
     return "\n".join(parts)
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

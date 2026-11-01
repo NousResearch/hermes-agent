@@ -30,6 +30,7 @@ from gateway.status_inline_source import (
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
+from gateway.status_argv import _argv_to_command_line, _read_process_cmdline  # cmdline sibling; re-exported (consumers patch/read these via gateway.status)
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -509,35 +510,6 @@ def get_process_start_time(pid: int) -> Optional[int]:
     return _get_process_start_time(pid)
 
 
-def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Process command line as one string: /proc, then psutil, then ``ps``.
-
-    Order is by cost, and this runs per live gateway on every roster/status poll. ``psutil`` reads
-    the process table in-process (a ``sysctl`` on macOS) where ``ps`` costs a fork+exec — measured
-    0.02ms against 4.2ms on macOS for the same string. It cannot always answer: on macOS it raises
-    ``AccessDenied`` for a process owned by another user, which ``ps`` still reports, so ``ps``
-    stays as the fallback rather than being replaced."""
-    with contextlib.suppress(OSError):
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-        if raw:
-            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
-    with contextlib.suppress(Exception):
-        import psutil  # type: ignore
-        cmdline_parts = psutil.Process(pid).cmdline()
-        if cmdline_parts:
-            return " ".join(cmdline_parts)
-    if not _IS_WINDOWS:
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            result = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "command="],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-                check=False,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-    return None
-
-
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -666,7 +638,7 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     argv = record.get("argv")
     if record.get("kind") != _GATEWAY_KIND or not isinstance(argv, list) or not argv:
         return False
-    return looks_like_gateway_runtime_command_line(" ".join(str(part) for part in argv))
+    return looks_like_gateway_runtime_command_line(_argv_to_command_line(str(part) for part in argv))
 
 
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:

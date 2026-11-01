@@ -1991,6 +1991,7 @@
   "sidebar.projects.baseBranchPlaceholder": ["ar"],
   "sidebar.projects.branchOff": ["ar"],
   "sidebar.projects.moveBusy": ["ar","ja","zh-hant"],
+  "sidebar.projects.moveCreateNew": ["ar","de","es","fr","ja","ru","zh-hant"],
   "sidebar.projects.moveFailed": ["ar","ja","zh-hant"],
   "sidebar.projects.moveNoFolder": ["ar","ja","zh-hant"],
   "sidebar.projects.moveNoProjects": ["ar","ja","zh-hant"],

@@ -1400,11 +1400,21 @@ export interface ProjectDialogState {
   mode: 'add-folder' | 'create' | 'rename'
   projectId?: string
   name?: string
+  /** Create-mode only: a folder path to prefill in the picker (skips the
+   *  user having to re-pick the directory of the session they came from). */
+  prefillFolder?: string
+  /** Create-mode only: fired with the newly created project AFTER the dialog's
+   *  submit succeeds. Lets a caller chain follow-up work — e.g. the session
+   *  "Move to project" submenu uses it to immediately move the originating
+   *  session into the project the user just created, so "no other project"
+   *  doesn't dead-end the flow. Errors are caught + toasted; the dialog
+   *  itself still closes on success. */
+  onCreated?: (project: ProjectInfo) => void | Promise<void>
 }
 
 export const $projectDialog = atom<null | ProjectDialogState>(null)
 
-export function openProjectCreate(): void {
+export function openProjectCreate(options?: { onCreated?: ProjectDialogState['onCreated']; prefillFolder?: string }): void {
   if ($projectsRpcAvailable.get() === false) {
     notify({
       kind: 'warning',
@@ -1414,7 +1424,7 @@ export function openProjectCreate(): void {
     return
   }
 
-  $projectDialog.set({ mode: 'create' })
+  $projectDialog.set({ mode: 'create', prefillFolder: options?.prefillFolder, onCreated: options?.onCreated })
 }
 
 /** Clear the armed "New project" drag placement — on dialog close, so a later

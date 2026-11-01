@@ -26,7 +26,8 @@ vi.mock('@/i18n', () => ({
           namePlaceholder: 'Project name',
           noFolders: 'No folders yet',
           primaryBadge: 'Primary',
-          removeFolder: 'Remove folder'
+          removeFolder: 'Remove folder',
+          moveFailed: 'Could not move session'
         }
       }
     }
@@ -46,7 +47,16 @@ const { $newProjectDropPlacement, $projectDialog, addProjectFolders, createProje
     return {
       // Where a "New project" DRAG armed its drop (null = plain click).
       $newProjectDropPlacement: atom<{ anchor: string; before?: null | string; dir: string } | null>(null),
-      $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
+      $projectDialog: atom<
+        | {
+            mode: 'create' | 'rename' | 'add-folder'
+            name?: string
+            projectId?: string
+            prefillFolder?: string
+            onCreated?: (project: { id: string; name: string }) => void | Promise<void>
+          }
+        | null
+      >({
         mode: 'create'
       }),
       addProjectFolders: vi.fn(),
@@ -212,5 +222,45 @@ describe('ProjectDialog add-folder mode (#68741)', () => {
     await waitFor(() => expect(pickProjectFolders).toHaveBeenCalledOnce())
     expect(addProjectFolders).not.toHaveBeenCalled()
     expect(closeProjectDialog).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProjectDialog create-then-move (#86000)', () => {
+  it('reports a failed create-then-move as a move failure, not a create failure', async () => {
+    // Regression (AI review #86000): the project IS created at this point —
+    // only the follow-up moveSessionToProject failed. The toast must say
+    // "Could not move session", not "Failed to create project".
+    const { createProject } = await import('@/store/projects')
+
+    const { notifyError: notifyErrorStore } = await import('@/store/notifications')
+
+    ;(createProject as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: 'p1',
+      name: 'New project'
+    })
+    ;(notifyErrorStore as ReturnType<typeof vi.fn>).mockClear()
+
+    $projectDialog.set({
+      mode: 'create',
+      onCreated: async () => {
+        throw new Error('move blew up')
+      }
+    })
+
+    render(<ProjectDialog />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+    // pickProjectFolders is async — wait until the folder lane renders.
+    await screen.findByRole('button', { name: 'Remove folder' })
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'New project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+
+    await vi.waitFor(() => {
+      expect(notifyErrorStore).toHaveBeenCalledTimes(1)
+    })
+    expect(notifyErrorStore).toHaveBeenCalledWith(
+      expect.any(Error),
+      'Could not move session'
+    )
   })
 })

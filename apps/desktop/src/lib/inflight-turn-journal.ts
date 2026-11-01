@@ -126,6 +126,13 @@ function ownerFinishedJournaledTurn(tail: ChatMessage[], owner: OwnerPendingTurn
   return submissions.length > 0 ? !submissions.some(id => owner.submissionIds.has(id)) : !owner.listed
 }
 
+/** Whether the session's journal holds a turn its owner has finished (see `ownerFinishedJournaledTurn`). */
+export function journaledTurnFinished(storedSessionId: null | string, owner: OwnerPendingTurns | undefined): boolean {
+  const snapshot = owner ? readInFlightTurnJournal(storedSessionId) : null
+
+  return Boolean(owner && snapshot && ownerFinishedJournaledTurn(snapshot.messages, owner))
+}
+
 function storage(): Storage | null {
   try {
     return typeof window === 'undefined' ? null : window.localStorage

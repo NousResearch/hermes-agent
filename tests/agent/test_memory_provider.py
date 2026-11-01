@@ -507,6 +507,34 @@ class TestMemoryManager:
         assert external.shutdown_calls == 1
         assert builtin.shutdown_called
 
+    def test_initialize_for_agent_reports_failure_without_exception_text(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.memory_manager as mm
+
+        class FailingMemoryProvider(FakeMemoryProvider):
+            def initialize(self, session_id, **kwargs):
+                raise RuntimeError("secret initialization detail")
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+        monkeypatch.setattr(mm, "get_spill_config", lambda: {"max_chars": 100})
+        manager = MemoryManager()
+        manager.add_provider(FailingMemoryProvider("external"))
+        manager.add_provider(FakeMemoryProvider("builtin"))
+        warnings = []
+
+        initialized = manager.initialize_for_agent(
+            say=warnings.append,
+            session_id="session",
+            hermes_home=str(tmp_path / "hermes_test"),
+        )
+
+        assert initialized is False
+        assert len(warnings) == 1
+        assert "failed to initialize" in warnings[0]
+        assert "another profile already uses" not in warnings[0]
+        assert "secret initialization detail" not in warnings[0]
+
     # -- Lifecycle hooks -----------------------------------------------------
 
 

@@ -925,10 +925,15 @@ class MemoryManager:
         warning sink) tells the user this profile now runs without it."""
         before = [p for p in self._providers if p.name != "builtin"]
         self.initialize_all(**kwargs)
+        failures = self.provider_initialization_failures
         for provider in (p for p in before if not any(p is kept for kept in self._providers)):
-            message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
-                       "provider instance another profile already uses. Built-in memory still works; the "
-                       "operator can see why with `hermes logs errors`.")
+            if provider.name in failures:
+                message = (f"⚠ Memory provider {provider.name!r} failed to initialize and was disabled. "
+                           "Built-in memory still works; the operator can see why with `hermes logs errors`.")
+            else:
+                message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
+                           "provider instance another profile already uses. Built-in memory still works; the "
+                           "operator can see why with `hermes logs errors`.")
             (say or logger.warning)(message)
         return self._has_external
 

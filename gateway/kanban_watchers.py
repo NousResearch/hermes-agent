@@ -89,6 +89,10 @@ class GatewayKanbanWatchersMixin:
 
         sub_fail_counts: dict[tuple, int] = getattr(self, "_kanban_sub_fail_counts", {})
         self._kanban_sub_fail_counts = sub_fail_counts
+        # Streak-start wall-clock stamps, runner-owned so the MIN_DROP_WINDOW_SECONDS window spans ticks
+        # rather than one notifier instance (rebuilt every tick).
+        sub_fail_since: dict[tuple, float] = getattr(self, "_kanban_sub_fail_since", {})
+        self._kanban_sub_fail_since = sub_fail_since
         notifier_profile = getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name()
         self._kanban_notifier_profile = notifier_profile
 
@@ -115,6 +119,7 @@ class GatewayKanbanWatchersMixin:
                 for d in deliveries:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
+                        sub_fail_since=sub_fail_since,
                     ).deliver()
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)

@@ -74,12 +74,61 @@ interface JournalStore {
 
 export interface InFlightRecoveryResult {
   applied: boolean
-  /** The base transcript already contains the journaled turn's completed
-   *  reply — the journal entry is stale and has been cleared. */
+  /** The journaled turn is finished (the base holds its completed reply, or the
+   *  owner no longer lists it): the journal entry is stale and has been cleared. */
   caughtUp: boolean
   messages: ChatMessage[]
   streamId: null | string
   turnStartedAt: null | number
+}
+
+/** What a session's owner has not finished, from its reopen snapshot's pending
+ *  list (`info.pending_submissions`): every admission still queued, running, or
+ *  lost in a crash (`unknown`), listed under the client's submission id. */
+export interface OwnerPendingTurns {
+  submissionIds: ReadonlySet<string>
+  /** The owner listed any admission at all. */
+  listed: boolean
+}
+
+/** The owner's pending list, or undefined when the snapshot carries none (an
+ *  owner without an admission ledger): then only the transcript can judge. */
+export function ownerPendingTurns(pendingSubmissions: unknown): OwnerPendingTurns | undefined {
+  if (!Array.isArray(pendingSubmissions)) {
+    return undefined
+  }
+
+  return {
+    submissionIds: new Set(
+      pendingSubmissions.flatMap(raw => (typeof raw?.input_id === 'string' ? [raw.input_id] : []))
+    ),
+    listed: pendingSubmissions.length > 0
+  }
+}
+
+// A send's optimistic prompt is `user-<submission id>` (use-prompt-actions/submit.ts),
+// the id the owner lists its admission under. Other prompt ids (a tile action, a
+// session's first message) name no admission.
+const SUBMITTED_PROMPT_ID = /^user-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+
+/** A journaled turn the owner no longer lists has finished: its stored rows are
+ *  the transcript, wherever the loaded page ends, so the journal is stale. A
+ *  listed turn is still running (folded live) or was lost in a crash (`unknown`:
+ *  recovered, which is what the journal is for). A tail whose prompts name no
+ *  admission can only be judged finished when the owner lists nothing. */
+function ownerFinishedJournaledTurn(tail: ChatMessage[], owner: OwnerPendingTurns): boolean {
+  const submissions = tail.flatMap(message =>
+    message.role === 'user' ? (SUBMITTED_PROMPT_ID.exec(message.id)?.slice(1, 2) ?? []) : []
+  )
+
+  return submissions.length > 0 ? !submissions.some(id => owner.submissionIds.has(id)) : !owner.listed
+}
+
+/** Whether the session's journal holds a turn its owner has finished (see `ownerFinishedJournaledTurn`). */
+export function journaledTurnFinished(storedSessionId: null | string, owner: OwnerPendingTurns | undefined): boolean {
+  const snapshot = owner ? readInFlightTurnJournal(storedSessionId) : null
+
+  return Boolean(owner && snapshot && ownerFinishedJournaledTurn(snapshot.messages, owner))
 }
 
 function storage(): Storage | null {
@@ -1040,7 +1089,7 @@ export function readInFlightTurnJournal(storedSessionId: null | string): InFligh
 export function recoverInFlightTurnJournal(
   storedSessionId: null | string,
   baseMessages: ChatMessage[],
-  options: { keepPending?: boolean } = {}
+  options: { keepPending?: boolean; owner?: OwnerPendingTurns } = {}
 ): InFlightRecoveryResult {
   const snapshot = readInFlightTurnJournal(storedSessionId)
 
@@ -1052,6 +1101,14 @@ export function recoverInFlightTurnJournal(
       streamId: null,
       turnStartedAt: null
     }
+  }
+
+  // The owner's ledger answers directly whether the journaled turn finished,
+  // wherever the loaded page ends; the transcript match below can only infer it.
+  if (options.owner && ownerFinishedJournaledTurn(snapshot.messages, options.owner)) {
+    clearInFlightTurnJournal(storedSessionId)
+
+    return { applied: false, caughtUp: true, messages: baseMessages, streamId: null, turnStartedAt: null }
   }
 
   const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)

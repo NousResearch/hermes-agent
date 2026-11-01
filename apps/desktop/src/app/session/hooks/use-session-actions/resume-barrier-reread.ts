@@ -5,6 +5,7 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { journaledTurnFinished, ownerPendingTurns } from '@/lib/inflight-turn-journal'
 import type { SessionMessage, SessionMessagesResponse, SessionResumeResult } from '@/types/hermes'
 
 import { reconcileDurableHistory } from './utils'
@@ -45,21 +46,34 @@ export async function graftTranscriptPage(
  * (`prefetchServesResume`); one that omits it (`omit_messages` honoured) only
  * says the turn is idle. That idle answer is the barrier (the reply is durable
  * once it returns), so a snapshot whose tail is still a local row is read once
- * more.
+ * more. So is a page beside a journaled turn the owner no longer lists, idle or
+ * not (a queued successor may already run): that turn settled before this
+ * snapshot, after its reply rows were written, but possibly after the page was
+ * read, and resume retires its journal, so nothing local would stand in for a
+ * missing reply.
  */
 export async function rereadPageAfterResumeBarrier(
-  resumed: Pick<SessionResumeResult, 'inflight' | 'messages' | 'queued'> & { running?: boolean },
+  resumed: Pick<SessionResumeResult, 'info' | 'inflight' | 'messages' | 'queued'> & { running?: boolean },
   early: GraftedTranscriptPage | null,
   storedSessionId: string,
   scope: ProfileScope
 ): Promise<GraftedTranscriptPage | null> {
   const tail = early?.snapshot.at(-1)
 
-  if (!early || !tail || resumed.running !== false || resumed.inflight || resumed.queued || resumed.messages?.length) {
+  if (!early || !tail || resumed.messages?.length) {
     return null
   }
 
-  if (early.transcript.some(message => message.id === tail.id)) {
+  const idleWithLocalTail =
+    resumed.running === false &&
+    !resumed.inflight &&
+    !resumed.queued &&
+    !early.transcript.some(message => message.id === tail.id)
+
+  if (
+    !idleWithLocalTail &&
+    !journaledTurnFinished(storedSessionId, ownerPendingTurns(resumed.info?.pending_submissions))
+  ) {
     return null
   }
 

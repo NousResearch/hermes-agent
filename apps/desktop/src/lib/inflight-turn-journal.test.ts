@@ -5,6 +5,7 @@ import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
   mergeInFlightMessages,
+  ownerPendingTurns,
   persistInFlightTurnState,
   purgeInFlightTurnJournals,
   readInFlightTurnJournal,
@@ -737,6 +738,115 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.caughtUp).toBe(false)
     expect(result.messages.map(m => m.id)).toEqual(['db-u0', 'db-a0', 'u1', 'assistant-stream-1'])
     expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  // ── The owner's pending list decides whether a journaled turn finished ──────
+  // A browser that died mid-turn keeps that turn's journal. When the session
+  // moves on elsewhere, resume folds against the newest REST page only: the
+  // journaled prompt can be older than that page, no base user matches, and
+  // the whole old turn used to be appended below the newest reply. The reopen
+  // snapshot lists every admission the owner has not finished (queued,
+  // running, or lost in a crash) under the client's submission id.
+
+  const SUBMISSION = '5e0c1a2b-7d3f-4c8e-9a1b-2c3d4e5f6a7b'
+
+  /** The dead tab's journal as a live send leaves it: the prompt under its
+   *  submission id, the reply up to the moment the socket dropped. */
+  function journalSentTurn(promptId = `user-${SUBMISSION}`) {
+    journalEntry([
+      user(promptId, 'Summarize the open issues.'),
+      assistantWithTool('assistant-stream-1', 'Reading the issue list:', { pending: true })
+    ])
+  }
+
+  /** The newest stored page after two newer turns; the journaled prompt is older. */
+  const newerPage = (): ChatMessage[] => [
+    { ...user('db-u300', 'group them by area'), rowId: 300 },
+    { ...assistant('db-a301', 'Grouped.'), rowId: 301 },
+    { ...user('db-u400', 'draft a note for the team'), rowId: 400 },
+    { ...assistant('db-a401', 'Drafted the note.'), rowId: 401 }
+  ]
+
+  const listed = (status: string, inputId = SUBMISSION) =>
+    ownerPendingTurns([{ admission_id: 'adm-1', input_id: inputId, status }])
+
+  it('retires a journaled turn the owner no longer lists, though its prompt is outside the loaded page', () => {
+    journalSentTurn()
+    const base = newerPage()
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false, owner: ownerPendingTurns([]) })
+
+    expect(result.applied).toBe(false)
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toBe(base)
+    // Cleared, so the next open does not fold it again.
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('retires a journaled turn the owner no longer lists while another turn runs', () => {
+    journalSentTurn()
+    const base = newerPage()
+
+    const result = recoverInFlightTurnJournal('stored-1', base, {
+      keepPending: true,
+      owner: listed('started', '0b6f3c1e-5d2a-4e8f-9c7b-1a2b3c4d5e6f')
+    })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toBe(base)
+    expect(result.streamId).toBeNull()
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('recovers a journaled turn the owner lists as lost in a crash', () => {
+    journalSentTurn()
+    // The prompt was stored at admission; the streamed reply died with the backend.
+    const base = [{ ...user('db-u1', 'Summarize the open issues.'), rowId: 1 }]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false, owner: listed('unknown') })
+
+    expect(result.applied).toBe(true)
+    expect(result.messages.map(message => message.id)).toEqual(['db-u1', 'assistant-stream-1'])
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('keeps folding a journaled turn the owner is still running', () => {
+    journalSentTurn()
+    const base = [{ ...user('db-u1', 'Summarize the open issues.'), rowId: 1 }]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true, owner: listed('started') })
+
+    expect(result.applied).toBe(true)
+    expect(result.streamId).toBe('assistant-stream-1')
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('leaves the transcript to judge when the owner sends no pending list', () => {
+    journalSentTurn()
+
+    const result = recoverInFlightTurnJournal('stored-1', newerPage(), {
+      keepPending: false,
+      owner: ownerPendingTurns(undefined)
+    })
+
+    expect(result.applied).toBe(true)
+    expect(result.messages.at(-1)?.id).toBe('assistant-stream-1')
+  })
+
+  it.each([
+    ['nothing is listed', [], true],
+    ['another admission is listed', [{ admission_id: 'adm-2', input_id: SUBMISSION, status: 'started' }], false]
+  ])('judges a prompt that names no admission finished only when %s', (_case, pending, finished) => {
+    // A tile action or a session's first message has an id that is no submission id.
+    journalSentTurn('user-1793499069406-k3x9q2')
+
+    const result = recoverInFlightTurnJournal('stored-1', newerPage(), {
+      keepPending: false,
+      owner: ownerPendingTurns(pending)
+    })
+
+    expect(result.caughtUp).toBe(finished)
+    expect(readInFlightTurnJournal('stored-1') === null).toBe(finished)
   })
 
   it('does not resurrect the journal streamId on a not-running resume (journal self-clear)', () => {

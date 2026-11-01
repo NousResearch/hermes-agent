@@ -221,11 +221,11 @@ class AcmeProfile(ProviderProfile):
 
 Every field and hook `providers/base.py` declares, in declaration order. Names ending in `()` are methods
 to override in a subclass; the rest are dataclass fields (a few, such as `picker_catalog` and the
-device-login callables, take a callable). Endpoint-keyed hooks (`client_headers`, `request_headers`,
-`max_tokens_param`) receive the request's `base_url` and return `None` / `{}` for an endpoint that is
-not yours; the `responses_*` and `message_carrier_*` fields and the reasoning-replay hooks apply only on
-hosts the profile lists in `hostnames`. Hot-path hooks must be pure and cheap (no I/O) unless the
-meaning says otherwise.
+device-login callables, take a callable). Endpoint-keyed hooks (`client_headers`, `anthropic_auth_style`,
+`request_headers`, `max_tokens_param`) receive the request's `base_url` and return `None` / `{}` for an
+endpoint that is not yours; the `responses_*` and `message_carrier_*` fields and the reasoning-replay hooks
+apply only on hosts the profile lists in `hostnames`. Hot-path hooks must be pure and cheap (no I/O) unless
+the meaning says otherwise.
 
 | Name | Meaning | Default |
 |---|---|---|
@@ -285,6 +285,7 @@ meaning says otherwise.
 | `supported_reasoning_efforts()` | Effort vocabulary for a model: `None` unknown, `()` none, tuple = clamp; no I/O | `None` |
 | `api_mode_for_model()` | Wire this provider serves a model on; `api_key` given only at resolution time | `None` (static `api_mode`) |
 | `client_headers()` | Default headers for a client built for `base_url` (`has_images` for image requests) | `None` (static `default_headers`) |
+| `anthropic_auth_style()` | `"bearer"`/`"api_key"` for an Anthropic Messages client at `base_url`; also applies `client_headers()` (rules below) | `None` (core host heuristics) |
 | `request_headers()` | Per-request `extra_headers` for `base_url`; `user_initiated` on a turn's first call | `{}` |
 | `max_tokens_param()` | `"max_completion_tokens"` or `"max_tokens"` for `base_url` | `None` (core heuristic) |
 | `listed()` | Whether discovery surfaces may offer the provider | `True` unless `hidden` with no pool row |
@@ -303,7 +304,7 @@ meaning says otherwise.
 | `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
 | `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` (plain values, so it works under `plugins.isolation: host`); overriding it replaces generic env seeding (return `[]` for none) | not overridden = generic env seeding |
 | `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
-| `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
+| `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only (rules below) | `None` |
 | `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
 | `credential_refresh_notice()` | Status line after a successful runtime refresh | `""` (generic wording) |
 | `request_rejection_hint()` | User-facing lines for an endpoint's hard rejection of any route | `()` |
@@ -335,6 +336,20 @@ meaning says otherwise.
 | `registry_auth_type` | Auth-registry row `auth_type` when credential resolution differs from the setup flow | `""` (`auth_type`) |
 | `base_url_env_var` | Env var overriding `base_url` on the registry row when not in `env_vars` | `""` |
 | `registry_after` | Registry id this row follows in priority-ordered scans | `""` (appended) |
+
+**`anthropic_auth_style()` rules.** Core asks only for an https (or strictly local `http`: localhost, or a
+loopback, RFC 1918 / ULA or link-local IP literal) URL on an ASCII host whose auth it does not own, so native Anthropic /
+Claude, Azure, MiniMax, Kimi / Moonshot, Nous and OAuth routes never reach the hook. Answering opts the
+client into `client_headers()`, which then receives the live key as `api_key` (never log or echo it). Header
+names must be RFC 9110 tokens with `str` values of printable ASCII or tab, without leading or trailing
+whitespace; credential, `anthropic-beta`, `anthropic-version`, transport and hop-by-hop headers (`Host`,
+`Content-Length`, `Cookie`, `Expect`, ...) are dropped.
+
+**`refresh_runtime_credentials()` rules.** The token must be a `str` of visible ASCII and `base_url` a `str`
+or `None`. A returned `base_url` may keep the current origin (no scheme or port change on the same host); a
+new host must be https (or strictly local `http`), listed in this profile's `hostnames`, and this profile
+must be the session's named provider. Otherwise core ignores the whole refresh and does not retry, except
+that a profile serving a `custom` route by host has its token adopted on the current base URL.
 
 ### Public helpers for a `model_setup_flow`
 

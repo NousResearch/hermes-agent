@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
 # ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
+_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).

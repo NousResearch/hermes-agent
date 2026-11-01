@@ -73,6 +73,32 @@ def stamp_data_use(message: MutableMapping[str, Any], requires: list[str]) -> No
     message["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), DATA_USE: list(requires)}
 
 
+# What the user typed on a turn a ``pre_llm_call`` hook vetoed, kept inside ``display_metadata``. The row's
+# ``content`` is the withheld placeholder, so every reader that hands transcript text to a model (wire
+# replay, compaction, session_search, memory providers, background review) only ever sees that; transcript
+# views render this key instead (agent/turn_context.py::_withhold_blocked_prompt).
+WITHHELD_PROMPT = "withheld_prompt"
+
+
+def withheld_prompt_text(message: Any) -> Optional[str]:
+    """The typed text a transcript view shows for a vetoed user row, else None."""
+    metadata = message.get("display_metadata") if isinstance(message, Mapping) else None
+    text = metadata.get(WITHHELD_PROMPT) if isinstance(metadata, Mapping) else None
+    return text if isinstance(text, str) else None
+
+
+def without_withheld_prompts(messages: Any) -> Any:
+    """*messages* with the vetoed text dropped from each row's ``display_metadata`` (copies only where
+    one is present), for hand-offs that leave the host with whole row dicts (memory providers)."""
+    if not isinstance(messages, list) or not any(withheld_prompt_text(m) is not None for m in messages):
+        return messages
+    return [
+        {**m, "display_metadata": {k: v for k, v in m["display_metadata"].items() if k != WITHHELD_PROMPT}}
+        if withheld_prompt_text(m) is not None else m
+        for m in messages
+    ]
+
+
 def lift_data_use(message: MutableMapping[str, Any]) -> None:
     """Restore a replayed row's ``data_use`` key from its durable ``display_metadata`` copy."""
     metadata = message.get("display_metadata")

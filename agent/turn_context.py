@@ -802,9 +802,47 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 
 
 # ``turn_exit_reason`` of a turn a ``pre_llm_call`` hook vetoed before any inference request, and
-# the ``api_content`` later turns replay in place of the vetoed prompt (the transcript keeps it).
+# the stored ``content`` of the vetoed user row (what the user typed is display-only metadata).
 PRE_LLM_BLOCK_EXIT_REASON = "blocked_by_plugin_pre_llm_call"
 PRE_LLM_BLOCK_WITHHELD_PROMPT = "[Message withheld: a pre_llm_call policy hook blocked it.]"
+
+
+def _withhold_blocked_prompt(agent: Any, turn_user_msg: dict[str, Any], typed: Any) -> None:
+    """Store a vetoed prompt as the withheld placeholder. ``content`` is what compaction,
+    session_search, memory providers and background review read, so the placeholder is the row's
+    content (and the persist override, so no flush restores the typed text); what the user typed is
+    kept only in ``display_metadata`` for transcript views. A row another writer materialized first
+    (the TUI/Desktop submit-time row) is rewritten in place under the persist lock. A row merged with
+    an earlier compaction handoff keeps the handoff and an unanswered earlier message merged into the
+    row keeps its text; only this turn's ask becomes the placeholder."""
+    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, _handoff_only_content
+    from agent.message_metadata import WITHHELD_PROMPT
+    from agent.session_persistence import _content_with_turn_override, _durable_content, _persist_lock
+
+    content = turn_user_msg.get("content")
+    if turn_user_msg.get(COMPRESSED_SUMMARY_METADATA_KEY):
+        handoff = flatten_message_text(_handoff_only_content(content)).strip()
+        withheld = f"{handoff}\n\n{PRE_LLM_BLOCK_WITHHELD_PROMPT}" if handoff else PRE_LLM_BLOCK_WITHHELD_PROMPT
+    else:
+        typed = _content_with_turn_override(turn_user_msg, content, typed)
+        withheld = _content_with_turn_override(turn_user_msg, content, PRE_LLM_BLOCK_WITHHELD_PROMPT)
+    metadata = turn_user_msg.get("display_metadata")
+    metadata = {**(metadata if isinstance(metadata, dict) else {}), WITHHELD_PROMPT: str(_durable_content(typed) or "")}
+    agent._persist_user_message_override = PRE_LLM_BLOCK_WITHHELD_PROMPT
+    with _persist_lock(agent):
+        turn_user_msg["content"] = withheld
+        turn_user_msg.pop("api_content", None)
+        turn_user_msg["display_metadata"] = metadata
+        _db = getattr(agent, "_session_db", None)
+        _row_id = turn_user_msg.get("_row_id")
+        if _db is None or not isinstance(_row_id, int):
+            return
+        try:
+            # A submit-time row is addressed under the session that wrote it (a rotation may follow).
+            _db.set_user_message_content(turn_user_msg.get("_submit_row_session_id") or agent.session_id,
+                                         _row_id, withheld, metadata)
+        except Exception:
+            logger.warning("withheld-prompt rewrite failed for session=%s", agent.session_id or "none", exc_info=True)
 
 
 def _collect_pre_llm_call_context(
@@ -1068,7 +1106,7 @@ def build_turn_context(
     Order matters: the DB session row is created only AFTER the system prompt is built
     (else it persists system_prompt=NULL and costs a cache miss) and BEFORE preflight
     compression."""
-    from agent.turn_context_compaction import run_turn_start_compaction
+    from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
@@ -1188,7 +1226,19 @@ def build_turn_context(
     ):
         agent._flush_messages_to_session_db(conversation_history, conversation_history)
 
-    compaction = run_turn_start_compaction(
+    # Before turn-start compaction: its summary request quotes recent user turns, this one included,
+    # so a vetoed prompt skips it (the turn makes no model call at all).
+    _blocks: list[str] = []
+    plugin_user_context = _collect_pre_llm_call_context(
+        agent, effective_task_id=effective_task_id, turn_id=turn_id,
+        original_user_message=original_user_message, messages=messages,
+        conversation_history=conversation_history, blocks=_blocks,
+    )
+    plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
+    compaction = CompactionOutcome(
+        messages=messages, active_system_prompt=active_system_prompt,
+        conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
+    ) if plugin_block_message else run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
         current_turn_user_idx=current_turn_user_idx, user_message=user_message,
@@ -1198,14 +1248,6 @@ def build_turn_context(
     active_system_prompt = compaction.active_system_prompt
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
-
-    _blocks: list[str] = []
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history, blocks=_blocks,
-    )
-    plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.
     stage_skills_index_note(agent, active_system_prompt, messages)
@@ -1227,7 +1269,7 @@ def build_turn_context(
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
         if plugin_block_message:
-            messages[current_turn_user_idx]["api_content"] = PRE_LLM_BLOCK_WITHHELD_PROMPT
+            _withhold_blocked_prompt(agent, messages[current_turn_user_idx], original_user_message)
         elif isinstance(messages[current_turn_user_idx].get("content"), list):
             _append_multimodal_context(
                 agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,

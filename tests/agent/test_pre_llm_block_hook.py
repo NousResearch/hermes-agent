@@ -56,40 +56,79 @@ def provider_url():
     srv.shutdown()
 
 
-def test_blocked_turn_never_reaches_the_provider_and_is_never_replayed(provider_url, tmp_path, monkeypatch):
-    """Turn 1 is vetoed: zero chat requests, the block message is the reply and closes the
-    transcript pair. Turn 2 (a fresh agent reloading the session) reaches the model with the
-    withheld placeholder in place of the vetoed prompt, while the transcript keeps the original."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+def _agent(provider_url, db):
     from run_agent import AIAgent
 
+    return AIAgent(
+        api_key="test-key", base_url=provider_url, provider="openai-compat", model="test-model",
+        max_iterations=4, enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
+        skip_memory=True, save_trajectories=False, platform="cli", session_db=db, session_id="s-block",
+    )
+
+
+def _blocked_session(provider_url, db):
+    """Run one vetoed turn on ``s-block``; return its result."""
+    verdicts = [{"context": "IGNORED-ON-BLOCK"}, {"action": "block", "message": BLOCK_MSG}]
+    with patch("hermes_cli.plugins.invoke_hook",
+               side_effect=lambda hook, **kw: list(verdicts) if hook == "pre_llm_call" else []):
+        return _agent(provider_url, db).run_conversation(f"look up {SECRET}", conversation_history=[], task_id="t")
+
+
+def test_blocked_turn_never_reaches_the_provider_and_stores_only_the_placeholder(provider_url, tmp_path, monkeypatch):
+    """Turn 1 is vetoed: zero chat requests, the block message is the reply and closes the
+    transcript pair. The stored row's content is the placeholder (what session_search and every
+    other content reader sees); the typed text is display-only metadata the transcript renders.
+    Turn 2 (a fresh agent reloading the session) replays the placeholder, never the prompt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    from agent.message_metadata import withheld_prompt_text
+    from tools.session_search_tool import session_search
+
     db = SessionDB(db_path=tmp_path / "state.db")
-    verdicts = {"pre_llm_call": [{"context": "IGNORED-ON-BLOCK"}, {"action": "block", "message": BLOCK_MSG}]}
-
-    def make_agent():
-        return AIAgent(
-            api_key="test-key", base_url=provider_url, provider="openai-compat", model="test-model",
-            max_iterations=4, enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
-            skip_memory=True, save_trajectories=False, platform="cli", session_db=db, session_id="s-block",
-        )
-
     try:
-        with patch("hermes_cli.plugins.invoke_hook", side_effect=lambda hook, **kw: list(verdicts.get(hook, []))):
-            result = make_agent().run_conversation(f"look up {SECRET}", conversation_history=[], task_id="t")
-            assert _Provider.chat_requests == []
-            assert result["final_response"] == BLOCK_MSG
-            assert result["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON
-            assert result["api_calls"] == 0 and result["failed"] is False
+        result = _blocked_session(provider_url, db)
+        assert _Provider.chat_requests == []
+        assert result["final_response"] == BLOCK_MSG
+        assert result["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON
+        assert result["api_calls"] == 0 and result["failed"] is False
 
-            verdicts.clear()
-            history = db.get_messages_as_conversation("s-block")
-            assert [(m["role"], m["content"]) for m in history] == [
-                ("user", f"look up {SECRET}"), ("assistant", BLOCK_MSG)]
-            follow_up = make_agent().run_conversation("next question", conversation_history=history, task_id="t")
+        history = db.get_messages_as_conversation("s-block")
+        assert [(m["role"], m["content"]) for m in history] == [
+            ("user", PRE_LLM_BLOCK_WITHHELD_PROMPT), ("assistant", BLOCK_MSG)]
+        assert withheld_prompt_text(history[0]) == f"look up {SECRET}"
+        assert SECRET not in session_search(query="CUSTOMER", db=db, current_session_id="other")
+
+        follow_up = _agent(provider_url, db).run_conversation("next question", conversation_history=history,
+                                                              task_id="t")
         assert follow_up["final_response"] == "MODEL-ANSWER"
         (sent,) = _Provider.chat_requests
         wire = json.dumps(sent["messages"])
         assert SECRET not in wire and PRE_LLM_BLOCK_WITHHELD_PROMPT in wire
+    finally:
+        db.close()
+
+
+def test_compaction_of_a_blocked_turn_never_sends_the_prompt(provider_url, tmp_path, monkeypatch):
+    """A later compaction serializes the stored rows for the summarizer and quotes user turns in its
+    handoff: neither the summary request nor the compacted history may carry the vetoed prompt."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"auxiliary:\n  compression: {{provider: custom, base_url: '{provider_url}', api_key: k, model: m}}\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from agent.conversation_compression import compress_context
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        _blocked_session(provider_url, db)
+        blocked_pair = db.get_messages_as_conversation("s-block")
+        filler = [{"role": role, "content": f"{role} {i} " + "x" * 400}
+                  for i in range(8) for role in ("user", "assistant")]
+        agent = _agent(provider_url, db)
+        compressed, _ = compress_context(agent, filler[:12] + blocked_pair + filler, "sys",
+                                         approx_tokens=150000, force=True)
+        assert _Provider.chat_requests, "the summarizer was never called"
+        assert SECRET not in json.dumps(_Provider.chat_requests)
+        assert SECRET not in json.dumps([{k: m.get(k) for k in ("content", "api_content")} for m in compressed])
     finally:
         db.close()
 

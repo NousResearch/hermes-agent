@@ -27,7 +27,7 @@ from gateway.restart import (
 from gateway.session import SessionSource
 from gateway.session_state import SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET
 from hermes_cli.config import cfg_get, resolve_ephemeral_system_prompt_from_config
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -598,6 +598,14 @@ class GatewayConfigLoadersMixin:
             return self._fallback_model
         by_home[home_key] = self._fallback_model = get_fallback_chain(cfg) or None
         return self._fallback_model
+
+    def _fallback_chain_for(self, source: Any) -> list | None:
+        """Fallback chain for *source*'s agent: its ``channel_overrides`` entry's own ``fallback_providers``
+        when set (``[]`` disables fallback for the chat), else the refreshed profile chain."""
+        chain = self._refresh_fallback_model()
+        override = self._channel_override_for(source)
+        declared = override.fallback_providers if override else None
+        return scoped_fallback_chain(chain, declared, pinned=False, owner=f"channel_overrides[{source.chat_id}]")
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:

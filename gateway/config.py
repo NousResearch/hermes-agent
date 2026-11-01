@@ -377,11 +377,14 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class ChannelOverride:
-    """Per-channel reply policy/model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel reply policy/model/provider/system_prompt/fallback_providers override
+    (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
     allow_silence: Optional[bool] = None
+    # Same shape as the top-level key; replaces the profile chain for this chat ([] disables fallback).
+    fallback_providers: Optional[list] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}

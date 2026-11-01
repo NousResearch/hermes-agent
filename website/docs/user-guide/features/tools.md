@@ -300,3 +300,16 @@ Delegated subagents cannot open a password prompt: their concurrent work does no
 :::warning
 On messaging platforms, if sudo fails, the output includes a tip to add `SUDO_PASSWORD` to `~/.hermes/.env`.
 :::
+
+## API Keys the Agent Asks For
+
+When a task needs a key the agent doesn't have, it asks through the masked secret prompt instead of
+asking you to paste the key into chat (the `clarify` tool's `secret_env` field). The prompt names the
+environment variable and says what the key is for and where it will be used. Your input is hidden,
+and the value is saved to the active profile's `.env`. The agent only learns the variable's name.
+Commands then use it as `$NAME`; Hermes's own provider keys are never passed to commands. The value
+is also masked if a tool result ever echoes it.
+
+The CLI shows a 🔑 panel, while the TUI and the desktop app show their secret dialog. Messaging
+platforms have no masked input, so the agent refuses there. It tells you to set the key from a local
+CLI, TUI or desktop session, or to add it to the profile's `.env` yourself. Never send keys in chat.

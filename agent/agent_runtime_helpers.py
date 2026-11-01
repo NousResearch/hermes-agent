@@ -22,7 +22,11 @@ from agent.message_sanitization import (
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.tool_dispatch_helpers import (
+    _trajectory_normalize_msg,
+    latest_user_task,
+    make_tool_result_message,
+)
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -2568,6 +2572,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                user_task=latest_user_task(messages),
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),

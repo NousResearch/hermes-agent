@@ -207,6 +207,8 @@ reopens the gesture-less forced-navigation class the advisory closed.
   follows the audio clock. The shared read-aloud preference is not ownership.
   Completed interim replies publish without waiting for a frame so read-aloud
   can speak tool-progress narration while hidden; partial text stays coalesced.
+  Interims and finals that arrive before ownership IPC settles share the pending
+  turn claim; message claims stay distinct so only the newest eligible reply plays.
 - Functional stream deadlines are not display loops. Delta coalescing and the
   400 ms post-commit journal debounce use `src/lib/stream-work-clock.ts`, racing
   the ordinary renderer timer with one pending native wake per owning renderer.

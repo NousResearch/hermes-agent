@@ -27,17 +27,41 @@ interface AutoSpeakReply {
 // start the final reply over the first window's progress update.
 const OWNED_TURNS_MAX = 64
 const ownedTurns = new Set<string>()
+const pendingTurnClaims = new Map<string, Promise<boolean>>()
 
 async function claimSpeech(turnKey: string | undefined, claimKey: string): Promise<boolean> {
   if (turnKey && !ownedTurns.has(turnKey)) {
-    if (!(await ownsAmbientCue(`speak:turn:${turnKey}`))) {
-      return false
+    let claim = pendingTurnClaims.get(turnKey)
+
+    if (!claim) {
+      // An interim and final can arrive before the first IPC claim settles.
+      // They share this window's turn claim, but still claim each message separately.
+      claim = ownsAmbientCue(`speak:turn:${turnKey}`)
+        .then(owns => {
+          if (pendingTurnClaims.get(turnKey) !== claim) {
+            return false
+          }
+
+          if (owns) {
+            ownedTurns.add(turnKey)
+
+            if (ownedTurns.size > OWNED_TURNS_MAX) {
+              ownedTurns.delete(ownedTurns.values().next().value!)
+            }
+          }
+
+          return owns
+        })
+        .finally(() => {
+          if (pendingTurnClaims.get(turnKey) === claim) {
+            pendingTurnClaims.delete(turnKey)
+          }
+        })
+      pendingTurnClaims.set(turnKey, claim)
     }
 
-    ownedTurns.add(turnKey)
-
-    if (ownedTurns.size > OWNED_TURNS_MAX) {
-      ownedTurns.delete(ownedTurns.values().next().value!)
+    if (!(await claim)) {
+      return false
     }
   }
 
@@ -46,6 +70,7 @@ async function claimSpeech(turnKey: string | undefined, claimKey: string): Promi
 
 export function clearOwnedSpeechTurnsForTests(): void {
   ownedTurns.clear()
+  pendingTurnClaims.clear()
 }
 
 interface UseAutoSpeakReplies {

@@ -81,6 +81,22 @@ def _ace_step(a: argparse.Namespace) -> Dict[str, Any]:
     return payload
 
 
+def _mureka_song(a: argparse.Namespace) -> Dict[str, Any]:
+    # Lyrics-to-song when lyrics are given (the prompt then steers style); prompt-to-song otherwise.
+    payload: Dict[str, Any] = {"prompt": a.prompt}
+    if a.lyrics:
+        payload["lyrics"] = a.lyrics
+    if a.duration is not None:
+        payload["duration"] = int(a.duration)
+    return payload
+
+
+def _mureka_song_v9(a: argparse.Namespace) -> Dict[str, Any]:
+    payload = _mureka_song(a)
+    payload.pop("duration", None)  # v9 song declares no duration knob
+    return payload
+
+
 def _elevenlabs_sfx(a: argparse.Namespace) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"text": a.prompt}
     if a.duration is not None:
@@ -120,6 +136,21 @@ MODELS: Dict[str, Dict[str, Any]] = {
         "endpoint": "google/lyria-3.5", "build": _lyria3, "duration": None, "ext": "mp3",
         "kind": "music clips, newest Lyria", "lyrics": False,
         "notes": "Google Lyria 3.5 (fal, Sep 2026). Same prompt-only surface as lyria3; negative prompts are declared but documented as unsupported.",
+    },
+    "mureka-9.5": {
+        "endpoint": "mureka/v9.5/generate/song", "build": _mureka_song, "duration": (120, 300), "ext": "mp3",
+        "kind": "full songs from lyrics or a prompt", "lyrics": True,
+        "notes": "Mureka 9.5. $0.15 per song with --lyrics, $0.50 prompt-only. --duration 120-300 s, else model-decided.",
+    },
+    "mureka-9": {
+        "endpoint": "mureka/v9/generate/song", "build": _mureka_song_v9, "duration": None, "ext": "mp3",
+        "kind": "cheap full songs from lyrics or a prompt", "lyrics": True,
+        "notes": "Mureka 9 (fal, Oct 2026). $0.045 per song with --lyrics (cheapest vocal songs here), $0.30 prompt-only.",
+    },
+    "mureka-9-instrumental": {
+        "endpoint": "mureka/v9/generate/instrumental", "build": _lyria3, "duration": None, "ext": "mp3",
+        "kind": "instrumental tracks", "lyrics": False,
+        "notes": "Mureka 9 instrumental; $0.045 per track. Prompt only, up to 1,024 characters.",
     },
     "stable-audio-3": {
         "endpoint": "fal-ai/stable-audio-3/medium/text-to-audio", "build": _stable_audio_3, "duration": (1, 380), "ext": "mp3",

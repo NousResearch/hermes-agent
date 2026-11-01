@@ -20,6 +20,12 @@ DECLARED = {
     "lyria3": {"prompt", "negative_prompt", "image_url"},
     "lyria3-pro": {"prompt", "negative_prompt", "image_url"},
     "lyria3.5": {"prompt", "negative_prompt", "image_url"},
+    # Mureka entries captured 2026-10-31.
+    "mureka-9.5": {"prompt", "lyrics", "duration", "vocal_id", "reference_id", "melody_id", "styles", "gender",
+                   "enable_safety_checker"},
+    "mureka-9": {"prompt", "lyrics", "vocal_id", "reference_id", "melody_id", "styles", "gender",
+                 "enable_safety_checker"},
+    "mureka-9-instrumental": {"prompt", "instrumental_id", "enable_safety_checker"},
     "stable-audio-3": {"prompt", "duration", "seed", "negative_prompt", "output_format", "num_inference_steps",
                        "enable_prompt_expansion", "enable_safety_checker", "guidance_scale", "bitrate", "sync_mode"},
     "ace-step": {"tags", "lyrics", "duration", "seed", "guidance_scale", "minimum_guidance_scale", "scheduler",

@@ -44,13 +44,16 @@ generation (use `heartmula` or `audiocraft-audio-generation`).
 | `minimax-music-2.6` | `fal-ai/minimax-music/v2.6` | model-decided | yes | cheaper MiniMax tier, `--instrumental` flag |
 | `lyria3` / `lyria3-pro` | `fal-ai/lyria3[/pro]` | ~30 s fixed | no | Google Lyria clips; prompt only |
 | `lyria3.5` | `google/lyria-3.5` | model-decided | no | newest Lyria (Sep 2026); same prompt-only surface, MP3 + optional lyrics text |
+| `mureka-9.5` | `mureka/v9.5/generate/song` | 120–300 s or model-decided | yes (prompt then steers style) | Mureka's top song tier; $0.15 / song with lyrics, $0.50 prompt-only |
+| `mureka-9` | `mureka/v9/generate/song` | model-decided | yes (prompt then steers style) | cheapest vocal songs from your lyrics ($0.045 / song; $0.30 prompt-only) |
+| `mureka-9-instrumental` | `mureka/v9/generate/instrumental` | model-decided | no | $0.045 instrumental tracks, prompt ≤ 1,024 chars |
 | `stable-audio-3` | `fal-ai/stable-audio-3/medium/text-to-audio` | 1–380 s | no | long instrumentals, licensed training data, `--negative-prompt`, `--seed` |
 | `ace-step` | `fal-ai/ace-step` | 5–240 s | yes | cheapest ($0.0002 / s ≈ 83 min per $1); prompt is a comma-separated tag list |
 | `elevenlabs-sfx` | `fal-ai/elevenlabs/sound-effects/v2` | 0.5–22 s | n/a | sound effects, `--loop` for seamless loops |
 
 Prices come from fal's model pages at authoring time and change; `--dry-run` never
-bills. Only elevenlabs-music and ace-step publish a per-unit price in fal's model
-API; the rest bill per fal's dashboard rate card.
+bills. Only elevenlabs-music, ace-step and the Mureka entries publish a per-unit price in
+fal's model API; the rest bill per fal's dashboard rate card.
 
 ## Procedure
 

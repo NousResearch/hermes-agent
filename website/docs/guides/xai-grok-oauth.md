@@ -179,6 +179,18 @@ To select xAI as the active provider, set `model.provider: xai-oauth` in `config
 
 ## Troubleshooting
 
+### Subscription quota runs out faster than in Grok Build
+
+Compare the same model, reasoning effort, tools, and conversation length. Hermes also
+makes auxiliary requests for tasks such as title generation and context compression;
+these requests use your subscription quota when they inherit the OAuth route.
+
+Main and auxiliary Responses requests use conversation-scoped `prompt_cache_key`
+values for [xAI cache routing](https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits).
+Auxiliary keys also include their instructions and tool schemas, so a different
+auxiliary prefix does not reuse the main request's routing key. Cache routing improves
+reuse opportunities; it does not guarantee a cache hit or a particular quota saving.
+
 ### Token expired — not re-logging in automatically
 
 Hermes refreshes the token before each session and again reactively on a 401. If refresh fails with `invalid_grant` (the refresh token was revoked, or the account was rotated), Hermes surfaces a typed re-auth message instead of crashing.

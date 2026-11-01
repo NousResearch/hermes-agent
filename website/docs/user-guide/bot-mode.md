@@ -403,3 +403,77 @@ Because Bots are profiles, everything has a terminal equivalent:
 | Create / inspect profiles | `hermes profile create`, `hermes profile list` |
 
 See [Profiles](./profiles.md) for the underlying primitive and [Profile Commands](../reference/profile-commands.md) for the full CLI reference.
+
+## Opt-in Telegram DM room relay
+
+The first-party `bot_room_delegate` tool can submit an explicit task from an
+allowlisted Telegram private DM to one existing, locally hosted Bot Mode room.
+It is disabled by default. Configure `telegram_room_relay` in the **default
+profile's local `config.yaml`**; keep real room and sender IDs out of Git:
+
+```yaml
+telegram_room_relay:
+  enabled: false  # Enable locally only after review and deployment verification.
+  profile: default
+  room_id: "<local-room-id>"
+  allowed_senders: ["<telegram-user-id>"]
+  members: [server, default]  # Example only: list the exact local profile roster.
+```
+
+The canonical hosted-room service refuses a different roster for an already-owned room;
+any roster mismatch at admission or result delivery fails closed.
+
+The room must already belong to this gateway's canonical hosted-room service,
+with a local, served member whose handle and profile are both `server`.
+Every room member must be local and served. The unique, nonempty `members` list
+must name the exact full roster, including `server`; missing, extra, duplicate,
+peer, or unknown members deny access. The default roster is empty and fails closed.
+The relay sends ordinary `@server ...` text;
+standard Bot Mode follow-up mentions can involve teammates. The tool takes only
+`recipient: server` and a nonempty plain-text `message` of at most 8,000 characters. The Telegram toolset
+includes it when locally enabled; installations with custom toolsets must also
+enable `bot_room_relay`. Start a new conversation after changing tool availability
+so the cached conversation prefix stays stable.
+
+This is a separate single-room relay grant. Ordinary room ownership and all
+`groups.*` owner checks remain unchanged. The tool cannot list rooms, read general
+room logs, approve actions, select another room, or supply caller identity. Each
+invocation checks bound gateway context for the default profile, Telegram private
+DM, and exactly one nonempty string in `allowed_senders`, matching the exact
+Telegram user ID. Process environment values cannot supply
+missing authorization context.
+
+Retries of the same inbound Telegram message reuse its durable discussion key,
+including after session rotation. Changed retry content is refused rather than
+submitted as another task. The caller has a fixed 120-second deadline from
+function entry, including authorization, submission, and reads. Blocking work runs in a context-copied
+daemon thread. Each path permits one worker; overlapping submissions return busy,
+even after a caller timeout, until that worker exits. A timeout does not cancel
+work, retry submission, or prove delivery failed. A blocked worker can keep the
+submission path busy indefinitely; process exit can terminate the daemon without resolving
+the outcome. A timeout or uncertain submission is incomplete; it may
+still be queued or awaiting an approval in Bot Mode. The relay never silently
+starts another discussion or approves an action.
+
+Retain the stable 64-hex `request_id` returned after successful authorization,
+including timeout and incomplete responses. Use read-only `bot_room_result(request_id)`
+to retrieve late results; never silently resubmit. If no `request_id` is returned,
+authorization did not complete and no task was submitted. Polling rechecks the same DM
+grant and exact roster, verifies the fixed-room submission, and uses a separate
+worker guard so a blocked submit cannot prevent retrieval. Polling also has a fixed
+120-second deadline. Missing submissions or unfinished discussions return incomplete/pending.
+
+Only nonempty committed replies from configured member profiles matching both the generated
+discussion and thread are returned to Telegram, each prefixed with its profile
+name and capped at 16,000 characters. The exact roster is revalidated before reply
+text is returned. Failed, cancelled, deferred, or bounded discussions, empty settled
+results, and truncated replies are reported as incomplete. Member sessions retain
+their normal room history; a correlated reply can use that context.
+The relay does not provide isolated member sessions or a general transcript feed.
+
+Before activation, install the reviewed revision through the normal deployment
+process, fill in the IDs locally, and schedule any required gateway interruption.
+After starting the updated gateway and a new Telegram session, verify an authorized
+DM task, a retry with no duplicate, and negative sender/group/profile cases.
+Keep the relay disabled if those checks fail. No live activation is part of the
+source change.

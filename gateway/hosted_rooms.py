@@ -528,6 +528,18 @@ def _load_event(conn: sqlite3.Connection, room_id: str, event_id: str) -> sqlite
     return conn.execute(_SELECT_EVENT, (room_id, event_id)).fetchone()
 
 
+def get_event(db_path: DbPath, *, room_id: Any, event_id: Any) -> dict[str, Any] | None:
+    """Read one immutable event through the unique room/event index."""
+    room_id, event_id = _room_id(room_id), _event_id(event_id)
+    conn = _read_connection(db_path)
+    try:
+        _room_row(conn, _SELECT_ROOM_WITH_BYTES, (room_id,), room_id)
+        row = _load_event(conn, room_id, event_id)
+        return _event_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:
     """The immutable (kind, actor_json, authority_epoch, payload_json) an event id is bound to."""
     return row["kind"], row["actor_json"], row["authority_epoch"], row["payload_json"]

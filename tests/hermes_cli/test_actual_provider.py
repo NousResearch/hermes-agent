@@ -442,7 +442,8 @@ def test_actual_client_tls_default_does_not_override_explicit_config(monkeypatch
         provider = "actual"
 
         @staticmethod
-        def _build_keepalive_http_client(base_url, *, verify):
+        def _build_keepalive_http_client(base_url, *, verify, follow_redirects=False):
+            assert follow_redirects is False
             assert base_url == DEFAULT_ACTUAL_BASE_URL
             assert verify == "resolved-verify"
             return "http-client"

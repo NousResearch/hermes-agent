@@ -69,8 +69,9 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
 # Lowercase alphanumerics, hyphens, underscores; 1-64 chars; no leading separator. Strict enough to
 # stop traversal/path separators, loose enough for kebab-case. Display formatting lives in ``name``.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
-# Deterministic branch slug: lowercase, separators collapsed, capped.
-_BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
+# Deterministic branch slug: lowercase, separators collapsed, capped. No ``.``: the 40-char cap can
+# leave a trailing dot ("...-php-8."), a ``..`` run or a ``.lock`` suffix, all invalid git refs.
+_BRANCH_SAFE_RE = re.compile(r"[^a-z0-9_-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.

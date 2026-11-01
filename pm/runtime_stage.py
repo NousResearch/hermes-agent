@@ -44,7 +44,8 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     checked = subprocess.run(
         [str(environment.executable), "-I", "-B", "-c",
          "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
-        env=env, capture_output=True, text=True, timeout=30,
+        env=env, capture_output=True, text=True,
+        encoding="utf-8" if sys.platform == "win32" else None, errors="replace", timeout=30,
         check=False,
     )
     if checked.returncode:

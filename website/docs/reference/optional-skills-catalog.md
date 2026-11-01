@@ -138,8 +138,11 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**game-asset-pipeline**](../user-guide/skills/optional/gaming/gaming-game-asset-pipeline.md) | Concept to rigged game assets in one resumable run. |
 | [**minecraft-modpack-server**](../user-guide/skills/optional/gaming/gaming-minecraft-modpack-server.md) | Host modded Minecraft servers (CurseForge, Modrinth). |
 | [**pokemon-player**](../user-guide/skills/optional/gaming/gaming-pokemon-player.md) | Play Pokemon via headless emulator + RAM reads. |
+| [**skintokens-rigging**](../user-guide/skills/optional/gaming/gaming-skintokens-rigging.md) | Auto-rig static meshes into skinned GLBs on HF Spaces. |
+| [**trellis-image-to-3d**](../user-guide/skills/optional/gaming/gaming-trellis-image-to-3d.md) | Generate textured GLB models from images on HF Spaces. |
 
 ## health
 

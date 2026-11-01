@@ -641,6 +641,12 @@ async def _record_reply(authority, home, key, future):
         record.update(_delivery_result(authority, record))
         await write_receipt(home, record)
         remember_receipt(authority, home, record)
+    if record.get('status') in _TERMINAL:
+        try:
+            from cron.delivery_outcome import settle_bot_chat_delivery_by_id
+            await asyncio.to_thread(settle_bot_chat_delivery_by_id, key)
+        except Exception:
+            logger.debug('Cron Bot Chat delivery settlement write-back skipped for %s', key, exc_info=True)
 
 
 async def refresh_receipt(authority, home, key):

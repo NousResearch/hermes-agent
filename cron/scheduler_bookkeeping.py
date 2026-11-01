@@ -56,7 +56,9 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
     ``cron.scheduler`` facade, which is where tests and the receipt-recovery path patch them."""
     from cron import scheduler
     job = d.job
-    if not d.should_deliver and job.get("last_delivery_queued"):
+    normalized_lane = scheduler._normalize_deliver_value(
+        scheduler._delivery_lane_value(job, for_failure=not d.success))
+    if (not d.should_deliver or normalized_lane == "local") and job.get("last_delivery_queued"):
         from cron.jobs import update_job
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
@@ -107,7 +109,7 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
     from cron.delivery_outcome import settle_quietly, settled_outcome
     if delivery_outcome == "queued":
         # A drain that already finished this send (cron/delivery_outcome.py) is the real outcome.
-        delivery_outcome = settled_outcome(execution_id) or "queued"
+        delivery_outcome = settled_outcome(execution_id, job_id=job["id"]) or "queued"
     from cron.scheduler_delivery import ORIGIN_NULL_DELIVERY_ERROR_PREFIX
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.

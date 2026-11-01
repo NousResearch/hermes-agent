@@ -3161,6 +3161,9 @@ def _save_compose_deliver(
         # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
         if d.unresolved_origin or _normalize_deliver_value(
                 _delivery_lane_value(job, for_failure=not d.success)) == "local":
+            if job.get("last_delivery_queued"):
+                update_job(job["id"], {"last_delivery_queued": None})
+                job["last_delivery_queued"] = None
             return
         queued_job = dict(job)
         if d.failure_incident_id:

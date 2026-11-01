@@ -378,7 +378,7 @@ _KERNELS: dict[tuple, SessionKernel] = _REGISTRY.kernels
 # stable owner id, owner-teardown disposal, idle reaping, max-live bound.
 # See #88637.
 DEFAULT_MAX_SESSION_KERNELS = 4
-DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
+DEFAULT_KERNEL_IDLE_TIMEOUT = 600
 
 
 def _lifecycle_limits() -> tuple[int, int]:

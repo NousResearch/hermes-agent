@@ -105,3 +105,30 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     authority.publish(key, status="settled", reply="done")
     assert delivery._deliver_result(job, "payload") is None
     assert updates[-1]["last_delivery_queued"] is None
+
+
+def test_settle_bot_chat_delivery_by_id_reconciles_queued_job(tmp_path, monkeypatch):
+    from cron import delivery_outcome, jobs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    authority = _FakeAuthority()
+    key = "a" * 64
+    authority(tmp_path, {"id": key, "message": "payload"})
+    authority.publish(key, status="settled", reply="done")
+
+    stored_job = {
+        "id": "j-bot",
+        "name": "Bot Job",
+        "enabled": True,
+        "no_agent": True,
+        "deliver": "bot-chat",
+        "last_status": "delivery_queued",
+        "last_delivery_queued": {"bot-chat:(own)": {"status": "queued", "delivery_id": key}},
+    }
+    jobs.save_jobs([stored_job])
+    settled_count = delivery_outcome.settle_bot_chat_delivery_by_id(key)
+    assert settled_count == 1
+    reloaded = jobs.get_job("j-bot")
+    assert reloaded["last_status"] == "ok"
+    assert reloaded.get("last_delivery_queued") is None
+

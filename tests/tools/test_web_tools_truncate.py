@@ -55,6 +55,30 @@ class TestTruncation:
         assert "UNIQUE_MIDDLE_MARKER" in full
         assert "row 2500" in full  # the omitted-middle row is in the stored file
 
+    def test_long_single_line_saved_copy_pages_from_footer_offset(self, tmp_path, monkeypatch):
+        """Regression for #138141: saved web text must be readable past its head."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        content = "a" * 1_500 + "MIDDLE_MARKER" + "b" * 3_500
+
+        out, truncated = web_tools_truncate._truncate_with_footer(
+            content, "https://example.com/one-line", 2_000
+        )
+
+        assert truncated is True
+        stored_path = next(
+            line.split("Full text saved to:", 1)[1].strip()
+            for line in out.splitlines() if line.startswith("Full text saved to:")
+        )
+        offset = int(next(
+            line.split("offset=", 1)[1].split(" ", 1)[0]
+            for line in out.splitlines() if line.startswith("To read the omitted middle:")
+        ))
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        page = ShellFileOperations(LocalEnvironment("/")).read_file(stored_path, offset=offset)
+        assert "MIDDLE_MARKER" in page.content
+
 
 class TestCharLimitConfig:
     def test_default_when_unset(self):

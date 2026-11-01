@@ -287,7 +287,7 @@ async def _start_gateway_start_control_socket(runner):
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
         from gateway.run_active_work_verb import active_work_verb
-        from gateway.drain_control import RESTART_WAIT_REASON
+        from gateway.drain_control import RESTART_WAIT_REASON, pause_if_idle_verb
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -305,7 +305,9 @@ async def _start_gateway_start_control_socket(runner):
                 payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
-            return payload
+            from gateway.launch_profile_binding import bind_live_served_profiles
+            payload["launch_binding_idle_protocol"] = 1
+            return bind_live_served_profiles(payload, runner)
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -353,6 +355,9 @@ async def _start_gateway_start_control_socket(runner):
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+                           "pause-if-idle": pause_if_idle_verb(runner, _main_loop),
+                           "pause-if-idle-bound": pause_if_idle_verb(
+                               runner, _main_loop, binding_reader=_identify_runtime),
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),

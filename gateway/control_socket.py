@@ -141,6 +141,10 @@ def _detect_supervisor() -> str:
     #92091.
     """
     env = os.environ
+    # This declaration establishes only supervised ownership/refusal, never positive
+    # enrollment. An invalidated launch receipt must not degrade to a manual owner.
+    if env.get("HERMES_S6_SUPERVISED_CHILD"):
+        return "s6"
     if env.get("INVOCATION_ID"):
         return "systemd"
     from gateway.restart import launchd_job_label
@@ -189,6 +193,12 @@ def build_identify_payload() -> dict[str, Any]:
         served = (read_runtime_status() or {}).get("served_profiles")
         if isinstance(served, list) and served:
             payload["served_profiles"] = served
+    from hermes_cli.service_manager_admission import observed_admission
+
+    enrolled = observed_admission(Path(record.get("hermes_home") or ""))
+    if enrolled is not None:
+        payload["launch_admission"] = enrolled
+        payload["supervisor"] = payload["launch_supervisor"] = "s6"
     return payload
 
 

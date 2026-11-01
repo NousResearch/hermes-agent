@@ -54,6 +54,7 @@ class GatewayReadyPayload(Payload):
     skin: SkinPayload
     change_events: bool
     replay_epoch: str
+    language: str | None = None
     heartbeat: bool | None = None  # WebSocket transport only
     # WebSocket transport bound to a session authority: session verbs speak the canonical wire
     # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
@@ -309,6 +310,8 @@ class StatusUpdatePayload(Payload):
     """``server._status_update`` and the direct emitters (goal / loop / heartbeat / process)."""
 
     kind: str
+    text_key: str | None = None
+    text_vars: dict[str, str | int | float] | None = None
     text: str
 
 
@@ -488,6 +491,8 @@ class NotificationShowPayload(Payload):
     ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows
     it in the toast's expandable body, the Ink TUI prints it into the transcript."""
 
+    text_key: str | None = None
+    text_vars: dict[str, str | int | float] | None = None
     text: str
     level: str
     kind: str

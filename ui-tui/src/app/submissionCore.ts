@@ -343,7 +343,7 @@ export function submitPrompt(
   const ownsTurn = () => focused() && !opts.behindTurn
 
   if (!sid) {
-    return deps.sys('session not ready yet')
+    return deps.sys(t('submission.sessionNotReady'))
   }
 
   // An identityless write cannot be deduplicated, even after the owner upgrades.
@@ -488,14 +488,16 @@ export function submitPrompt(
 
           patchUiState({ busy: true, status: 'queued for next turn' })
 
-          return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          return deps.sys(
+            t('slashCmd.core.queue.queued', `${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}`)
+          )
         }
 
         if (!focused()) {
           return
         }
 
-        deps.sys(`error: ${e.message}`)
+        deps.sys(t('errors.rpc', e.message))
         patchUiState({ busy: false, status: 'ready' })
       })
   }

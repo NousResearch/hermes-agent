@@ -113,14 +113,19 @@ export const opsCommands: SlashCommand[] = [
         return void ctx.gateway
           .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid, ...(confirm ? { confirm: true } : {}) })
           .then(
-            ctx.guarded<ReloadMcpResponse>(r =>
+            ctx.guarded<ReloadMcpResponse>(r => {
               ctx.transcript.sys(
-                r.message ||
-                  (r.status === 'confirm_required'
-                    ? t('slashCmd.ops.reloadMcp.confirmRequired')
-                    : t('slashCmd.ops.reloadMcp.reloaded'))
+                t(
+                  r.status === 'confirm_required'
+                    ? 'slashCmd.ops.reloadMcp.profileConfirm'
+                    : 'slashCmd.ops.reloadMcp.reloaded'
+                )
               )
-            )
+
+              if (r.message) {
+                ctx.transcript.sys(r.message)
+              }
+            })
           )
           .catch(ctx.guardedErr)
       }
@@ -334,7 +339,8 @@ export const opsCommands: SlashCommand[] = [
 
             // What a safe whole-tree restore left alone, as main's CLI lists it: the first five paths.
             const summarize = (paths: string[]) =>
-              paths.slice(0, 5).join(', ') + (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
+              paths.slice(0, 5).join(', ') +
+              (paths.length > 5 ? t('slashCmd.ops.rollback.morePaths', paths.length - 5) : '')
 
             for (const [key, paths] of [
               ['keptUserEdits', r.skipped_user_edits],
@@ -553,6 +559,7 @@ export const opsCommands: SlashCommand[] = [
                   }
 
                   ctx.local.setCatalog({
+                    descriptionKeys: catalog.description_keys ?? {},
                     canon: (catalog.canon ?? {}) as Record<string, string>,
                     categories: catalog.categories ?? [],
                     pairs: catalog.pairs as [string, string][],

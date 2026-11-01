@@ -29,7 +29,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
-import { en } from "@/i18n/en";
+import { resolvePluginDescription } from "@/i18n/runtime";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -81,9 +81,9 @@ function SetupCommandBlock({ code, label }: { code: string; label: string }) {
   );
 }
 
-function setupResultLabel(status: string) {
-  if (status === "already_installed") return "already installed";
-  if (status === "no_declared_steps") return "no declared setup";
+function setupResultLabel(status: string, t: Translations) {
+  if (status === "already_installed") return t.pluginsPage.setupAlreadyInstalled;
+  if (status === "no_declared_steps") return t.pluginsPage.setupNotDeclared;
   return status.replace(/_/g, " ");
 }
 
@@ -97,23 +97,19 @@ function setupResultClass(status: string) {
 }
 
 function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupResult[] }) {
+  const { t } = useI18n();
   if (!results.length) return null;
 
   return (
     <div className="grid gap-2 border border-border bg-background/20 p-3">
-      <p className="text-muted-foreground">Setup results</p>
+      <p className="text-muted-foreground">{t.pluginsPage.setupResults}</p>
       {results.map((result, index) => {
         const detail = result.stderr || result.stdout;
         return (
           <div key={`${result.kind}-${result.name}-${index}`} className="grid gap-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={cn(
-                  "border px-2 py-0.5 font-mono text-[0.6875rem]",
-                  setupResultClass(result.status),
-                )}
-              >
-                {setupResultLabel(result.status)}
+              <span className={cn("border px-2 py-0.5 font-mono text-[0.6875rem]", setupResultClass(result.status))}>
+                {setupResultLabel(result.status, t)}
               </span>
               <span className="text-muted-foreground">
                 {result.name}
@@ -148,6 +144,7 @@ function MemoryProviderSetupHint({
   provider: MemoryProviderInfo;
   results: MemoryProviderSetupResult[] | null;
 }) {
+  const { format, t } = useI18n();
   const setup = provider.setup;
   const hasDetails = setupHasDetails(setup);
   const hasInstallableSteps = setupHasInstallableSteps(setup);
@@ -156,16 +153,14 @@ function MemoryProviderSetupHint({
   const needsDependencySetup = hasInstallableSteps && !dependenciesInstalled;
   const isBlocked = provider.status === "unavailable" && needsDependencySetup;
   const shouldShow =
-    hasResults ||
-    needsDependencySetup ||
-    (provider.status === "unavailable" && hasDetails && !dependenciesInstalled);
+    hasResults || needsDependencySetup || (provider.status === "unavailable" && hasDetails && !dependenciesInstalled);
 
   if (!shouldShow) return null;
 
   if (!hasDetails || !setup) {
     return (
       <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.
+        {t.pluginsPage.providerUnavailable}
       </p>
     );
   }
@@ -178,28 +173,21 @@ function MemoryProviderSetupHint({
       )}
     >
       <p className={isBlocked ? "text-destructive" : "text-muted-foreground"}>
-        {needsDependencySetup
-          ? "Finish these setup steps before Hermes can activate this provider."
-          : "Provider dependency setup completed."}
+        {needsDependencySetup ? t.pluginsPage.finishSetup : t.pluginsPage.setupCompleted}
       </p>
 
       {needsDependencySetup ? (
-        <Button
-          className="w-fit uppercase"
-          disabled={installing}
-          onClick={onInstall}
-          size="sm"
-        >
+        <Button className="w-fit uppercase" disabled={installing} onClick={onInstall} size="sm">
           <span className="inline-flex items-center gap-2">
             {installing ? <Spinner /> : null}
-            {installing ? "Installing provider dependencies" : "Install provider dependencies"}
+            {installing ? t.pluginsPage.installingDependencies : t.pluginsPage.installDependencies}
           </span>
         </Button>
       ) : null}
 
       {installing ? (
         <div className="flex items-center gap-2 text-muted-foreground">
-          <Spinner /> Running provider setup. This may take a minute…
+          <Spinner /> {t.pluginsPage.runningSetup}
         </div>
       ) : null}
 
@@ -210,17 +198,23 @@ function MemoryProviderSetupHint({
           {setup.external_dependencies.map((dep, index) => (
             <div key={`${dep.name || "dependency"}-${index}`} className="grid gap-2">
               <p className="text-muted-foreground">
-                External dependency{dep.name ? `: ${dep.name}` : ""}
+                {format(t.pluginsPage.externalDependency, {
+                  name: dep.name ? `: ${dep.name}` : "",
+                })}
               </p>
               {dep.install ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Install ${dep.name}` : "Install dependency"}
+                  label={
+                    dep.name ? format(t.pluginsPage.installNamed, { name: dep.name }) : t.pluginsPage.installDependency
+                  }
                   code={dep.install}
                 />
               ) : null}
               {dep.check ? (
                 <SetupCommandBlock
-                  label={dep.name ? `Verify ${dep.name}` : "Verify dependency"}
+                  label={
+                    dep.name ? format(t.pluginsPage.verifyNamed, { name: dep.name }) : t.pluginsPage.verifyDependency
+                  }
                   code={dep.check}
                 />
               ) : null}
@@ -229,7 +223,7 @@ function MemoryProviderSetupHint({
 
           {setup.pip_dependencies.length ? (
             <div className="grid gap-2">
-              <p className="text-muted-foreground">Python dependencies</p>
+              <p className="text-muted-foreground">{t.pluginsPage.pythonDependencies}</p>
               <div className="flex flex-wrap gap-2">
                 {setup.pip_dependencies.map((dep) => (
                   <code
@@ -247,15 +241,10 @@ function MemoryProviderSetupHint({
 
       {setup.required_env.length && needsDependencySetup ? (
         <div className="grid gap-2">
-          <p className="text-muted-foreground">
-            Required environment values. Fill the matching fields below, or set them in the Hermes environment.
-          </p>
+          <p className="text-muted-foreground">{t.pluginsPage.requiredEnvHint}</p>
           <div className="flex flex-wrap gap-2">
             {setup.required_env.map((envKey) => (
-              <code
-                key={envKey}
-                className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
-              >
+              <code key={envKey} className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]">
                 {envKey}
               </code>
             ))}
@@ -292,22 +281,23 @@ export default function PluginsPage() {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   const { toast, showToast } = useToast();
-  const { t } = useI18n();
+  const { format, t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
-  const loadHub = useCallback((memorySelection?: string) => {
-    return api
-      .getPluginsHub()
-      .then((h) => {
-        setHub(h);
-        const p = h.providers;
-        setMemorySel(
-          memorySelection ?? (p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN),
-        );
-        setContextSel(p.context_engine || "compressor");
-      })
-      .catch(() => showToast(t.common.loading, "error"));
-  }, [showToast, t.common.loading]);
+  const loadHub = useCallback(
+    (memorySelection?: string) => {
+      return api
+        .getPluginsHub()
+        .then((h) => {
+          setHub(h);
+          const p = h.providers;
+          setMemorySel(memorySelection ?? (p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN));
+          setContextSel(p.context_engine || "compressor");
+        })
+        .catch(() => showToast(t.common.loading, "error"));
+    },
+    [showToast, t.common.loading],
+  );
 
   const loadCatalog = useCallback(() => {
     return api
@@ -343,17 +333,13 @@ export default function PluginsPage() {
         .then((config) => {
           if (cancelled) return;
           setMemoryConfig(config);
-          setMemoryValues(
-            Object.fromEntries(
-              config.fields.map((field) => [field.key, fieldInitialValue(field)]),
-            ),
-          );
+          setMemoryValues(Object.fromEntries(config.fields.map((field) => [field.key, fieldInitialValue(field)])));
         })
         .catch((e) => {
           if (!cancelled) {
             setMemoryConfig(null);
             setMemoryValues({});
-            showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
+            showToast(e instanceof Error ? e.message : t.pluginsPage.providerConfigLoadFailed, "error");
           }
         })
         .finally(() => {
@@ -364,7 +350,7 @@ export default function PluginsPage() {
     return () => {
       cancelled = true;
     };
-  }, [memorySel, showToast]);
+  }, [memorySel, showToast, t.pluginsPage.providerConfigLoadFailed]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -379,14 +365,26 @@ export default function PluginsPage() {
         force: installForce,
         enable: installEnable,
       });
-      showToast(`${r.plugin_name ?? id} installed`, "success");
+      showToast(
+        format(t.pluginsPage.pluginInstalled, {
+          name: r.plugin_name ?? id,
+        }),
+        "success",
+      );
       if ((r.warnings?.length ?? 0) > 0) showToast(r.warnings!.join(" "), "error");
-      if ((r.missing_env?.length ?? 0) > 0)
-        showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
+      if ((r.missing_env?.length ?? 0) > 0) {
+        showToast(
+          format(t.common.messageWithDetail, {
+            message: t.pluginsPage.missingEnvWarn,
+            detail: r.missing_env!.join(", "),
+          }),
+          "error",
+        );
+      }
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.installFailed, "error");
     } finally {
       setInstallBusy(false);
     }
@@ -418,16 +416,26 @@ export default function PluginsPage() {
     try {
       const rc = await api.rescanPlugins();
       showToast(
-        `${t.pluginsPage.refreshDashboard} (${rc.count})`,
+        format(t.pluginsPage.rescanCount, {
+          action: t.pluginsPage.refreshDashboard,
+          count: rc.count,
+        }),
         "success",
       );
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.rescanFailed, "error");
     } finally {
       setRescanBusy(false);
     }
-  }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
+  }, [
+    loadHub,
+    showToast,
+    format,
+    t.pluginsPage.refreshDashboard,
+    t.pluginsPage.rescanCount,
+    t.pluginsPage.rescanFailed,
+  ]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -463,7 +471,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.saveFailed, "error");
     } finally {
       setMemoryBusy(false);
     }
@@ -489,13 +497,18 @@ export default function PluginsPage() {
       const failed = result.results.filter((row) => row.status === "failed");
       if (failed.length) {
         const names = Array.from(new Set(failed.map((row) => row.name))).join(", ");
-        showToast(`Provider setup failed: ${names || provider}. See setup results below.`, "error");
+        showToast(
+          format(t.pluginsPage.setupFailedDetails, {
+            names: names || provider,
+          }),
+          "error",
+        );
       } else {
-        showToast("Provider setup finished", "success");
+        showToast(t.pluginsPage.providerSetupFinished, "success");
       }
       await loadHub(provider);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Provider setup failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.setupFailed, "error");
     } finally {
       setMemorySetupBusy(false);
     }
@@ -508,7 +521,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.saveFailed, "error");
     } finally {
       setContextBusy(false);
     }
@@ -520,7 +533,7 @@ export default function PluginsPage() {
       await fn();
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.failed, "error");
     } finally {
       setRowBusy(null);
     }
@@ -534,12 +547,9 @@ export default function PluginsPage() {
     const q = catalogSearch.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((entry) =>
-      [
-        entry.name,
-        entry.description,
-        entry.maintainer,
-        ...entry.capabilities.provides_tools,
-      ].some((haystack) => haystack.toLowerCase().includes(q)),
+      [entry.name, entry.description, entry.maintainer, ...entry.capabilities.provides_tools].some((haystack) =>
+        haystack.toLowerCase().includes(q),
+      ),
     );
   }, [catalog, catalogSearch]);
 
@@ -556,22 +566,18 @@ export default function PluginsPage() {
   const activeMemoryInfo = providers?.memory_provider
     ? providers.memory_options.find((provider) => provider.name === providers.memory_provider)
     : null;
-  const visibleMemoryFields =
-    memoryConfig?.fields.filter((field) => fieldIsVisible(field, memoryValues)) ?? [];
+  const visibleMemoryFields = memoryConfig?.fields.filter((field) => fieldIsVisible(field, memoryValues)) ?? [];
 
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="plugins:top" />
 
       <div className={cn("flex w-full flex-col gap-8")}>
-
         {providers && (
           <Card>
             <CardHeader>
               <CardTitle>{t.pluginsPage.providersHeading}</CardTitle>
-              <p className="text-xs tracking-[0.08em] text-text-tertiary">
-                Configure memory providers and runtime context engine selection.
-              </p>
+              <p className="text-xs tracking-[0.08em] text-text-tertiary">{t.pluginsPage.configureProviders}</p>
             </CardHeader>
 
             <CardContent className="flex flex-col gap-6">
@@ -586,19 +592,14 @@ export default function PluginsPage() {
                         </Badge>
                       )}
                       {selectedMemoryName && selectedMemoryName === providers.memory_provider && (
-                        <Badge tone="outline">active</Badge>
+                        <Badge tone="outline">{t.pluginsPage.active}</Badge>
                       )}
                       {!selectedMemoryName && !providers.memory_provider && (
-                        <Badge tone="success">active</Badge>
+                        <Badge tone="success">{t.pluginsPage.active}</Badge>
                       )}
                     </div>
 
-                    <Select
-                      id="mem-provider"
-                      className="w-full"
-                      value={memorySel}
-                      onValueChange={setMemorySel}
-                    >
+                    <Select id="mem-provider" className="w-full" value={memorySel} onValueChange={setMemorySel}>
                       <SelectOption value={MEMORY_PROVIDER_BUILTIN}>
                         {`(${t.pluginsPage.providerDefaults})`}
                       </SelectOption>
@@ -612,21 +613,19 @@ export default function PluginsPage() {
                   </div>
 
                   {!selectedMemoryName && (
-                    <p className="text-xs text-muted-foreground">
-                      Hermes will use the built-in MEMORY.md and USER.md files.
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t.pluginsPage.builtinMemoryHint}</p>
                   )}
 
                   {activeMemoryInfo?.status === "missing" && (
                     <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                      Active provider {providers.memory_provider} is no longer installed. Select another provider and save.
+                      {format(t.pluginsPage.missingActiveProvider, {
+                        provider: providers.memory_provider,
+                      })}
                     </p>
                   )}
 
                   {selectedMemoryName && selectedMemoryInfo?.description && (
-                    <p className="text-xs text-muted-foreground">
-                      {selectedMemoryInfo.description}
-                    </p>
+                    <p className="text-xs text-muted-foreground">{selectedMemoryInfo.description}</p>
                   )}
 
                   {selectedMemoryName && selectedMemoryInfo && (
@@ -640,20 +639,18 @@ export default function PluginsPage() {
 
                   {selectedMemoryName && selectedMemoryInfo?.status === "needs_config" && (
                     <p className="border border-warning/50 px-3 py-2 text-xs text-warning">
-                      Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.
+                      {t.pluginsPage.dependenciesReadyHint}
                     </p>
                   )}
 
                   {selectedMemoryName && memoryConfigBusy && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Spinner /> Loading provider settings…
+                      <Spinner /> {t.pluginsPage.loadingProviderSettings}
                     </div>
                   )}
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length === 0 && (
-                    <p className="text-xs text-muted-foreground">
-                      This provider does not expose dashboard settings.
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t.pluginsPage.noProviderSettings}</p>
                   )}
 
                   {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length > 0 && (
@@ -665,9 +662,9 @@ export default function PluginsPage() {
                           <div key={field.key} className="grid gap-2 min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
                               <Label htmlFor={`memory-${field.key}`}>{field.label}</Label>
-                              {field.required && <Badge tone="outline">required</Badge>}
+                              {field.required && <Badge tone="outline">{t.pluginsPage.required}</Badge>}
                               {field.kind === "secret" && field.is_set && !value && (
-                                <Badge tone="success">set</Badge>
+                                <Badge tone="success">{t.pluginsPage.set}</Badge>
                               )}
                               {field.url && (
                                 <a
@@ -676,7 +673,7 @@ export default function PluginsPage() {
                                   rel="noreferrer"
                                   className="inline-flex items-center gap-1 text-xs underline"
                                 >
-                                  Open <ExternalLink className="h-3 w-3" />
+                                  {t.pluginsPage.open} <ExternalLink className="h-3 w-3" />
                                 </a>
                               )}
                             </div>
@@ -716,13 +713,11 @@ export default function PluginsPage() {
                                   }
                                   min={field.minimum ?? undefined}
                                   max={field.maximum ?? undefined}
-                                  step={
-                                    field.step ?? (field.kind === "integer" ? 1 : undefined)
-                                  }
+                                  step={field.step ?? (field.kind === "integer" ? 1 : undefined)}
                                   value={String(value ?? "")}
                                   placeholder={
                                     field.kind === "secret" && field.is_set
-                                      ? "Leave blank to keep existing value"
+                                      ? t.pluginsPage.keepExistingSecret
                                       : field.placeholder
                                   }
                                   onChange={(event) =>
@@ -736,7 +731,7 @@ export default function PluginsPage() {
                                   <Button
                                     ghost
                                     size="icon"
-                                    aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
+                                    aria-label={secretIsVisible ? t.pluginsPage.hideSecret : t.pluginsPage.showSecret}
                                     onClick={() =>
                                       setSecretVisible((current) => ({
                                         ...current,
@@ -754,9 +749,7 @@ export default function PluginsPage() {
                               </div>
                             )}
 
-                            {field.description && (
-                              <p className="text-xs text-muted-foreground">{field.description}</p>
-                            )}
+                            {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
                           </div>
                         );
                       })}
@@ -770,20 +763,15 @@ export default function PluginsPage() {
                     onClick={() => void onSaveMemoryProvider()}
                     prefix={memoryBusy ? <Spinner /> : undefined}
                   >
-                    Save memory provider
+                    {t.pluginsPage.saveMemoryProvider}
                   </Button>
                 </div>
 
                 <div className="grid content-start gap-3 min-w-0">
                   <Label htmlFor="ctx-engine">{t.pluginsPage.contextEngineLabel}</Label>
 
-                  <Select
-                    id="ctx-engine"
-                    className="w-full"
-                    value={contextSel}
-                    onValueChange={setContextSel}
-                  >
-                    <SelectOption value="compressor">compressor</SelectOption>
+                  <Select id="ctx-engine" className="w-full" value={contextSel} onValueChange={setContextSel}>
+                    <SelectOption value="compressor">{t.pluginsPage.compressor}</SelectOption>
 
                     {providers.context_options
                       .filter((o) => o.name !== "compressor")
@@ -801,7 +789,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveContextEngine()}
                     prefix={contextBusy ? <Spinner /> : undefined}
                   >
-                    Save context engine
+                    {t.pluginsPage.saveContextEngine}
                   </Button>
                 </div>
               </div>
@@ -812,42 +800,31 @@ export default function PluginsPage() {
         <Card>
           <CardHeader>
             <CardTitle>{t.pluginsPage.installHeading}</CardTitle>
-            <p className="text-xs tracking-[0.08em] text-text-tertiary">
-              {t.pluginsPage.installHint}
-            </p>
+            <p className="text-xs tracking-[0.08em] text-text-tertiary">{t.pluginsPage.installHint}</p>
           </CardHeader>
 
-
           <CardContent className="flex flex-col gap-4">
-
             <div className="flex flex-col gap-2">
-
               <Label htmlFor="install-url">{t.pluginsPage.identifierLabel}</Label>
 
               <Input
                 className="font-mono-ui lowercase"
                 id="install-url"
-                placeholder="owner/repo, owner/repo/subdir, or https://..."
+                placeholder={t.pluginsPage.identifierPlaceholder}
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
               />
             </div>
 
-
             <div className="flex flex-wrap items-center gap-8">
-
               <div className="flex items-center gap-3">
-
                 <Switch checked={installForce} onCheckedChange={setInstallForce} />
 
-                <span className="text-xs tracking-[0.06em] text-text-secondary">
-                  {t.pluginsPage.forceReinstall}
-                </span>
+                <span className="text-xs tracking-[0.06em] text-text-secondary">{t.pluginsPage.forceReinstall}</span>
               </div>
 
               <div className="flex items-center gap-3">
-
                 <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
 
                 <span className="text-xs tracking-[0.06em] text-text-secondary">
@@ -866,33 +843,25 @@ export default function PluginsPage() {
               {t.pluginsPage.installBtn}
             </Button>
 
-            <p className="text-xs tracking-[0.06em] text-text-tertiary">
-              {t.pluginsPage.rescanHint}
-            </p>
+            <p className="text-xs tracking-[0.06em] text-text-tertiary">{t.pluginsPage.rescanHint}</p>
 
-            <p className="text-xs tracking-[0.06em] text-text-tertiary">
-              {t.pluginsPage.removeHint}
-            </p>
+            <p className="text-xs tracking-[0.06em] text-text-tertiary">{t.pluginsPage.removeHint}</p>
           </CardContent>
         </Card>
 
         <div className="flex flex-col gap-3" data-testid="plugin-catalog-section">
-
           <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
-            {t.pluginsPage.catalogHeading ?? "Plugin catalog"}
+            {t.pluginsPage.catalogHeading}
           </h3>
 
-          <p className="text-xs tracking-[0.06em] text-text-tertiary">
-            {t.pluginsPage.catalogHint ??
-              "Curated, Nous-reviewed plugins pinned to exact commits."}
-          </p>
+          <p className="text-xs tracking-[0.06em] text-text-tertiary">{t.pluginsPage.catalogHint}</p>
 
           <Input
             className="max-w-md"
-            placeholder={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
+            placeholder={t.pluginsPage.catalogSearchPlaceholder}
             value={catalogSearch}
             onChange={(e) => setCatalogSearch(e.target.value)}
-            aria-label={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
+            aria-label={t.pluginsPage.catalogSearchPlaceholder}
           />
 
           {catalogLoading ? (
@@ -902,14 +871,14 @@ export default function PluginsPage() {
             </div>
           ) : catalogEntries.length === 0 ? (
             <p className="text-xs text-text-tertiary">
-              {t.pluginsPage.catalogEmpty ?? "No catalog entries match."}{" "}
+              {t.pluginsPage.catalogEmpty}{" "}
               <a
                 className="underline"
                 href="https://hermes-agent.nousresearch.com/docs/plugins"
                 target="_blank"
                 rel="noreferrer"
               >
-                {t.pluginsPage.catalogEmptyDocsLink ?? "Learn about Hermes plugins"}
+                {t.pluginsPage.catalogEmptyDocsLink}
               </a>
             </p>
           ) : (
@@ -930,34 +899,22 @@ export default function PluginsPage() {
         </div>
 
         <div className="flex flex-col gap-3">
-
           <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
             {t.pluginsPage.pluginListHeading}
           </h3>
 
           {loading ? (
-
             <div className="flex items-center gap-2 py-8 text-xs text-text-tertiary">
-
               <Spinner />
               <span>{t.common.loading}</span>
             </div>
           ) : rows.length === 0 ? (
-
             <p className="text-xs text-text-tertiary">{t.common.noResults}</p>
           ) : (
-
             <ul className="flex flex-col gap-3">
-
               {rows.map((row: HubAgentPluginRow) => (
-
                 <li key={row.name}>
-
-
-                  <PluginRowCard
-                    {...{ row, rowBusy, setRuntimeLoading, showToast, t }}
-                  />
-
+                  <PluginRowCard {...{ row, rowBusy, setRuntimeLoading, showToast, t }} />
                 </li>
               ))}
             </ul>
@@ -965,30 +922,17 @@ export default function PluginsPage() {
         </div>
 
         {(hub?.orphan_dashboard_plugins?.length ?? 0) > 0 ? (
-
-
           <div className="flex flex-col gap-3 opacity-95">
-
             <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
               {t.pluginsPage.orphanHeading}
             </h3>
 
             <ul className="flex flex-col gap-2 rounded border border-current/15 p-4">
-
               {hub!.orphan_dashboard_plugins.map((m) => (
-
                 <li className="text-xs text-text-secondary" key={m.name}>
-
-
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
-
-
+                  {m.label ?? m.name} — {resolvePluginDescription(t, m.description || m.tab?.path, m.descriptionKey)}
                   {!m.tab?.hidden ? (
-
-
                     <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
-
-
                       <ExternalLink className="h-3 w-3 opacity-65" />
 
                       {t.pluginsPage.openTab}
@@ -1010,75 +954,54 @@ export default function PluginsPage() {
         onConfirm={() => {
           if (catalogConfirm) void onCatalogInstall(catalogConfirm);
         }}
-        title={t.pluginsPage.catalogConfirmTitle ?? "Install this plugin?"}
+        title={t.pluginsPage.catalogConfirmTitle}
         description={
           catalogConfirm
             ? [
                 catalogConfirm.capability_summary,
                 catalogConfirm.capabilities.requires_env.length
-                  ? `${t.pluginsPage.catalogRequiresEnv ?? "Requires env"}: ${catalogConfirm.capabilities.requires_env.join(", ")}`
+                  ? `${t.pluginsPage.catalogRequiresEnv}: ${catalogConfirm.capabilities.requires_env.join(", ")}`
                   : "",
-                t.pluginsPage.catalogConfirmInstallNote ??
-                  "Plugins install disabled; enable it after install to activate.",
+                t.pluginsPage.catalogConfirmInstallNote,
               ]
                 .filter(Boolean)
                 .join("\n\n")
             : ""
         }
-        confirmLabel={t.pluginsPage.catalogInstallBtn ?? "Install"}
+        confirmLabel={t.pluginsPage.catalogInstallBtn}
       />
     </div>
   );
 }
 
 interface PluginRowCardProps {
-
   row: HubAgentPluginRow;
   rowBusy: string | null;
-  setRuntimeLoading: (
-    name: string,
-    fn: () => Promise<unknown>,
-  ) => Promise<void>;
+  setRuntimeLoading: (name: string, fn: () => Promise<unknown>) => Promise<void>;
 
   showToast: (msg: string, variant: "success" | "error") => void;
   t: Translations;
 }
 
 function PluginRowCard(props: PluginRowCardProps) {
-  const {
-    row,
-    rowBusy,
-    setRuntimeLoading,
-    showToast,
-    t,
-  } = props;
+  const { format } = useI18n();
+  const { row, rowBusy, setRuntimeLoading, showToast, t } = props;
 
   const dm = row.dashboard_manifest;
 
-  const tabPath = dm?.tab && !dm.tab.hidden ? dm.tab.override ?? dm.tab.path : null;
+  const tabPath = dm?.tab && !dm.tab.hidden ? (dm.tab.override ?? dm.tab.path) : null;
 
   const busy = rowBusy === row.name;
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const badgeTone =
-    row.runtime_status === "enabled"
-      ? "success"
-      : row.runtime_status === "disabled"
-        ? "destructive"
-        : "outline";
+    row.runtime_status === "enabled" ? "success" : row.runtime_status === "disabled" ? "destructive" : "outline";
 
   return (
-
     <Card className={cn(busy ? "opacity-70" : undefined)}>
-
-
       <CardContent className="flex flex-col gap-4 px-6 py-4">
-
-
         <div className="flex flex-wrap items-start justify-between gap-4">
-
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-
             <span className="truncate font-semibold">{row.name}</span>
 
             <Badge tone="outline">
@@ -1089,15 +1012,9 @@ function PluginRowCard(props: PluginRowCardProps) {
 
             <Badge tone={badgeTone}>{row.runtime_status}</Badge>
 
-            {row.auth_required ? (
-              <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
-            ) : null}
+            {row.auth_required ? <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge> : null}
 
-            {row.removed_reason ? (
-              <Badge tone="destructive">
-                {t.pluginsPage.catalogRemovedBadge ?? "Removed"}
-              </Badge>
-            ) : null}
+            {row.removed_reason ? <Badge tone="destructive">{t.pluginsPage.catalogRemovedBadge}</Badge> : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -1110,9 +1027,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                   void setRuntimeLoading(row.name, async () => {
                     const res = await api.disableAgentPlugin(row.name);
                     showToast(
-                      res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectAfterRestart
-                        : t.pluginsPage.disableRuntime,
+                      res.restart_required ? t.pluginsPage.toggleTakesEffectAfterRestart : t.pluginsPage.disableRuntime,
                       "success",
                     );
                   });
@@ -1129,9 +1044,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                   void setRuntimeLoading(row.name, async () => {
                     const res = await api.enableAgentPlugin(row.name);
                     showToast(
-                      res.restart_required
-                        ? t.pluginsPage.toggleTakesEffectAfterRestart
-                        : t.pluginsPage.enableRuntime,
+                      res.restart_required ? t.pluginsPage.toggleTakesEffectAfterRestart : t.pluginsPage.enableRuntime,
                       "success",
                     );
                   });
@@ -1142,7 +1055,6 @@ function PluginRowCard(props: PluginRowCardProps) {
             )}
 
             {tabPath ? (
-
               <Link
                 className={cn(
                   "inline-flex items-center rounded-none px-3 py-1.5",
@@ -1156,7 +1068,6 @@ function PluginRowCard(props: PluginRowCardProps) {
             ) : null}
 
             {row.can_update_git ? (
-
               <Button
                 disabled={busy}
                 ghost
@@ -1165,9 +1076,9 @@ function PluginRowCard(props: PluginRowCardProps) {
                   void setRuntimeLoading(row.name, async () => {
                     const pp = t.pluginsPage;
                     const applied = await runDashboardPluginUpdate(row.name, {
-                      consentBody: pp.updateConsentBody ?? en.pluginsPage.updateConsentBody!,
-                      scanBody: pp.updateScanBody ?? en.pluginsPage.updateScanBody!,
-                      scanBlocked: pp.updateScanBlocked ?? en.pluginsPage.updateScanBlocked!,
+                      consentBody: pp.updateConsentBody,
+                      scanBody: pp.updateScanBody,
+                      scanBlocked: pp.updateScanBlocked,
                     });
                     if (applied) showToast(pp.updateGit, "success");
                   });
@@ -1190,26 +1101,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                   });
                 }}
               >
-                {row.user_hidden ? (
-                  <EyeOff className="h-3.5 w-3.5" />
-                ) : (
-                  <Eye className="h-3.5 w-3.5" />
-                )}
+                {row.user_hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                 {row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
               </Button>
             ) : null}
 
             {row.can_remove ? (
-
-
-              <Button
-                destructive
-                disabled={busy}
-                ghost
-                size="sm"
-                onClick={() => setConfirmRemove(true)}
-              >
-
+              <Button destructive disabled={busy} ghost size="sm" onClick={() => setConfirmRemove(true)}>
                 {busy ? <Spinner /> : <Trash2 className="h-3.5 w-3.5" />}
               </Button>
             ) : null}
@@ -1218,36 +1116,26 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {row.description ? (
           <p className="min-w-0 w-full text-xs tracking-[0.06em] text-text-secondary break-words">
-            {row.description}
+            {resolvePluginDescription(t, row.description, row.dashboard_manifest?.descriptionKey)}
           </p>
         ) : null}
 
         {row.removed_reason ? (
           <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-            {t.pluginsPage.removedFromCatalog ?? "Removed from catalog"}: {row.removed_reason}
+            {t.pluginsPage.removedFromCatalog}: {row.removed_reason}
           </p>
         ) : null}
 
         {dm?.slots?.length ? (
-
           <p className="text-xs tracking-[0.05em] text-text-tertiary">
             {t.pluginsPage.dashboardSlots}: {dm.slots.join(", ")}
           </p>
         ) : null}
 
-        {row.auth_required ? (
-          <CommandBlock
-            label={t.pluginsPage.authRequiredHint}
-            code={row.auth_command}
-          />
-        ) : null}
+        {row.auth_required ? <CommandBlock label={t.pluginsPage.authRequiredHint} code={row.auth_command} /> : null}
 
         {!row.has_dashboard_manifest && !dm ? (
-
-
-          <p className="text-xs italic text-text-disabled">
-            {t.pluginsPage.noDashboardTab}
-          </p>
+          <p className="text-xs italic text-text-disabled">{t.pluginsPage.noDashboardTab}</p>
         ) : null}
       </CardContent>
 
@@ -1258,11 +1146,13 @@ function PluginRowCard(props: PluginRowCardProps) {
           setConfirmRemove(false);
           void setRuntimeLoading(row.name, async () => {
             await api.removeAgentPlugin(row.name);
-            showToast(`${row.name} removed`, "success");
+            showToast(format(t.pluginsPage.removed, { name: row.name }), "success");
           });
         }}
         title={t.pluginsPage.removeConfirm}
-        description={`This will remove the "${row.name}" plugin from your agent.`}
+        description={format(t.pluginsPage.removeDescription, {
+          name: row.name,
+        })}
         destructive
         confirmLabel={t.common.delete}
       />
@@ -1283,10 +1173,9 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
   const caps = entry.capabilities;
   const chips: string[] = [];
-  if (caps.provides_tools.length) chips.push(`${caps.provides_tools.length} tools`);
-  if (caps.provides_hooks.length) chips.push(`${caps.provides_hooks.length} hooks`);
-  if (caps.provides_middleware.length)
-    chips.push(`${caps.provides_middleware.length} middleware`);
+  if (caps.provides_tools.length) chips.push(t.pluginsPage.catalogTools.replace("{count}", String(caps.provides_tools.length)));
+  if (caps.provides_hooks.length) chips.push(t.pluginsPage.catalogHooks.replace("{count}", String(caps.provides_hooks.length)));
+  if (caps.provides_middleware.length) chips.push(t.pluginsPage.catalogMiddleware.replace("{count}", String(caps.provides_middleware.length)));
   if (caps.requires_env.length) chips.push(`env: ${caps.requires_env.join(", ")}`);
 
   const isRemoved = removed !== null;
@@ -1299,31 +1188,22 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
             <span className="truncate font-semibold">{entry.name}</span>
 
             <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
-              {entry.tier}
+              {{ official: t.pluginsPage.catalogTierOfficial, verified: t.pluginsPage.catalogTierVerified,
+                 community: t.pluginsPage.catalogTierCommunity }[entry.tier]}
             </Badge>
 
-            {entry.installed && entry.runtime_status ? (
-              <Badge tone="outline">{entry.runtime_status}</Badge>
-            ) : null}
+            {entry.installed && entry.runtime_status ? <Badge tone="outline">{entry.runtime_status}</Badge> : null}
 
-            {isRemoved ? (
-              <Badge tone="destructive">
-                {t.pluginsPage.catalogRemovedBadge ?? "Removed"}
-              </Badge>
-            ) : null}
+            {isRemoved ? <Badge tone="destructive">{t.pluginsPage.catalogRemovedBadge}</Badge> : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {isRemoved ? null : entry.installed && !entry.update_available ? (
-              <Badge tone="success">
-                {t.pluginsPage.catalogInstalledBadge ?? "Installed ✓"}
-              </Badge>
+              <Badge tone="success">{t.pluginsPage.catalogInstalledBadge}</Badge>
             ) : (
               <Button disabled={busy} ghost size="sm" onClick={onInstall}>
                 {busy ? <Spinner /> : null}
-                {entry.update_available
-                  ? t.pluginsPage.catalogUpdateBtn ?? "Update available"
-                  : t.pluginsPage.catalogInstallBtn ?? "Install"}
+                {entry.update_available ? t.pluginsPage.catalogUpdateBtn : t.pluginsPage.catalogInstallBtn}
               </Button>
             )}
           </div>
@@ -1331,7 +1211,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
         {isRemoved ? (
           <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-            {t.pluginsPage.removedFromCatalog ?? "Removed from catalog"}
+            {t.pluginsPage.removedFromCatalog}
             {removed.reason ? `: ${removed.reason}` : ""}
             {removed.date ? ` (${removed.date})` : ""}
           </p>
@@ -1346,10 +1226,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
         {chips.length ? (
           <div className="flex flex-wrap gap-2">
             {chips.map((chip) => (
-              <code
-                key={chip}
-                className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
-              >
+              <code key={chip} className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]">
                 {chip}
               </code>
             ))}
@@ -1381,13 +1258,9 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
             </a>
           ) : null}
 
-          {entry.requires_hermes ? (
-            <span>hermes {entry.requires_hermes}</span>
-          ) : null}
+          {entry.requires_hermes ? <span>hermes {entry.requires_hermes}</span> : null}
 
-          {entry.platforms.length ? (
-            <span>{entry.platforms.join(", ")}</span>
-          ) : null}
+          {entry.platforms.length ? <span>{entry.platforms.join(", ")}</span> : null}
         </div>
       </CardContent>
     </Card>

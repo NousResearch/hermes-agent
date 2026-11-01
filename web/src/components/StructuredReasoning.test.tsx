@@ -1,3 +1,4 @@
+import { I18nContext, formatTranslation, resolveTranslations } from "@/i18n/runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { StructuredReasoning } from "./StructuredReasoning";
@@ -24,4 +25,16 @@ describe("StructuredReasoning", () => {
     expect(html).toContain("Result");
     expect(html).toContain("{&quot;ok&quot;:true}");
   });
+});
+
+it("localizes reasoning labels and preserves tool content", () => {
+  const html = renderToStaticMarkup(
+    <I18nContext.Provider value={{ locale: "zh", t: resolveTranslations("zh"), format: formatTranslation, setLocale: async () => {} }}>
+      <StructuredReasoning content={'<thinking><action>tool_call</action><result>{"ok":true}</result></thinking>'} />
+    </I18nContext.Provider>,
+  );
+  expect(html).toContain("操作");
+  expect(html).toContain("结果");
+  expect(html).toContain("tool_call");
+  expect(html).toContain("{&quot;ok&quot;:true}");
 });

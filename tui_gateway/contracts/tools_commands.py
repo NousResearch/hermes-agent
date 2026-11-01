@@ -219,6 +219,7 @@ class CommandCatalogMeta(Result):
 
 
 class CommandCategory(Result):
+    key: str | None = None
     name: str
     pairs: list[list[str]] = Field(default_factory=list)
 
@@ -229,6 +230,7 @@ class SkillCatalogEntry(Result):
 
 
 class CommandsCatalogResult(Result):
+    description_keys: dict[str, str] = Field(default_factory=dict)
     pairs: list[list[str]] = Field(default_factory=list)
     sub: dict[str, list[str]] = Field(default_factory=dict)
     canon: dict[str, str] = Field(default_factory=dict)

@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const ja: Translations = {
+export const ja: TranslationOverlay = {
   common: {
     save: "保存",
     saving: "保存中...",
@@ -152,8 +152,7 @@ export const ja: Translations = {
     untitledSession: "無題のセッション",
     deleteSession: "セッションを削除",
     confirmDeleteTitle: "セッションを削除しますか？",
-    confirmDeleteMessage:
-      "会話とそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
+    confirmDeleteMessage: "会話とそのすべてのメッセージが完全に削除されます。この操作は取り消せません。",
     sessionDeleted: "セッションを削除しました",
     failedToDelete: "セッションの削除に失敗しました",
     deleteEmpty: "空を削除",
@@ -238,8 +237,7 @@ export const ja: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "ジョブをスケジュールから削除します。この操作は取り消せません。",
+    confirmDeleteMessage: "ジョブをスケジュールから削除します。この操作は取り消せません。",
     confirmDeleteTitle: "スケジュールされたジョブを削除しますか？",
     newJob: "新しい Cron ジョブ",
     nameOptional: "名前 (任意)",
@@ -304,9 +302,9 @@ export const ja: Translations = {
     name: "名前",
     namePlaceholder: "例: coder, writer など",
     nameRequired: "名前は必須です",
-    nameRule:
-      "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
-    invalidName: "無効なプロファイル名",    cloneFrom: "プロファイルから複製",
+    nameRule: "小文字、数字、_ および - のみ使用可能。最初は文字または数字で始める必要があります。最大 64 文字。",
+    invalidName: "無効なプロファイル名",
+    cloneFrom: "プロファイルから複製",
     cloneFromNone: "なし（空）",
     allProfiles: "プロファイル",
     noProfiles: "プロファイルが見つかりません。",
@@ -337,11 +335,9 @@ export const ja: Translations = {
     disableRuntime: "無効化",
     enableAfterInstall: "インストール後に有効化",
     enableRuntime: "有効化",
-    toggleTakesEffectAfterRestart:
-      "保存しました — 変更を適用するにはゲートウェイを再起動してください。",
+    toggleTakesEffectAfterRestart: "保存しました — 変更を適用するにはゲートウェイを再起動してください。",
     forceReinstall: "強制再インストール (既存のフォルダを先に削除)",
-    headline:
-      "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
+    headline: "Hermes プラグインを発見、インストール、有効化、更新します (`hermes plugins` 相当)。",
     identifierLabel: "Git URL または owner/repo",
     inactive: "非アクティブ",
     installBtn: "インストール",
@@ -361,7 +357,8 @@ export const ja: Translations = {
     removeConfirm: "このプラグインを ~/.hermes/plugins/ から削除しますか？",
     removeHint: "削除できるのは ~/.hermes/plugins 配下のユーザーがインストールしたプラグインのみです。",
     rescanHeading: "SPA プラグインレジストリ",
-    rescanHint: "ディスクにファイルを追加した後に再スキャンすると、ダッシュボードのサイドバーが新しいマニフェストを認識します。",
+    rescanHint:
+      "ディスクにファイルを追加した後に再スキャンすると、ダッシュボードのサイドバーが新しいマニフェストを認識します。",
     runtimeHeading: "ゲートウェイランタイム (YAML プラグイン)",
     saveProviders: "プロバイダー設定を保存",
     savedProviders: "プロバイダー設定を保存しました。",
@@ -402,7 +399,8 @@ export const ja: Translations = {
     importConfig: "JSON から設定をインポート",
     resetDefaults: "デフォルトにリセット",
     resetScopeTooltip: "{scope} をデフォルトにリセット",
-    confirmResetScope: "すべての {scope} 設定をデフォルトにリセットしますか？フォームのみ更新されます — 保存を押すまで config.yaml には書き込まれません。",
+    confirmResetScope:
+      "すべての {scope} 設定をデフォルトにリセットしますか？フォームのみ更新されます — 保存を押すまで config.yaml には書き込まれません。",
     resetScopeToast: "{scope} をデフォルトにリセットしました — 確認して保存してください",
     rawYaml: "生の YAML 設定",
     searchResults: "検索結果",
@@ -436,8 +434,7 @@ export const ja: Translations = {
 
   env: {
     changesNote: "変更は即座にディスクへ保存されます。アクティブなセッションは新しいキーを自動的に取得します。",
-    confirmClearMessage:
-      "この変数の保存値が .env ファイルから削除されます。この操作は UI から取り消せません。",
+    confirmClearMessage: "この変数の保存値が .env ファイルから削除されます。この操作は UI から取り消せません。",
     confirmClearTitle: "このキーをクリアしますか？",
     description: "API キーとシークレットを管理します。保存先:",
     hideAdvanced: "詳細設定を隠す",
@@ -455,7 +452,8 @@ export const ja: Translations = {
     showValue: "実際の値を表示",
     hideValue: "値を非表示",
     customTitle: "カスタムキー",
-    customHint: "Hermes が認識しない、.env に保存された任意の環境変数。スキル、MCP サーバー、または独自のツール用に環境変数を注入するために使用します。",
+    customHint:
+      "Hermes が認識しない、.env に保存された任意の環境変数。スキル、MCP サーバー、または独自のツール用に環境変数を注入するために使用します。",
     customConfigured: "カスタムキーを {count} 個設定済み",
     addCustomKey: "カスタムキーを追加",
     customKeyName: "変数名",
@@ -558,8 +556,7 @@ export const ja: Translations = {
     },
     scan: {
       building_headline: "実績プロファイルを構築中…",
-      building_detail:
-        "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。",
+      building_detail: "セッション、ツール呼び出し、モデルのメタデータ、解除状態を読み込んでいます。",
       starting_headline: "実績スキャンを開始しています…",
       progress_detail:
         "{total} 件中 {scanned} 件のセッションをスキャンしました · {pct}%。履歴が読み込まれるにつれてバッジが解除されます。",
@@ -575,8 +572,7 @@ export const ja: Translations = {
       scan_status_body:
         "Hermes はローカル履歴を一度スキャンし、その後カードが自動的に表示されます。数秒かかってもスタックしているわけではありません。",
       what_scanned_header: "スキャン対象",
-      what_scanned_body:
-        "セッション、ツール呼び出し、モデルのメタデータ、エラー、実績、ローカルの解除状態。",
+      what_scanned_body: "セッション、ツール呼び出し、モデルのメタデータ、エラー、実績、ローカルの解除状態。",
     },
     card: {
       share_title: "この実績を共有",
@@ -616,11 +612,10 @@ export const ja: Translations = {
       copy_button: "画像をコピー",
       copied: "コピーしました ✓",
       download_button: "PNG をダウンロード",
-      hint:
-        "「X で共有」は事前入力された投稿を新しいタブで開きます。1200×630 のバッジを添付したい場合は、先に「画像をコピー」を押してください — X では投稿エディタに直接貼り付けられます。「PNG をダウンロード」はファイルとして保存し、どこでも使えるようにします。",
+      hint: "「X で共有」は事前入力された投稿を新しいタブで開きます。1200×630 のバッジを添付したい場合は、先に「画像をコピー」を押してください — X では投稿エディタに直接貼り付けられます。「PNG をダウンロード」はファイルとして保存し、どこでも使えるようにします。",
       clipboard_unsupported:
         "このブラウザではクリップボードへの画像コピーがサポートされていません — 代わりに「ダウンロード」をご利用ください。",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -635,12 +630,6 @@ export const ja: Translations = {
       "ボードを使うと、関連のない作業の流れを分けられます — プロジェクト、リポジトリ、ドメインごとに 1 つずつ。あるボードのワーカーは、別のボードのタスクを見ることはありません。",
     slug: "スラッグ",
     slugHint: "— 小文字とハイフン、例: atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "表示名",
     displayNameHint: "（任意）",
     description: "説明",
@@ -683,8 +672,7 @@ export const ja: Translations = {
     runHistory: "実行履歴",
     workerLog: "ワーカーログ",
     loadingLog: "ログを読み込んでいます…",
-    noWorkerLog:
-      "— ワーカーログはまだありません（タスクが起動していないか、ログがローテーションされました）—",
+    noWorkerLog: "— ワーカーログはまだありません（タスクが起動していないか、ログがローテーションされました）—",
     noDescription: "— 説明はありません —",
     noComments: "— コメントはありません —",
     edit: "編集",
@@ -715,8 +703,7 @@ export const ja: Translations = {
     reassign: "再割り当て",
     renderingError: "Kanban タブで描画エラーが発生しました",
     reloadView: "ビューを再読み込み",
-    wsAuthFailed:
-      "WebSocket 認証に失敗しました — ページを再読み込みしてセッショントークンを更新してください。",
+    wsAuthFailed: "WebSocket 認証に失敗しました — ページを再読み込みしてセッショントークンを更新してください。",
     markDone: "{n} 件のタスクを完了にしますか？",
     markArchived: "{n} 件のタスクをアーカイブしますか？",
     warning: "警告",
@@ -767,27 +754,20 @@ export const ja: Translations = {
       done: "完了",
       archived: "アーカイブ済み",
     },
-    confirmDone:
-      "このタスクを完了にしますか？ワーカーの取得は解放され、依存している子タスクが ready になります。",
-    confirmArchive:
-      "このタスクをアーカイブしますか？既定のボードビューから消えます。",
-    confirmBlocked:
-      "このタスクをブロック中にしますか？ワーカーの取得は解放されます。",
-    completionSummary:
-      "{label} の完了サマリ。これはタスクの結果として保存されます。",
-    completionSummaryRequired:
-      "タスクを完了にする前に、完了サマリの入力が必要です。",
+    confirmDone: "このタスクを完了にしますか？ワーカーの取得は解放され、依存している子タスクが ready になります。",
+    confirmArchive: "このタスクをアーカイブしますか？既定のボードビューから消えます。",
+    confirmBlocked: "このタスクをブロック中にしますか？ワーカーの取得は解放されます。",
+    completionSummary: "{label} の完了サマリ。これはタスクの結果として保存されます。",
+    completionSummaryRequired: "タスクを完了にする前に、完了サマリの入力が必要です。",
     triagePlaceholder: "おおまかなアイデア — AI が仕様化します…",
     taskTitlePlaceholder: "新しいタスクのタイトル…",
     specifier: "スペシファイア",
     assigneePlaceholder: "担当者",
     priority: "優先度",
-    skillsPlaceholder:
-      "スキル（任意、カンマ区切り）: translation, github-code-review",
+    skillsPlaceholder: "スキル（任意、カンマ区切り）: translation, github-code-review",
     noParent: "— 親タスクなし —",
     workspacePathDir: "ワークスペースのパス（必須、例: ~/projects/my-app）",
-    workspacePathOptional:
-      "ワークスペースのパス（任意、空の場合は担当者から導出）",
+    workspacePathOptional: "ワークスペースのパス（任意、空の場合は担当者から導出）",
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },

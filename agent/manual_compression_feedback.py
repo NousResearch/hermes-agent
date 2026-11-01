@@ -49,6 +49,16 @@ def summarize_manual_compression(
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         failure_reason = None
 
+    dropped_count = max(before_count - after_count, 0)
+    if fallback_used:
+        reported_dropped_count = getattr(
+            compression_state, "_last_summary_dropped_count", None
+        )
+        if isinstance(reported_dropped_count, int) and not isinstance(
+            reported_dropped_count, bool
+        ):
+            dropped_count = reported_dropped_count
+
     note = None
     if refused_would_grow:
         headline = f"Compression refused (summary would grow the conversation): {before_count} messages preserved"
@@ -58,9 +68,6 @@ def summarize_manual_compression(
         note = "Summary generation failed; no messages were removed."
     elif fallback_used:
         headline = f"Compressed with fallback: {before_count} → {after_count} messages"
-        dropped_count = getattr(compression_state, "_last_summary_dropped_count", None)
-        if not isinstance(dropped_count, int) or isinstance(dropped_count, bool):
-            dropped_count = max(before_count - after_count, 0)
         note = (
             "Summary generation failed; Hermes used limited fallback context "
             f"and removed {dropped_count} message(s)."
@@ -80,16 +87,24 @@ def summarize_manual_compression(
     else:
         token_line = f"Approx request size: ~{before_tokens:,} → ~{after_tokens:,} tokens"
 
+    safe_failure_reason = None
     if failure_reason and (aborted or fallback_used):
         # Crosses a user-facing UI boundary: never let a disabled global redaction
         # preference expose credentials embedded in provider exception text.
-        note = f"{note} Reason: {redact_sensitive_text(failure_reason.strip(), force=True)}"
+        safe_failure_reason = redact_sensitive_text(failure_reason.strip(), force=True)
+        note = f"{note} Reason: {safe_failure_reason}"
 
     return {
         "noop": noop,
         "aborted": aborted,
         "refused_would_grow": refused_would_grow,
         "fallback_used": fallback_used,
+        "before_count": before_count,
+        "after_count": after_count,
+        "before_tokens": before_tokens,
+        "after_tokens": after_tokens,
+        "dropped_count": dropped_count,
+        "failure_reason": safe_failure_reason,
         "headline": headline,
         "token_line": token_line,
         "note": note,

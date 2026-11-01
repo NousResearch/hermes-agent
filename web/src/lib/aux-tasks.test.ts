@@ -1,6 +1,7 @@
+import { resolveTranslations } from "@/i18n/runtime";
 import { describe, expect, it } from "vitest";
 
-import { auxTaskLabel, auxTaskRows, BUILTIN_AUX_TASKS } from "./aux-tasks";
+import { auxTaskLabel, auxTaskRows, localizedAuxTaskLabel, BUILTIN_AUX_TASKS } from "./aux-tasks";
 
 const builtinKeys = BUILTIN_AUX_TASKS.map((t) => t.key);
 
@@ -52,5 +53,21 @@ describe("auxTaskRows", () => {
       },
     ]);
     expect(rows.at(-1)).toEqual({ key: "side_task", label: "Side", hint: "", inheritFrom: "compression" });
+  });
+});
+
+describe("auxiliary task presentation", () => {
+  it("localizes built-in names while retaining plugin names and inherited routing", () => {
+    const tasks = [{
+      task: "side_task", provider: "auto", model: "", base_url: "",
+      label: "Plugin-owned name", hint: "Plugin-owned hint", inherit_from: "compression",
+    }];
+    const copy = resolveTranslations("zh").modelSettings;
+    expect(localizedAuxTaskLabel(tasks, "compression", copy)).toBe("上下文压缩");
+    expect(localizedAuxTaskLabel(tasks, "voice_chat", copy)).toBe("语音聊天");
+    expect(localizedAuxTaskLabel(tasks, "side_task", copy)).toBe("Plugin-owned name");
+    expect(auxTaskRows(tasks).at(-1)).toMatchObject({
+      label: "Plugin-owned name", hint: "Plugin-owned hint", inheritFrom: "compression",
+    });
   });
 });

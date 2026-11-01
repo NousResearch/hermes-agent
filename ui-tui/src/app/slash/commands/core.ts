@@ -17,7 +17,7 @@ import type {
   SlashExecResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
-import { t } from '../../../i18n/runtime.js'
+import { getLocale, t, translateOptional } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { writeSessionExport } from '../../../lib/sessionExport.js'
@@ -40,6 +40,39 @@ const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
   const session = key === 'focus' && ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {}
 
   ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
+}
+
+const formatSessionStatus = (response: SessionStatusResponse): string => {
+  const details = response.details
+
+  if (!details) {
+    return response.output || t('slashCmd.core.status.empty')
+  }
+
+  const lines = [
+    t('sessionStatus.heading'),
+    '',
+    t('sessionStatus.sessionId', details.session_id),
+    t('sessionStatus.path', details.path)
+  ]
+
+  if (details.project) {
+    lines.push(t('sessionStatus.project', details.project))
+  }
+
+  if (details.title) {
+    lines.push(t('sessionStatus.title', details.title))
+  }
+
+  lines.push(
+    t('sessionStatus.model', details.model, details.provider),
+    t('sessionStatus.created', details.created),
+    t('sessionStatus.lastActivity', details.last_activity),
+    t('sessionStatus.tokens', details.tokens.toLocaleString(getLocale())),
+    t('sessionStatus.agentRunning', t(details.agent_running ? 'common.yes' : 'common.no'))
+  )
+
+  return lines.join('\n')
 }
 
 /** `/config`: the projection as indented `key: value` lines (YAML-shaped, like the classic CLI). */
@@ -110,8 +143,11 @@ export const coreCommands: SlashCommand[] = [
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
-        rows: cat.pairs,
-        title: cat.name
+        rows: cat.pairs.map(([command, description]) => [
+          command,
+          translateOptional(`slash.${ctx.local.catalog?.descriptionKeys?.[command.split(' ')[0]]}`, description)
+        ]),
+        title: translateOptional(cat.key ? `slashCategory.${cat.key}` : undefined, cat.name)
       }))
 
       if (ctx.local.catalog?.skillCount) {
@@ -268,7 +304,7 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
           ctx.guarded<SessionStatusResponse>(r =>
-            ctx.transcript.page(r.output || t('slashCmd.core.status.empty'), t('slashCmd.core.status.pageTitle'))
+            ctx.transcript.page(formatSessionStatus(r), t('slashCmd.core.status.pageTitle'))
           )
         )
         .catch(ctx.guardedErr)
@@ -348,17 +384,24 @@ export const coreCommands: SlashCommand[] = [
       // T10: `display.timestamps` (the classic CLI's key) through the owner's config.set; the
       // transcript repaints on the same frame, as /density does.
       if (mode === 'status') {
-        return ctx.transcript.sys(`timestamps ${current ? 'on' : 'off'}`)
+        return ctx.transcript.sys(
+          t(
+            'slashCmd.core.timestamps.state',
+            t(current ? 'slashCmd.core.timestamps.on' : 'slashCmd.core.timestamps.off')
+          )
+        )
       }
 
       const next = flagFromArg(mode, current)
 
       if (next === null) {
-        return ctx.transcript.sys('usage: /timestamps [on|off|status]')
+        return ctx.transcript.sys(t('slashCmd.core.timestamps.usage'))
       }
 
       patchUiState({ timestamps: next })
-      ctx.transcript.sys(`timestamps ${next ? 'on' : 'off'}`)
+      ctx.transcript.sys(
+        t('slashCmd.core.timestamps.state', t(next ? 'slashCmd.core.timestamps.on' : 'slashCmd.core.timestamps.off'))
+      )
       // A refused write would revert on the next config refresh: say so instead of staying quiet.
       ctx.gateway.gw
         .request<ConfigSetResponse>('config.set', { key: 'timestamps', value: next ? 'on' : 'off' })
@@ -374,7 +417,7 @@ export const coreCommands: SlashCommand[] = [
       if (!ctx.gateway.gw?.isCanonical) {
         return void ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
-          .then(r => !ctx.stale() && ctx.transcript.page(r?.output || '{}', 'Config'))
+          .then(r => !ctx.stale() && ctx.transcript.page(r?.output || '{}', t('slashCmd.core.config.title')))
           .catch(ctx.guardedErr)
       }
 
@@ -387,7 +430,7 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<ConfigFullResponse>(r => {
             const lines = configLines(r.config ?? {}, '')
 
-            ctx.transcript.page(lines.length ? lines.join('\n') : '{}', 'Config')
+            ctx.transcript.page(lines.length ? lines.join('\n') : '{}', t('slashCmd.core.config.title'))
           })
         )
         .catch(ctx.guardedErr)

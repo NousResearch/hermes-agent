@@ -1,6 +1,6 @@
-import type { Translations } from "./types";
+import type { TranslationOverlay } from "./types";
 
-export const uk: Translations = {
+export const uk: TranslationOverlay = {
   common: {
     save: "Зберегти",
     saving: "Збереження...",
@@ -152,8 +152,7 @@ export const uk: Translations = {
     untitledSession: "Сесія без назви",
     deleteSession: "Видалити сесію",
     confirmDeleteTitle: "Видалити сесію?",
-    confirmDeleteMessage:
-      "Це назавжди видалить розмову та всі її повідомлення. Цю дію не можна скасувати.",
+    confirmDeleteMessage: "Це назавжди видалить розмову та всі її повідомлення. Цю дію не можна скасувати.",
     sessionDeleted: "Сесію видалено",
     failedToDelete: "Не вдалося видалити сесію",
     deleteEmpty: "Видалити порожні",
@@ -238,8 +237,7 @@ export const uk: Translations = {
   },
 
   cron: {
-    confirmDeleteMessage:
-      "Це видаляє завдання з розкладу. Цю дію не можна скасувати.",
+    confirmDeleteMessage: "Це видаляє завдання з розкладу. Цю дію не можна скасувати.",
     confirmDeleteTitle: "Видалити заплановане завдання?",
     newJob: "Нове Cron-завдання",
     nameOptional: "Назва (необов'язково)",
@@ -268,8 +266,7 @@ export const uk: Translations = {
       onceAt: "Виконати о",
       customLabel: "Cron-вираз",
       customPlaceholder: "0 9 * * *",
-      customHint:
-        "П'ятиполевий cron-вираз (хвилина, година, день, місяць, день тижня).",
+      customHint: "П'ятиполевий cron-вираз (хвилина, година, день, місяць, день тижня).",
       preview: "Надсилається як",
       previewEmpty: "(не заповнено)",
     },
@@ -305,8 +302,7 @@ export const uk: Translations = {
     name: "Назва",
     namePlaceholder: "напр. coder, writer тощо.",
     nameRequired: "Назва обов'язкова",
-    nameRule:
-      "Лише малі літери, цифри, _ та -; має починатися з літери або цифри; до 64 символів.",
+    nameRule: "Лише малі літери, цифри, _ та -; має починатися з літери або цифри; до 64 символів.",
     invalidName: "Недопустима назва профілю",
     cloneFrom: "Клонувати з профілю",
     cloneFromNone: "Жоден (порожній)",
@@ -339,11 +335,9 @@ export const uk: Translations = {
     disableRuntime: "Вимкнути",
     enableAfterInstall: "Увімкнути після встановлення",
     enableRuntime: "Увімкнути",
-    toggleTakesEffectAfterRestart:
-      "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
+    toggleTakesEffectAfterRestart: "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
     forceReinstall: "Примусово перевстановити (спершу видалити наявну теку)",
-    headline:
-      "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",
+    headline: "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",
     identifierLabel: "Git URL або owner/repo",
     inactive: "неактивний",
     installBtn: "Встановити",
@@ -404,7 +398,8 @@ export const uk: Translations = {
     importConfig: "Імпортувати конфігурацію з JSON",
     resetDefaults: "Скинути до значень за замовчуванням",
     resetScopeTooltip: "Скинути {scope} до значень за замовчуванням",
-    confirmResetScope: "Скинути всі налаштування {scope} до значень за замовчуванням? Це лише оновлює форму — зміни не записуються до config.yaml, доки ви не натиснете «Зберегти».",
+    confirmResetScope:
+      "Скинути всі налаштування {scope} до значень за замовчуванням? Це лише оновлює форму — зміни не записуються до config.yaml, доки ви не натиснете «Зберегти».",
     resetScopeToast: "{scope} скинуто до значень за замовчуванням — перегляньте та збережіть, щоб застосувати",
     rawYaml: "Сирий YAML-конфіг",
     searchResults: "Результати пошуку",
@@ -457,7 +452,8 @@ export const uk: Translations = {
     showValue: "Показати справжнє значення",
     hideValue: "Сховати значення",
     customTitle: "Власні ключі",
-    customHint: "Довільні змінні середовища, збережені у вашому .env, які Hermes не розпізнає. Використовуйте їх для впровадження змінних середовища для навичок, серверів MCP або власних інструментів.",
+    customHint:
+      "Довільні змінні середовища, збережені у вашому .env, які Hermes не розпізнає. Використовуйте їх для впровадження змінних середовища для навичок, серверів MCP або власних інструментів.",
     customConfigured: "Задано власних ключів: {count}",
     addCustomKey: "Додати власний ключ",
     customKeyName: "Назва змінної",
@@ -560,8 +556,7 @@ export const uk: Translations = {
     },
     scan: {
       building_headline: "Побудова профілю досягнень…",
-      building_detail:
-        "Читання сеансів, викликів інструментів, метаданих моделей і стану розблокування.",
+      building_detail: "Читання сеансів, викликів інструментів, метаданих моделей і стану розблокування.",
       starting_headline: "Запуск сканування досягнень…",
       progress_detail:
         "Проскановано {scanned} з {total} сеансів · {pct}%. Значки розблоковуються в міру надходження історії.",
@@ -618,11 +613,10 @@ export const uk: Translations = {
       copy_button: "Копіювати зображення",
       copied: "Скопійовано ✓",
       download_button: "Завантажити PNG",
-      hint:
-        "«Поділитися в X» відкриває попередньо заповнений допис у новій вкладці. Якщо хочете прикріпити значок 1200×630 — спочатку натисніть «Копіювати зображення»: X дозволить вставити його прямо в редактор твіта. «Завантажити PNG» збереже файл для використання будь-де.",
+      hint: "«Поділитися в X» відкриває попередньо заповнений допис у новій вкладці. Якщо хочете прикріпити значок 1200×630 — спочатку натисніть «Копіювати зображення»: X дозволить вставити його прямо в редактор твіта. «Завантажити PNG» збереже файл для використання будь-де.",
       clipboard_unsupported:
         "Цей браузер не підтримує копіювання зображень у буфер обміну — використайте «Завантажити».",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: 'Just unlocked {tier_part}"{name}" in Hermes Agent ☤',
     },
   },
   kanban: {
@@ -637,12 +631,6 @@ export const uk: Translations = {
       "Дошки дозволяють розділяти непов'язані потоки роботи — по одній на проєкт, репозиторій або домен. Воркери на одній дошці ніколи не бачать задач іншої дошки.",
     slug: "Slug",
     slugHint: "— рядкові літери, дефіси, напр. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Відображувана назва",
     displayNameHint: "(необов'язково)",
     description: "Опис",
@@ -685,8 +673,7 @@ export const uk: Translations = {
     runHistory: "Історія запусків",
     workerLog: "Журнал воркера",
     loadingLog: "Завантаження журналу…",
-    noWorkerLog:
-      "— журналу воркера ще немає (задачу не запущено або журнал ротаційно видалено) —",
+    noWorkerLog: "— журналу воркера ще немає (задачу не запущено або журнал ротаційно видалено) —",
     noDescription: "— немає опису —",
     noComments: "— немає коментарів —",
     edit: "редагувати",
@@ -717,8 +704,7 @@ export const uk: Translations = {
     reassign: "Перепризначити",
     renderingError: "На вкладці Kanban сталася помилка рендерингу",
     reloadView: "Перезавантажити вигляд",
-    wsAuthFailed:
-      "Помилка автентифікації WebSocket — перезавантажте сторінку, щоб оновити токен сесії.",
+    wsAuthFailed: "Помилка автентифікації WebSocket — перезавантажте сторінку, щоб оновити токен сесії.",
     markDone: "Позначити {n} задач(у) як виконані?",
     markArchived: "Архівувати {n} задач(у)?",
     warning: "Попередження",
@@ -771,25 +757,19 @@ export const uk: Translations = {
     },
     confirmDone:
       "Позначити цю задачу як виконану? Захоплення воркера буде звільнено, а залежні нащадки стануть готовими.",
-    confirmArchive:
-      "Архівувати цю задачу? Вона зникне з типового вигляду дошки.",
-    confirmBlocked:
-      "Позначити цю задачу як заблоковану? Захоплення воркера буде звільнено.",
-    completionSummary:
-      "Підсумок завершення для {label}. Зберігається як result задачі.",
-    completionSummaryRequired:
-      "Підсумок завершення обов'язковий перед позначенням задачі виконаною.",
+    confirmArchive: "Архівувати цю задачу? Вона зникне з типового вигляду дошки.",
+    confirmBlocked: "Позначити цю задачу як заблоковану? Захоплення воркера буде звільнено.",
+    completionSummary: "Підсумок завершення для {label}. Зберігається як result задачі.",
+    completionSummaryRequired: "Підсумок завершення обов'язковий перед позначенням задачі виконаною.",
     triagePlaceholder: "Чорнова ідея — ШІ її специфікує…",
     taskTitlePlaceholder: "Назва нової задачі…",
     specifier: "специфікатор",
     assigneePlaceholder: "виконавець",
     priority: "Пріоритет",
-    skillsPlaceholder:
-      "навички (необов'язково, через кому): translation, github-code-review",
+    skillsPlaceholder: "навички (необов'язково, через кому): translation, github-code-review",
     noParent: "— без батька —",
     workspacePathDir: "шлях робочої області (обов'язково, напр. ~/projects/my-app)",
-    workspacePathOptional:
-      "шлях робочої області (необов'язково, виводиться з виконавця, якщо порожньо)",
+    workspacePathOptional: "шлях робочої області (необов'язково, виводиться з виконавця, якщо порожньо)",
     logTruncated: "(показано останні 100 KB — повний журнал у ",
     logAt: ")",
   },

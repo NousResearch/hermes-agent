@@ -11,7 +11,7 @@ import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { faces } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
+import { thinkingVerbs } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { messages, t as tr } from '../i18n/runtime.js'
@@ -27,8 +27,13 @@ const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const verbPadWidth = () => Math.max(...thinkingVerbs().map(stringWidth)) + stringWidth('…')
+
+export const padVerb = (verb: string) => {
+  const text = `${verb}…`
+
+  return text + ' '.repeat(Math.max(0, verbPadWidth() - stringWidth(text)))
+}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -128,7 +133,7 @@ export const MAX_DURATION_WIDTH = Math.max(
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
   const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const verb = showVerb ? 1 + verbPadWidth() : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
@@ -147,7 +152,7 @@ function FaceTicker({
   verbOverride?: string
 }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * thinkingVerbs().length))
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
 
@@ -192,7 +197,8 @@ function FaceTicker({
   }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+  const verbs = thinkingVerbs()
+  const verb = verbOverride ?? verbs[verbTick % verbs.length] ?? ''
   const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb

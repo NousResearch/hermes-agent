@@ -45,3 +45,33 @@ What each surface (`serve`, `dashboard`, `webapp`) may do is one table,
 - Tests: Python in `tests/hermes_cli/` (routers, pty bridge); JS in the `web/` vitest suite. Python
   tests must not assert about `package.json` / `.tsx` sources (root testing rules). Root TypeScript
   style rules apply.
+
+## Localization framework (Dashboard + Ink TUI)
+
+- English is the complete source catalog and only final fallback. Every non-English pack
+  overlays English independently; Simplified Chinese is the first complete non-English
+  implementation, not a privileged runtime branch.
+- `locales/registry.json` is the single authority for locale identities, endonyms, picker
+  labels, ordinary aliases and protocol compatibility aliases. Python, Ink and Dashboard
+  consume it directly; do not recreate locale lists or normalization tables elsewhere.
+- Product language choices expose `zh` (Simplified Chinese) and `zh-hant` (Traditional
+  Chinese) as independent languages. Region-tagged inputs such as `zh-TW`, `zh-HK` and
+  `zh-MO` are boundary-only compatibility values that normalize immediately to `zh-hant`.
+- Stable translation keys belong at presentation boundaries. Components, commands, schema
+  renderers and bundled Dashboard extensions must not branch on a named locale or use
+  translated labels as control-flow identifiers.
+- This rollout covers Dashboard/Web UI, Ink TUI, its Dashboard embedding, and bundled
+  Dashboard extensions. Classic CLI, Electron Desktop chat, website and messaging-platform
+  presentation need deliberate follow-up work rather than incidental changes here.
+- Command presentation metadata is added in the shared `tui_gateway/command_discovery.py`
+  builder, consumed by both canonical and sidecar transports. Do not restore a parallel catalog
+  accumulator. Compression presentation likewise shares one structured formatter across transports.
+- Dashboard profile scope wraps plugin discovery and asset loading at the application root.
+  Ink configuration hydration stays bound to the focused session and preserves its busy preference.
+- A changed config revision refreshes the active pack even when the language ID is unchanged;
+  failed or cancelled application leaves the revision retryable.
+- A display-language refresh must not rebuild the agent or reload MCP/tool schemas. Tool
+  reload remains an explicit user action so per-conversation prompt caching stays stable.
+- Acceptance tests assert behavior: complete English, complete declared packs, direct English
+  fallback for partial packs, cross-runtime normalization parity, and no feature-code edits
+  required when registering a new locale. Never freeze locale counts.

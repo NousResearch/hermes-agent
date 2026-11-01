@@ -6,25 +6,21 @@ import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/c
 import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
-  const { t } = useI18n();
-  const platformStateBadge: Record<
-    string,
-    { tone: "success" | "warning" | "destructive" | "outline"; label: string }
-  > = {
-    connected: { tone: "success", label: t.status.connected },
-    disconnected: { tone: "warning", label: t.status.disconnected },
-    disabled: { tone: "outline", label: t.status.disabled ?? "Disabled" },
-    fatal: { tone: "destructive", label: t.status.error },
-  };
+  const { locale, t } = useI18n();
+  const platformStateBadge: Record<string, { tone: "success" | "warning" | "destructive" | "outline"; label: string }> =
+    {
+      connected: { tone: "success", label: t.status.connected },
+      disconnected: { tone: "warning", label: t.status.disconnected },
+      disabled: { tone: "outline", label: t.status.disabled },
+      fatal: { tone: "destructive", label: t.status.error },
+    };
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center gap-2">
           <Radio className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">
-            {t.status.connectedPlatforms}
-          </CardTitle>
+          <CardTitle className="text-base">{t.status.connectedPlatforms}</CardTitle>
         </div>
       </CardHeader>
 
@@ -62,16 +58,12 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                 />
 
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="font-mondwest normal-case text-sm font-medium capitalize truncate">
-                    {name}
-                  </span>
+                  <span className="font-mondwest normal-case text-sm font-medium capitalize truncate">{name}</span>
 
                   {info.error_message && (
                     <span
                       className={`font-mondwest normal-case text-xs ${
-                        info.state === "disabled"
-                          ? "text-muted-foreground"
-                          : "text-destructive"
+                        info.state === "disabled" ? "text-muted-foreground" : "text-destructive"
                       }`}
                     >
                       {info.error_message}
@@ -80,16 +72,13 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
 
                   {info.updated_at && (
                     <span className="font-mondwest normal-case text-xs text-muted-foreground">
-                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
+                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at, locale, t.common.unknown)}
                     </span>
                   )}
                 </div>
               </div>
 
-              <Badge
-                tone={display.tone}
-                className="shrink-0 self-start sm:self-center"
-              >
+              <Badge tone={display.tone} className="shrink-0 self-start sm:self-center">
                 {display.tone === "success" && (
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}

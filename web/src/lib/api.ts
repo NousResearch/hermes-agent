@@ -1,3 +1,4 @@
+import { configApi } from "./api-config";
 import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
@@ -380,7 +381,7 @@ function profileQuery(profile?: string): string {
   return profile ? `?profile=${encodeURIComponent(profile)}` : "";
 }
 
-function appendProfileParam(url: string, profile?: string): string {
+export function appendProfileParam(url: string, profile?: string): string {
   if (!profile || url.includes("profile=")) return url;
   return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(profile)}`;
 }
@@ -601,10 +602,7 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
-  getConfig: (profile = getManagementProfile()) =>
-    fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
-  getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  ...configApi,
   getModelInfo: (profile = getManagementProfile()) =>
     fetchJSON<ModelInfoResponse>(appendProfileParam("/api/model/info", profile)),
   getModelOptions: (
@@ -657,22 +655,6 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(answer),
-    }),
-  saveConfig: (config: Record<string, unknown>, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config", profile), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
-    }),
-  getConfigRaw: (profile = getManagementProfile()) =>
-    fetchJSON<{ yaml: string; path?: string }>(
-      appendProfileParam("/api/config/raw", profile),
-    ),
-  saveConfigRaw: (yaml_text: string, profile = getManagementProfile()) =>
-    fetchJSON<{ ok: boolean }>(appendProfileParam("/api/config/raw", profile), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ yaml_text }),
     }),
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
   setEnvVar: (key: string, value: string) =>
@@ -2437,7 +2419,9 @@ export interface SkillWriteResult {
 export interface ToolsetInfo {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   platform: string;
   platform_label: string;
   enabled: boolean;
@@ -2643,7 +2627,9 @@ export interface DashboardFontResponse {
 export interface PluginManifestResponse {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   icon: string;
   version: string;
   tab: {

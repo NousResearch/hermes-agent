@@ -1,3 +1,4 @@
+import { normalizeLanguageIdentity } from '@hermes/shared/locale-registry'
 // Fetch the TUI language from the backend. The locale id comes from
 // `display.language` (already read by useConfigSync's `config.get full`); the
 // strings come from `i18n.catalog {lang, surface: 'tui'}`. A backend that
@@ -7,7 +8,7 @@
 import type { GatewayClient } from '../gatewayClient.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import { applyLocale, DEFAULT_LOCALE, getLocale } from './runtime.js'
+import { applyLocale, DEFAULT_LOCALE } from './runtime.js'
 import type { CatalogPack } from './types.js'
 
 export const TUI_SURFACE = 'tui'
@@ -21,7 +22,7 @@ export function normalizeLanguageId(raw: unknown): string {
 
   const id = raw.trim().toLowerCase().replace(/_/g, '-')
 
-  return id || DEFAULT_LOCALE
+  return normalizeLanguageIdentity(id)
 }
 
 type RequestFn = <T>(method: string, params: Record<string, unknown>) => Promise<T>
@@ -41,45 +42,57 @@ export async function fetchCatalogPack(request: RequestFn, lang: string): Promis
   }
 }
 
-let inFlight: Promise<void> | null = null
-let lastRequested = ''
+interface LocaleRequest {
+  gw: Pick<GatewayClient, 'request'>
+  lang: string
+  signal?: AbortSignal
+  promise: Promise<boolean>
+}
+let current: LocaleRequest | null = null
 
-/** Apply `display.language`: no-op when it did not change; English needs no
- *  RPC. Coalesces concurrent calls (config poll + boot hydration). */
-export function syncTuiLocale(gw: Pick<GatewayClient, 'request'>, rawLanguage: unknown): Promise<void> {
+/** Coalesce one active scope's requests. A failed fetch remains retryable, and
+ * a late response cannot replace a newer session's catalog. */
+export function syncTuiLocale(
+  gw: Pick<GatewayClient, 'request'>,
+  rawLanguage: unknown,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return Promise.resolve(false)
+  }
+
   const lang = normalizeLanguageId(rawLanguage)
 
-  if (lang === lastRequested && (inFlight || lang === getLocale())) {
-    return inFlight ?? Promise.resolve()
+  if (current?.gw === gw && current.lang === lang && current.signal === signal) {
+    return current.promise
   }
 
-  lastRequested = lang
+  const request: LocaleRequest = { gw, lang, signal, promise: Promise.resolve(true) }
+  current = request
 
   if (lang === DEFAULT_LOCALE) {
-    applyLocale(DEFAULT_LOCALE, null)
-    inFlight = null
+    applyLocale(lang, null)
 
-    return Promise.resolve()
+    return request.promise
   }
 
-  const run = fetchCatalogPack((method, params) => gw.request(method, params), lang).then(pack => {
-    // A newer request superseded this one while it was in flight.
-    if (lastRequested === lang) {
-      applyLocale(lang, pack)
+  request.promise = fetchCatalogPack((method, params) => gw.request(method, params), lang).then(pack => {
+    if (current !== request || signal?.aborted) {
+      return false
     }
+
+    applyLocale(pack?.lang ?? lang, pack)
+
+    if (!pack) {
+      current = null
+    }
+
+    return pack !== null
   })
 
-  inFlight = run.finally(() => {
-    if (inFlight === run) {
-      inFlight = null
-    }
-  })
-
-  return inFlight
+  return request.promise
 }
 
-/** Test seam: forget the last requested language. */
 export function resetTuiLocaleSync(): void {
-  inFlight = null
-  lastRequested = ''
+  current = null
 }

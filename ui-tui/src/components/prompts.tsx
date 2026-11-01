@@ -88,8 +88,8 @@ export function approvalAction(
     return { kind: 'choose', choice: opts[n - 1]! }
   }
 
-  if (key.return) {
-    return { kind: 'choose', choice: opts[sel]! }
+  if (key.return && opts[sel]) {
+    return { kind: 'choose', choice: opts[sel] }
   }
 
   if (ch === 'v' || ch === 'V') {

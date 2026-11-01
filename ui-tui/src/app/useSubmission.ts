@@ -172,7 +172,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (!r) {
-            return sys('error: invalid response: shell.exec')
+            return sys(t('errors.invalidResponse', 'shell.exec'))
           }
 
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -182,14 +182,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (r.code !== 0 || !out) {
-            sys(`exit ${r.code}`)
+            sys(t('submission.shellExit', r.code))
           }
         })
         .catch((e: Error) => {
           item?.settle?.(false)
 
           if (focused()) {
-            sys(`error: ${describeShellExecError(e)}`)
+            sys(t('errors.rpc', describeShellExecError(e)))
           }
         })
         .finally(() => {
@@ -384,7 +384,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
           const saved = journaled(() => composerActions.enqueue(queued.text, queued.display, destination, submission.attachments))
 
-          if (saved) { sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`) }
+          if (saved) { sys(t('slashCmd.core.queue.queued', `${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}`)) }
         } else {
           // Attachment commands capture the cleared composer's revision.
           composerActions.clearIn()

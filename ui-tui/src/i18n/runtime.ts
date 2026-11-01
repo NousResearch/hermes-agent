@@ -137,3 +137,12 @@ export const messages = (): Translations => $catalog.get()
 export function t(key: TranslationKey, ...args: unknown[]): string {
   return translateFrom(locale => (locale === DEFAULT_LOCALE ? en : $catalog.get()), $locale.get(), key, args)
 }
+
+/** Gateway-provided ids are optional: an older client keeps the server text. */
+export function translateOptional(key: string | undefined, fallback: string, ...args: unknown[]): string {
+  if (!key) {
+    return fallback
+  }
+
+  return render(resolvePath(messages(), key), args) ?? fallback
+}

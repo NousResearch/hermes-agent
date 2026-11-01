@@ -19,14 +19,14 @@ def auth_headers(api_key: object = "", base_url: str = "") -> dict[str, str]:
     return dict(headers)
 
 
-def metadata_cache_key(base_url: str) -> str:
-    """Partition probe memos by profile and configured header identity, never raw secrets."""
+def metadata_cache_key(base_url: str, api_key: object = "") -> str:
+    """Partition probe memos by profile and credentials without minting callable keys."""
     import json
     from agent.credential_persistence import fingerprint_secret_value
     from hermes_cli.config import get_custom_provider_extra_headers
     from hermes_constants import hermes_home_key
 
-    identity = json.dumps([hermes_home_key(), get_custom_provider_extra_headers(base_url)], sort_keys=True)
+    identity = json.dumps([hermes_home_key(), get_custom_provider_extra_headers(base_url), api_key if isinstance(api_key, str) else ""], sort_keys=True)
     return f"{base_url}#{fingerprint_secret_value(identity)}"
 
 

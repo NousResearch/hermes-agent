@@ -82,15 +82,15 @@ def test_metadata_provider_headers_are_route_scoped_and_stripped_on_redirect(ser
     assert all(not ({"x-consumer", "x-private-auth"} & headers.keys()) for _, headers in seen)
 
 
-def test_metadata_cache_refreshes_after_header_or_profile_change(servers, tmp_path, monkeypatch):
+def test_metadata_cache_refreshes_after_credentials_or_profile_change(servers, tmp_path, monkeypatch):
     """One tenant's catalog cannot mask another header-authenticated tenant's context."""
     seen = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             tenant = self.headers.get("X-Tenant")
-            seen.append(tenant)
-            length = 32768 if tenant == "first-tenant" else 65536
+            seen.append((tenant, self.headers.get("Authorization")))
+            length = 131072 if self.headers.get("Authorization") == "Bearer second-token" else (32768 if tenant == "first-tenant" else 65536)
             body = json.dumps({"data": [{"id": "model", "max_model_len": length}]}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -104,20 +104,38 @@ def test_metadata_cache_refreshes_after_header_or_profile_change(servers, tmp_pa
     monkeypatch.setenv("NO_PROXY", "")
     base_url = "http://metadata.invalid/v1"
     first_home, second_home = tmp_path / "first", tmp_path / "second"
-    for home, tenant in ((first_home, "first-tenant"), (first_home, "second-tenant"), (second_home, "second-tenant")):
+    cases = [(first_home, "first-tenant", "test-token", 32768),
+             (first_home, "second-tenant", "test-token", 65536),
+             (first_home, "second-tenant", "second-token", 131072),
+             (second_home, "second-tenant", "second-token", 131072)]
+    for home, tenant, token, expected in cases:
         home.mkdir(exist_ok=True)
         monkeypatch.setenv("HERMES_HOME", str(home))
         (home / "config.yaml").write_text(json.dumps({"providers": {"gateway": {
             "base_url": base_url, "extra_headers": {"X-Tenant": tenant},
         }}}))
-        metadata = model_metadata.fetch_endpoint_model_metadata(base_url, api_key="test-token")
-        assert metadata["model"]["context_length"] == (32768 if tenant == "first-tenant" else 65536)
+        metadata = model_metadata.fetch_endpoint_model_metadata(base_url, api_key=token)
+        assert metadata["model"]["context_length"] == expected
         model_metadata._endpoint_model_metadata_cache.clear()
         model_metadata._endpoint_model_metadata_cache_time.clear()
-        assert model_metadata.fetch_endpoint_model_metadata(base_url, api_key="test-token") == metadata
+        assert model_metadata.fetch_endpoint_model_metadata(base_url, api_key=token) == metadata
         cache_text = (home / "cache" / "endpoint_model_metadata.json").read_text()
         assert "first-tenant" not in cache_text and "second-tenant" not in cache_text
-    assert seen == ["first-tenant", "second-tenant", "second-tenant"]
+        assert "test-token" not in cache_text and "second-token" not in cache_text
+    assert seen == [("first-tenant", "Bearer test-token"), ("second-tenant", "Bearer test-token"),
+                    ("second-tenant", "Bearer second-token"), ("second-tenant", "Bearer second-token")]
+    minted = []
+
+    def key_source():
+        minted.append(True)
+        return "test-token" if len(minted) == 1 else "second-token"
+
+    # Callable credentials cannot establish a reusable disk identity without minting.
+    metadata = model_metadata.fetch_endpoint_model_metadata(base_url, api_key=key_source)
+    assert metadata["model"]["context_length"] == 65536
+    assert model_metadata.fetch_endpoint_model_metadata(base_url, api_key=key_source)["model"]["context_length"] == 131072
+    assert minted == [True, True]
+    assert (second_home / "cache" / "endpoint_model_metadata.json").read_text() == cache_text
 
 
 @pytest.fixture

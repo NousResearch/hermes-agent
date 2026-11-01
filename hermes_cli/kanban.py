@@ -495,7 +495,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
-            "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
+            "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
         return 0

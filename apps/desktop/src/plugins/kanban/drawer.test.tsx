@@ -434,3 +434,23 @@ describe('blocked task detail', () => {
     )
   })
 })
+
+describe('current human wait detail', () => {
+  it('shows the actual question with its current wait badge', async () => {
+    detail = {
+      ...legacyDetail,
+      task: {
+        ...legacyDetail.task,
+        status: 'review',
+        current_attention: {
+          kind: 'awaiting-answer',
+          run_id: 9,
+          summary: 'Should we retain the existing ownership rule?'
+        }
+      }
+    }
+    openDrawer()
+    expect(await screen.findByText(en.attention['awaiting-answer'])).toBeTruthy()
+    expect(screen.getByText('Should we retain the existing ownership rule?')).toBeTruthy()
+  })
+})

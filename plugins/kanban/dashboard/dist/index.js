@@ -3118,6 +3118,30 @@
     return "";
   }
 
+  function TaskAttention(props) {
+    const { t: i18n } = useI18n();
+    const task = props.task;
+    const attention = task.current_attention;
+    if (!attention) return null;
+    const defaults = {
+      "awaiting-answer": ["Needs your answer", "warning"],
+      "awaiting-test": ["Awaiting your testing", "info"],
+      "run-failed": ["Run failed", "danger"],
+    };
+    const fallback = defaults[attention.kind];
+    const visible = attention.kind === "run-failed"
+      ? !["running", "done", "archived"].includes(task.status) : task.status === "review";
+    if (!fallback || !visible) return null;
+    const badge = attention.kind === "awaiting-test" && attention.badge;
+    const custom = badge && typeof badge.label === "string" && badge.label.trim()
+      && badge.label.length <= 80 && ["success", "info", "warning", "danger"].includes(badge.tone);
+    const tone = custom ? badge.tone : fallback[1];
+    return h("div", { className: "hermes-kanban-task-attention" },
+      h(Badge, { variant: "outline", className: "hermes-kanban-task-attention--" + tone },
+        custom ? badge.label : tx(i18n, "attention." + attention.kind, fallback[0])),
+      props.detail && attention.summary ? h("p", null, attention.summary) : null);
+  }
+
   function TaskCard(props) {
     const { t: i18n } = useI18n();
     const t = props.task;
@@ -3251,6 +3275,7 @@
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
+          h(TaskAttention, { task: t }),
           h("div", { className: "hermes-kanban-card-row hermes-kanban-card-meta" },
             t.assignee
               ? h("span", { className: "hermes-kanban-assignee",
@@ -4018,6 +4043,7 @@
               onClick: function () { props.setEditing(true); },
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
+      h(TaskAttention, { task: t, detail: true }),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),

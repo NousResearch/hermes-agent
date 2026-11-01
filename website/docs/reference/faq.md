@@ -55,7 +55,9 @@ See:
 
 ### Is my data sent anywhere?
 
-API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your local Ollama instance). Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`.
+Your conversations go to the LLM provider you configure (e.g., OpenRouter, your local Ollama instance), and to the backends of tools you use. Conversations, memory, and skills are stored locally in `~/.hermes/`.
+
+Usage metrics are **off by default**. If you opt in (`telemetry.shared_metrics.enabled` and `send`, or `hermes setup telemetry`), Hermes sends aggregate counters to Nous Research once a day; never prompts, responses, files, or paths. Some other requests happen without an opt-in, such as the daily update check (`updates.check: false` turns it off) and the models.dev catalog download. [Privacy and Data](../user-guide/privacy.md) lists every path, its default, and the key that turns it off.
 
 ### Can I use it offline / with local models?
 

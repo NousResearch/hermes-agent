@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/git-worktrees',
         'user-guide/docker',
         'user-guide/security',
+        'user-guide/privacy',
         'user-guide/checkpoints-and-rollback',
       ],
     },

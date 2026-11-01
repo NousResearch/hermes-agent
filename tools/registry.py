@@ -14,7 +14,8 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, fields
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -556,6 +557,8 @@ class ToolRegistry:
                 logger.warning(
                     "Toolset alias collision: '%s' (%s) overwritten by %s", alias, existing, toolset
                 )
+            if existing == toolset:
+                return
             self._toolset_aliases[alias] = toolset
             self._generation += 1
 
@@ -753,12 +756,28 @@ class ToolRegistry:
                         "replacement is intentional, or deregister the existing tool first.",
                         name, toolset, existing.toolset)
                     return
-            target[name] = ToolEntry(
-                name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
-                requires_env=requires_env or [], is_async=is_async,
+            candidate = ToolEntry(
+                name=name, toolset=toolset, schema=deepcopy(schema) if toolset.startswith("mcp-") else schema, handler=handler, check_fn=check_fn,
+                requires_env=(list(requires_env or []) if toolset.startswith("mcp-") else requires_env or []), is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
                 dynamic_schema_overrides=dynamic_schema_overrides)
+            # Routine MCP rediscovery is not a replacement. Keep both the exact entry
+            # and attestation generation when every schema/handler/policy field agrees.
+            # Other tool families retain their registration/CAS replacement semantics.
+            previous = target.get(name)
+            if (toolset.startswith("mcp-") and previous is not None
+                    and all(getattr(previous, f.name) == getattr(candidate, f.name)
+                            for f in fields(ToolEntry) if f.name != "schema")
+                    and json.dumps(previous.schema, sort_keys=True) == json.dumps(candidate.schema, sort_keys=True)):
+                # The route may have reconnected since a cached availability failure.
+                # Re-probe this check without changing registration identity or generation.
+                with _check_fn_cache_lock:
+                    for cache_key in tuple(_check_fn_cache):
+                        if cache_key[0] is check_fn:
+                            _check_fn_cache.pop(cache_key, None)
+                return
+            target[name] = candidate
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,

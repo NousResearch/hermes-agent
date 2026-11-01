@@ -1,5 +1,5 @@
-"""Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
-fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+"""Primary cooldown arming (rate limits and outages) and per-session model rejection markers, shared
+by the fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
 import logging
 import math
 import time
@@ -9,6 +9,16 @@ from agent.error_classifier import FailoverReason
 logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
+# Failovers that say the primary ROUTE is down (not that this request was bad): restoring it on the
+# very next turn re-fails, burns that turn's retries and flaps the "restored" notice (#46856).
+# ``unknown`` only reaches the fallback walk after the retry budget is spent on it.
+_OUTAGE_FAILOVER_REASONS = frozenset({
+    FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout, FailoverReason.auth,
+    FailoverReason.auth_permanent, FailoverReason.upstream_blocked, FailoverReason.model_not_found,
+    FailoverReason.unknown,
+})
+DEFAULT_OUTAGE_COOLDOWN_SECONDS = 300
+_MAX_COOLDOWN_SECONDS = 14400
 
 
 def _provider_reset_delay(reset_at) -> float | None:
@@ -42,6 +52,88 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     return True
 
 
+def _leaving_primary(agent) -> bool:
+    """False when chain-switching from an active fallback: the primary was not the failing source.
+    A fallback on the primary's provider with another model is still a fallback, so the route must
+    match on provider AND model before an outage there may re-bench the primary."""
+    if not getattr(agent, "_fallback_activated", False):
+        return True
+    rt = getattr(agent, "_primary_runtime", None) or {}
+
+    def norm(value) -> str:
+        return str(value or "").strip().lower()
+
+    return bool(norm(rt.get("provider"))) and all(
+        norm(getattr(agent, field, "")) == norm(rt.get(field)) for field in ("provider", "model"))
+
+
+def outage_cooldown_seconds() -> float:
+    """``fallback.outage_cooldown_seconds`` (0 = restore the primary every turn, the old behaviour),
+    bounded to [0, 4 h]; an unreadable or invalid value keeps the default."""
+    from hermes_cli.config import load_config
+    try:
+        fallback_cfg = (load_config() or {}).get("fallback")
+    except Exception:  # health: allow BLE001 -- a config read failure must not abort the fallback swap
+        fallback_cfg = None
+    raw = fallback_cfg.get("outage_cooldown_seconds") if isinstance(fallback_cfg, dict) else None
+    try:
+        seconds = float(DEFAULT_OUTAGE_COOLDOWN_SECONDS if raw is None else raw)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_OUTAGE_COOLDOWN_SECONDS
+    return min(max(seconds, 0.0), _MAX_COOLDOWN_SECONDS) if math.isfinite(seconds) else DEFAULT_OUTAGE_COOLDOWN_SECONDS
+
+
+def _arm_outage_cooldown(agent, reason: FailoverReason | None, reset_at=None) -> int | None:
+    """Bench a primary that failed over for an outage for ``fallback.outage_cooldown_seconds`` (or a
+    longer provider-declared reset), so later turns stay on the working fallback instead of retrying
+    the dead route. ``restore_primary_runtime`` sends one probe turn at expiry (``_primary_probe_pending``)."""
+    if reason not in _OUTAGE_FAILOVER_REASONS or not _leaving_primary(agent):
+        return None
+    configured = outage_cooldown_seconds()
+    if configured <= 0:
+        return None
+    seconds = math.ceil(min(max(configured, _provider_reset_delay(reset_at) or 0), _MAX_COOLDOWN_SECONDS))
+    agent._rate_limited_until = time.monotonic() + seconds
+    agent._primary_outage_cooldown = True
+    logging.info("Primary outage (%s): staying on the fallback for %d s before one probe turn", reason.value, seconds)
+    return seconds
+
+
+def arm_primary_cooldown(agent, reason: FailoverReason | None, reset_at=None) -> int | None:
+    """Arm the primary's cooldown for a failover that leaves it; seconds armed, or None."""
+    agent._primary_probe_pending = False
+    if reason in _RATE_LIMIT_FAILOVER_REASONS:
+        # A backup's own throttle says nothing about the primary: its outage probe stays owed.
+        if _leaving_primary(agent):
+            agent._primary_outage_cooldown = False
+        return _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    return _arm_outage_cooldown(agent, reason, reset_at=reset_at)
+
+
+def probe_failed_fast(agent, reason: FailoverReason | None) -> bool:
+    """True on the primary's probe turn after an outage cooldown when it fails for an outage again:
+    fail over now instead of spending the retry budget on a route that just proved still down."""
+    return bool(getattr(agent, "_primary_probe_pending", False)) and reason in _OUTAGE_FAILOVER_REASONS
+
+
+def begin_primary_probe(agent) -> bool:
+    """Called as the primary is reinstated: True when this turn is the probe after an outage cooldown."""
+    probing = bool(getattr(agent, "_primary_outage_cooldown", False))
+    agent._primary_outage_cooldown = False
+    agent._primary_probe_pending = probing
+    return probing
+
+
+def primary_return_notice(agent, previous_model: str, previous_provider: str, probing: bool) -> str:
+    """The status line for a primary reinstated after a real fallback. A probe after an outage
+    cooldown is not a recovery yet, so it is not announced as one."""
+    if probing:
+        return (f"🔁 Trying primary model {agent.model} via {agent.provider} again after its outage cooldown; "
+                f"fallback {previous_model} via {previous_provider} takes over if it is still down.")
+    return (f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+            f"fallback {previous_model} via {previous_provider} is no longer active.")
+
+
 def _arm_rate_limit_cooldown(
     agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:
@@ -53,11 +145,7 @@ def _arm_rate_limit_cooldown(
     Only arm when leaving the primary: chain-switching from an active fallback means the primary
     was not the failing source. Return the armed cooldown in seconds, or None when not armed.
     """
-    if reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        return None
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-    if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
+    if reason not in _RATE_LIMIT_FAILOVER_REASONS or not _leaving_primary(agent):
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1

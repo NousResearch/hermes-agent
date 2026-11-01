@@ -22,8 +22,9 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import (
         _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
-        _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
+        _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
+    from agent.fallback_reasoning import rebind_fallback_reasoning, record_primary_reasoning
     from hermes_cli.fallback_config import resolve_entry_api_key
     # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
     # of falling through to OpenRouter defaults.
@@ -59,6 +60,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         elif not api_mode_explicit and api_mode == "chat_completions":
             api_mode = _fallback_api_mode_resolved(agent, provider, model, base_url)
 
+    if not getattr(agent, "_fallback_activated", False):
+        record_primary_reasoning(agent)  # leaving the session route: restore puts this effort back
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
     # Clear the per-config context_length override so the new model's own context window is
     # resolved instead of the previous model's stale value (#22387).
@@ -88,7 +91,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         provider=provider, base_url=base_url, api_mode=api_mode, model=model)
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
     _update_fallback_context_compressor(agent)
-    _reresolve_fallback_reasoning_config(agent)
+    rebind_fallback_reasoning(agent, entry)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
     return old_model, old_provider
 
@@ -124,10 +127,12 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
     if getattr(agent, "_compression_feasibility_checked", False) is True:
         from agent.conversation_compression import revalidate_compression_feasibility
         revalidate_compression_feasibility(agent)
-    # Older snapshots have no reasoning_config; keep the current value.
-    saved_reasoning = rt.get("reasoning_config")
-    if saved_reasoning is not None:
-        agent.reasoning_config = dict(saved_reasoning)
+    # A recorded None is the route's own default and must replace a fallback's per-model override.
+    # Older snapshots have no key; keep the current value. Fallback-only bookkeeping (a user's
+    # effort change while a fallback served) is reinstall_primary_runtime's, not this installer's.
+    if "reasoning_config" in rt:
+        saved_reasoning = rt["reasoning_config"]
+        agent.reasoning_config = dict(saved_reasoning) if saved_reasoning else None
     # Reset the stale-call circuit breaker: its streak measured the route being left.
     from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
     _reset_stale_streak(agent)
@@ -142,7 +147,11 @@ def reinstall_primary_runtime(
 ) -> None:
     """Put ``agent`` back on its ``_primary_runtime`` snapshot ``rt`` and clear the fallback state."""
     from agent.agent_runtime_helpers import _rebind_primary_credential_pool
+    from agent.fallback_reasoning import _UNSET, restored_reasoning
+    serving_reasoning = getattr(agent, "reasoning_config", None)
+    decided = restored_reasoning(agent, rt)  # read before the snapshot overwrites the live effort
     reinstall_runtime_snapshot(agent, rt)
+    agent.reasoning_config = serving_reasoning if decided is _UNSET else decided
     _rebind_primary_credential_pool(
         agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched
     )

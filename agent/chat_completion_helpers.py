@@ -2001,20 +2001,6 @@ def _update_fallback_context_compressor(agent) -> None:
         revalidate_compression_feasibility(agent)
 
 
-def _reresolve_fallback_reasoning_config(agent) -> None:
-    """Per-model override > global reasoning_effort (YAML False = disabled); a config load
-    failure keeps the current reasoning_config rather than killing the swap."""
-    try:
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
-        # because a config load failure must not kill the swap.
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
-        agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
-        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
-    except Exception as _reasoning_err:
-        logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
-
-
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
@@ -2054,10 +2040,11 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.fallback_cooldown import arm_primary_cooldown, switch_deferred_by_reset
+    from agent.fallback_reasoning import effort_change_note
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
-    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    cooldown_seconds = arm_primary_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)
@@ -2074,6 +2061,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
 
         try:
             from agent.route_binding import bind_route_entry
+            departing_reasoning = dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None
             bound = bind_route_entry(agent, fb, fb_provider, fb_model)
             if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
@@ -2085,7 +2073,8 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."
+                + effort_change_note(departing_reasoning, agent.reasoning_config))
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."

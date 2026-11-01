@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frCronControl } from './fr_cron_control'
 import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
@@ -3375,6 +3376,7 @@ export const frOverrides = {
       'Changement de modèle annulé — vous avez refusé l’avertissement sur le niveau d’entraînement sur les données.'
   },
   cron: {
+    control: frCronControl,
     close: 'Fermer le cron',
     title: 'Tâches planifiées',
     count: count => `${count} ${count === 1 ? 'tâche' : 'tâches'}`,
@@ -3691,7 +3693,6 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
-      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',
@@ -4950,7 +4951,7 @@ export const frOverrides = {
         truncated: {
           title: 'La réponse a été écourtée',
           body: (_provider, model) =>
-            `${model || 'Le modèle'} s'est arrêté avant la fin ; sa dernière étape n'a donc pas été exécutée. Continuez pour reprendre là où il s'est arrêté.`
+            `${model || 'Le modèle'} s'est arrêté avant d'avoir fini sa réponse. Continuez pour reprendre là où il s'est arrêté.`
         },
         invalid_response: {
           title: 'Impossible de lire la réponse',

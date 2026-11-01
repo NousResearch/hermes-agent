@@ -2430,6 +2430,7 @@
             },
             "outcome": {
               "enum": [
+                "cancelled",
                 "failed",
                 "missed",
                 "skipped",

@@ -20,7 +20,7 @@ from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
 from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
@@ -175,11 +175,10 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
-    "cache/bws_cache.json", "cache/bws_cache.enc.json",
+    *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
     "workspace/meetings/node_token.json",  # google_meet node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
     ".copilot_jwt.json",            # exchanged Copilot API token
-    "runtime/photon-sidecar.json",  # Photon sidecar auth token
     "proxy",                        # iron-proxy CA key + proxy tokens
     "chrome-debug",                 # /browser connect Chrome profile (cookies, logins)
     "home",                         # subprocess HOME: gh, git, ssh, npm and skill-CLI credentials
@@ -1480,27 +1479,17 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
-    """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
-    the placeholder header). Never overwrites an existing profile ``.env``.
-
-    Profiles created before the dashboard/CLI started seeding a ``.env`` (PR #44792) have none, so once the
-    Channels/Keys endpoints became profile-scoped those profiles stopped inheriting the root install's
-    credentials and showed everything as unconfigured. To avoid breaking anyone on update, copy the DEFAULT
-    install's ``.env`` into each named profile that lacks one — that preserves the effective credentials
-    those profiles were already running with (they previously read the root ``.env`` via the process
-    environment). Users can then diverge per profile from there.
+    """Seed the placeholder ``.env`` header into every named profile lacking one; never
+    overwrites an existing file. It never copies the default's ``.env``: secrets are
+    profile-scoped, and a copied bot token makes two adapters fight over one bot.
     """
     backfilled: list[str] = []
-    default_env = _get_default_hermes_home() / ".env"
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
             continue
         try:
-            if default_env.is_file():
-                shutil.copy2(default_env, env_path)
-            else:
-                env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
+            env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)
             backfilled.append(entry.name)
         except OSError as e:

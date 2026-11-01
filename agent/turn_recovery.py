@@ -1258,7 +1258,7 @@ def max_retries_exhausted_result(
         # text carries the plain what-happened + next step itself.
         _reset_at = classified.error_context.get("reset_at")
         _final_response = exhausted_copy(
-            classified.reason.value, label=provider_label_for(provider), attempts=attempts,
+            classified.reason.value, label=provider_label_for(provider), attempts=attempts, error=api_error,
             summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
         )
         if _welcome_hint:

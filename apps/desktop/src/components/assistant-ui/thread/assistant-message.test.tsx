@@ -27,6 +27,12 @@ const startManualProviderOAuth = vi.hoisted(() => vi.fn())
 const requestModelMenuToggle = vi.hoisted(() => vi.fn<() => boolean>(() => true))
 const requestComposerSubmit = vi.hoisted(() => vi.fn<(text: string, options?: unknown) => boolean>(() => true))
 const requestComposerInsert = vi.hoisted(() => vi.fn())
+const openExternalLink = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/external-link', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  openExternalLink: (href: string) => openExternalLink(href)
+}))
 
 vi.mock('@/app/chat/composer/focus', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -512,13 +518,84 @@ describe('error card layout (Error System Overhaul)', () => {
   it('names an out-of-credits turn on its card too: the banner may be off screen', async () => {
     render(
       <MemoryRouter>
+        <Harness assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'nous', retryable: false })} />
+      </MemoryRouter>
+    )
+
+    expect(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings })).toBeTruthy()
+  })
+
+  it("opens the failing provider's own billing page from this chat's billing wall", async () => {
+    const { $activeSessionId } = await import('@/store/session')
+    const { clearBillingBlock, setBillingBlock } = await import('@/store/billing-block')
+    $activeSessionId.set('wall-session')
+    setBillingBlock('wall-session', {
+      billing_url: 'https://platform.openai.com/settings/organization/billing',
+      is_nous: false,
+      message: 'out of credits',
+      provider: 'openai',
+      provider_label: 'OpenAI'
+    } as never)
+
+    try {
+      render(
+        <MemoryRouter>
+          <Harness
+            assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'openai', retryable: false })}
+          />
+        </MemoryRouter>
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings }))
+      expect(openExternalLink).toHaveBeenCalledWith('https://platform.openai.com/settings/organization/billing')
+    } finally {
+      clearBillingBlock()
+      $activeSessionId.set(null)
+    }
+  })
+
+  it('never retargets an older card at a later wall from another provider in the same chat', async () => {
+    openExternalLink.mockClear()
+    const { $activeSessionId } = await import('@/store/session')
+    const { clearBillingBlock, setBillingBlock } = await import('@/store/billing-block')
+    $activeSessionId.set('wall-session')
+    setBillingBlock('wall-session', {
+      billing_url: 'https://platform.openai.com/settings/organization/billing',
+      is_nous: false,
+      message: 'out of credits',
+      model: 'gpt-5',
+      provider: 'openai',
+      provider_label: 'OpenAI'
+    })
+
+    try {
+      render(
+        <MemoryRouter>
+          <Harness
+            assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'nous', retryable: false })}
+          />
+        </MemoryRouter>
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings }))
+      expect(openExternalLink).not.toHaveBeenCalled()
+    } finally {
+      clearBillingBlock()
+      $activeSessionId.set(null)
+    }
+  })
+
+  it("never sends a third-party provider's credit failure to Nous billing without its billing link", async () => {
+    render(
+      <MemoryRouter>
         <Harness
           assistant={failedMessage({ code: 'billing', layer: 'billing', provider: 'openai', retryable: false })}
         />
       </MemoryRouter>
     )
 
-    expect(await screen.findByRole('button', { name: en.assistant.thread.errorOpenBillingSettings })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: en.assistant.thread.errorSwitchProvider })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.assistant.thread.errorOpenBillingSettings })).toBeNull()
   })
 })
 

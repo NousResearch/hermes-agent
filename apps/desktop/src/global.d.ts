@@ -445,6 +445,10 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
       setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
+      /** Wake only this window's preview guest while an automation script is pending. */
+      beginPreviewGuestActivity?: (webContentsId: number) => Promise<number>
+      endPreviewGuestActivity?: (token: number) => Promise<void>
+      executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load

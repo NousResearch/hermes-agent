@@ -116,11 +116,15 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
         return tool_error(error)
     if callback is None:
         return tool_error(_UNAVAILABLE)
+    from agent.redact import redact_approval_display
     from tools.human_input_hooks import human_input_request
+    # Every surface renders the display copy of the question; the result echoes the raw text. Choices stay
+    # raw: a picked choice is the answer value.
+    shown = [{**q, "question": redact_approval_display(q["question"])} for q in normalized]
     # Observers see the questions only; the answers stay in the tool result.
-    with human_input_request("clarify", prompt="\n".join(q["question"] for q in normalized)) as human:
+    with human_input_request("clarify", prompt="\n".join(q["question"] for q in shown)) as human:
         try:
-            reply = callback(normalized)
+            reply = callback(shown)
             human.outcome = str(reply.get("outcome") or "")
             return _result(normalized, reply)
         except Exception as exc:

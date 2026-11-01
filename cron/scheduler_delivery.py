@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, List, Optional
 
 
@@ -1504,6 +1505,16 @@ def _deliver_via_live_adapter(
     return delivered
 
 
+def _run_send_in_fresh_loop(make_send):
+    """Close a fresh send coroutine if the native event-loop runner rejects it."""
+    fresh_coro = make_send()
+    try:
+        return asyncio.run(fresh_coro)
+    except BaseException:
+        fresh_coro.close()
+        raise
+
+
 def _standalone_send(
     t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
     """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
@@ -1559,7 +1570,9 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
+                return pool.submit(
+                    contextvars.copy_context().run, partial(_run_send_in_fresh_loop, _send)
+                ).result(
                     timeout=30), None
             finally:
                 pool.shutdown(wait=False)

@@ -78,19 +78,20 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Rápida',
   tierUltrafast: 'Ultrarrápida',
   tierHint: 'Solo en modelos que la ofrecen.',
-  turnsLabel: 'Turn limit',
-  turnsPlaceholder: 'Uses the global limit',
-  turnsHint: 'Maximum turns for a subagent on this route.',
-  timeoutLabel: 'Timeout (seconds)',
-  timeoutPlaceholder: 'Uses the global timeout',
-  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
+  turnsLabel: 'Límite de turnos',
+  turnsPlaceholder: 'Usa el límite global',
+  turnsHint: 'Turnos máximos para un subagente en esta ruta.',
+  timeoutLabel: 'Tiempo de espera (segundos)',
+  timeoutPlaceholder: 'Usa el tiempo de espera global',
+  timeoutHint:
+    'Segundos de inactividad antes de detener un subagente en esta ruta. 0 lo desactiva; los valores menores que 30 usan 30.',
   optional: 'opcional',
   errors: {
     required: 'Obligatorio',
     spaces: 'Sin espacios',
     duplicate: 'Otra ruta ya usa este nombre',
-    turns: 'Use a whole number of 1 or more.',
-    seconds: 'Use a whole number of 0 or more.'
+    turns: 'Usa un número entero de 1 o más.',
+    seconds: 'Usa un número entero de 0 o más.'
   },
   saveRoute: 'Guardar ruta',
   createRoute: 'Añadir ruta',

@@ -75,19 +75,20 @@ export const deDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'Schnell',
   tierUltrafast: 'Ultraschnell',
   tierHint: 'Nur bei Modellen, die das anbieten.',
-  turnsLabel: 'Turn limit',
-  turnsPlaceholder: 'Uses the global limit',
-  turnsHint: 'Maximum turns for a subagent on this route.',
-  timeoutLabel: 'Timeout (seconds)',
-  timeoutPlaceholder: 'Uses the global timeout',
-  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
+  turnsLabel: 'Zuglimit',
+  turnsPlaceholder: 'Verwendet das globale Limit',
+  turnsHint: 'Maximale Anzahl Züge für einen Subagenten auf dieser Route.',
+  timeoutLabel: 'Zeitlimit (Sekunden)',
+  timeoutPlaceholder: 'Verwendet das globale Zeitlimit',
+  timeoutHint:
+    'Sekunden ohne Aktivität, bevor ein Subagent auf dieser Route gestoppt wird. 0 schaltet es aus; Werte unter 30 werden zu 30.',
   optional: 'optional',
   errors: {
     required: 'Erforderlich',
     spaces: 'Keine Leerzeichen',
     duplicate: 'Eine andere Route verwendet diesen Namen bereits',
-    turns: 'Use a whole number of 1 or more.',
-    seconds: 'Use a whole number of 0 or more.'
+    turns: 'Verwenden Sie eine ganze Zahl ab 1.',
+    seconds: 'Verwenden Sie eine ganze Zahl ab 0.'
   },
   saveRoute: 'Route speichern',
   createRoute: 'Route hinzufügen',

@@ -67,19 +67,20 @@ export const arDelegationRouting: DelegationRoutingTranslations = {
   tierFast: 'سريعة',
   tierUltrafast: 'فائقة السرعة',
   tierHint: 'فقط في النماذج التي توفرها.',
-  turnsLabel: 'Turn limit',
-  turnsPlaceholder: 'Uses the global limit',
-  turnsHint: 'Maximum turns for a subagent on this route.',
-  timeoutLabel: 'Timeout (seconds)',
-  timeoutPlaceholder: 'Uses the global timeout',
-  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
+  turnsLabel: 'حد الأدوار',
+  turnsPlaceholder: 'يستخدم الحد العام',
+  turnsHint: 'الحد الأقصى للأدوار لوكيل فرعي على هذا المسار.',
+  timeoutLabel: 'المهلة (بالثواني)',
+  timeoutPlaceholder: 'يستخدم المهلة العامة',
+  timeoutHint:
+    'ثوانٍ من الخمول قبل إيقاف وكيل فرعي على هذا المسار. القيمة 0 تعطّلها؛ والقيم الأقل من 30 تُستخدم كـ 30.',
   optional: 'اختياري',
   errors: {
     required: 'مطلوب',
     spaces: 'بلا مسافات',
     duplicate: 'مسار آخر يستخدم هذا الاسم بالفعل',
-    turns: 'Use a whole number of 1 or more.',
-    seconds: 'Use a whole number of 0 or more.'
+    turns: 'استخدم عددًا صحيحًا يساوي 1 أو أكثر.',
+    seconds: 'استخدم عددًا صحيحًا يساوي 0 أو أكثر.'
   },
   saveRoute: 'حفظ المسار',
   createRoute: 'إضافة مسار',

@@ -72,7 +72,7 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
   turnsHint: 'Maximum turns for a subagent on this route.',
   timeoutLabel: 'Timeout (seconds)',
   timeoutPlaceholder: 'Uses the global timeout',
-  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables.',
+  timeoutHint: 'Idle seconds before a subagent on this route is stopped. 0 disables; values under 30 use 30.',
   optional: 'optional',
   errors: {
     required: 'Required',

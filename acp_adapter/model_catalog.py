@@ -246,7 +246,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         current_provider=normalized_provider, current_model=model, current_base_url=base_url,
     )
     payload = build_models_payload(
-        context, explicit_only=True, include_unconfigured=False, picker_hints=False,
+        context, explicit_only=True, include_unconfigured=False, picker_hints=False, for_picker=True,
         canonical_order=True, pricing=False, capabilities=False, refresh=False,
         probe_custom_providers=False, probe_current_custom_provider=False, max_models=ACP_MAX_MODELS_PER_PROVIDER,
     )

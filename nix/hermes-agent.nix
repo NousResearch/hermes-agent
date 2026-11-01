@@ -125,7 +125,7 @@ let
   };
 
   hermesWeb = callPackage ./web.nix {
-    inherit hermesNpmLib generatedIcons;
+    inherit hermesNpmLib generatedIcons rev branch dirty;
   };
 
   # The store is read-only, so the Webapp is built here and never by `hermes webapp`.

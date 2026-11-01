@@ -454,8 +454,9 @@ class MemoryManager:
         clean_user_content = memory_user_text(user_content) if providers else None
         if not clean_user_content or not self._owner_allows("sync_turn"):
             return
+        from agent.message_metadata import without_withheld_prompts
         clean_user_content, assistant_content, redacted_messages = _redact_for_provider(
-            clean_user_content, assistant_content, messages)
+            clean_user_content, assistant_content, without_withheld_prompts(messages))
         optional_kwargs = {"messages": memory_messages(redacted_messages), "turn_author": turn_author}
 
         def _sync(provider: MemoryProvider) -> None:

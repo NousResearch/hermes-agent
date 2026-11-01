@@ -195,6 +195,31 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_pause_requeues_checkpointed_worker_and_preserves_resume_summary(worker_env):
+    """A cooperative checkpoint pause is terminal, but leaves the card runnable (#138729)."""
+    from tools import kanban_tools  # register the actual handler
+    from tools.registry import registry
+
+    out = json.loads(registry.dispatch(
+        "kanban_pause", {"summary": "Checkpoint committed at abc123."}))
+    assert out["ok"] is True
+    assert out["status"] == "ready"
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task.status == "ready"
+        assert task.current_run_id is None
+        assert run.outcome == "paused"
+        assert run.summary == "Checkpoint committed at abc123."
+        assert "Checkpoint committed at abc123." in kb.build_worker_context(conn, worker_env)
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the
@@ -571,11 +596,11 @@ def test_schedule_goal_mode_refused(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_schedule_exposed_to_codex_runtime_workers():
+def test_pause_exposed_to_codex_runtime_workers():
     """Codex app-server workers only reach Hermes tools named in EXPOSED_TOOLS."""
     from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
-    assert "kanban_schedule" in EXPOSED_TOOLS
+    assert "kanban_pause" in EXPOSED_TOOLS
 
 
 def test_block_dependency_without_open_parent_is_rekinded(worker_env):

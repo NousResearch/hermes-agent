@@ -23,7 +23,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_PAUSE_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ def _check_kanban_orchestrator_mode() -> bool:
 # (heartbeat / attach / attach_url) do not terminate a run and are not gated.
 _RUN_LIFECYCLE_TOOLS = frozenset({
     "kanban_complete", "kanban_block", "kanban_schedule",
-    "kanban_request_review", "kanban_request_changes",
+    "kanban_request_review", "kanban_request_changes", "kanban_pause",
 })
 
 class _Reject(Exception):
@@ -929,6 +929,19 @@ def _handle_request_changes(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "ready", implementer=detail)
 
 
+@_kanban_handler("kanban_pause")
+def _handle_pause(args: dict, **kw) -> str:
+    """Release a checkpointed task for its next worker without marking it done."""
+    tid = _worker_guard("kanban_pause", args)
+    summary = _redact(_require_text(
+        args, "summary", "summary is required — identify the checkpoint and next step"))
+    with _board(args.get("board")) as (kb, conn):
+        ok = kb.pause_task(conn, tid, summary=summary, expected_run_id=_worker_run_id(tid))
+        _check(ok, f"could not pause {tid} (unknown id, not running, or stale run)")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, status=task.status if task else "ready")
+
+
 @_kanban_handler("kanban_heartbeat")
 def _handle_heartbeat(args: dict, **kw) -> str:
     """Signal liveness: extend the claim TTL AND record a heartbeat event.
@@ -1300,6 +1313,7 @@ _TOOLS = (
     ("kanban_schedule", KANBAN_SCHEDULE_SCHEMA, _handle_schedule, "⏰"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
+    ("kanban_pause", KANBAN_PAUSE_SCHEMA, _handle_pause, "⏸"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),
     ("kanban_comment", KANBAN_COMMENT_SCHEMA, _handle_comment, "💬"),
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),

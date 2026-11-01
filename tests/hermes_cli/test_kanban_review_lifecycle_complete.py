@@ -624,6 +624,40 @@ def test_goal_run_status_is_bound_to_original_run(conn) -> None:
     assert current.current_run_id == successor.current_run_id
 
 
+def test_pause_returns_a_worker_to_ready_and_is_terminal_for_its_goal_run(conn) -> None:
+    task_id = kb.create_task(conn, title="Checkpointed work", assignee="builder")
+    worker = kb.claim_task(conn, task_id)
+    assert worker is not None
+
+    assert kb.pause_task(
+        conn,
+        task_id,
+        summary="Checkpoint abc123; resume by running focused tests.",
+        expected_run_id=worker.current_run_id,
+    )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.current_run_id is None
+    assert kb.goal_run_status(conn, task_id, worker.current_run_id) == "paused"
+    paused_run = _run(kb.list_runs(conn, task_id), "paused")
+    assert paused_run.summary == "Checkpoint abc123; resume by running focused tests."
+
+
+def test_pause_preserves_a_review_worker_phase(conn) -> None:
+    task_id, reviewer = _claimed_review(conn, "Checkpointed review")
+
+    assert kb.pause_task(
+        conn, task_id, summary="Review checkpointed for the next reviewer.",
+        expected_run_id=reviewer.current_run_id,
+    )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "review"
+
+
 def test_parked_review_approval_without_evidence_still_creates_audit_run(conn) -> None:
     task_id = kb.create_task(conn, title="Manual approval", assignee="reviewer")
     assert kb.request_review(conn, task_id, summary="implementation handoff")

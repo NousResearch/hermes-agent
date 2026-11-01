@@ -51,6 +51,8 @@ import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
+  /** Overlay mounts drop the page's own titlebar band: the card supplies it. */
+  overlay?: boolean
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
@@ -146,7 +148,7 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   }
 }
 
-export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+export function MessagingView({ overlay = false, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
   // Shared settings "Applies to" scope, request-shaped (undefined → follow
@@ -553,6 +555,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   return (
     <PageSearchShell
       {...props}
+      overlay={overlay}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}

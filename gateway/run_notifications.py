@@ -1747,7 +1747,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # LOCAL PATCH: snapping to the next line boundary must never discard the payload.
+            # A long single-line tail (a teammate's reply from message_agent is one JSON line,
+            # its own newlines escaped) has its only real "\n" at the very end, so the stock
+            # snap cut everything and the notification read
+            # "[… output truncated — showing last 0 chars]" with the whole reply dropped —
+            # the sender then had to dig the answer out of the delivery receipt by hand.
+            # Keep the raw tail whenever snapping would leave nothing.
+            _snapped = _tail[_nl + 1:] if _nl != -1 else _tail
+            _tail = _snapped if _snapped.strip() else _tail
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

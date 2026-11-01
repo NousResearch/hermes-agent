@@ -240,6 +240,7 @@ exa = ["exa-py==2.26.0"]
 firecrawl = ["firecrawl-py==4.53.2"]
 parallel-web = ["parallel-web==0.6.0"]
 ddgs = ["ddgs==9.16.0"]
+yandex-ai-studio-sdk = ["yandex-ai-studio-sdk==0.22.1"]
 # Image generation backends
 fal = ["fal-client==0.14.1"]
 # Edge TTS — default TTS provider but still optional (users can pick

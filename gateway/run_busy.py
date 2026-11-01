@@ -630,6 +630,7 @@ class GatewayBusySessionMixin:
         # A bare "yes" while blocked on a dangerous-command approval must reach the approval handler,
         # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
         # has_blocking_approval so a conversational "yes" never fires a command.
+        _approval_handled = False
         try:
             from tools.approval import has_blocking_approval
             # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
@@ -657,6 +658,7 @@ class GatewayBusySessionMixin:
                     # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
                     event.text = f"/{_verb} {_normalized_args}".rstrip()
                     _reply = await _approval_handler(event)
+                    _approval_handled = True
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
@@ -668,6 +670,12 @@ class GatewayBusySessionMixin:
                             await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
                     return True
         except Exception:
+            if _approval_handled:
+                logger.warning(
+                    "Plain-text approval was resolved but its confirmation failed for session %s",
+                    session_key, exc_info=True,
+                )
+                return True
             logger.warning(
                 "Plain-text approval routing failed for session %s; "
                 "falling through to busy handling", session_key, exc_info=True,

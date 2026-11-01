@@ -329,6 +329,9 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord pattern. |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
+| `HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS` | Debounce window for Telegram photo/album bursts (default: `0.8`). |
+| `HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS` | Debounce window for rapid consecutive Telegram text messages (default: `0.3`, clamped `0.08`–`2.0`). |
+| `HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Extra window to detect client-side splits of one long Telegram message (default: `1.0`, clamped between the text batch delay and `4.0`). |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |
 | `DISCORD_ALLOW_ALL_USERS` | Allow any Discord user to trigger the bot (dev only). |

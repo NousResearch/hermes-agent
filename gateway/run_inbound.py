@@ -221,7 +221,17 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         source = event.source
 
-        if not self._is_user_authorized_for_source(source):
+        # A durable admission the authority is EXECUTING was already authorized where it was
+        # admitted: a native row passed this very gate before ``admit_message`` ordered it, and an
+        # authority-door row (``session.submit``) carries the authority's own principal/capability
+        # decision — never the transport's. The allowlist below is about INBOUND traffic; a cold
+        # Desktop row rebuilt as an API-family source (session_desktop_recovery) has no
+        # allowlistable messaging identity (its row ``user_id`` is a backend stamp like
+        # 'basic:admin'), so re-running the verdict here default-denied every claimed viewer turn
+        # into a silently completed no-op — the same settle-without-turn GW-2 forbids (cf. the
+        # executing-admission exemptions in _hm_post_admission_consume/_hm_pre_gateway_dispatch_hook).
+        _executing_admission = executing_admission.get()
+        if not _executing_admission and not self._is_user_authorized_for_source(source):
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
@@ -243,7 +253,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+        # (Nor re-judge: an executing admission's loop-guard verdict was settled at admission.)
+        if (not _executing_admission and not getattr(event, "_bot_loop_admitted", False)
+                and not self._admit_bot_message_for_source(source)):
             return None
         return event, source, False
 

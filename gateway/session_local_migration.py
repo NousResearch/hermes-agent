@@ -70,7 +70,23 @@ def resolve_local_target(authority, actor, sid):
         authority.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import restore_local_session
         return restore_local_session(authority, ref.session_id) if bound else ref
-    return adopt_legacy_session(authority, actor, row)
+    try:
+        return adopt_legacy_session(authority, actor, row)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'not_found':
+            raise
+        # A login-stamped Desktop row (the served dashboard's ``basic:admin`` stamp)
+        # is a foreign owner for every other caller, the host's own native peer included, so
+        # adoption refuses — but the local Desktop must still open the machine's own chat.
+        # The desktop family's own floor (gateway/session_desktop_recovery, the same mount the
+        # authorize chain uses for cold rows) rebuilds the source from the row's columns and
+        # takes NO ownership: no receipt, no policy commit, the stamp and its claim untouched.
+        # resume() supplies the compression TIP, that floor mounts only the lineage ROOT (a
+        # child would fork the FIFO): map tip→root here — the root mount still executes on the
+        # physical tip. Outside this fall-through the floor's own child refusal stands.
+        from gateway.session_desktop_recovery import restore_desktop_session
+        lineage = authority.db.get_compression_lineage(sid)
+        return restore_desktop_session(authority, lineage[0] if lineage else sid)
 
 
 def legacy_launch_params(row):

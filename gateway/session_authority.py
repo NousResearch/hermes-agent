@@ -210,7 +210,16 @@ class SessionAuthority:
                 if (restore_routed_session(self, ref.session_id) is None
                         and not mount_history(self, actor, ref.session_id)):
                     from gateway.session_api import restore_api_session
-                    restore_api_session(self, ref.session_id)
+                    try:
+                        restore_api_session(self, ref.session_id)
+                    except RuntimeStoreError as exc:
+                        if exc.reason != 'not_found':
+                            raise
+                        # No API binding: a cold Desktop-client row (source='desktop') carries no
+                        # receipt/lane/binding key at all, so without this family it answers bare
+                        # not_found on every resume after a restart (gateway/session_desktop_recovery).
+                        from gateway.session_desktop_recovery import restore_desktop_session
+                        restore_desktop_session(self, ref.session_id)
         from gateway.session_history_mount import is_history_mount, require_history_access
         if is_history_mount(self.sessions[ref.session_id]):
             require_history_access(self, actor, ref.session_id, capability)

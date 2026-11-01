@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_INTERVAL_SECONDS = 30
 # Backstop tick budget so an unattended loop can't run forever. 0 = unlimited; config loops.max_ticks.
 DEFAULT_MAX_TICKS = 100
+# Consecutive slash ticks that show the user nothing (unknown command, dispatch error) before
+# the loop self-pauses instead of burning the whole tick budget silently.
+SLASH_NOOP_PAUSE_AFTER = 3
 # Self-paced mode: start at the floor, double while replies are unchanged, cap at the
 # ceiling, snap back to the floor on any change.
 DEFAULT_SELF_PACED_FLOOR_SECONDS = 60
@@ -192,11 +195,20 @@ class LoopState:
     # double-firing mid-turn and tells the post-turn hook the turn that just ended was ours.
     awaiting_response: bool = False
     last_response_digest: str = ""    # self-paced change detection
+    # Consecutive slash ticks with no output and no send-turn; persisted so a restart can't
+    # reset the pause countdown. Old state_meta rows without the key deserialize to 0.
+    slash_noop_streak: int = 0
     paused_reason: Optional[str] = None
     last_stop_reason: Optional[str] = None
     # Gateway routing (platform / chat_id / chat_type / thread_id) captured at creation so the
     # idle watcher can inject ticks into the right chat. Empty for CLI/TUI (own schedulers).
     route: dict[str, str] = field(default_factory=dict)
+    # sys-8xces5: (tick index, payload digest) of the last wakeup whose injection raised AFTER
+    # the prompt persisted as a role=user turn. Rolling that tick back re-fires the same '#N'
+    # prompt and duplicates the turn; ``fire_tick`` coalesces a re-render whose index+digest
+    # match instead of re-injecting. 0/"" = nothing landed-unconfirmed.
+    landed_tick: int = 0
+    landed_digest: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -383,6 +395,12 @@ def _digest_response(response: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def wakeup_payload_digest(message: str) -> str:
+    """Exact-digest of a fired wakeup payload — the coalescing key half (sys-8xces5). NOT
+    normalized like ``_digest_response``: the dedupe compares persisted byte-identical turns."""
+    return hashlib.sha256((message or "").encode("utf-8", "replace")).hexdigest()
+
+
 class LoopManager:
     """Per-session /loop state + tick decisions.
 
@@ -481,6 +499,7 @@ class LoopManager:
         if not s or s.status == "cleared":
             return None
         s.status, s.paused_reason, s.awaiting_response = "active", None, False
+        s.slash_noop_streak = 0  # fresh chance: one more invisible tick must not re-pause instantly
         # Re-arm relative to now so a long pause doesn't fire instantly N times.
         delay = s.current_delay or s.interval_seconds or self_paced_floor_seconds()
         s.next_due_at = time.time() + min(delay, 5.0)
@@ -508,32 +527,83 @@ class LoopManager:
         The message is the wakeup-framed prompt, or the raw command when the loop's prompt is
         itself a slash command (``/loop 10m /recap``). Marks ``awaiting_response`` so the tick
         can't double-fire; drivers MUST follow up with ``complete_tick`` (or ``abandon_tick``).
+
+        Coalescing (sys-8xces5): when a prior injection raised AFTER the prompt persisted
+        (``abandon_tick(payload=...)``), re-firing the same tick index re-claims the tick and
+        returns None instead of re-rendering the '#N' prompt — one persisted user turn per index.
         """
         s = self._state
         if s is None or not self.is_due():
             return None
-        s.ticks_fired += 1
+        next_index = s.ticks_fired + 1
+        message = self._render_wakeup(next_index)
+        s.ticks_fired = next_index
         s.last_fired_at = time.time()
         s.awaiting_response = True
         # Provisional schedule from NOW: complete_tick reschedules from turn end, but if the
         # process dies mid-turn this keeps the persisted loop from being 'due' in a tight loop.
         s.next_due_at = s.last_fired_at + (s.current_delay or s.interval_seconds or self_paced_floor_seconds())
+        if message is not None and s.landed_tick == next_index and wakeup_payload_digest(message) == s.landed_digest:
+            # The prompt for this index already persisted as a role=user turn — claim, don't re-inject.
+            # Release the claim through complete_tick: no completion can ever arrive for an
+            # injection that never happened, so a True awaiting_response here would wedge the
+            # loop (persisted) — and the --times/max_ticks caps live ONLY in complete_tick, so
+            # a manual release let a coalesced last tick run one run past the user's cap.
+            s.landed_tick, s.landed_digest = 0, ""
+            self.complete_tick("")
+            return None
         self._save()
+        return message
 
+    def _render_wakeup(self, tick: int) -> Optional[str]:
+        """The wakeup-framed prompt for tick index ``tick``; raw command for slash loops."""
+        s = self._state
+        if s is None:
+            return None
         if s.prompt.lstrip().startswith("/"):
             return s.prompt.strip()
         cadence = f", {s.cadence_label()}" if s.mode == "interval" else ", self-paced"
         template = WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE if s.until else WAKEUP_PROMPT_TEMPLATE
-        return template.format(tick=s.ticks_fired, cadence=cadence, prompt=s.prompt, until=s.until)
+        return template.format(tick=tick, cadence=cadence, prompt=s.prompt, until=s.until)
 
-    def abandon_tick(self) -> None:
-        """Roll back a fired tick whose injection failed (nothing ran)."""
+    def abandon_tick(self, payload: Optional[str] = None) -> None:
+        """Roll back a fired tick whose injection failed (nothing ran).
+
+        Pass the fired ``payload`` when the raise came AFTER the prompt persisted as a role=user
+        turn (sys-8xces5): the tick rolls back WITH the (index, digest) stamped landed, so the
+        next ``fire_tick`` re-fires index #N and coalesces to a claim-without-injection — one
+        persisted turn per index. ``awaiting_response`` is cleared: no completion can arrive for
+        the dead turn, and a persisted True would skip the loop forever (manual resume only).
+        """
         s = self._state
         if s is None or not s.awaiting_response:
+            return
+        if payload is not None:
+            s.landed_tick, s.landed_digest = s.ticks_fired, wakeup_payload_digest(payload)
+            s.ticks_fired = max(0, s.ticks_fired - 1)
+            s.awaiting_response = False
+            self._save()
             return
         s.awaiting_response = False
         s.ticks_fired = max(0, s.ticks_fired - 1)
         self._save()
+
+    def record_slash_noop(self, progressed: bool) -> dict[str, Any]:
+        """Track one slash-prefixed tick's outcome; pause the loop after a streak of no-output ticks.
+
+        A slash tick whose command shows nothing and never starts a send-turn is a no-op (unknown
+        command, dispatch failure); without this the loop burns its whole tick budget silently."""
+        s = self._state
+        if s is None:
+            return {"status": None, "stopped": False, "reason": "no loop", "message": ""}
+        s.slash_noop_streak = 0 if progressed else s.slash_noop_streak + 1
+        if s.slash_noop_streak >= SLASH_NOOP_PAUSE_AFTER:
+            s.awaiting_response = False  # this tick is over; a paused loop must not look mid-turn
+            why = f"slash command produced no output {s.slash_noop_streak} ticks in a row"
+            return self._stop("paused", why,
+                              f"⏸ Loop paused — {why}. /loop resume to keep going, /loop stop to end it.")
+        self._save()
+        return {"status": s.status, "stopped": False, "reason": "loop continues", "message": ""}
 
     def _stop(self, status: str, reason: str, message: str) -> dict[str, Any]:
         """Persist a terminal (``done``) or recoverable (``paused``) stop and build the result."""
@@ -735,4 +805,5 @@ __all__ = [
     "parse_loop_args",
     "response_signals_complete",
     "save_loop",
+    "wakeup_payload_digest",
 ]

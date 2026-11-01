@@ -217,3 +217,60 @@ def test_tui_tick_noop_when_not_due(server, session):
 
     submit.assert_not_called()
     assert s["running"] is False
+
+
+def test_slash_loop_noop_ticks_pause_the_loop(server, session):
+    """A /loop whose prompt resolves to no output (unknown slash command) pauses at the no-op
+    streak threshold instead of silently burning the whole tick budget."""
+    sid, session_key, s = session
+    from hermes_cli.loops import SLASH_NOOP_PAUSE_AFTER, LoopManager, save_loop
+
+    mgr = LoopManager(session_key)
+    mgr.set("/bogus-command", interval_seconds=60)
+
+    statuses = []
+
+    def fake_emit(event, sid_, payload):
+        if payload.get("kind") == "loop":
+            statuses.append(payload["text"])
+
+    with patch.object(server, "_emit", fake_emit), \
+         patch.dict(server._methods, {"command.dispatch": lambda rid, params: {
+             "error": {"code": 4004, "message": "unknown command: bogus-command"}}}):
+        for i in range(SLASH_NOOP_PAUSE_AFTER):
+            mgr = LoopManager(session_key)  # reload: the poller's writes must not be clobbered by a stale copy
+            mgr.state.next_due_at = time.time() - 1
+            save_loop(session_key, mgr.state)
+            server._maybe_fire_tui_loop_tick(sid, s)
+            assert LoopManager(session_key).state.slash_noop_streak == i + 1
+            assert LoopManager(session_key).state.status == (
+                "paused" if i + 1 == SLASH_NOOP_PAUSE_AFTER else "active")
+
+    state = LoopManager(session_key).state
+    assert any("unknown command" in t for t in statuses)  # the dispatch error is surfaced, not swallowed
+    assert any("/loop resume" in t for t in statuses)
+    assert "no output" in (state.paused_reason or "")
+
+
+def test_slash_loop_skill_command_runs_the_turn_and_clears_the_streak(server, session):
+    """A skill command dispatches back type 'skill' with a message (methods_tools.py): the tick
+    must run it as a turn, not class the bead's own repro (/loop 5m /<skill>) as a no-op."""
+    sid, session_key, s = session
+    from hermes_cli.loops import LoopManager, save_loop
+
+    mgr = LoopManager(session_key)
+    mgr.set("/my-skill", interval_seconds=60)
+    mgr.state.slash_noop_streak = 2
+    mgr.state.next_due_at = time.time() - 1
+    save_loop(session_key, mgr.state)
+
+    with patch.object(server, "_emit"), \
+         patch.object(server, "_run_prompt_submit", return_value=True) as submit, \
+         patch.dict(server._methods, {"command.dispatch": lambda rid, params: {
+             "result": {"type": "skill", "message": "run the skill"}}}):
+        server._maybe_fire_tui_loop_tick(sid, s)
+
+    submit.assert_called_once()
+    assert submit.call_args[0][3] == "run the skill"
+    state = LoopManager(session_key).state
+    assert state.slash_noop_streak == 0 and state.status == "active"

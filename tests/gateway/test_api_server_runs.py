@@ -475,6 +475,81 @@ class TestStartRun:
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
 
+    @staticmethod
+    def _make_locked_adapter(tmp_path, session_id, *, provider, model, confirmed=True):
+        """Adapter backed by a real SessionDB whose session carries a persisted model lock."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id, "api_server")
+        if provider or model:
+            db.update_session_runtime_lock(
+                session_id, provider=provider, model=model,
+                route_source="raw_request", confirmed=confirmed)
+        adapter = _make_adapter()
+        adapter._session_db = db
+        return adapter
+
+    async def _start_and_capture_create_agent(self, adapter, body):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json=body)
+                assert resp.status == 202, await resp.text()
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+        assert mock_create.call_args is not None, "agent was never created"
+        return mock_create.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_start_falls_back_to_confirmed_session_model_lock(self, tmp_path):
+        """A body without provider/model must route via the session's persisted lock —
+        same behavior as /api/sessions/{id}/chat — instead of the gateway default."""
+        adapter = self._make_locked_adapter(
+            tmp_path, "locked-session", provider="nous", model="x-ai/grok-4.5")
+        kwargs = await self._start_and_capture_create_agent(
+            adapter, {"input": "hello", "session_id": "locked-session"})
+        assert kwargs["requested_provider"] == "nous"
+        assert kwargs["requested_model"] == "x-ai/grok-4.5"
+        assert kwargs["route"] == {"model": "x-ai/grok-4.5", "provider": "nous"}
+
+    @pytest.mark.asyncio
+    async def test_start_body_provider_model_overrides_session_lock(self, tmp_path):
+        adapter = self._make_locked_adapter(
+            tmp_path, "locked-session", provider="nous", model="x-ai/grok-4.5")
+        kwargs = await self._start_and_capture_create_agent(adapter, {
+            "input": "hello", "session_id": "locked-session",
+            "provider": "minimax", "model": "MiniMax-M3"})
+        assert kwargs["requested_provider"] == "minimax"
+        assert kwargs["requested_model"] == "MiniMax-M3"
+
+    @pytest.mark.asyncio
+    async def test_start_ignores_unconfirmed_session_lock(self, tmp_path):
+        adapter = self._make_locked_adapter(
+            tmp_path, "locked-session", provider="nous", model="x-ai/grok-4.5", confirmed=False)
+        kwargs = await self._start_and_capture_create_agent(
+            adapter, {"input": "hello", "session_id": "locked-session"})
+        assert not kwargs.get("requested_provider")
+        assert not kwargs.get("requested_model")
+
+    @pytest.mark.asyncio
+    async def test_start_without_session_lock_keeps_default_routing(self, tmp_path):
+        adapter = self._make_locked_adapter(tmp_path, "plain-session", provider="", model="")
+        kwargs = await self._start_and_capture_create_agent(
+            adapter, {"input": "hello", "session_id": "plain-session"})
+        assert not kwargs.get("requested_provider")
+        assert not kwargs.get("requested_model")
+        assert kwargs.get("route") is None
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

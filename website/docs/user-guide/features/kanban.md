@@ -1255,11 +1255,13 @@ You can manage subscriptions explicitly from the CLI — useful when a script / 
 ```bash
 hermes kanban notify-subscribe t_abcd \
     --platform telegram --chat-id 12345678 --thread-id 7 \
-    --chat-type group --delivery-mode notify+wake
+    --chat-type group --delivery-mode notify+wake --progress
 hermes kanban notify-list
 hermes kanban notify-unsubscribe t_abcd \
     --platform telegram --chat-id 12345678 --thread-id 7
 ```
+
+Pass `--progress` to also receive worker-authored heartbeat notes as passive progress messages. Heartbeats without a note remain silent, and progress messages never wake the destination agent even when the subscription's delivery mode includes wake. Existing and new subscriptions default to terminal events only; re-subscribe with `--no-progress` to disable progress messages.
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 

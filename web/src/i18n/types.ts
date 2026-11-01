@@ -10,6 +10,7 @@ export type Locale =
   | "uk"
   | "af"
   | "ko"
+  | "lo"
   | "it"
   | "ga"
   | "pt"

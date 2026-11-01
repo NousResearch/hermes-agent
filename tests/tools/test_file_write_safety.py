@@ -4,6 +4,7 @@ Based on PR #1085 by ismoilh (salvaged).
 """
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,20 @@ class TestCheckSensitivePathMacOSBypass:
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
+class _PlainShellEnv:
+    """Runs each command in a non-login ``bash -c`` with an exact PATH. LocalEnvironment's
+    login-shell snapshot runs macOS ``path_helper``, which moves /bin ahead of a PATH stub."""
+
+    def __init__(self, cwd: str, path: str):
+        self.cwd, self._path = cwd, path
+
+    def execute(self, command, cwd=None, timeout=None, stdin_data=None):
+        proc = subprocess.run(
+            ["bash", "-c", command], cwd=cwd or self.cwd, input=stdin_data, text=True,
+            capture_output=True, timeout=timeout or 60, env={**os.environ, "PATH": self._path})
+        return {"output": proc.stdout + proc.stderr, "returncode": proc.returncode}
+
+
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.
 
@@ -293,6 +308,24 @@ class TestAtomicWrite:
     def test_no_temp_file_leaked_on_success(self, ops, tmp_path: Path):
         target = tmp_path / "f.txt"
         ops.write_file(str(target), "hello\n")
+        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
+
+    @pytest.mark.platforms("posix")
+    def test_no_temp_file_leaked_when_the_swap_fails(self, tmp_path: Path):
+        # The temp was created and filled, then the rename failed (EBUSY bind mount, ENOSPC,
+        # ...): the write reports failure, the original stays, and the temp is cleaned up.
+        stub = tmp_path.parent / "failing-mv-bin"
+        stub.mkdir()
+        (stub / "mv").write_text("#!/bin/sh\necho 'mv: Device or resource busy' >&2\nexit 1\n")
+        (stub / "mv").chmod(0o755)
+        from tools.file_operations import ShellFileOperations
+        ops = ShellFileOperations(
+            _PlainShellEnv(str(tmp_path), f"{stub}{os.pathsep}{os.environ['PATH']}"), cwd=str(tmp_path))
+        target = tmp_path / "f.txt"
+        target.write_text("v1", encoding="utf-8")
+        res = ops.write_file(str(target), "v2 content")
+        assert res.error
+        assert target.read_text(encoding="utf-8") == "v1"
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 

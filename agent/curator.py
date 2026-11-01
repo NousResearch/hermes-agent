@@ -206,11 +206,51 @@ def _archive_as_curator(_u, name: str) -> bool:
                 reset_ledger_actor(tok)
 
 
+def _stage_archive(name: str) -> int:
+    """skills.write_approval is on: stage the archive for ``/skills approve`` instead of moving the skill.
+    At most one pending archive per skill; returns 1 when a new one was staged."""
+    from tools import write_approval as wa
+    payload = {"action": "archive", "name": name}
+    if any(r.get("payload") == payload for r in wa.list_pending(wa.SKILLS)):
+        return 0
+    wa.stage_write(wa.SKILLS, payload, summary=f"curator: archive '{name}' (inactive)", origin="curator")
+    return 1
+
+
+def _activity_anchor(row: dict[str, Any], now: datetime) -> datetime:
+    """Start of a skill's inactivity clock. Never-active skills anchor on created_at so they don't self-archive."""
+    anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
+    return anchor if anchor.tzinfo else anchor.replace(tzinfo=UTC)
+
+
+def archive_blocker(name: str) -> str:
+    """Why the inactivity pass would not archive ``name`` now, or "" when it would. ``/skills approve`` of an
+    archive staged under skills.write_approval checks this first: the skill may have been pinned, referenced by
+    a cron job or used again since the archive was staged."""
+    from tools import skill_usage as _u
+    row = next((r for r in _u.curated_report() if r["name"] == name), None)
+    if row is None or row.get("state") == _u.STATE_ARCHIVED:
+        return "is no longer an active curator-managed skill"
+    if row.get("pinned"):
+        return "is pinned"
+    if name in _cron_referenced_skills():
+        return "is referenced by a cron job"
+    now = datetime.now(UTC)
+    anchor = _activity_anchor(row, now)
+    never_used = int(row.get("use_count", 0) or 0) == 0
+    if anchor > now - timedelta(days=get_archive_after_days()) or (
+            never_used and anchor > now - timedelta(days=get_stale_after_days())):
+        return f"was active within curator.archive_after_days ({get_archive_after_days()})"
+    return ""
+
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int]:
     """Move every curator-managed skill between active/stale/archived based on its latest real activity; pinned skills are
     never touched. Built-ins are seeded with a baseline record on first sight so their inactivity clock starts NOW, not at epoch.
-    Returns a counter dict."""
+    With skills.write_approval on, archives are staged for approval instead of applied. Returns a counter dict."""
     from tools import skill_usage as _u
+    from tools import write_approval as wa
+    gated = wa.write_approval_enabled(wa.SKILLS)
 
     now = now or datetime.now(UTC)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
@@ -218,7 +258,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     # Cron-referenced skills are in use by definition (usage only bumps when a
     # job fires, so paused/rare jobs would age them out). Treat as pinned.
     protected = _cron_referenced_skills()
-    counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
+    counts = {"marked_stale": 0, "archived": 0, "archive_staged": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     def _set(name: str, state: str, key: str) -> None:
         _u.set_state(name, state)
@@ -240,10 +280,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
             _u.reanchor_clock(name)
             counts["seeded"] += 1
             continue
-        # Never-active skills anchor on created_at so they don't self-archive.
-        anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
-        if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=UTC)
+        anchor = _activity_anchor(row, now)
         current = row.get("state", _u.STATE_ACTIVE)
         # use_count == 0 is absence of evidence, not staleness: never archive a
         # never-used skill younger than stale_after_days.
@@ -252,7 +289,9 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
                 _set(name, _u.STATE_ACTIVE, "reactivated")
             continue
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            if _archive_as_curator(_u, name):
+            if gated:
+                counts["archive_staged"] += _stage_archive(name)
+            elif _archive_as_curator(_u, name):
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
             _set(name, _u.STATE_STALE, "marked_stale")
@@ -945,7 +984,9 @@ def run_curator_review(
                 curator_backup.prune_old_snapshots()
         counts = apply_automatic_transitions(now=start)
     auto_summary = ", ".join(
-        f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
+        f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"),
+                                                    ("archive_staged", "archive(s) staged for approval"),
+                                                    ("reactivated", "reactivated")) if counts.get(key)
     ) or "no changes"
 
     # Persist before the LLM pass so a crash mid-review still records the run.

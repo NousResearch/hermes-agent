@@ -551,6 +551,32 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+def test_respawn_guard_ignores_stale_auth_error_after_successful_run(kanban_home):
+    """If a task was rate-limited or auth-blocked in the past (stamping last_failure_error),
+    but a subsequent run succeeded (e.g. review_requested), the guard must not block it.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale auth", assignee="a")
+        kb.claim_task(conn, tid)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        run_id = task.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='review_requested', status='completed', ended_at=? "
+            "WHERE id=?",
+            (5_000_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("quota exceeded", tid),
+        )
+        conn.commit()
+
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

@@ -22,6 +22,7 @@ import {
   $currentReasoningEffortWire,
   getComposerSelectionGeneration,
   getCurrentModelSource,
+  isManualComposerPickArmed,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
@@ -145,7 +146,13 @@ export function useModelControls({
         // the catalog omits entirely once no preset is enabled — that absence is
         // authoritative, and without the exception the pill reads
         // `Model · moa: default` forever (#90244).
-        const manualPick = () => Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
+        const manualPick = () =>
+          Boolean($currentModel.get()) &&
+          getCurrentModelSource() === 'manual' &&
+          // A pick carried over from a live session (or restored from storage)
+          // is NOT a choice for this draft, so the profile default reseeds over
+          // it. Only a pick the user made in this draft stays sticky.
+          isManualComposerPickArmed()
 
         const pickProvider = () => ($currentProvider.get() || '').trim()
 

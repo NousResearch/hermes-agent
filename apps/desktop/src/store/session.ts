@@ -1745,11 +1745,33 @@ export const getCurrentModelSource = (): ComposerModelSource => {
 // it's read cross-window, where this atom wouldn't see writes.
 export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSource())
 
+// Which chat a MANUAL model pick was made in: a live session id, or `null` for
+// a fresh draft. `undefined` means "no pick yet in this app run" — a value
+// restored from localStorage cannot be trusted to belong to the draft the user
+// is looking at, so it never counts as armed.
+//
+// Why: a manual pick used to be global and persisted, so one paid pick quietly
+// became the model for every later new chat (and survived restarts), billing a
+// model the user never chose for that conversation. A pick now only applies to
+// the draft it was made in, and to sessions created from that draft; a pick
+// made inside a live session no longer leaks into the next new chat.
+let manualPickSessionScope: null | string | undefined = undefined
+
+/** True when the user made a manual model pick for the CURRENT draft — i.e. it
+ *  is safe to ship as a `session.create` override. A pick made in a live
+ *  session, or one restored from storage, is not. */
+export const isManualComposerPickArmed = (): boolean =>
+  manualPickSessionScope === null && getCurrentModelSource() === 'manual'
+
 export const setCurrentModelSource = (source: ComposerModelSource) => {
   const key = composerSelectionKey(COMPOSER_MODEL_SOURCE_KEY)
 
   if (key !== null) {
     persistString(key, source || null)
+  }
+
+  if (source !== 'manual') {
+    manualPickSessionScope = undefined
   }
 
   $currentModelSource.set(source)
@@ -1765,6 +1787,10 @@ export const getComposerSelectionGeneration = (): number => composerSelectionGen
 
 export const markComposerSelectionManual = (): void => {
   composerSelectionGeneration += 1
+  // Remember WHICH chat this pick belongs to: the live session id, or `null`
+  // when it was made in a fresh draft. Only a draft pick is allowed to ride a
+  // `session.create` override — see isManualComposerPickArmed.
+  manualPickSessionScope = $activeSessionId.get()?.trim() || null
   setCurrentModelSource('manual')
 }
 

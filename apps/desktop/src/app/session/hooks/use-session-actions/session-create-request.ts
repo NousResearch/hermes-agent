@@ -15,7 +15,8 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentServiceTier,
-  getCurrentModelSource
+  getCurrentModelSource,
+  isManualComposerPickArmed
 } from '@/store/session'
 import type { SessionCreateResponse } from '@/types/hermes'
 
@@ -106,7 +107,13 @@ export async function desktopSessionCreateParams(
   // the live agent (applySavedMainModel) and only flips the source to 'default'.
   // Shipping that stale value as an override pins every new chat to the old
   // model. Omit model/provider unless the source is 'manual'.
-  const isManualSelection = getCurrentModelSource() === 'manual'
+  //
+  // 'manual' alone is not enough: it is persisted in localStorage and stays set
+  // after the chat it was picked for, so a single paid pick used to become the
+  // model for every later new chat. `isManualComposerPickArmed()` only returns
+  // true for a pick the user made in THIS draft — a pick made inside a live
+  // session, or one restored from storage, never pins a new chat.
+  const isManualSelection = getCurrentModelSource() === 'manual' && isManualComposerPickArmed()
 
   const selection = {
     effort: $currentReasoningEffort.get().trim(),

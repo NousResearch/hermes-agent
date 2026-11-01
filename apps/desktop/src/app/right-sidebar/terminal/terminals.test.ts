@@ -259,9 +259,10 @@ describe('session cwd → terminal tab linking', () => {
     $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(nasTab)
 
-    // An active tab on the wrong host with the same path does not keep focus.
+    // An active tab on the wrong host with the same path does not keep focus,
+    // even though the path string never changes.
     $host.set({ connectionId: 'local' })
-    $currentCwd.set('/repo/')
+    $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(localTab)
 
     $host.set({ connectionId: 'nas' })

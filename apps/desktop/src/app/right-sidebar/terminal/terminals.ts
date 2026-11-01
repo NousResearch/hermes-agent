@@ -395,11 +395,19 @@ const terminalCwd = (term: TerminalEntry) => normalizePath(term.restoreCwd || te
 //
 // A path names a directory on one host: `/repo` on the NAS is not `/repo` here,
 // so only tabs on the session's gateway (or a fresh tab that has not recorded
-// one yet) can match.
+// one yet) can match. The link follows the (host, cwd) pair, so picking another
+// gateway re-selects even when both hosts report the same path string.
 export function bindTerminalDefaultGateway(source: ReadableAtom<TerminalGateway | undefined>): void {
   unbindDefaultGateway()
   $defaultGateway = source
-  unbindDefaultGateway = () => {}
+  let host = source.get()?.connectionId
+
+  unbindDefaultGateway = source.listen(gateway => {
+    if (gateway?.connectionId !== host) {
+      host = gateway?.connectionId
+      followSessionCwd($currentCwd.get())
+    }
+  })
 }
 
 function followSessionCwd(cwd: string) {

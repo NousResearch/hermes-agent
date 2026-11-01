@@ -103,4 +103,28 @@ describe('a terminal tab owns the gateway it was opened on', () => {
     expect(start.mock.calls[1]![0].connectionId).toBe('nas')
   })
 
+  it('the same literal cwd on another host selects that host’s tab', async () => {
+    const stores = await loadStores()
+    stores.$connectionsRegistry.set(registryWith({ host: 'nas.example', id: 'nas' }))
+    stores.$connection.set({ connectionId: 'nas' } as never)
+    stores.$currentCwd.set('/elsewhere')
+
+    const nas = stores.createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
+    const local = stores.createTerminal('/repo', { connectionId: 'local' })
+    stores.selectTerminal(nas)
+    stores.$currentCwd.set('/repo')
+    expect(stores.$activeTerminalId.get()).toBe(nas)
+
+    stores.$connection.set({ connectionId: 'local' } as never)
+    stores.$currentCwd.set('/repo')
+    expect(stores.$activeTerminalId.get()).toBe(local)
+
+    stores.$connection.set({ connectionId: 'nas' } as never)
+    expect(stores.$activeTerminalId.get()).toBe(nas)
+
+    // A manual pick survives while neither host nor cwd changes.
+    stores.selectTerminal(local)
+    stores.$connectionsRegistry.set(registryWith({ host: 'nas.example', id: 'nas' }))
+    expect(stores.$activeTerminalId.get()).toBe(local)
+  })
 })

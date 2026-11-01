@@ -289,6 +289,7 @@ _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
     "codex_app_server",
 }
+_OPENROUTER_PREWARM_LOCK = threading.Lock()  # racing inits could each see the pre-warm Event clear and each spawn
 
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
@@ -417,14 +418,13 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
 
-    # Pre-warm the OpenRouter metadata cache (1h TTL) off-thread so the first pricing estimate
-    # doesn't block. Process-level Event guard: an unguarded spawn leaks a thread per message.
-    if (agent.provider == "openrouter" or agent._is_openrouter_url()) and \
-            not _ra()._openrouter_prewarm_done.is_set():
-        _ra()._openrouter_prewarm_done.set()
-        threading.Thread(
-            target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
-        ).start()
+    # Pre-warm OpenRouter metadata (1h TTL) off-thread so the first pricing estimate doesn't block; once per process.
+    if agent.provider == "openrouter" or agent._is_openrouter_url():
+        with _OPENROUTER_PREWARM_LOCK:
+            if not _ra()._openrouter_prewarm_done.is_set():
+                _ra()._openrouter_prewarm_done.set()
+                threading.Thread(
+                    target=fetch_model_metadata, daemon=True, name="openrouter-prewarm").start()
 
 
 def _set_defaults(agent, table: dict[str, Any]) -> None:

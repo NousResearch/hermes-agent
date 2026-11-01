@@ -31,6 +31,66 @@ _FAILED_CATALOG_TTL_SECONDS = 120.0
 _pricing_cache_retry_after: dict[str, float] = {}
 
 
+# A stale non-empty catalog is re-fetched at most this often, so repeated cached_only reads cannot
+# pile up refresh threads while the endpoint is unreachable.
+_STALE_CATALOG_RETRY_SECONDS = 300.0
+_catalog_refresh_inflight: set[str] = set()
+
+
+def _provider_for_cache_key(cache_key: str) -> str:
+    """The provider whose fetcher fills *cache_key*, or "" when it cannot be attributed."""
+    try:
+        from hermes_cli.models import _pricing_profile_key
+
+        profile = _pricing_profile_key()
+    except Exception:
+        profile = ""
+    for (prof, provider), key in list(_pricing_provider_cache_keys.items()):
+        if key == cache_key and (not profile or prof == profile):
+            return provider
+    return ""
+
+
+def _schedule_catalog_refresh(cache_key: str) -> bool:
+    """Re-fetch *cache_key* behind a cached_only read, and return whether one started.
+
+    Called when a catalog passes its deadline while a caller that performs no provider I/O is
+    reading it: that caller gets the stale catalog, and this puts a fresh one in place for the next
+    read — so a deadline still re-checks whatever the client cannot observe (an org's model policy)
+    without ever blanking a picker. A daemon thread, so a slow or unreachable endpoint cannot hold
+    the caller's response path, the same contract ``_prewarm_pricing_async`` relies on.
+    """
+    if cache_key in _catalog_refresh_inflight:
+        return False
+    provider = _provider_for_cache_key(cache_key)
+    if not provider:
+        return False
+    fetcher = _PRICING_FETCHERS.get(provider)
+    if fetcher is None:
+        return False
+
+    _catalog_refresh_inflight.add(cache_key)
+
+    def _run() -> None:
+        try:
+            fetcher(force_refresh=True)
+        except Exception:
+            # Best-effort: the stale catalog is already serving readers and nothing is waiting on
+            # this thread, but stay observable rather than fail silently.
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "background pricing refresh failed for %s", provider, exc_info=True
+            )
+        finally:
+            _catalog_refresh_inflight.discard(cache_key)
+
+    import threading
+
+    threading.Thread(target=_run, name=f"pricing-refresh-{provider}", daemon=True).start()
+    return True
+
+
 def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
     """The cached catalog for *cache_key*, or None to go fetch it."""
     cached = _pricing_cache.get(cache_key)
@@ -38,6 +98,19 @@ def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
         return None
     retry_after = _pricing_cache_retry_after.get(cache_key)
     if retry_after is not None and time.monotonic() >= retry_after:
+        if cached:
+            # A non-empty catalog past its deadline is stale, not wrong: the rates were real, and
+            # the entry expired only because its contents can lag server-side state (an org's model
+            # policy). Evicting it blanks the price column and the Free badge for the caller that
+            # asked for cached_only — and a normal picker open performs no I/O, so nothing refills
+            # it: the column stays empty until someone discovers Refresh Models. Serve the stale
+            # catalog and re-fetch behind the read instead, so the deadline still re-checks what
+            # the client cannot observe without ever blanking a picker.
+            _pricing_cache_retry_after[cache_key] = (
+                time.monotonic() + _STALE_CATALOG_RETRY_SECONDS
+            )
+            _schedule_catalog_refresh(cache_key)
+            return cached
         _pricing_cache.pop(cache_key, None)
         _pricing_cache_retry_after.pop(cache_key, None)
         return None

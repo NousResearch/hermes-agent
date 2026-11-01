@@ -77,10 +77,10 @@ describe('keep-awake mode', () => {
     expect(readKeepAwakeMode({ on: false })).toBe('off')
     // An explicit mode wins over a stale legacy flag beside it.
     expect(readKeepAwakeMode({ mode: 'off', on: true })).toBe('off')
-    // Unreadable or absent -> off, the pre-existing default.
-    expect(readKeepAwakeMode(null)).toBe('off')
-    expect(readKeepAwakeMode('garbage')).toBe('off')
-    expect(readKeepAwakeMode({ mode: 'sometimes' })).toBe('off')
+    // Unreadable or absent -> the default: awake while a turn runs.
+    expect(readKeepAwakeMode(null)).toBe('while-working')
+    expect(readKeepAwakeMode('garbage')).toBe('while-working')
+    expect(readKeepAwakeMode({ mode: 'sometimes' })).toBe('while-working')
   })
 
   it('holds the blocker only when the mode and the live turn picture agree', () => {

@@ -209,6 +209,32 @@ _UTILITY_TOOL_SPECS = (
              "description": "Optional arguments to pass to the prompt",
              "properties": {},
              "additionalProperties": True},
+     }, ["name"]),
+    ("list_event_types", "List the event types MCP server '{server}' can notify about, and your active "
+     "subscriptions to them", {}, None),
+    ("subscribe_event", "Subscribe to an event from MCP server '{server}': each occurrence starts a new "
+     "agent run with your instructions and delivers its result to the chosen target",
+     {
+         "name": {"type": "string", "description": "Event type name from list_event_types"},
+         "arguments": {
+             "type": "object",
+             "description": "Subscription arguments matching the event's inputSchema",
+             "properties": {},
+             "additionalProperties": True},
+         "instructions": {"type": "string",
+                          "description": "What to do each time the event arrives (up to 2000 characters)"},
+         "deliver": {"type": "string",
+                     "description": "Where each run's result goes: log, telegram, discord, slack, ..."},
+         "deliver_chat_id": {"type": "string", "description": "Optional chat id on the deliver platform"},
+     }, ["name"]),
+    ("unsubscribe_event", "Cancel a subscription to an event from MCP server '{server}'",
+     {
+         "name": {"type": "string", "description": "Event type name"},
+         "arguments": {
+             "type": "object",
+             "description": "The same arguments the subscription was made with",
+             "properties": {},
+             "additionalProperties": True},
      }, ["name"]))
 
 
@@ -262,4 +288,5 @@ def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
 # the real tools worked. See #18051.
 _UTILITY_CAPABILITY_ATTRS = {
     "list_resources": "resources", "read_resource": "resources",
-    "list_prompts": "prompts", "get_prompt": "prompts"}
+    "list_prompts": "prompts", "get_prompt": "prompts",
+    "list_event_types": "events", "subscribe_event": "events", "unsubscribe_event": "events"}

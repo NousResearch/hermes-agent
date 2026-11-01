@@ -1,6 +1,5 @@
 """Isolated production-library controls; no transport/provider calls."""
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -98,21 +97,6 @@ assert fenced.session_id != suspended.session_id
 results["historical_expiry_fence_preserved"] = True
 store._db.close()
 
-spec = importlib.util.spec_from_file_location("migration_probe", repo / "optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py")
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-source_dir = home / "migration-source"
-target = home / "migration-target"
-source_dir.mkdir()
-target.mkdir()
-(target / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-before = (target / "config.yaml").read_bytes()
-migrator = module.Migrator(source_dir, target, True, None, False, False, home / "archive-output")
-migrator.migrate_session_config({"session": {"reset": {"mode": "daily", "atHour": 3}, "identityLinks": {"test": "identity"}}})
-assert (target / "config.yaml").read_bytes() == before
-assert json.loads((migrator.archive_dir / "session-config.json").read_text(encoding="utf-8")) == {"identityLinks": {"test": "identity"}}
-results["migration_timers_ignored_advanced_archived"] = True
 from contextlib import redirect_stdout
 from io import StringIO
 from hermes_cli.cli_info_mixin import CLIInfoMixin

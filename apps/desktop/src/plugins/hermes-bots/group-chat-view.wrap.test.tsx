@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
@@ -84,8 +84,13 @@ it('soft-wraps fenced code in room message bodies instead of scrolling sideways'
 
   const { container } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)
 
-  const body = container.querySelector('[data-slot="group-chat-message-content"]')!
-  expect(body).toBeTruthy()
+  // The room paints once the canonical `groups.capabilities` gate resolves.
+  const body = await waitFor(() => {
+    const found = container.querySelector('[data-slot="group-chat-message-content"]')
+    expect(found).toBeTruthy()
+
+    return found!
+  })
 
   // The room body wrapper wraps pre content rather than growing an X scrollbar.
   expect(body.className).toContain('[&_pre]:whitespace-pre-wrap')

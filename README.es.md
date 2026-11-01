@@ -158,6 +158,7 @@ Si vienes de OpenClaw, Hermes puede importar automáticamente tu configuración,
 **En cualquier momento después de instalar:**
 
 ```bash
+hermes plugins install agent-importers  # una vez: OpenClaw, Claude Code, Codex y Cursor
 hermes claw migrate              # Migración interactiva (preset completo)
 hermes claw migrate --dry-run    # Vista previa de qué se migraría
 hermes claw migrate --preset user-data   # Migrar sin secretos

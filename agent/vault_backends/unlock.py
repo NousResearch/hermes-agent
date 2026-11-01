@@ -2,9 +2,15 @@
 
 An unlock is a session token minted by the manager's CLI from the master
 password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
-process memory only, keyed by backend, and expires after an idle TTL or an
-explicit lock. The master password itself is consumed by the CLI call and
-dropped; nothing is written to disk or env.
+process memory only, keyed by (profile home, backend), and is dropped at an
+idle TTL (by a timer, not at the next call) or an explicit lock. It is held
+inside a closure, so no module attribute exposes it to a plain import or a
+dump of module state, and it reaches only the manager CLI call that uses it
+(as that child's ``BW_SESSION`` / ``OP_SESSION*``), never ``os.environ``.
+That stops casual and accidental access, not code running in this process,
+which can always read its memory: the boundary for third-party plugins is
+``plugins.isolation: host``. The master password itself is consumed by the
+CLI call and dropped; nothing is written to disk or env.
 
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the
@@ -17,12 +23,11 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Callable, Dict, NamedTuple, Optional
 
 _IDLE_TTL_S = 30 * 60
 
-_lock = threading.Lock()
-_sessions: dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
@@ -69,13 +74,6 @@ def _key(backend: str) -> tuple[str, str]:
     return (str(get_hermes_home()), backend)
 
 
-# Lock generation per key: ``lock()`` bumps it, and an unlock that started before the bump must
-# not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
-# acknowledged Lock).
-_generation: dict[tuple[str, str], int] = {}
-# Which gateway session performed the unlock; the token is released when THAT session ends,
-# not when any sibling session in the profile is torn down.
-_owner_session: dict[tuple[str, str], Optional[str]] = {}
 _current_session_tls = threading.local()
 
 
@@ -84,79 +82,167 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
-def _live(backend: str, *, touch: bool) -> Optional[str]:
-    key = _key(backend)
-    with _lock:
-        entry = _sessions.get(key)
-        if entry is None:
-            return None
-        token, last = entry
-        if time.monotonic() - last > _IDLE_TTL_S:
-            del _sessions[key]
-            return None
-        if touch:
-            _sessions[key] = (token, time.monotonic())
-        return token
+def get_current_session_id() -> Optional[str]:
+    """The session bound on this thread (``tools.thread_context`` carries it to tool workers)."""
+    return getattr(_current_session_tls, "sid", None)
+
+
+_Key = tuple[str, str]  # (profile home, backend)
+
+
+@dataclass(slots=True)
+class _Token:
+    value: str = field(repr=False)
+    last_used: float
+
+
+class _TokenOps(NamedTuple):
+    live: Callable[[_Key, bool], Optional[str]]
+    begin: Callable[[_Key], int]
+    commit: Callable[[_Key, str, Optional[int], Optional[str]], bool]
+    lock_profile: Callable[[str, Optional[str]], None]
+    release: Callable[[str], None]
+    lock_everything: Callable[[], None]
+
+
+def _token_store() -> _TokenOps:
+    """The token state, reachable only through the closures returned here.
+
+    The lock generation per key is bumped by every lock, and an unlock that started before the bump
+    must not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
+    acknowledged Lock). Sibling sessions in a profile never release each other's tokens.
+
+    ``owners`` (which gateway session unlocked a key) is revocation bookkeeping and outlives the token:
+    the TTL drops only the secret, so a session ending after its token expired still bumps the
+    generation and fences a replacement unlock that is in flight.
+    """
+    guard = threading.Lock()
+    tokens: dict[_Key, _Token] = {}
+    owners: dict[_Key, Optional[str]] = {}
+    generations: dict[_Key, int] = {}
+    timer: Optional[threading.Timer] = None
+
+    def forget(key: _Key) -> None:
+        tokens.pop(key, None)
+        owners.pop(key, None)
+        generations[key] = generations.get(key, 0) + 1
+
+    def arm(now: float) -> None:
+        # One daemon timer for the earliest expiry; a touch only moves expiry later, so the timer may
+        # fire early, find nothing expired and re-arm.
+        nonlocal timer
+        if timer is None and tokens:
+            delay = min(t.last_used for t in tokens.values()) + _IDLE_TTL_S - now
+            timer = threading.Timer(max(delay, 0.0) + 0.01, expire)
+            timer.daemon = True
+            timer.start()
+
+    def settle() -> None:
+        nonlocal timer
+        if not tokens and timer is not None:
+            timer.cancel()
+            timer = None
+
+    def expire() -> None:
+        nonlocal timer
+        with guard:
+            if timer is threading.current_thread():  # not a newer timer armed while this one waited
+                timer = None
+            now = time.monotonic()
+            for key in [k for k, t in tokens.items() if now - t.last_used > _IDLE_TTL_S]:
+                del tokens[key]
+            arm(now)
+
+    def live(key: _Key, touch: bool) -> Optional[str]:
+        with guard:
+            token = tokens.get(key)
+            if token is None:
+                return None
+            now = time.monotonic()
+            if now - token.last_used > _IDLE_TTL_S:
+                del tokens[key]
+                settle()
+                return None
+            if touch:
+                token.last_used = now
+            return token.value
+
+    def begin(key: _Key) -> int:
+        with guard:
+            return generations.get(key, 0)
+
+    def commit(key: _Key, value: str, generation: Optional[int], owner: Optional[str]) -> bool:
+        with guard:
+            if generation is not None and generation != generations.get(key, 0):
+                return False
+            now = time.monotonic()
+            tokens[key] = _Token(value, now)
+            owners[key] = owner
+            arm(now)
+            return True
+
+    def lock_profile(home: str, backend: Optional[str]) -> None:
+        with guard:
+            # Bump the generation for every key the lock names (not only the ones holding a token):
+            # an unlock that is still running for this backend must see the lock when it returns.
+            keys = {k for k in [*tokens, *owners, *generations] if k[0] == home and (backend is None or k[1] == backend)}
+            if backend is not None:
+                keys.add((home, backend))
+            for key in keys:
+                forget(key)
+            settle()
+
+    def release(session_id: str) -> None:
+        with guard:
+            for key in [k for k, owner in owners.items() if owner == session_id]:
+                forget(key)
+            settle()
+
+    def lock_everything() -> None:
+        with guard:
+            for key in {*tokens, *owners}:
+                forget(key)
+            settle()
+
+    return _TokenOps(live, begin, commit, lock_profile, release, lock_everything)
+
+
+_tokens = _token_store()
 
 
 def get_session_token(backend: str) -> Optional[str]:
     """Token for a real manager call; refreshes the idle timer."""
-    return _live(backend, touch=True)
+    return _tokens.live(_key(backend), True)
 
 
 def begin_unlock(backend: str) -> int:
     """Snapshot the lock generation before spawning the manager CLI; pass it to ``store_session_token``."""
-    with _lock:
-        return _generation.get(_key(backend), 0)
+    return _tokens.begin(_key(backend))
 
 
 def store_session_token(backend: str, token: str, generation: Optional[int] = None) -> bool:
     """Commit an unlock. Returns False (and drops the token) when a Lock happened since ``begin_unlock``."""
-    key = _key(backend)
-    with _lock:
-        if generation is not None and generation != _generation.get(key, 0):
-            return False
-        _sessions[key] = (token, time.monotonic())
-        _owner_session[key] = getattr(_current_session_tls, "sid", None)
-        return True
+    return _tokens.commit(_key(backend), token, generation, get_current_session_id())
 
 
 def lock(backend: Optional[str] = None) -> None:
     """Forget the current profile's session for one backend (or all of them when None)."""
-    home = _key("")[0]
-    with _lock:
-        # Bump the generation for every key the lock names (not only the ones holding a token):
-        # an unlock that is still running for this backend must see the lock when it returns.
-        keys = {k for k in list(_sessions) + list(_generation) if k[0] == home and (backend is None or k[1] == backend)}
-        if backend is not None:
-            keys.add((home, backend))
-        for key in keys:
-            _forget(key)
+    _tokens.lock_profile(_key("")[0], backend)
 
 
 def release_session(session_id: str) -> None:
     """A gateway session ended: drop only the tokens that session unlocked."""
-    with _lock:
-        for key in [k for k, sid in _owner_session.items() if sid == session_id]:
-            _forget(key)
-
-
-def _forget(key: tuple[str, str]) -> None:
-    _sessions.pop(key, None)
-    _owner_session.pop(key, None)
-    _generation[key] = _generation.get(key, 0) + 1
+    _tokens.release(session_id)
 
 
 def lock_all_profiles() -> None:
     """Process shutdown: drop every token."""
-    with _lock:
-        for key in list(_sessions):
-            _forget(key)
+    _tokens.lock_everything()
 
 
 def is_unlocked(backend: str) -> bool:
     """Status probe: does NOT extend the idle TTL (only real manager calls do)."""
-    return _live(backend, touch=False) is not None
+    return _tokens.live(_key(backend), False) is not None
 
 
 def can_prompt_here() -> bool:

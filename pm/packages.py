@@ -220,6 +220,10 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+# The POSIX interpreter name the pinned Windows Python also answers to (see Python.stage).
+WINDOWS_PYTHON3 = "python3.exe"
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -261,6 +265,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
+        # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
+        # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
+        # small launcher of pythonXY.dll that finds its home from its own directory, so a copy
+        # under the POSIX name is the same interpreter. Staged before publish, so the recorded
+        # tree digest covers it.
+        if target.startswith("win32"):
+            shutil.copy2(staged / "python.exe", staged / WINDOWS_PYTHON3)
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason or not target.startswith("win32"):
+            return reason
+        # An entry staged before python3.exe existed fails here, so an explicit install
+        # (activation's setup) restages it once; startup's facts check never calls verify.
+        alias = entry / WINDOWS_PYTHON3
+        try:
+            if alias.read_bytes() == (entry / "python.exe").read_bytes():
+                return ""
+        except OSError:
+            return f"{WINDOWS_PYTHON3} is missing beside python.exe"
+        return f"{WINDOWS_PYTHON3} differs from python.exe"
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
@@ -480,7 +506,7 @@ class Venv(StatePackage):
                           seed_lock=seed, frozen=repair or not members, replay=replay,
                           source=project, environment=environment)
             resolved_lock = generation / "workspace" / "uv.lock"
-            environment.check()
+            environment.check(resolved_lock)
             if repair:
                 from pm.environments import venv_command
                 from pm.recovery import validate_environment
@@ -963,65 +989,6 @@ class CuaDriver(BinaryPackage):
 
 
 @register
-class AgentBrowser(BinaryPackage):
-    name = "agent-browser"
-    optional = True
-    # Browser tools find agent-browser only in PM's store or on PATH (no npx
-    # fallback), and their readiness check never installs it, so an install
-    # without it silently loses every browser_* tool.
-    # Default-install it; `install.sh --skip-browser` declines it.
-    default = True
-    deps = ("chromium",)
-    # Termux owns its browser stack (`npm install -g agent-browser`; see
-    # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
-    gaps = {
-        "linux-arm64-bionic": "Termux installs agent-browser through npm",
-        **{target: "agent-browser has no musl Chromium runtime" for target in MUSL_TARGETS},
-    }
-    flatten = True
-    probe_version = False
-    url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
-    # No win32-arm64 gap: agent-browser ships only win32-x64, and Windows
-    # ARM64 runs it via built-in emulation (its own postinstall falls back
-    # to x64 on arm64). chromium is likewise the x64 build on win32-arm64.
-    emulated_arch_targets = frozenset({"win32-arm64"})
-
-    def latest_versions(self, target: str, locked=None) -> list[str]:
-        latest = npm_dist_tags("agent-browser").get("latest")
-        return [latest] if latest else []
-
-    def _rel(self, target: str) -> Optional[str]:
-        ext = ".exe" if target.startswith("win32") else ""
-        # Windows ARM64 runs the x64 binary under built-in emulation:
-        # agent-browser ships no native arm64 build (its own postinstall
-        # falls back to x64 on arm64), so the staged name is win32-x64.
-        if target == "win32-arm64":
-            target = "win32-x64"
-        return f"bin/agent-browser-{target}{ext}"
-
-    def binary(self, entry: Path, target: str) -> Optional[Path]:
-        # The win32-arm64 payload carries the x64 binary (emulated), so
-        # resolve it under the win32-x64 name.
-        return super().binary(entry, "win32-x64" if target == "win32-arm64" else target)
-
-    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        flatten_single_dir(staged)
-        bin_dir = staged / "bin"
-        if not bin_dir.is_dir():
-            raise InstallError(self.name, "staged without a bin/ directory")
-        keep = Path(self._rel(target)).name
-        if not (bin_dir / keep).is_file():
-            raise InstallError(self.name, f"{keep} missing from the staged tarball")
-        for item in bin_dir.iterdir():
-            if item.is_file() and item.name.startswith("agent-browser-") and item.name != keep:
-                item.unlink()
-        # The npm tarball ships every native binary as 0644; agent-browser's
-        # own postinstall sets the exec bit, and pm runs no postinstall.
-        kept = bin_dir / keep
-        kept.chmod(kept.stat().st_mode | 0o111)
-
-
-@register
 class Chromium(Package):
     """Playwright resolves browsers by DIRECTORY NAME under one root:
     `<name with '-'→'_'>-<revision>`, no target suffix. The env points
@@ -1036,6 +1003,10 @@ class Chromium(Package):
 
     name = "chromium"
     optional = True
+    # browser_exec's launcher drives this build, and its readiness check
+    # installs it only once per process, so default-install it like the
+    # other OS tools; `install.sh --skip-browser` declines it.
+    default = True
     on_path = False
     # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
     gaps = {
@@ -1049,7 +1020,7 @@ class Chromium(Package):
     # playwright's dbazure mirror with its own platform names.
     # win32-arm64 uses the win64 (x64) build: CfT publishes no native
     # win-arm64 chromium, and Windows ARM64 runs x64 binaries via built-in
-    # emulation — the same choice agent-browser's own postinstall makes.
+    # emulation.
     _CFT = {
         "linux-x64": "linux64",
         "darwin-x64": "mac-x64",
@@ -1096,10 +1067,11 @@ class Chromium(Package):
         binary = self.binary(entry, target)
         if binary is None:
             raise InstallError(self.name, f"Chromium executable missing under {native(entry)}")
-        return {
-            "PLAYWRIGHT_BROWSERS_PATH": str(entry.parent),
-            "AGENT_BROWSER_EXECUTABLE_PATH": str(binary),
-        }
+        # Playwright launches without an executable_path (e.g. the
+        # har-derived-api-client skill's `chromium.launch(channel="chromium")`)
+        # find this build through the root; Hermes's own launcher asks
+        # hermes_cli.browser_runtime.chromium_executable() instead.
+        return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 
 class LlamaCpp(BinaryPackage):

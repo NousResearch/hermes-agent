@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
+from agent.session_activity import AwakeIdleMeter
+
 
 @dataclass
 class TurnContext:
@@ -35,6 +37,8 @@ class TurnContext:
     repeat_count: list = field(default_factory=lambda: [0])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
+    # Turn-scoped so the poll loop and stale-agent eviction both discount host sleep from idle.
+    awake_idle: AwakeIdleMeter = field(default_factory=AwakeIdleMeter)
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
     _cleanup_msg_ids: list[str] = field(default_factory=list)
@@ -68,6 +72,8 @@ class TurnContext:
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
+    # The chat's resolved display.interim_assistant_messages. Turn-shaped gates (scheduled heartbeat, hold_stream,
+    # finite viewer) apply in TurnRunner; a fresh agent's delegation.gateway_mode reads this session-shaped value.
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
     AIAgent: Any = None

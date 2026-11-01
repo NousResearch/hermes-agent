@@ -390,8 +390,13 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
+    if payload.get("budget_max"):
+        return (f" timed out (iteration budget {payload.get('budget_used')}/"
+                f"{payload['budget_max']}); will retry")
+    if "limit_seconds" not in payload or payload.get("limit_seconds") is None:
+        return " timed out (timeout limit unavailable); will retry"
     with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
+        return f" timed out (max_runtime={int(payload['limit_seconds'])}s); will retry"
     return " timed out (max_runtime=0s); will retry"
 
 

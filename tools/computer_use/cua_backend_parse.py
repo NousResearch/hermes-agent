@@ -109,6 +109,7 @@ def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[
         if not isinstance(idx, int):
             continue
         role, label, frame, token = (raw.get(k) for k in ("role", "label", "frame", "element_token"))
+        parent_index = raw.get("parent_index", raw.get("parentIndex"))
         bounds: tuple[int, int, int, int] = (0, 0, 0, 0)
         with contextlib.suppress(TypeError, ValueError):
             if isinstance(frame, dict) and frame:
@@ -118,6 +119,7 @@ def _parse_elements_from_structured(raw_elements: list[dict[str, Any]]) -> list[
             bounds=bounds,
             # Opaque `s{snapshot_hex}:{index}` token — the driver owns parse + LRU semantics.
             element_token=token if isinstance(token, str) and token else None,
+            parent_index=parent_index if isinstance(parent_index, int) else None,
         ))
     return elements
 

@@ -1,6 +1,6 @@
 name: ethics-filter
 repo: https://github.com/RegeneratusLabs/ethics-filter
-sha: be65c29dbff92e3680a7013964ec092da1c489f4
+sha: d1ecb60a48a9f2ffd5f7eab5029c11a5940b2651
 subdir: plugin
 version: "1.1.0"
 title: Ethics Filter

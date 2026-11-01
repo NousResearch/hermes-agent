@@ -8,6 +8,7 @@ before the terminal query, which is the path most users hit.
 
 from __future__ import annotations
 
+import time
 
 import pytest
 
@@ -428,3 +429,257 @@ class TestOsc11Da1Fence:
         result, leftover = _run_osc11_child(lambda age: None, repo_root)
         assert result == "None"
         assert leftover == "b''"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Silent-terminal verdict cache (#144550).
+#
+# A terminal that answers neither the OSC 11 query nor the DA1 fence (Apple
+# Terminal replies with zero bytes) cannot convert the 1 s budget into a
+# colour, yet it paid that budget on every launch. Two consecutive misses are
+# remembered per terminal, TTL-bounded, and ONLY for the negative case: a terminal that
+# answers must keep being probed so a theme switch lands on the next start.
+
+
+class _FakeClock:
+    """Deterministic stand-in for the ``time`` module: advances on every read."""
+
+    def __init__(self, step: float = 0.25, wall: float | None = None):
+        self.step = step
+        self.t = 0.0
+        self.wall = time.time() if wall is None else wall
+
+    def monotonic(self) -> float:
+        self.t += self.step
+        return self.t
+
+    def time(self) -> float:
+        return self.wall
+
+
+@pytest.fixture
+def probe_env(monkeypatch, cli_mod, tmp_path):
+    """Drive the real probe against a fake tty whose terminal never answers.
+
+    Returns a callback ``arm(reply=b"", late_reply=b"")`` that reinstalls the tty fakes and clock, so each
+    call to ``_query_osc11_background`` is measured on simulated time instead of wall-clock seconds.
+    """
+    import os
+    import select
+    import termios
+    import tty as _tty
+    from types import SimpleNamespace
+
+    import hermes_cli.cli_render as render
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.delenv("COLORTERM", raising=False)
+
+    read_fd, write_fd = os.pipe()
+    real_select = select.select
+    fake_attrs = [0, 0, 0, 0, 0, 0, [b"\x00"] * 32]
+    monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
+    monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
+    monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+    monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_mod.sys.stdin, "fileno", lambda: read_fd, raising=False)
+
+    def arm(*, reply: bytes = b"", late_reply: bytes = b"") -> _FakeClock:
+        def restore(fd, when, attrs):
+            if late_reply:
+                os.write(write_fd, late_reply)
+
+        monkeypatch.setattr(termios, "tcsetattr", restore)
+        if reply:
+            os.write(write_fd, reply)
+        if reply or late_reply:
+            monkeypatch.setattr(select, "select", lambda r, w, x, timeout: real_select(r, w, x, 0))
+        else:
+            # Nothing ever arrives: the read loop must fall through to its deadline.
+            monkeypatch.setattr(select, "select", lambda r, w, x, timeout: ([], [], []))
+        clock = _FakeClock(step=0.005 if late_reply else 0.25)
+        monkeypatch.setattr(render, "time", SimpleNamespace(monotonic=clock.monotonic, time=clock.time))
+        return clock
+
+    yield arm
+    os.close(read_fd)
+    os.close(write_fd)
+
+
+def _verdict_path():
+    from hermes_constants import get_hermes_dir
+
+    return get_hermes_dir("cache/terminal", "terminal_cache") / "osc11_silent.json"
+
+
+@pytest.mark.platforms("posix")
+class TestSilentTerminalProbeCache:
+    def test_interrupted_probe_preserves_one_miss(self, cli_mod, probe_env):
+        import json
+        from unittest.mock import patch
+
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+        path = _verdict_path()
+        record = path.read_bytes()
+        assert json.loads(record)["misses"] == 1
+
+        probe_env()
+        with patch("select.select", side_effect=[KeyboardInterrupt("probe interrupted"), ([], [], [])]):
+            with pytest.raises(KeyboardInterrupt, match="probe interrupted"):
+                cli_mod._query_osc11_background()
+
+        assert json.loads(path.read_bytes())["misses"] == 1
+        assert path.read_bytes() == record
+
+    def test_uninterrupted_silent_probe_increments_one_miss(self, cli_mod, probe_env):
+        import json
+
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert json.loads(_verdict_path().read_text())["misses"] == 1
+
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert json.loads(_verdict_path().read_text())["misses"] == 2
+
+    def test_drain_reply_resets_count(self, cli_mod, probe_env):
+        """Bytes arriving only after TCSAFLUSH still break a silent streak."""
+        import json
+
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert json.loads(_verdict_path().read_text())["misses"] == 1
+
+        probe_env(late_reply=b"\x1b[?62;22c")
+        assert cli_mod._query_osc11_background() is None
+        assert json.loads(_verdict_path().read_text())["misses"] == 0
+
+        clock = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "a late answer must not suppress the next probe"
+
+    @pytest.mark.parametrize("misses", ['"2"', '2.9', 'true', '1e309', 'NaN', '-1', '[]', '{}', 'null'])
+    def test_invalid_miss_count_still_probes(self, cli_mod, probe_env, misses):
+        import hermes_cli.cli_render as render
+
+        clock = probe_env()
+        path = _verdict_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"terminal":"xterm-256color|apple_terminal|","at":'
+            + str(clock.wall) + ',"misses":' + misses + '}', encoding="utf-8",
+        )
+        assert render._osc11_terminal_silent_misses() == 0
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "only a whole-number miss count may suppress probing"
+
+    @pytest.mark.parametrize("recorded", ['1e309', '-1e309', 'NaN', '1' + '0' * 400, '"bad"', '[]', '{}', 'null'])
+    def test_invalid_timestamp_still_probes(self, cli_mod, probe_env, recorded):
+        clock = probe_env()
+        path = _verdict_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '{"terminal":"xterm-256color|apple_terminal|","at":'
+            + recorded + ',"misses":2}', encoding="utf-8",
+        )
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "an invalid timestamp must not suppress probing"
+
+    def test_fresh_whole_number_count_still_skips(self, cli_mod, probe_env):
+        import json
+
+        clock = probe_env()
+        path = _verdict_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"terminal": "xterm-256color|apple_terminal|", "at": clock.wall, "misses": 2}),
+            encoding="utf-8",
+        )
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t < 0.1, "two fresh integer misses must still suppress the probe"
+
+    def test_silent_terminal_does_not_pay_the_budget_again(self, cli_mod, probe_env):
+        """Two silent launches spend the budget; the third skips it."""
+        clock = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "the first probe must still use its full budget"
+
+        clock2 = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock2.t >= 1.0, "one missed window must not suppress the next probe"
+
+        clock3 = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock3.t < 0.1, (
+            "a terminal already known to answer nothing must be skipped, not probed for another ~1 s"
+        )
+
+    @pytest.mark.parametrize("reply", [
+        b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c",
+        b"\x1b[?62;22c",
+        b"x",
+    ])
+    def test_answer_between_silent_launches_resets_count(self, cli_mod, probe_env, reply):
+        """Any received byte breaks the sequence, even without an OSC 11 reply."""
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+
+        probe_env(reply=reply)
+        result = cli_mod._query_osc11_background()
+        assert result == ("#FFFFFF" if b"rgb:" in reply else None)
+
+        probe_env()
+        assert cli_mod._query_osc11_background() is None
+        clock = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "silence separated by an answer must not count as consecutive"
+
+    def test_answering_terminal_is_not_cached_as_silent(self, cli_mod, probe_env):
+        """A terminal that answers keeps being probed, so a theme switch still lands."""
+        probe_env(reply=b"\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\\x1b[?62;22c")
+        assert cli_mod._query_osc11_background() == "#0C0C0C"
+        assert not _verdict_path().exists(), "an answering terminal must never be recorded as silent"
+
+        probe_env(reply=b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c")
+        assert cli_mod._query_osc11_background() == "#FFFFFF", "detection must re-run on the next launch"
+
+    def test_verdict_expires_after_the_ttl(self, cli_mod, probe_env):
+        """A stale verdict (terminal upgraded, emulator now answers) is re-probed."""
+        import json
+
+        clock = probe_env()
+        path = _verdict_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"terminal": "xterm-256color|apple_terminal|", "at": time.time() - 2 * 24 * 3600, "misses": 2}),
+            encoding="utf-8",
+        )
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "an expired verdict must not suppress the probe"
+        clock2 = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock2.t >= 1.0, "an expired count must restart at one miss"
+
+    def test_verdict_is_per_terminal(self, cli_mod, probe_env):
+        """Another terminal (TERM/TERM_PROGRAM) gets its own probe."""
+        import json
+
+        clock = probe_env()
+        path = _verdict_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"terminal": "xterm-ghostty|ghostty|", "at": time.time(), "misses": 2}),
+            encoding="utf-8",
+        )
+        assert cli_mod._query_osc11_background() is None
+        assert clock.t >= 1.0, "a verdict recorded for another terminal must not apply here"
+        clock2 = probe_env()
+        assert cli_mod._query_osc11_background() is None
+        assert clock2.t >= 1.0, "another terminal's count must restart at one miss"
+

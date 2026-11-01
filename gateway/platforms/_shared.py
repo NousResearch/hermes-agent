@@ -177,12 +177,23 @@ def send_error(message: Any) -> dict:
 
 # kind -> (applies-when predicate over (cfg, key), env encoder). "lower"/"json" bridge whenever the key
 # is present (YAML ``none`` still writes "none"); "str" skips null/blank, "csv" skips null and leaves
-# lists to the setter's comma join.
+# lists to the setter's comma join; "onoff" coerces a boolean-ish value to canonical "on"/"off".
+_ONOFF_OFF_TOKENS = {"off", "false", "0", "no", "none", ""}
+
+
+def _encode_onoff(value: Any) -> str:
+    if value is None:
+        return "on"
+    token = str(value).strip().lower()
+    return "off" if token in _ONOFF_OFF_TOKENS else "on"
+
+
 _YAML_KINDS: dict[str, tuple[Callable[[dict, str], bool], Callable[[Any], Any]]] = {
     "lower": (lambda cfg, key: key in cfg, lambda v: str(v).lower()),
     "str": (lambda cfg, key: cfg.get(key) not in (None, ""), str),
     "csv": (lambda cfg, key: cfg.get(key) is not None, lambda v: v),
     "json": (lambda cfg, key: key in cfg, json.dumps),
+    "onoff": (lambda cfg, key: key in cfg, _encode_onoff),
 }
 
 

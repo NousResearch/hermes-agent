@@ -177,6 +177,33 @@ class TestJudgeParseFailureAutoPause:
         assert transport_failed is True
 
 
+    def test_transport_failure_hint_never_invents_a_provider(self, hermes_home):
+        """Repeated judge transport errors must not suggest an unselected provider."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="transport-hint-sid", default_max_turns=20)
+        mgr.set("complete the work")
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("continue", "judge error: ConnectionError", False, None, True),
+        ):
+            for _ in range(4):
+                decision = mgr.evaluate_after_turn("work continues")
+                assert decision["should_continue"] is True
+
+            decision = mgr.evaluate_after_turn("work continues")
+
+        assert decision["status"] == "paused"
+        assert decision["should_continue"] is False
+        assert mgr.state.consecutive_transport_failures == 5
+        message = decision["message"]
+        assert "auxiliary.goal_judge.provider/model" in message
+        assert "active profile" in message
+        assert "deepseek" not in message.lower()
+        assert "openrouter" not in message.lower()
+
+
     def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
         """N=3 consecutive parse failures → auto-pause with config pointer."""
         from hermes_cli import goals

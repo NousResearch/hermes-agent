@@ -1,28 +1,27 @@
 name: olympus
 repo: https://github.com/AIEngineerX/Olympus
-sha: 70de0095d74625d592fcfef3c3aabf2ec2779e14
+sha: 501d8d980b9268db584a2797e2562272caa59f35
 title: Olympus
 description: "Manage your Hermes agents from one dashboard tab: every agent (profile) on one list with its status, current task and tool, helpers and a week of runs; one Needs-you queue of questions waiting on your answer, failed or overdue cron jobs, stalled or failing Kanban workers, blocked or unassigned tasks, offline gateways and looping or expensive runs, each with its action; an inspector per agent; a Live view of every open run with its subagents and their last tool; a Floor with every agent at a fixed place, moving only on recorded tool calls; a Pop out window of the roster that stays on top; and a Performance view of run success, run time, tool failures and cost per agent, each compared with the days before, with the runs behind any day a click away. Controls (pause, resume or run a cron job; answer, retry, reclaim or reassign a Kanban task) are confirmed, logged and executed by Hermes' own dashboard and Kanban endpoints; `dashboard.olympus.controls: false` turns them off. Opt-in alerts run as a Hermes no-agent cron job. Disclosure — reads Hermes' own stores read-only across every profile under HERMES_HOME (sessions and messages in state.db, cron jobs and run output, the Kanban database, gateway state, config.yaml, skills and the cron ledger) and writes only to plugin-data/olympus/; no network calls to third-party services, no shell commands, no background processes, no stored credentials and no self-updater; never opens a profile's .env (configured gateways come from Hermes' own helper, a private import the validator warns on); local labels, task titles and questions stay hidden unless `dashboard.olympus.expose_local_labels: true`; the Desktop page uses the plugin SDK only."
 maintainer: AIEngineerX
 tier: community
 category: desktop
-version: "2.1.0"
+version: "2.1.1"
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/AIEngineerX/Olympus/tree/70de0095d74625d592fcfef3c3aabf2ec2779e14
+docs_url: https://github.com/AIEngineerX/Olympus/tree/501d8d980b9268db584a2797e2562272caa59f35
 screenshots:
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/agents.png
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/inspector.png
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/performance.png
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/live.png
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/floor.png
-  - https://raw.githubusercontent.com/AIEngineerX/Olympus/70de0095d74625d592fcfef3c3aabf2ec2779e14/screenshots/glance.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/agents.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/inspector.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/performance.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/live.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/floor.png
+  - https://raw.githubusercontent.com/AIEngineerX/Olympus/501d8d980b9268db584a2797e2562272caa59f35/screenshots/glance.png
 readme: true
 platforms: []
 known_issues:
   - "A Kanban worker that has finished can read as Working for up to ten minutes, because Hermes leaves the worker's session open after the task run ends."
   - "While a worker runs, Now shows its task but not the tool it is using."
   - "At 390 px the confirm popup for a control can overflow its row by a pixel."
-  - "In Live and Floor, a subagent still running after its parent run has ended (a background delegation) shows as a run of its own, not under its parent."
 capabilities:
   provides_tools: []
   provides_hooks: []

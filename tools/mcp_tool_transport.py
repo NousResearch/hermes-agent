@@ -17,6 +17,7 @@ from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
+from tools.mcp_tool_structured_output import install_lenient_output_validation
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -257,6 +258,9 @@ class MCPServerTransportMixin:
         """Handshake, discover, publish readiness, then serve until a lifecycle event. Clears stale
         breaker state but leaves the session UNPROVEN: flapping transports handshake fine and drop
         moments later, so only keepalive/tool-call success clears the reconnect budget."""
+        # Before any tools/call: an outputSchema mismatch is a reachable server answering, so it must
+        # serve the result's content, not raise a RuntimeError that strikes the breaker (#101330).
+        install_lenient_output_validation(session, self.name)
         self.initialize_result = await self._negotiate_session(session, connect_timeout)
         self.session = session
         if mark_lifecycle:

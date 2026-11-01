@@ -1614,8 +1614,16 @@ class CheckpointManager:
         BATCH = 200
         for i in range(0, len(oversize), BATCH):
             chunk = oversize[i:i + BATCH]
+            # --literal-pathspecs: names come from `ls-files`, so they must be
+            # matched exactly. As glob pathspecs, a name with `[`, `]`, `*` or
+            # `?` (e.g. `a[12].bin`) would also unstage every file the name
+            # matches (e.g. `a1.bin`), silently dropping files that are under
+            # the cap from the snapshot (#135605).
+            # -f: a large file modified while `git add -A` was reading it makes
+            # git refuse the whole batch (rc 1), leaving every file in it
+            # staged; --cached keeps -f index-only.
             _run_git(
-                ["rm", "--cached", "--quiet", "--"] + chunk,
+                ["--literal-pathspecs", "rm", "--cached", "-f", "--quiet", "--"] + chunk,
                 store, working_dir, index_file=index_file,
                 allowed_returncodes={128},
             )

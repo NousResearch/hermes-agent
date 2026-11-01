@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 # omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
 _ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
 
+# Token-endpoint statuses that say nothing about the refresh grant (plus every 5xx).
+_TRANSIENT_REFRESH_STATUSES = frozenset({408, 425, 429})
+
 # Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
 _ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
 _DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
@@ -449,6 +452,11 @@ class HermesProviderMixin:
     async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
+            if response.status_code in _TRANSIENT_REFRESH_STATUSES or response.status_code >= 500:
+                # The token endpoint never judged the grant (outage, overload, rate limit).
+                # Keep it so the next request retries; clearing strands a non-interactive
+                # gateway behind a browser reauth even after the outage ends.
+                return False
             # A writer outside the fence (interactive `hermes mcp login`, or a
             # pre-fence Hermes sharing this HERMES_HOME) may have rotated the
             # grant and persisted the replacement. Providers issuing single-use

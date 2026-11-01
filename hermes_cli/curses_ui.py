@@ -215,17 +215,10 @@ def _is_boundary(target: str, index: int) -> bool:
         prev == prev.lower() and cur != cur.lower() and cur == cur.upper())
 
 
-def _token_score(orig: str, lower: str, token: str) -> float | None:
-    """Score one token against a target; None if not a subsequence. Faithful port of ``fuzzyScore``
-    in ui-tui / web ``fuzzy.ts`` so all surfaces rank identically; matches run against ``lower``,
-    boundary detection uses ``orig`` for camelCase."""
+def _score_positions(orig: str, lower: str, token: str, positions: list[int]) -> float:
+    """Score one alignment of ``token`` in ``lower`` (mirrors ``scorePositions`` in ``fuzzy.ts``)."""
     score, prev = 0.0, -1
-    positions: list[int] = []
-    for ch in token:
-        idx = lower.find(ch, prev + 1)
-        if idx < 0:
-            return None
-        positions.append(idx)
+    for idx in positions:
         score += 1
         if prev >= 0 and idx == prev + 1:
             score += 5
@@ -241,6 +234,27 @@ def _token_score(orig: str, lower: str, token: str) -> float | None:
     if lower == token:
         score += 20  # exact match dominates
     return score - len(lower) * 0.01  # slightly prefer shorter targets
+
+
+def _token_score(orig: str, lower: str, token: str) -> float | None:
+    """Score one token against a target; None if not a subsequence. Faithful port of ``fuzzyScore``
+    in ui-tui / web ``fuzzy.ts`` so all surfaces rank identically; matches run against ``lower``,
+    boundary detection uses ``orig`` for camelCase."""
+    positions: list[int] = []
+    for ch in token:
+        idx = lower.find(ch, positions[-1] + 1 if positions else 0)
+        if idx < 0:
+            return None
+        positions.append(idx)
+    best = _score_positions(orig, lower, token, positions)
+    # The greedy alignment can scatter the token over an earlier, unrelated part of the label
+    # (``opus`` via ``anthropic``/``claude`` in ``anthropic/claude-opus-5.5``); every contiguous
+    # occurrence is another alignment, keep the best (earendil-works/pi#11296).
+    start = lower.find(token)
+    while start >= 0:
+        best = max(best, _score_positions(orig, lower, token, list(range(start, start + len(token)))))
+        start = lower.find(token, start + 1)
+    return best
 
 
 def _fuzzy_score(label: str, query: str) -> float | None:

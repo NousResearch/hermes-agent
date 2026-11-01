@@ -11,6 +11,8 @@ Exit-code contract (script-friendly, documented in the CLI help):
 """
 
 import argparse
+import contextlib
+import io
 import json
 
 import pytest
@@ -121,10 +123,14 @@ class TestNormalizationParity:
     def test_normalized_trace_shown_when_command_normalizes(self,
                                                             isolated_approvals,
                                                             capsys):
+        # The word 'st""atus' can only reach the handler quoted (a real shell
+        # collapses a bare st""atus before REMAINDER ever sees it), so the faithful
+        # reconstruction is `git 'st""atus'` and the runtime's normalized variant
+        # for that string is `git 'status'`.
         rc = at.approvals_test_command(_args(['git', 'st""atus']))
         out = capsys.readouterr().out
         assert rc == 0
-        assert "git status" in out
+        assert "git 'status'" in out
 
 
 class TestReadOnly:
@@ -142,6 +148,100 @@ class TestReadOnly:
         rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
         capsys.readouterr()
         assert rc == 2
+
+
+class TestVerdictParity:
+    """Regression for #120931: the dry-run verdict must match the runtime verdict.
+
+    REMAINDER delivers shell-split words: the caller's quoting is already gone. The
+    handler must re-quote with shlex.join so the quote-aware detectors see the same
+    token boundaries as the real invocation instead of metacharacters turned live.
+    """
+
+    def test_quoted_payload_is_not_parsed_as_operators(self, isolated_approvals,
+                                                       capsys):
+        # Runtime evaluates the real string `git commit -m "x; rm -rf /"` and asks
+        # for approval; a bare-space rejoin made the tester hardline-deny on the
+        # now-bare `;`.
+        rc = at.approvals_test_command(
+            _args(["git", "commit", "-m", "x; rm -rf /"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+
+    def test_quoted_pipe_is_data_not_a_pipeline(self, isolated_approvals, capsys):
+        # Runtime allows `echo "a | reboot"`; the bare rejoin reported
+        # hardline-deny on the now-bare `|`.
+        rc = at.approvals_test_command(_args(["echo", "a | reboot"]))
+        out = capsys.readouterr().out
+        assert rc == 0
+
+    def test_shell_carrier_payload_still_scanned_as_code(self, isolated_approvals,
+                                                         capsys):
+        # The dangerous direction: runtime hardline-denies the real string
+        # `sh -c "rm -rf /"` (the quoted payload is code); the bare rejoin only
+        # asked for approval because the payload arrived unquoted.
+        rc = at.approvals_test_command(_args(["sh", "-c", "rm -rf /"]))
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert "hardline-deny" in out
+
+    def test_json_command_field_shows_faithful_reconstruction(self, isolated_approvals,
+                                                              capsys):
+        import shlex as _shlex
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = at.approvals_test_command(
+                _args(["git", "commit", "-m", "x; rm -rf /"], as_json=True))
+        payload = json.loads(buf.getvalue())
+        assert rc == 2
+        # shlex.join -> shlex.split must round-trip to the delivered words.
+        assert _shlex.split(payload["command"]) == [
+            "git", "commit", "-m", "x; rm -rf /"]
+
+    def test_embedded_apostrophe_round_trips(self, isolated_approvals, capsys):
+        import shlex as _shlex
+        rc = at.approvals_test_command(_args(["echo", "it's fine"]))
+        out = capsys.readouterr().out
+        assert rc == 0
+        # The printed command must survive shlex.split unchanged.
+        command_line = next(line for line in out.splitlines()
+                            if line.startswith("command :"))
+        shown = command_line.split("command : ", 1)[1]
+        assert _shlex.split(shown) == ["echo", "it's fine"]
+
+    def test_single_word_is_the_complete_command(self, isolated_approvals, capsys):
+        # `hermes approvals test -- 'rm -rf /'` delivers ONE argv word; the single
+        # word IS the complete command string and must be evaluated verbatim.
+        rc = at.approvals_test_command(_args(["rm -rf /"]))
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert "hardline-deny" in out
+
+    def test_plain_words_stay_bare(self, isolated_approvals, capsys):
+        # No needless quoting for words without metacharacters.
+        rc = at.approvals_test_command(_args(["ls", "-la"]))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "command : ls -la" in out
+
+
+class TestParserRemainderPath:
+    """End-to-end through argparse REMAINDER: quoting consumed by the shell."""
+
+    def test_remainder_words_are_requoted(self, isolated_approvals, capsys):
+        from hermes_cli.subcommands.approvals import build_approvals_parser
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        build_approvals_parser(sub, cmd_approvals=at.approvals_test_command)
+        # The user typed: hermes approvals test -- git commit -m "x; rm -rf /"
+        # A real shell delivers these words with the double quotes consumed.
+        argv = ["approvals", "test", "--", "git", "commit", "-m", "x; rm -rf /"]
+        args = parser.parse_args(argv)
+        rc = args.func(args)
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
 
 
 class TestOutputAndWiring:

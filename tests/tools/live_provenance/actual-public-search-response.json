@@ -1,0 +1,122 @@
+{
+  "success": true,
+  "data": {
+    "provenance": {
+      "requested_backend": "serper",
+      "served_by": "serper",
+      "served_by_source": "requested_backend_default",
+      "fallback_used": false,
+      "retrieved_at": "2026-10-19T11:07:28Z",
+      "served_at": "2026-10-19T11:07:28Z",
+      "cache": {
+        "layer": "hermes_process_memory",
+        "status": "miss",
+        "age_seconds": null,
+        "ttl_seconds": 1200.0,
+        "key_dimensions": [
+          "provider_name",
+          "normalized_query",
+          "bucketed_limit"
+        ],
+        "credential_identity_in_key": false,
+        "locale_in_key": false,
+        "provider_configuration_in_key": false
+      },
+      "evidence_scope": "search_result_metadata_only",
+      "page_fetched": false,
+      "result_scope": "top_n",
+      "requested_limit": 10,
+      "fetched_result_count": 9,
+      "returned_count": 9,
+      "result_set_truncated": false,
+      "result_set_truncation_scope": "hermes_bucket_slice_only",
+      "upstream_cache_timestamp": null,
+      "upstream_cache_timestamp_status": "not_reported_in_response",
+      "limitations": [
+        "page_not_fetched",
+        "not_exhaustive",
+        "upstream_cache_time_not_reported"
+      ],
+      "transformations": [],
+      "engine": "google_serp",
+      "source_date_kind": "publish_or_update_estimate",
+      "source_date_kind_status": "inferred_from_google_serp",
+      "provider_result_count": 9,
+      "dropped_invalid_result_count": 0
+    },
+    "web": [
+      {
+        "title": "NousResearch/hermes-agent: The agent that grows with you",
+        "url": "https://github.com/nousresearch/hermes-agent",
+        "description": "The self-improving AI agent built by Nous Research. It's the only agent with a built-in learning loop — it creates skills from experience, ...",
+        "position": 1,
+        "serp_position": 1,
+        "serp_date": "3 hours ago"
+      },
+      {
+        "title": "Hermes Agent - Nous Research",
+        "url": "https://hermes-agent.nousresearch.com/",
+        "description": "Hermes Agent is the open-source, self-hosted AI agent by Nous Research. Persistent memory, self-created skills, and a messaging gateway for Telegram, ...",
+        "position": 2,
+        "serp_position": 2,
+        "serp_date": null
+      },
+      {
+        "title": "Issues · NousResearch/hermes-agent",
+        "url": "https://github.com/NousResearch/hermes-agent/issues",
+        "description": "The agent that grows with you. Contribute to NousResearch/hermes-agent development by creating an account on GitHub.",
+        "position": 3,
+        "serp_position": 3,
+        "serp_date": null
+      },
+      {
+        "title": "Nous Research",
+        "url": "https://github.com/nousresearch",
+        "description": "The official plugins for Hermes Agent, built and maintained by Nous Research: Home Assistant, Spotify, Claude Subscription DirectSDK and more,",
+        "position": 4,
+        "serp_position": 4,
+        "serp_date": null
+      },
+      {
+        "title": "Hermes Agent Documentation - Nous Research",
+        "url": "https://hermes-agent.nousresearch.com/docs/",
+        "description": "The self-improving AI agent built by Nous Research. The only agent with a built-in learning loop — it creates skills from experience, improves them during use, ...",
+        "position": 5,
+        "serp_position": 5,
+        "serp_date": null
+      },
+      {
+        "title": "Releases · NousResearch/hermes-agent",
+        "url": "https://github.com/NousResearch/hermes-agent/releases",
+        "description": "The agent can now sign in, pay, and fill addresses from 1Password, Bitwarden, or the local Hermes vault without ever seeing a secret; two-factor codes come from ...",
+        "position": 6,
+        "serp_position": 6,
+        "serp_date": null
+      },
+      {
+        "title": "LLM and Model Providers | Hermes Agent - Nous Research",
+        "url": "https://hermes-agent.nousresearch.com/docs/integrations/providers",
+        "description": "This page covers setting up inference providers for Hermes Agent. Download GitHub Nous Research Built by Nous Research",
+        "position": 7,
+        "serp_position": 7,
+        "serp_date": null
+      },
+      {
+        "title": "Hermes Agent GitHub Repository: Official Setup Guide",
+        "url": "https://hermes-agent.ai/blog/hermes-agent-github-repository",
+        "description": "The official Hermes Agent GitHub repository is github.com/NousResearch/hermes-agent. Use that repository for source code, install scripts, ...",
+        "position": 8,
+        "serp_position": 8,
+        "serp_date": "May 24, 2026"
+      },
+      {
+        "title": "Hermes Agent Review 2026: Nous Research Setup + Best ...",
+        "url": "https://www.heyuan110.com/posts/ai/2026-04-14-hermes-agent-guide/",
+        "description": "Nous Research Hermes Agent v0.9.0 hands-on review (April 2026): 27K+ GitHub stars, installation guide on $5 Hetzner VPS, best models for the ...",
+        "position": 9,
+        "serp_position": 9,
+        "serp_date": "Apr 14, 2026"
+      }
+    ]
+  }
+}

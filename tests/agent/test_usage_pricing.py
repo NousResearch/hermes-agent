@@ -183,6 +183,63 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal(2)
 
 
+def test_endpoint_metadata_pricing_override_reprices_the_whole_request(monkeypatch):
+    """Nous-style ``pricing.overrides`` tiers apply to every billed component."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "openai/gpt-6.1-sol-pro": {
+                "pricing": {
+                    "prompt": "0.000002", "completion": "0.000010",
+                    "input_cache_read": "0.0000001", "input_cache_write": "0.0000025",
+                    "overrides": [{
+                        "min_prompt_tokens": 272_000,
+                        "prompt": "0.000004", "completion": "0.000015",
+                        "input_cache_read": "0.0000002", "input_cache_write": "0.000005",
+                    }],
+                },
+            },
+        },
+    )
+
+    result = estimate_usage_cost(
+        "openai/gpt-6.1-sol-pro",
+        CanonicalUsage(
+            input_tokens=200_000, output_tokens=10_000,
+            cache_read_tokens=50_000, cache_write_tokens=30_000,
+        ),
+        provider="nous", base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    # 280k prompt tokens crosses the tier; all four components use the override rates.
+    assert result.amount_usd == Decimal("1.11")
+
+
+def test_endpoint_metadata_multiple_pricing_overrides_keep_base_rates(monkeypatch):
+    """Ambiguous tier tables fail open instead of guessing which tier to bill."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "future-model": {
+                "pricing": {
+                    "prompt": "0.000002", "completion": "0.000010",
+                    "overrides": [
+                        {"min_prompt_tokens": 100, "prompt": "0.000004"},
+                        {"min_prompt_tokens": 200, "prompt": "0.000006"},
+                    ],
+                },
+            },
+        },
+    )
+
+    result = estimate_usage_cost(
+        "future-model", CanonicalUsage(input_tokens=500, output_tokens=100),
+        provider="nous", base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    assert result.amount_usd == Decimal("0.002")
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

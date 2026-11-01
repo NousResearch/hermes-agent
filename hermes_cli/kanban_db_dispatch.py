@@ -41,12 +41,6 @@ DEFAULT_FAILURE_LIMIT = 2
 # before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
-# A healthy worker is still alive for a while after kanban_complete /
-# kanban_request_review returns (final assistant turn, session persistence), so
-# a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
-TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
-
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -108,6 +102,10 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_run_scopes: list[str] = field(default_factory=list)
+    """Scope unit names stopped by :func:`reap_terminal_run_scopes`: a closed run
+    whose transient worker scope was still loaded, holding whatever background
+    children the worker left behind."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -1100,7 +1098,25 @@ def _classify_dead_worker_exit(
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
+    # Read the cause only for the bookings that record a crash: a quota-wall requeue
+    # or a terminal-provider crash needs none.
+    def oom_killed() -> bool:
+        return bool(task_id) and _worker_scope_oom_killed(task_id)
+
     if kind == "clean_exit":
+        if oom_killed():
+            # The kernel killed a process in the worker's cgroup and systemd
+            # stopped the scope, so this rc=0 is the worker's signal path, not a
+            # worker skipping its paperwork: book the cause, not a violation.
+            return _DeadWorker(
+                kind, code,
+                f"pid {pid} exited rc=0 because the kernel OOM killer stopped its worker "
+                "scope: the lane needed more memory than the scope limit. This is not a "
+                "protocol violation, no terminal kanban call was possible. Bound the lane's "
+                "memory (test parallelism) or raise the worker ceiling, then retry.",
+                "crashed",
+                {"pid": pid, "claimer": claimer, "exit_code": code, "oom_killed": True},
+            )
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
@@ -1141,6 +1157,15 @@ def _classify_dead_worker_exit(
     else:
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
+    if oom_killed():
+        # The bare kinds above name no cause, and an OOM death reaches here as
+        # "pid not alive" (the scope was collected before the sweep) as often as
+        # through the clean_exit branch.
+        error_text += (
+            " - the kernel OOM killer stopped this run's worker scope: the lane needed "
+            "more memory than the scope limit"
+        )
+        event_payload["oom_killed"] = True
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
@@ -1818,17 +1843,6 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return _has_spawnable(conn, "review")
 
 
-def review_dispatch_enabled() -> bool:
-    """Whether review tasks dispatch automatically. Default true (Hermes ships
-    ``sdlc-review``); operators disable it for human-only review boards.
-    """
-    try:
-        from hermes_cli.config import load_config
-        return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
-    except Exception:
-        return True
-
-
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -1882,43 +1896,6 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     if configured is not None:
         return configured
     return derive_default_max_in_progress()
-
-
-def configured_max_in_progress() -> Optional[int]:
-    """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
-
-    Shared so every dispatch entry point agrees on "explicitly configured": a
-    positive integer wins, anything else falls through to the derived default.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("max_in_progress")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    try:
-        ival = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return ival if ival >= 1 else None
-
-
-def count_running_tasks(conn: sqlite3.Connection) -> int:
-    """Number of tasks in ``status='running'``.
-
-    Used by the multi-board sweep to count OTHER boards' workers against the
-    host-level budget — the memory-derived cap bounds the machine, not the
-    board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
-    """
-    try:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
-        )
-    except Exception:
-        return 0
 
 
 def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
@@ -2219,6 +2196,10 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
+    # The worker's *scope* is the other half of the same leak: killing the worker's pid
+    # does not reach a server it double-forked away from its signal path. Not dry-run
+    # gated, exactly like the reaper above: reaping is restorative.
+    result.reaped_run_scopes = reap_terminal_run_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
@@ -2302,15 +2283,16 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(
+def _spawnable_review_count(
     conn: sqlite3.Connection,
     review_rows: list[sqlite3.Row],
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
-) -> bool:
-    """Mirror review dispatch gates before reserving ready-lane capacity.
+) -> int:
+    """How many review rows this tick could actually claim.
 
+    Mirror review dispatch gates before reserving ready-lane capacity.
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
     assignee already at the per-profile cap, or respawn-guarded — cannot
@@ -2318,9 +2300,10 @@ def _any_spawnable_review(
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
     """
     if not review_rows:
-        return False
+        return 0
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    count = 0
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2330,8 +2313,8 @@ def _any_spawnable_review(
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
-    return False
+            count += 1
+    return count
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2410,13 +2393,19 @@ def _dispatch_once_locked(
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
-    # one slot back.
+    # `kanban.review_reserved_slots` slots back, sized to the review work
+    # actually waiting, so a single pending review cannot pin the ready lane to
+    # zero. Reviews then claim from the full budget below.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
-        conn, review_rows,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
-    ):
-        ready_budget = max(spawn_budget - 1, 0)
+    if spawn_budget is not None and spawn_budget > 0:
+        reserve = configured_review_reserved_slots()
+        if reserve > 0:
+            wanted = _spawnable_review_count(
+                conn, review_rows,
+                per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+            )
+            if wanted:
+                ready_budget = max(spawn_budget - min(wanted, reserve), 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
@@ -2962,3 +2951,14 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli.kanban_db_spawn_budget import (
+    configured_max_in_progress,
+    configured_review_reserved_slots,
+    count_running_tasks,
+    review_dispatch_enabled,
+)
+from hermes_cli.kanban_db_worker_scopes import (
+    TERMINAL_WORKER_REAP_GRACE_SECONDS,
+    _worker_scope_oom_killed,
+    reap_terminal_run_scopes,
+)

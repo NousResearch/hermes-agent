@@ -65,6 +65,21 @@ it('offers a collapsed read-only checklist from an idle session, without a runni
   expect(screen.queryByLabelText('Running')).toBeNull()
 })
 
+it('lets the user dismiss the retained previous-tasks list', () => {
+  restoreSessionTodosFromSnapshot(
+    'owner',
+    { revision: 3, todos: [{ id: 'one', content: 'Already done', status: 'completed' }] },
+    false
+  )
+  // The finished list has lingered and left the live group; only the retained copy remains.
+  $todosBySession.set({})
+  render(stack())
+
+  expect(screen.getByRole('button', { name: /Previous tasks 1\/1/ })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+  expect(screen.queryByRole('button', { name: /Previous tasks/ })).toBeNull()
+})
+
 it('auto-expands only todos and keeps other groups closed as activity arrives', () => {
   $todosBySession.set({ owner: [{ id: 'todo', content: 'Visible todo', status: 'in_progress' }] })
   $goalsBySession.set({ owner: { status: 'active', title: 'Hidden legacy goal', updatedAt: 1 } })

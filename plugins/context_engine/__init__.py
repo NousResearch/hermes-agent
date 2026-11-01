@@ -6,6 +6,7 @@ general plugin system: ``context.engine`` in config.yaml names the active engine
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -73,7 +74,18 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     from agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
-    module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    if is_bundled:
+        module_name = f"plugins.context_engine.{name}"
+    else:
+        # The loader short-circuits on sys.modules[module_name], so a user engine's cache key
+        # must include the home: one process serving several profiles (multiplexed gateway)
+        # would otherwise keep executing whichever profile's module imported the name first
+        # (#134347). Bundled engines share one tree per install, so they stay name-keyed.
+        from hermes_constants import hermes_home_key
+        home_digest = hashlib.sha256(
+            str(hermes_home_key()).encode("utf-8", "surrogateescape")
+        ).hexdigest()[:12]
+        module_name = f"{_USER_NAMESPACE}.{name}__home_{home_digest}"
     from hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:

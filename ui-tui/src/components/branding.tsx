@@ -212,13 +212,25 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
+// The hero track also holds the model, cwd and session lines, so it can't be
+// sized to the art alone: a narrow hero (one glyph, a short word) made a track
+// a few columns wide and shredded those lines into vertical fragments. Floor
+// the track at the default caduceus width. A whitespace-only hero draws no
+// art, so it gets no track and the panel falls back to its single column.
+function heroLayout(t: Theme, cols: number) {
+  const hideHero = t.bannerHero.length > 0 && t.bannerHero.trim().length === 0
+  const heroLines = hideHero ? [] : caduceus(t.color, t.bannerHero || undefined)
+  const heroW = artWidth(heroLines)
+  const leftW = heroW ? Math.min(Math.max(heroW, CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4)) : 0
+
+  return { heroLines, leftW, wide: leftW > 0 && cols >= 90 && leftW + 40 < cols }
+}
+
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
-  const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
+  const { heroLines, leftW, wide } = heroLayout(t, cols)
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)

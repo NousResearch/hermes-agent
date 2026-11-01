@@ -21,8 +21,10 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
+from gateway.slash_commands_branch_link import LinkCutoffUnresolved, find_link_cutoff
 from gateway.slash_commands_branch_thread import (
-    BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
+    BRANCH_THREAD_PLATFORMS, SlackLinkTarget, branch_dest_source, branch_thread_parent,
+    format_thread_ref, parse_branch_link_args,
 )
 from gateway.slash_commands_status import history_unreadable
 
@@ -1211,6 +1213,32 @@ class GatewaySessionCommandsMixin:
         if not self._session_db:
             return self._session_db_unavailable_reply()
         source = event.source
+        args = event.get_command_args()
+        stay_here, link_target, branch_title, link_forced = parse_branch_link_args(args)
+        if link_target is None and link_forced:
+            # ``--at`` was given but nothing after it reads as a Slack thread permalink
+            # (non-Slack URL, channel-root permalink, or nothing at all).
+            return t("gateway.branch.link_unparsable")
+        if link_target is None and "archives/" in args and "http" in args:
+            # A bare Slack link with no --at: not interpreted (titles stay titles), but the
+            # predictable mistake gets pointed at the right form instead of a plain branch
+            # of this chat carrying a URL as its title.
+            return t("gateway.branch.link_requires_at")
+        if link_target is not None:
+            if stay_here:
+                # In-place switching would rebind THIS chat onto a cut clone of itself —
+                # surprising for a command whose whole point is a fresh thread. Reject rather
+                # than silently drop the flag.
+                return t("gateway.branch.link_here_unsupported")
+            if source.platform != Platform.SLACK:
+                return t("gateway.branch.link_wrong_platform")
+            if not source.thread_id or float(link_target.thread_ts) != float(source.thread_id):
+                # The link is a cutoff selector for THIS conversation: it must point into the
+                # invoking thread itself. The invoker is therefore a participant of the
+                # transcript being copied by construction — no cross-thread or cross-channel
+                # cloning, and DMs follow the same uniform rule.
+                return t("gateway.branch.link_wrong_thread")
+            return await self._branch_from_link(event, link_target, branch_title)
         session_key = self._session_key_for_source(source)
         current_entry = await self.async_session_store.get_or_create_session(source)
         try:
@@ -1220,7 +1248,6 @@ class GatewaySessionCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
         new_session_id = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        stay_here, branch_title = parse_branch_args(event.get_command_args())
         if not branch_title:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
@@ -1309,3 +1336,82 @@ class GatewaySessionCommandsMixin:
         if threads is not None:
             await threads.mark_async(str(thread_id))
         return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)
+
+    async def _branch_from_link(self, event: MessageEvent, link: SlackLinkTarget, branch_title: str) -> str:
+        """``/branch --at <message link>`` — clone THIS session, cut the transcript at the linked
+        message's turn, and open the clone in a NEW sibling thread of this thread's channel
+        (#32105, gateway surface). The link only picks the branch point (the same-thread rule
+        was checked by the caller).
+
+        The invoking chat is never rebound (the clone lives in a new thread, not here) and
+        the original session is untouched; the thread is created BEFORE the child row, mirroring
+        the plain path's ordering, so a failed branch leaves no orphan behind."""
+        import json as _json
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        source = event.source
+        target_source = source  # same-thread rule: the linked thread IS this thread
+        current_entry = await self.async_session_store.get_or_create_session(source)
+        target_id = current_entry.session_id
+        try:
+            history = await self.async_session_store.load_transcript(target_id)
+        except TranscriptReadError:
+            return history_unreadable()
+        if not history:
+            return t("gateway.branch.no_conversation")
+        try:
+            point = find_link_cutoff(history, link)
+        except LinkCutoffUnresolved as unresolved:
+            key = ("gateway.branch.link_behind_history" if unresolved.reason == "before_history"
+                   else "gateway.branch.link_message_not_found")
+            return t(key)
+        copied = history[: point.index + 1]
+        if not copied:
+            return t("gateway.branch.link_turn_incomplete")
+        if not branch_title:
+            current_title = await self._session_db.get_session_title(target_id)
+            branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
+        dest_source = await self._branch_open_thread(target_source, branch_title)
+        if dest_source is None:
+            # No in-place fallback in link mode: this chat is not the session being branched, and
+            # rebinding it onto another thread's clone would be surprising. Nothing was changed.
+            return t("gateway.branch.link_thread_failed")
+        parent = await self._session_db.get_session(target_id)
+        origin_json = None
+        with contextlib.suppress(Exception):
+            origin_json = _json.dumps(dest_source.to_dict())
+        new_session_id = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+        dest_key = self._session_key_for_source(dest_source)
+        try:
+            await self._session_db.create_session(
+                session_id=new_session_id,
+                source=Platform.SLACK.value,
+                model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                model_config={"_branched_from": target_id, "_branched_from_message": link.message_ts},
+                parent_session_id=target_id, user_id=dest_source.user_id,
+                session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
+                thread_id=dest_source.thread_id, origin_json=origin_json,
+                display_name=(parent or {}).get("display_name") or "slack",
+                system_prompt=(parent or {}).get("system_prompt") or None)
+        except Exception as e:
+            logger.error("Failed to create link branch session: %s", e, exc_info=True)
+            return t("gateway.branch.create_failed", error=e)
+        # Chunked transactions; best-effort — a failed copy still yields a usable (partial) branch.
+        with contextlib.suppress(Exception):
+            await self._session_db.append_messages_batch(
+                new_session_id, [_branch_row(msg) for msg in copied], chunk_rows=500)
+        with contextlib.suppress(Exception):
+            await self._session_db.set_session_title(new_session_id, branch_title)
+        # Materialize the thread's own entry, then point IT at the clone; the target thread's key
+        # is never touched, so the original conversation stays live where it is.
+        await self.async_session_store.get_or_create_session(dest_source)
+        new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
+        if not new_entry:
+            return t("gateway.branch.switch_failed")
+        self._clear_session_boundary_security_state(dest_key)
+        self._evict_cached_agent(dest_key)
+        msg_count = len([m for m in copied if m.get("role") == "user"])
+        key = "gateway.branch.branched_from_link_one" if msg_count == 1 else "gateway.branch.branched_from_link_many"
+        return t(key, title=branch_title, count=msg_count, parent=target_id, new=new_session_id,
+                 thread=format_thread_ref(Platform.SLACK, str(dest_source.thread_id)))

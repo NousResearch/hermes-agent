@@ -1211,6 +1211,37 @@ test('runSsh delivers stdinData to the child and does not log it', async () => {
   assert.equal(stdinWritten, 'secret-token-value', 'stdinData must be written to child.stdin')
 })
 
+test('runSsh decodes non-UTF-8 remote output with an OEM/GBK fallback', async () => {
+  // #127320: a zh-CN Windows remote emits cmd.exe errors in GBK/CP936; the
+  // bytes are not valid UTF-8 and used to surface as U+FFFD mojibake, hiding
+  // the real failure. runSsh must decode strict-UTF-8 first (byte-identical
+  // for the normal case) and fall back to GBK for legacy-codepage output.
+  const spawnFn: any = (_cmd, _args, opts) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+
+    child.kill = () => {}
+    child.stdin = { end() {} }
+    assert.equal(opts.stdio[0], 'ignore')
+    process.nextTick(() => {
+      // 命令行太长。 ("The command line is too long.") as emitted by a GBK console.
+      child.stderr.emit('data', Buffer.from('c3fcc1eed0d0ccabb3a4a1a3', 'hex'))
+      // A UTF-8 multibyte char split across chunk boundaries must still decode
+      // (per-chunk decode would cut it in half): 张 = e5 bc a0.
+      child.stdout.emit('data', Buffer.from([0x68, 0x65, 0x72, 0x6d, 0x65, 0x73, 0x3a, 0x20, 0xe5, 0xbc]))
+      child.stdout.emit('data', Buffer.from([0xa0]))
+      child.emit('close', 1)
+    })
+
+    return child
+  }
+
+  const result: any = await runSsh(['host', 'cmd'], { timeoutMs: 5000, spawnFn })
+  assert.equal(result.stderr, '命令行太长。')
+  assert.equal(result.stdout, 'hermes: 张')
+})
+
 test.runIf(process.platform !== 'win32')('open() rejects a control-dir that is a symlink', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
   const real = path.join(tmp, 'real')

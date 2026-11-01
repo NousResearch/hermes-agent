@@ -8,6 +8,7 @@ imported lazily inside each function (no import cycle; test patches stay effecti
 import json
 import logging
 import re
+import shlex
 from contextlib import suppress
 import os
 import subprocess
@@ -1227,10 +1228,20 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
             else:
                 os.environ["HERMES_HOME"] = launch_home
         return
+    repair = f"{'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+    if svc_name != get_service_name():
+        # The gateway installer cannot repair dashboard/serve or operator-owned units.
+        # A drop-in targets the affected unit without replacing its launch configuration.
+        command = ["sudo", "systemctl"] if system else ["systemctl", "--user"]
+        repair = (
+            f"{shlex.join([*command, 'edit', f'{svc_name}.service'])}\n"
+            "    Add this drop-in:\n      [Service]\n"
+            f"      RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}"
+        )
     print(
         f"  ⚠ {svc_name} lacks RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}: a permanent refusal "
         f"(exit {GATEWAY_FATAL_CONFIG_EXIT_CODE}) would crash-loop it instead of parking.\n"
-        f"    Repair: {'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+        f"    Repair: {repair}"
     )
 
 

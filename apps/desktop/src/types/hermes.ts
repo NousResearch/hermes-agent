@@ -367,6 +367,8 @@ export interface MessagingHomeChannel {
 
 export interface MessagingPlatformInfo {
   configured: boolean
+  /** Non-secret platform policy values persisted in config.yaml. */
+  config_fields?: MessagingEnvVarInfo[]
   description: string
   docs_url: string
   enabled: boolean
@@ -404,6 +406,7 @@ export interface PairingResponse {
 }
 
 export interface MessagingPlatformUpdate {
+  config?: Record<string, string[]>
   clear_env?: string[]
   enabled?: boolean
   env?: Record<string, string>

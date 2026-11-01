@@ -84,6 +84,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+import { setAttendedInterval } from "@/lib/attended-interval";
 
 
 /** Render an FTS5 snippet with highlighted matches.
@@ -1083,10 +1084,10 @@ export default function SessionsPage() {
         .catch(() => {});
     };
     loadOverview();
-    const id = setInterval(loadOverview, 5000);
+    const stop = setAttendedInterval(loadOverview, 5000);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stop();
     };
   }, [loadSessions, sessionQueryOptions]);
 

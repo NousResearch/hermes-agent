@@ -419,6 +419,17 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_registers_s6_gateway_slot(self, profile_env, monkeypatch):
+        """install_distribution must register the profile's s6 gateway slot (Phase 4 parity)."""
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "hermes_cli.profiles._maybe_register_gateway_service",
+            lambda name: calls.append(name),
+        )
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="s6test")
+        assert calls == ["s6test"]
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default
@@ -840,6 +851,20 @@ class TestInstalledAtStamp:
         refreshed = read_manifest(get_profile_dir("demo")).installed_at
         assert refreshed != first, "installed_at should change on update"
         assert refreshed.startswith("2099-01-01"), refreshed
+
+    def test_update_registers_s6_gateway_slot(self, profile_env, monkeypatch):
+        """update_distribution re-registers the s6 slot so profiles installed before the
+        install-side registration existed are repaired by `hermes profile update`."""
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "hermes_cli.profiles._maybe_register_gateway_service",
+            lambda name: calls.append(name),
+        )
+        staged = _make_staging_dir(profile_env, "src")
+        install_distribution(str(staged), name="legacy")
+        calls.clear()  # the install-side call is asserted by its own test
+        update_distribution("legacy")
+        assert calls == ["legacy"]
 
 
 # ===========================================================================

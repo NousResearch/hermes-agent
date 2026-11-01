@@ -1134,6 +1134,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Set once startStream reports the app lacks streaming (Agents & AI Apps
         # off / missing scope); later responses skip straight to edit-based streaming.
         self._native_stream_unsupported = False
+        # Slack Code channels (one agent session per channel): channel id -> is a code channel (errors are
+        # not cached); top-level message ts seen in code channels (replies to them go top-level, not
+        # threaded); roots a user replied under (those stay threaded); channels showing "processing".
+        self._code_channels: dict[str, bool] = {}
+        self._code_channel_roots: dict[str, None] = {}
+        self._code_channel_threaded: set[str] = set()
+        self._code_channel_busy: set[str] = set()
         # Socket Mode self-healing state for silently dropped websockets; the monotonic
         # start time is the grace window for the first ping/pong.
         self._app_token: Optional[str] = None
@@ -1643,7 +1650,8 @@ class SlackAdapter(BasePlatformAdapter):
             ("file_change", _noop), ("reaction_added", _reaction(False)),
             ("reaction_removed", _reaction(True)),
             ("assistant_thread_started", self._handle_assistant_thread_lifecycle_event),
-            ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event)):
+            ("assistant_thread_context_changed", self._handle_assistant_thread_lifecycle_event),
+            ("agent_session_stopped", self._handle_agent_session_stopped)):
             self._app.event(event_type)(_listener_for(handler))
         # Catch-all ack: unacked envelopes count as failures and past 95%/60-min Slack disables
         # Event Subscriptions (ALL inbound). Registered AFTER all named handlers (first match wins).
@@ -2728,6 +2736,10 @@ class SlackAdapter(BasePlatformAdapter):
             return
         if not self._app:
             return
+        md = metadata or {}
+        if self._is_known_code_channel(chat_id) and not self._resolve_thread_ts(md.get("message_id"), md):
+            await self._set_code_channel_status(chat_id, "processing")
+            return
         thread_ts = None
         if metadata:
             # Same synthetic-thread guard as sending: with reply_in_thread=false thread_id is the
@@ -2786,6 +2798,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
+        if chat_id in getattr(self, "_code_channel_busy", ()):
+            await self._set_code_channel_status(chat_id, "active")
         if self._suppressed_ignored(chat_id, "status clear in", level=logging.DEBUG):
             self._active_status_threads.pop(chat_id, None)
             return
@@ -2903,7 +2917,10 @@ class SlackAdapter(BasePlatformAdapter):
         self, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
     ) -> Optional[str]:
         """thread_ts for an API call: metadata thread_id (parent ts) over reply_to (may be a child
-        ts). With ``reply_in_thread: false`` top-level messages get flat replies."""
+        ts). With ``reply_in_thread: false`` top-level messages get flat replies, as do top-level
+        messages in a Slack Code channel."""
+        if self._code_channel_reply_is_flat(reply_to, metadata):
+            return None
         # Inbound sets metadata.thread_id to the message's own ts for top-level messages
         # (session keying), so thread_id == reply_to means a synthetic thread → reply flat.
         if not self.config.extra.get("reply_in_thread", True):
@@ -4313,6 +4330,9 @@ class SlackAdapter(BasePlatformAdapter):
             return thread_ts
         if event.get("_hermes_no_thread_response"):
             return event.get("thread_ts") or None
+        if self._is_known_code_channel(event.get("channel", "")) and not (
+                event.get("thread_ts") and event.get("thread_ts") != ts):
+            return None  # a Slack Code channel is one session; a user-started thread keeps its own
         # Reaction handoff into a configured target channel (#45265): the response should be a new top-level
         # message in the target channel, never a thread under the synthetic ts (which is the reaction's
         # event_ts — not a real message there).
@@ -4431,6 +4451,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
+        await self._note_code_channel_message(event or {})
         _ts = str((event or {}).get("ts") or "")
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
@@ -6400,8 +6421,99 @@ class SlackAdapter(BasePlatformAdapter):
         match = text and re.match(r"\s*<@([^>|\s]+)(?:\|[^>]*)?>", text)
         return bool(match) and match.group(1) not in self_uids
 
+    # ── Slack Code channels ────────────────────────────────────────────────
+    # A code channel (Slack Code, GA 2026-10-28) is one agent session per channel: people talk to the
+    # agent without @mentioning it, it replies top-level, the session status is channel-level
+    # (``agents.sessions.setStatus`` without ``thread_ts``) and Slack sends ``agent_session_stopped``
+    # for the Stop button. https://docs.slack.dev/ai/slack-code/
+    _CODE_CHANNEL_ROOTS_MAX = 5000
+
+    def _is_known_code_channel(self, channel_id: str) -> bool:
+        return bool(channel_id) and getattr(self, "_code_channels", {}).get(channel_id) is True
+
+    async def _detect_code_channel(self, channel_id: str) -> None:
+        """Cache whether ``channel_id`` is a code channel. The documented signal is
+        ``properties.record_channel.record_type == "agent_channel"``; ``properties.code_channel`` can be
+        ``{}`` on a new channel, so it is not used. Lookup failures are not cached (retried next message)."""
+        cache = getattr(self, "_code_channels", None)
+        if cache is None or not channel_id or channel_id in cache or channel_id[:1] not in ("C", "G"):
+            return
+        try:
+            resp = await self._get_client(channel_id).conversations_info(channel=channel_id)
+            props = (resp.get("channel") or {}).get("properties") or {}
+            cache[channel_id] = (props.get("record_channel") or {}).get("record_type") == "agent_channel"
+        except Exception as e:  # never block inbound on this lookup
+            logger.debug("[Slack] code-channel lookup for %s failed: %s", channel_id, e, exc_info=True)
+
+    async def _note_code_channel_message(self, event: dict) -> None:
+        """Before an inbound message is handled: recognise its channel and remember top-level message
+        ts (replies to them go top-level) and roots a user replied under (those stay threaded). Only
+        plain user messages count; joins and edits are dropped later anyway."""
+        try:
+            channel = str(event.get("channel") or "")
+            await self._detect_code_channel(channel)
+            if not self._is_known_code_channel(channel) or event.get("subtype") not in (
+                    None, "file_share", "thread_broadcast"):
+                return
+            ts, thread_ts = str(event.get("ts") or ""), str(event.get("thread_ts") or "")
+            if ts and (not thread_ts or thread_ts == ts):
+                roots = self._code_channel_roots
+                roots[ts] = None
+                while len(roots) > self._CODE_CHANNEL_ROOTS_MAX:
+                    roots.pop(next(iter(roots)))
+            elif thread_ts:
+                self._code_channel_threaded.add(thread_ts)
+        except Exception:
+            logger.debug("[Slack] code-channel bookkeeping failed", exc_info=True)
+
+    def _code_channel_reply_is_flat(self, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> bool:
+        """A reply to a top-level code-channel message goes top-level. Inbound stamps the message's own
+        ts as ``metadata.thread_id`` and the streaming path passes no ``reply_to``, so key on either."""
+        roots = getattr(self, "_code_channel_roots", None)
+        if not roots:
+            return False
+        md = metadata or {}
+        thread = md.get("thread_id") or md.get("thread_ts")
+        anchor = thread or reply_to
+        return (anchor in roots and anchor not in self._code_channel_threaded
+                and (not thread or not reply_to or thread == reply_to))
+
+    async def _set_code_channel_status(self, chat_id: str, status: str) -> None:
+        """Channel-level session status (``processing`` while working, ``active`` when the turn ends);
+        ``processing`` is sent once per turn because ``_keep_typing`` refreshes often."""
+        busy = self._code_channel_busy
+        if status == "processing":
+            if chat_id in busy:
+                return
+            busy.add(chat_id)
+        else:
+            busy.discard(chat_id)
+        try:
+            await self._get_client(chat_id).api_call(
+                "agents.sessions.setStatus", json={"channel_id": chat_id, "status": status})
+        except Exception as e:
+            logger.debug("[Slack] agents.sessions.setStatus %s in %s failed: %s", status, chat_id, e,
+                         exc_info=True)
+
+    async def _handle_agent_session_stopped(self, event: dict, body: Optional[dict] = None) -> None:
+        """The user pressed Stop on an agent session (code channel, or a thread when ``thread_ts`` is
+        set): run the gateway's own ``/stop`` for that session. Slack updates the status itself."""
+        channel = str((event or {}).get("channel") or "")
+        if not channel:
+            return
+        getattr(self, "_code_channel_busy", set()).discard(channel)
+        stop = {"type": "message", "channel": channel, "user": event.get("user"), "text": "/stop",
+                "ts": str(event.get("event_ts") or "")}
+        if event.get("thread_ts"):
+            stop["thread_ts"] = event["thread_ts"]
+        logger.info("[Slack] agent_session_stopped in %s (thread %s): stopping the session",
+                    channel, event.get("thread_ts"))
+        await self._handle_slack_message(stop, body)
+
     def _slack_is_free_channel(self, channel_id: str) -> bool:
         """Does ``channel_id`` admit messages without an @mention?"""
+        if self._is_known_code_channel(channel_id):
+            return True  # a code channel is the agent's working space: people don't @mention it
         return channel_id not in self._slack_require_mention_channels() and (
             channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
 

@@ -102,19 +102,19 @@ group_sessions_per_user: false
 
 Hermes Agent 使用你的 Mattermost 用户 ID 来控制谁可以与机器人交互。个人资料对话框（头像 → 个人资料）里没有这个 ID。
 
-Mattermost 把 ID 记在三处。见 [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings.html#identify-a-users-id)：
+可以用以下任一方式查找（见 Mattermost 文档 [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings#identify-a-users-id)）：
 
-1. **System Console** → **User Management** → **Users** → 打开你自己的用户。ID 在 User Configuration 页面上。这需要系统管理员。
-2. **API**：用 bot token 按用户名查询。返回里的 `id` 是你的，不是 bot 的：
+1. **System Console**（系统管理员）：**User Management** → **Users** → 打开你自己的用户。ID 在 User Configuration 页面上。
+2. **浏览器**（任何用户）：在已登录 Mattermost 的浏览器中新开标签页，打开 `https://your-mattermost-server/api/v4/users/me`。返回里的 `id` 就是你的用户 ID。
+3. **用 bot token 调用 API**：按你的用户名查询。返回里的 `id` 是你的：
 
-```bash
-curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
-  https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
-```
+   ```bash
+   curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
+     https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
+   ```
 
-用同一个 bot token 调用 `GET /api/v4/users/me` 得到的是 **bot** 的 id。只有当你用的是自己账号的 personal access token 时，`/users/me` 才是你的 id。
-
-3. **mmctl**：`mmctl user list` 会列出每个用户的 id。
+   不要用 bot token 调用 `/api/v4/users/me`：那返回的是 **bot** 的 ID，不是你的。
+4. **mmctl**（系统管理员）：`mmctl user list --all` 会为每个用户输出一行 `<id>: <username> (<email>)`。
 
 你的用户 ID 是一个 26 位字母数字字符串，例如 `3uo8dkh1p7g1mfk49ear5fzs5c`。
 

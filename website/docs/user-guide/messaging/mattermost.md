@@ -102,19 +102,19 @@ For DMs, simply open a direct message with the bot — it will be able to respon
 
 Hermes Agent uses your Mattermost User ID to control who can interact with the bot. The profile dialog (avatar → Profile) does not show it.
 
-Mattermost documents the ID in three places. See [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings.html#identify-a-users-id):
+Use one of these (see Mattermost's [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings#identify-a-users-id)):
 
-1. **System Console** → **User Management** → **Users** → open your user. The ID is on the User Configuration page. This needs a system admin.
-2. **API**, with the bot token, looking up your username. The `id` field is yours, not the bot's:
+1. **System Console** (system admins): **User Management** → **Users** → open your user. The ID is on the User Configuration page.
+2. **Browser** (any user): while logged in to Mattermost, open `https://your-mattermost-server/api/v4/users/me` in a new tab. The `id` field is your User ID.
+3. **API with the bot token**: look up your username. The `id` field in the response is yours:
 
-```bash
-curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
-  https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
-```
+   ```bash
+   curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
+     https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
+   ```
 
-`GET /api/v4/users/me` with that same bot token returns the **bot's** id. `/users/me` is your id only when the token is a personal access token for your own account.
-
-3. **mmctl**: `mmctl user list` prints each user id.
+   Don't call `/api/v4/users/me` with the bot token: that returns the **bot's** ID, not yours.
+4. **mmctl** (system admins): `mmctl user list --all` prints one line per user: `<id>: <username> (<email>)`.
 
 Your User ID is a 26-character alphanumeric string like `3uo8dkh1p7g1mfk49ear5fzs5c`.
 

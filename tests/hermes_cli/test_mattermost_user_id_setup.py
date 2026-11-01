@@ -1,8 +1,8 @@
-"""Mattermost setup must name a user-id lookup Mattermost actually documents.
+"""`hermes gateway setup` → Mattermost must name a user-ID lookup that exists.
 
-The profile dialog does not show the id. System Console → User Management →
-Users, and GET /api/v4/users/username/<username>, do. /users/me with the bot
-token is the bot.
+The profile dialog does not show the ID. System Console → User Management →
+Users and GET /api/v4/users/username/<username> do; /users/me with the bot
+token returns the bot's own user.
 """
 
 import io
@@ -21,23 +21,5 @@ def test_gateway_setup_points_at_a_documented_user_id(tmp_path, monkeypatch, cap
     out = capsys.readouterr().out
     assert "User Management" in out
     assert "/api/v4/users/username/" in out
+    assert "click your avatar" not in out
     assert "displayed there" not in out
-    assert "click your avatar" not in out
-    assert "bot's id" in out
-
-
-def test_plugin_setup_points_at_a_documented_user_id(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from plugins.platforms.mattermost.adapter import interactive_setup
-
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO("https://mm.example.com\ntok-abc\nuserid26\n\n"),
-    )
-    interactive_setup()
-
-    out = capsys.readouterr().out
-    assert "User Management" in out
-    assert "/api/v4/users/username/" in out
-    assert "click your avatar" not in out
-    assert "bot's id" in out

@@ -1,14 +1,14 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { formatTranslation, resolveTranslations } from '@/i18n/runtime'
+import { resolveTranslations } from '@/i18n/runtime'
 import { api } from '@/lib/api'
 import { runDashboardPluginUpdate } from '@/lib/plugin-update'
 
 const pp = resolveTranslations('zh').pluginsPage
 const copy = {
-  consentBody: (name: string, sha: string) => formatTranslation(pp.updateConsentBody, { name, sha }),
-  scanBody: (name: string, count: number) => formatTranslation(pp.updateScanBody, { name, count }),
-  scanBlocked: (name: string) => formatTranslation(pp.updateScanBlocked, { name })
+  consentBody: pp.updateConsentBody,
+  scanBody: pp.updateScanBody,
+  scanBlocked: pp.updateScanBlocked
 }
 
 afterEach(() => vi.restoreAllMocks())

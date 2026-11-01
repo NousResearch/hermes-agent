@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -122,7 +123,7 @@ export default function FilesPage() {
         setLoading(false);
       }
     },
-    [currentPath],
+    [currentPath, t.common],
   );
 
   useEffect(() => {
@@ -132,7 +133,7 @@ export default function FilesPage() {
     void load(currentPath);
   }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setAfterTitle(
       <Badge tone="outline" className="max-w-[22rem] truncate text-xs" title={headerPath}>
         {headerPath}

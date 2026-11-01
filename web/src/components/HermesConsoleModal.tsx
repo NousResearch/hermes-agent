@@ -471,7 +471,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       activeCommandRef.current = false;
       hasReadyFrameRef.current = false;
     };
-  }, [connectNonce, handleFrame, handleInputData, open, profile, theme]);
+  }, [connectNonce, handleFrame, handleInputData, open, profile, t.common, theme]);
 
   useEffect(() => {
     if (!open) return;

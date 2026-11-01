@@ -190,6 +190,24 @@ def _command_category_key(category: str) -> str:
     }.get(category, "")
 
 
+def command_presentation_messages(lang: str) -> dict[str, str]:
+    """Reuse core command translations and usage hints for the selected TUI language."""
+    from agent.i18n import t
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    messages = {}
+    for cmd in COMMAND_REGISTRY:
+        key = f"slash.{cmd.name}.description"
+        description = t(key, lang=lang)
+        if description == key:
+            description = cmd.description
+        if cmd.args_hint:
+            description = t("slash.shared.usage_suffix", lang=lang,
+                            description=description, name=cmd.name, args_hint=cmd.args_hint)
+        messages[f"slash.{cmd.name}"] = description
+    return messages
+
+
 def _catalog_registry(cat: _Catalog, module_loader) -> None:
     commands = module_loader("hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:

@@ -290,8 +290,8 @@ cache. `scripts.bundles.stage --cache PATH` (or `hermes pm bundle --cache PATH`)
 selects the persistent cache explicitly. Direct staging also accepts the
 provider's `UV_CACHE_DIR`; otherwise it uses the output parent's `.uv-cache`.
 The PM runtime and application dependency builds receive this same cache.
-General PM staging uses `setup-pm` and `save-pm-cache` to restore and save it
-after the build, including failures, under its v2 namespace. Desktop composition
+General PM staging uses `setup-pm`, which restores and saves it automatically on
+success. Desktop composition
 instead prepares the full dependency set before its single dependency snapshot
 save. The packaged `uv-cache/` is a copy, not the writable build cache.
 

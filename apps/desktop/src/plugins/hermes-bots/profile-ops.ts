@@ -380,6 +380,12 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
     description: bot.description || ''
   })
 
+  // Prefs a deleted profile left under the copy's name must not become its.
+  // Older builds without the door keep them, as before.
+  if (typeof host.dropLeftoverProfilePrefs === 'function') {
+    host.dropLeftoverProfilePrefs(name, ownerRoute?.connectionId)
+  }
+
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy
   // chat or created. Those belong to the original bot.

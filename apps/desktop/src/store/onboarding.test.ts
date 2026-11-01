@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as notifications from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
-import type { OAuthProvider } from '@/types/hermes'
+import type { AppHandoffStatus, OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
   completeDesktopOnboarding,
   confirmOnboardingModel,
+  DEFAULT_ONBOARDING_REASON,
   type DesktopOnboardingState,
   type OnboardingContext,
   refreshOnboarding,
@@ -22,6 +23,9 @@ import {
 
 // Onboarding's due check answered "not due": first-run surfaces are free to show.
 markOnboardingDecided()
+
+const NOT_CONNECTED =
+  'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, or `hermes auth add <provider>`.'
 
 function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnboardingState {
   return {
@@ -206,6 +210,53 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['fresh'])
     expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
     expect($desktopOnboarding.get().reason).toContain('setup.status reports configured credentials')
+  })
+
+  it('shows no sentence of its own over the picker when nothing is set up', async () => {
+    const unconfigured: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'setup.status') {
+        return { provider_configured: false } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return {
+          ok: false,
+          error: 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.'
+        } as never
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
+    expect($desktopOnboarding.get()).toMatchObject({ configured: false, reason: DEFAULT_ONBOARDING_REASON })
+  })
+
+  it.each([
+    ['answers', async () => ({ ok: false, error: NOT_CONNECTED }) as never],
+    [
+      'fails',
+      async () => {
+        throw new Error(NOT_CONNECTED)
+      }
+    ]
+  ])('drops an earlier raw sentence once nothing is set up and the runtime check %s', async (_, runtimeCheck) => {
+    $desktopOnboarding.set(baseState({ reason: NOT_CONNECTED }))
+
+    const unconfigured: OnboardingContext['requestGateway'] = async method => {
+      if (method === 'setup.status') {
+        return { provider_configured: false } as never
+      }
+
+      if (method === 'setup.runtime_check') {
+        return runtimeCheck()
+      }
+
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+
+    expect(await refreshOnboarding(onboardingContext(unconfigured))).toBe(false)
+    expect($desktopOnboarding.get().reason).not.toContain('hermes model')
   })
 
   it('keeps cached providers when onboarding was not re-requested', async () => {
@@ -496,6 +547,42 @@ describe('OAuth onboarding', () => {
     $desktopOnboarding.set(baseState())
     resetBootRaceWindowForTests()
     vi.restoreAllMocks()
+  })
+
+  it('a Nous sign-in shows its account and what moved on the confirm screen, not in a dialog after it', async () => {
+    const { startProviderOAuth } = await import('./onboarding')
+    const { $freeTierSignIn } = await import('./free-tier-sign-in')
+    const { setOnboardingSurfaceActive } = await import('./onboarding-presence')
+    const handoff: AppHandoffStatus = { lines: ['Your apps moved to someone@example.com: linear.'], state: 'claimed' }
+
+    installApiMock(async ({ path }) => {
+      if (path.endsWith('/start')) {
+        return { expires_in: 600, flow: 'device_code', session_id: 's', user_code: 'C', verification_url: 'http://x' }
+      }
+
+      if (path.includes('/poll/')) {
+        return { account_email: 'someone@example.com', handoff_status: handoff, session_id: 's', status: 'approved' }
+      }
+
+      if (path.startsWith('/api/model/options')) {
+        return { providers: [{ models: ['nous/m'], name: 'Nous Portal', slug: 'nous' }] }
+      }
+
+      return path.startsWith('/api/model/recommended-default') ? { model: 'nous/m' } : { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    setOnboardingSurfaceActive('onboarding', true)
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), {
+      requestGateway: async method =>
+        // SAFETY: onboarding reads only `provider_configured` from setup.status and `ok` from the rest.
+        (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
+    })
+    await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
+
+    expect($desktopOnboarding.get().flow).toMatchObject({ signedIn: { email: 'someone@example.com', handoff } })
+    setOnboardingSurfaceActive('onboarding', false)
+    expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
   })
 
   it('clears stale readiness errors after OAuth succeeds and model confirmation is shown', async () => {
@@ -1063,7 +1150,7 @@ describe('saveOnboardingLocalEndpoint', () => {
       }
 
       if (method === 'setup.status') {
-        return { provider_configured: false } as never
+        return { provider_configured: true } as never
       }
 
       if (method === 'setup.runtime_check') {
@@ -1120,7 +1207,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(2)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 
@@ -1147,7 +1234,7 @@ describe('device-code poll expiry', () => {
         return deviceStart(600)
       }
 
-      if (path === '/api/providers/oauth/nous/poll/device-sess-1') {
+      if (path.startsWith('/api/providers/oauth/nous/poll/device-sess-1')) {
         return { status: 'pending' }
       }
 

@@ -157,7 +157,7 @@ export default function WebhooksPage() {
     } finally {
       setRestarting(false);
     }
-  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome]);
+  }, [format, loadWebhooks, showToast, t.common, t.webhooks.gatewayRestarting, t.webhooks.restartFailed, watchRestartOutcome]);
 
   const handleEnableWebhooks = useCallback(async () => {
     setEnabling(true);
@@ -183,7 +183,7 @@ export default function WebhooksPage() {
     } finally {
       setEnabling(false);
     }
-  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome]);
+  }, [format, loadWebhooks, showToast, t.common, t.webhooks.enableFailed, t.webhooks.enabledRestartFailed, t.webhooks.enabledRestarting, watchRestartOutcome]);
 
   const resetForm = useCallback(() => {
     setName("");
@@ -242,7 +242,7 @@ export default function WebhooksPage() {
         setTogglingName(null);
       }
     },
-    [format, loadWebhooks, showToast, t.webhooks],
+    [format, loadWebhooks, showToast, t.common, t.webhooks.disabledNamed, t.webhooks.enabledNamed, t.webhooks.error],
   );
 
   const webhookDelete = useConfirmDelete({
@@ -257,7 +257,7 @@ export default function WebhooksPage() {
           throw e;
         }
       },
-      [format, loadWebhooks, showToast, t.webhooks],
+      [format, loadWebhooks, showToast, t.common, t.webhooks.deletedNamed, t.webhooks.error],
     ),
   });
 

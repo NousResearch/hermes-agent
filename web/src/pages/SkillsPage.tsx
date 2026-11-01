@@ -66,6 +66,7 @@ import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { installedHubEntry } from "@/lib/skill-hub-installed";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -167,7 +168,7 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProfile, loadNonce]);
+  }, [selectedProfile, loadNonce, t.common]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -878,7 +879,7 @@ function HubBrowser({
       setSearchMs(Math.round(performance.now() - t0));
       setSearching(false);
     }
-  }, [format, profile, query, showToast, t.skills.hub.searchFailed]);
+  }, [format, profile, query, showToast, t.common, t.skills.hub.searchFailed]);
 
   /* ---- Poll a spawned action's log until it exits ---- */
   useEffect(() => {
@@ -924,7 +925,7 @@ function HubBrowser({
         showToast(format(t.skills.hub.installFailed, { error: errorMessage(e, t.common) }), "error");
       }
     },
-    [format, profile, showToast, t.skills.hub],
+    [format, profile, showToast, t.common, t.skills.hub.installFailed, t.skills.hub.installing],
   );
 
   const updateAll = useCallback(async () => {
@@ -937,9 +938,12 @@ function HubBrowser({
     } catch (e) {
       showToast(format(t.skills.hub.updateFailed, { error: errorMessage(e, t.common) }), "error");
     }
-  }, [format, profile, showToast, t.skills.hub]);
+  }, [format, profile, showToast, t.common, t.skills.hub.updateFailed, t.skills.hub.updating]);
 
-  const isInstalled = useCallback((identifier: string) => Boolean(installed[identifier]), [installed]);
+  const isInstalled = useCallback(
+    (hit: SkillHubResult) => Boolean(installedHubEntry(installed, hit)),
+    [installed],
+  );
 
   const showLanding = !searched && !searching;
 
@@ -1030,7 +1034,7 @@ function HubBrowser({
                 <HubResultCard
                   key={r.identifier}
                   result={r}
-                  installed={isInstalled(r.identifier)}
+                  installed={isInstalled(r)}
                   onOpen={() => setDetail(r)}
                   onInstall={() => void install(r.identifier)}
                 />
@@ -1068,7 +1072,7 @@ function HubBrowser({
               <HubResultCard
                 key={r.identifier}
                 result={r}
-                installed={isInstalled(r.identifier)}
+                installed={isInstalled(r)}
                 onOpen={() => setDetail(r)}
                 onInstall={() => void install(r.identifier)}
               />
@@ -1081,7 +1085,7 @@ function HubBrowser({
       {detail && (
         <SkillDetailDialog
           result={detail}
-          installed={isInstalled(detail.identifier)}
+          installed={isInstalled(detail)}
           onClose={() => setDetail(null)}
           onInstall={() => void install(detail.identifier)}
           showToast={showToast}
@@ -1279,7 +1283,7 @@ function SkillDetailDialog({
     return () => {
       cancelled = true;
     };
-  }, [format, result.identifier, showToast, t.skills.hub.previewFailed]);
+  }, [format, result.identifier, showToast, t.common, t.skills.hub.previewFailed]);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -1292,7 +1296,7 @@ function SkillDetailDialog({
     } finally {
       setScanning(false);
     }
-  }, [format, result.identifier, showToast, t.skills.hub.scanFailed]);
+  }, [format, result.identifier, showToast, t.common, t.skills.hub.scanFailed]);
 
   return (
     <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>

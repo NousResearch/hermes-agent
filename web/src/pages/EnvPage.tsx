@@ -690,7 +690,7 @@ export default function EnvPage() {
           setSaving(null);
         }
       },
-      [format, showToast, t.env.removeFailedNamed, t.env.removedNamed],
+      [format, showToast, t.common, t.env.removeFailedNamed, t.env.removedNamed],
     ),
   });
 

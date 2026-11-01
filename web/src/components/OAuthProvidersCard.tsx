@@ -66,14 +66,16 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
 
   const onErrorRef = useRef(onError);
   const loadErrorTemplateRef = useRef(t.oauth.loadProvidersFailed);
+  const commonCopyRef = useRef(t.common);
 
   useEffect(() => {
     onErrorRef.current = onError;
     loadErrorTemplateRef.current = t.oauth.loadProvidersFailed;
-  }, [onError, t.oauth.loadProvidersFailed]);
+    commonCopyRef.current = t.common;
+  }, [onError, t.oauth.loadProvidersFailed, t.common]);
 
   const reportLoadError = useCallback((error: unknown) => {
-    onErrorRef.current?.(loadErrorTemplateRef.current.replace("{error}", String(error)));
+    onErrorRef.current?.(loadErrorTemplateRef.current.replace("{error}", () => errorMessage(error, commonCopyRef.current)));
   }, []);
 
   const refresh = useCallback(() => {
@@ -86,20 +88,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   }, [reportLoadError]);
 
   useEffect(() => {
-    let cancelled = false;
-    api
-      .getOAuthProviders()
-      .then((resp) => {
-        if (!cancelled) setProviders(resp.providers);
-      })
-      .catch(reportLoadError)
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reportLoadError]);
+    refresh();
+  }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);

@@ -42,6 +42,8 @@ export interface Step {
   toolCalls?: ToolCallSpec[]
   /** Hold the stream after the first text (or reasoning) chunk until the gate opens. */
   holdAfterFirstChunk?: Gate
+  /** Hold the stream after its last text chunk, before tool calls and the finish, until the gate opens. */
+  holdBeforeFinish?: Gate
 }
 
 export interface RecordedCompletion {
@@ -178,6 +180,10 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
       res.write(chunk(model, { content: piece }))
       rec.sentText += piece
       await afterChunk()
+    }
+
+    if (step.holdBeforeFinish) {
+      await step.holdBeforeFinish.opened
     }
 
     const calls = step.toolCalls ?? []

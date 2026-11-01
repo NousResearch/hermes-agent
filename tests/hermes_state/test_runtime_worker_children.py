@@ -6,6 +6,7 @@ from functools import partial
 import psutil
 import pytest
 
+from hermes_cli.process_identity import worker_birth
 from gateway.session_worker_child import reserve_child_execution
 from hermes_state import SessionDB
 import hermes_state_runtime as rt
@@ -13,7 +14,7 @@ import hermes_state_runtime as rt
 
 def _reserve(db, epoch, sequence, *, limits=(2, 1), refused=None, execution_id='worker'):
     handler = partial(reserve_child_execution, epoch=epoch, execution_id=execution_id,
-                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                       principal='local', limits=limits, refused=refused)
     return rt.apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id='parent', generation=0,
                                    sequence=sequence, operation='child.reserve',
@@ -93,7 +94,7 @@ def test_depth_cap_profile_and_an_early_child_finish_settle_the_child_row(ledger
     assert db.get_session(child['session_id'])['profile_name'] == 'coder'
     # The child is already at max_spawn_depth=1: the owner refuses its own child.request.
     nested = partial(reserve_child_execution, epoch=epoch, execution_id=child['execution_id'],
-                     identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                     identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                      principal='local', limits=(2, 1), refused=None)
     assert rt.apply_worker_receipt(db, epoch=epoch, execution_id=child['execution_id'], session_id=child['session_id'],
                                    generation=0, sequence=1, operation='child.reserve',
@@ -137,7 +138,7 @@ async def test_child_reserve_verifies_the_parent_claim_and_refuses_while_drainin
     connection = SimpleNamespace(authority=authority, actor=SimpleNamespace(
         subject='human', profile_id='p', capabilities={'session:submit', 'worker:adopt'}))
     scope = {'profile_id': 'p', 'session_id': 'parent', 'execution_id': 'compute', 'generation': 0,
-             'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'secret': 'w' * 32}
+             'pid': process.pid, 'birth': worker_birth(psutil.Process(process.pid)), 'secret': 'w' * 32}
     try:
         epoch = (await worker_request(connection, None, scope | {'kind': 'compute'}, operation='register'))['owner_epoch']
 
@@ -166,7 +167,7 @@ def test_a_child_store_closed_before_any_turn_finishes_its_execution_and_ends_it
     from agent.runtime_session_store import RuntimeSessionStore
     db, epoch = ledger
     reserve = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
-                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
                       principal='local', limits=(2, 1), refused=None)
 
     def rpc(method, **params):

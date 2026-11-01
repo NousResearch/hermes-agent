@@ -137,17 +137,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     return () => {
       if (pollTimer.current !== null) window.clearInterval(pollTimer.current);
     };
-  }, [
-    start,
-    phase,
-    provider.id,
-    provider.name,
-    onSuccess,
-    onClose,
-    t.oauth.connectedProvider,
-    t.oauth.loginStatusFailed,
-    t.oauth.pollingFailed,
-  ]);
+  }, [start, phase, provider.id, provider.name, onSuccess, onClose, t.oauth.connectedProvider, t.oauth.loginStatusFailed, t.oauth.pollingFailed, t.common]);
 
   const handleSubmitPkceCode = async () => {
     if (!start || start.flow !== "pkce") return;

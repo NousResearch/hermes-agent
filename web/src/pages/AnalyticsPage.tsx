@@ -444,7 +444,7 @@ export default function AnalyticsPage() {
       .then(setData)
       .catch((err) => setError(errorMessage(err, t.common)))
       .finally(() => setLoading(false));
-  }, [days, showTokens]);
+  }, [days, showTokens, t.common]);
 
   useLayoutEffect(() => {
     // Period selector + refresh both live in afterTitle so the controls

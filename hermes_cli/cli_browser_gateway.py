@@ -35,30 +35,18 @@ def gateway_browser(cli, connection, word: str, rest: str) -> None:
             return
         params["url"] = normalized[0]
         print(f"   {_t('browser.checking', url=params['url'])}")
-    if word == "use":
-        mode = rest.lower() or "on"
-        if mode not in {"on", "off"}:
-            return _say_block(
-                _t("browser.use_usage"),
-                f"   {_t('browser.use_on_hint')}", f"   {_t('browser.use_off_hint')}")
-        params["enabled"] = mode == "on"
     try:
         result = connection.call("browser.manage", **params) or {}
     except GatewayClientError as exc:
         return _say_block(f"   ⚠ {exc}")
     for message in result.get("messages") or ():
         print(f"   {message}")
-    if word == "use":
-        return _say_block(_t("browser.use_enabled" if params["enabled"] else "browser.use_disabled"),
-                          f"   {_t('browser.new_sessions_only')}")
     if word == "disconnect":
         return _say_block(_t("browser.disconnected"), f"   {_t('browser.reverted')}")
     if word == "connect":
         if not result.get("connected"):
             return _say_block(_t("browser.not_connected"))
         return _say_block(_t("browser.connected"), f"   {_t('browser.endpoint', url=result.get('url') or '')}")
-    if result.get("browser_use"):
-        return _say_block(_t("browser.status_browser_use"), f"   {_t('browser.status_use_off_hint')}")
     if result.get("connected"):
         return _say_block(_t("browser.status_connected"), f"   {_t('browser.endpoint', url=result.get('url') or '')}")
     _say_block(_t("browser.status_gateway_default"),

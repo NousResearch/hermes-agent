@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-import time
+
+from agent.deadline import poll_until
 
 
 _OWNER_STOP_HINTS = {
@@ -59,19 +60,18 @@ def _drain_manual_gateway(home: Path) -> None:
     response = pause_gateway_for_update(home)
     if not pause_acked(response, identity):
         raise RuntimeError(f"gateway refused to drain for {home}")
-    deadline = time.monotonic() + min(120.0, max(5.0, float(response.get("drain_timeout", 30.0)) + 5.0))
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         current = get_process_start_time(pid)
         original_gone = not _pid_exists(pid) or (current is not None and current != start)
-        if original_gone and identify_gateway(home) is None and get_running_pid_identity_strict(home / "gateway.pid") is None:
-            return
-        time.sleep(0.05)
-    raise RuntimeError(f"gateway did not exit for {home}; no data removed")
+        return original_gone and identify_gateway(home) is None and get_running_pid_identity_strict(home / "gateway.pid") is None
+
+    if not poll_until(_gone, min(120.0, max(5.0, float(response.get("drain_timeout", 30.0)) + 5.0)), 0.05):
+        raise RuntimeError(f"gateway did not exit for {home}; no data removed")
 
 
 def _refuse_backend_writers(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.process_identity import LEDGER_FILENAME, _pid_alive_matches, _read_ledger
+    from hermes_cli.process_identity import LEDGER_FILENAME, _read_ledger, entry_still_running
 
     root = get_default_hermes_root(home=home).resolve()
     rows = _read_ledger(root / LEDGER_FILENAME)
@@ -85,7 +85,7 @@ def _refuse_backend_writers(home: Path) -> None:
         pid = row.get("pid")
         if type(pid) is not int or pid <= 0:
             raise RuntimeError("backend ownership contains an invalid PID")
-        if _pid_alive_matches(pid, row.get("create_time")) is not False:
+        if entry_still_running(row):
             raise RuntimeError(f"backend PID {pid} still owns {home}; close its desktop/dashboard before retrying")
 
 

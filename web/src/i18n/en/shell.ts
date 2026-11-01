@@ -154,9 +154,8 @@ export const shellEn: Pick<
     dismiss: 'Dismiss',
     sharedMetricsTitle: 'Help improve Hermes?',
     sharedMetricsBody:
-      'Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.',
-    sharedMetricsShare: 'Send to Nous',
-    sharedMetricsLocal: 'Local only',
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Sharing sends them to Nous once a day.",
+    sharedMetricsShare: "Share with Nous",
     sharedMetricsOff: 'No thanks',
     sharedMetricsDetails: 'Details',
     sharedMetricsSaveFailed: "Couldn't save your choice"

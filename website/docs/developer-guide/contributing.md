@@ -135,7 +135,7 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
    core-schema footprint, reusable by any MCP host, reached via the built-in MCP client.
 6. **New core tool** — only when fundamental, broadly useful to nearly every user, and
    unreachable via terminal + file or an MCP server (terminal, read_file, web_search,
-   browser_navigate).
+   browser_exec).
 
 ## Common contribution paths
 

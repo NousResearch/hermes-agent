@@ -20,14 +20,16 @@ export const settingsEn: Pick<
   | 'profileBuilder'
   | 'toolsetConfig'
   | 'systemPage'
+  | 'systemMemory'
   | 'theme'
 > = {
   pluginsPage: {
-    updateScanBody:
-      'The security scan flagged {count} findings in the new code of {name}. Update anyway only if you trust the source:',
-    updateScanBlocked: 'The security scan rated the new code of {name} dangerous. The update was not applied.',
-    updateConsentBody:
-      'The new catalog pin of {name} ({sha}) adds surfaces the installed version does not have. Apply it only if you trust them:',
+    updateScanBody: (name: string, count: number) =>
+      `The security scan flagged ${count} finding${count === 1 ? '' : 's'} in the new code of ${name}. Update anyway only if you trust the source:`,
+    updateScanBlocked: (name: string) =>
+      `The security scan rated the new code of ${name} dangerous. The update was not applied.`,
+    updateConsentBody: (name: string, sha: string) =>
+      `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     contextEngineLabel: 'Context engine',
     dashboardSlots: 'Dashboard slots',
     disableRuntime: 'Disable',
@@ -122,7 +124,7 @@ export const settingsEn: Pick<
     showSecret: 'Show secret',
     rescanCount: '{action} ({count})',
     catalogHeading: 'Plugin catalog',
-    catalogHint: 'Plugins pinned to exact commits, with distinct Official, Verified by Nous and Community tiers.',
+    catalogHint: "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
     catalogSearchPlaceholder: 'Search catalog...',
     catalogEmpty: 'No catalog entries match.',
     catalogEmptyDocsLink: 'Learn about Hermes plugins',
@@ -169,7 +171,7 @@ export const settingsEn: Pick<
     profileSelector: 'Profile',
     currentProfile: 'current ({name})',
     managingProfile: 'Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.',
-    browseHub: 'Browse hub',
+    browseHub: "Browse skills hub",
     learnSkill: 'Learn a skill',
     newSkill: 'New skill',
     configure: 'Configure',
@@ -266,6 +268,40 @@ export const settingsEn: Pick<
     invalidJson: 'Invalid JSON file',
     yaml: 'YAML',
     categories: {
+      database: 'Database',
+      attachments: 'Attachments',
+      web: 'Web Tools',
+      worktrees: 'Worktrees',
+      tool_output: 'Tool Output',
+      tool_loop_guardrails: 'Tool Loop Guardrails',
+      openrouter: 'OpenRouter',
+      bedrock: 'Amazon Bedrock',
+      webapp: 'Web App',
+      vision: 'Vision',
+      wake_word: 'Wake Word',
+      loops: 'Recurring Tasks',
+      moa: 'Mixture of Agents',
+      curator: 'Skill Maintenance',
+      slack: 'Slack',
+      mattermost: 'Mattermost',
+      matrix: 'Matrix',
+      kanban: 'Kanban',
+      tools: 'Tools',
+      model_catalog: 'Model Catalog',
+      monitoring: 'Monitoring',
+      hosted_rooms: 'Hosted Rooms',
+      gateway: 'Gateway',
+      streaming: 'Streaming',
+      sessions: 'Sessions',
+      lsp: 'Language Servers',
+      x_search: 'X Search',
+      vault: 'Credential Vault',
+      secrets: 'Secret Sources',
+      bot_desktop: 'Bot Desktop',
+      proxy: 'Proxy',
+      desktop: 'Desktop',
+      vertex: 'Vertex AI',
+      local_runtime: 'Local Runtime',
       general: 'General',
       agent: 'Agent',
       terminal: 'Terminal',
@@ -727,6 +763,12 @@ export const settingsEn: Pick<
     postSetup: 'post-setup: {command}',
     starting: 'Starting…'
   },
+  systemMemory: {
+    activeProvider: "Active memory provider",
+    noProvider: "none — built-in only",
+    builtinLayer: "Built-in layer",
+    builtinNote: "MEMORY.md and USER.md are Hermes's own memory, separate from any external provider. Both load into sessions by default; the config toggles (memory.memory_enabled / memory.user_profile_enabled) turn each off. A provider adds to them; it never replaces them.",
+  },
   systemPage: {
     gatewayLogsHint: 'Open Logs for details.',
     gatewayRestartFailed: 'Could not restart the gateway',
@@ -889,8 +931,6 @@ export const settingsEn: Pick<
     },
     memory: {
       title: 'Memory',
-      externalProvider: 'External provider:',
-      builtInOnly: 'built-in only',
       statusReady: 'Ready',
       statusNeedsSetup: 'Needs setup',
       statusUnavailable: 'Unavailable',
@@ -900,7 +940,6 @@ export const settingsEn: Pick<
       configureInPlugins: 'configure in Plugins',
       providerMissing:
         'The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.',
-      builtInFiles: 'Built-in files',
       resetMemory: 'Reset MEMORY.md',
       resetUser: 'Reset USER.md',
       resetAll: 'Reset all',

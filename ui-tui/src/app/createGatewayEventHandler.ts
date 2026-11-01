@@ -4,6 +4,7 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { UsageLimit } from '@hermes/shared/plan-usage'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -17,7 +18,7 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
-import { billingDialogCopy } from '../lib/billingDialog.js'
+import { billingDialogCopy, usageLimitDialog } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -47,7 +48,11 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
-import { mutateCanonicalSession, openModelConfirmation } from './slash/canonicalSessionControls.js'
+import {
+  mutateCanonicalSession,
+  openModelConfirmation,
+  switchCanonicalModel
+} from './slash/canonicalSessionControls.js'
 import { loadSlashCatalog, refreshSlashCatalogOnSkillsChange } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
@@ -692,6 +697,109 @@ function applySessionInfo(payload: unknown, { appendMessage, setHistoryItems, se
   }))
 
   setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+}
+
+/** Billing wall (out of credits / payment required) or a window plan's limit (`error_surface.usage_limit`). */
+function confirmBillingWall(
+  payload: Extract<AnyGatewayEvent, { type: 'message.complete' }>['payload'],
+  ctx: GatewayEventHandlerContext
+): void {
+  const { submitRef } = ctx.submission
+
+  const surface = payload?.error_surface as { code?: string; usage_limit?: UsageLimit | null } | null | undefined
+
+  const usageLimit = surface?.usage_limit
+
+  if (usageLimit) {
+    return confirmUsageLimit(usageLimit, ctx)
+  }
+
+  // A window plan's limit is not an empty wallet: its sentence is in the transcript already.
+  if (!payload?.billing || surface?.code === 'usage_window') {
+    return
+  }
+
+  const block = payload.billing
+  const copy = billingDialogCopy(block)
+
+  patchOverlayState({
+    confirm: {
+      cancelLabel: copy.cancelLabel,
+      confirmLabel: copy.confirmLabel,
+      detail: copy.detail,
+      onConfirm: () => {
+        if (block.is_nous) {
+          submitRef.current('/topup')
+        } else if (block.billing_url) {
+          openExternalUrl(block.billing_url)
+        } else {
+          submitRef.current('/model')
+        }
+      },
+      title: copy.title
+    }
+  })
+}
+
+/** A window plan's limit: one ask, switch to the plan's recommended model (this session) and re-send,
+ *  or dismiss. The sentence is already in the transcript. */
+function confirmUsageLimit(usageLimit: UsageLimit, ctx: GatewayEventHandlerContext): void {
+  const { gw, rpc } = ctx.gateway
+  const { sys } = ctx.system
+  const { submitRef } = ctx.submission
+  const dialog = usageLimitDialog(usageLimit)
+
+  patchOverlayState({
+    confirm: {
+      cancelLabel: dialog.cancelLabel,
+      confirmLabel: dialog.confirmLabel,
+      detail: dialog.detail,
+      onConfirm: () => {
+        if (!dialog.switchValue) {
+          submitRef.current('/topup')
+
+          return
+        }
+
+        const sid = getUiState().sid
+
+        // The owner refuses `config.set model`: a pick is the session-scoped `session.mutate`.
+        if (gw.isCanonical && sid) {
+          void switchCanonicalModel(gw, sid, dialog.switchValue, sys, () => submitRef.current('/retry')).catch(
+            (e: unknown) => sys(`error: ${rpcErrorMessage(e)}`)
+          )
+
+          return
+        }
+
+        // Switch first; re-send only once it landed (or was queued for the next turn).
+        void rpc<{ deferred?: boolean; value?: string }>('config.set', {
+          key: 'model',
+          session_id: sid,
+          value: dialog.switchValue
+        })
+          .then(r => {
+            // `/retry` targets the active chat: never rewind one the user opened meanwhile.
+            if (getUiState().sid !== sid) {
+              return
+            }
+
+            if (!r?.value) {
+              return sys('error: model switch failed')
+            }
+
+            sys(`model → ${r.value}`)
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, model: r.value! } : state.info
+            }))
+            submitRef.current('/retry')
+          })
+          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+      },
+      title: dialog.title
+    }
+  })
 }
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
@@ -1791,28 +1899,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // this is the actionable layer. Set AFTER recordMessageComplete() so the
         // turn-idle resetFlowOverlays() (which clears `confirm`) can't wipe it;
         // the top-of-loop guard already scopes this to the active session.
-        if (ev.payload?.billing) {
-          const block = ev.payload.billing
-          const copy = billingDialogCopy(block)
-
-          patchOverlayState({
-            confirm: {
-              cancelLabel: copy.cancelLabel,
-              confirmLabel: copy.confirmLabel,
-              detail: copy.detail,
-              onConfirm: () => {
-                if (block.is_nous) {
-                  submitRef.current('/topup')
-                } else if (block.billing_url) {
-                  openExternalUrl(block.billing_url)
-                } else {
-                  submitRef.current('/model')
-                }
-              },
-              title: copy.title
-            }
-          })
-        }
+        confirmBillingWall(ev.payload, ctx)
 
         return
       }

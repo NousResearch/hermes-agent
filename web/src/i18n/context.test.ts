@@ -151,9 +151,9 @@ describe('Dashboard i18n framework', () => {
 
   it('skips the full config read while its lightweight revision is unchanged', async () => {
     vi.spyOn(api, 'getConfigRevision').mockResolvedValue({
-      mtime_ns: 10,
+      revision: 'version-10',
       path: '/profile/config.yaml',
-      size: 20
+
     })
     const getConfig = vi.spyOn(api, 'getConfig').mockResolvedValue({ display: { language: 'zh' } })
 
@@ -167,9 +167,9 @@ describe('Dashboard i18n framework', () => {
 
   it('returns to the registry default when the configured language is removed or invalid', async () => {
     const getRevision = vi.spyOn(api, 'getConfigRevision').mockResolvedValue({
-      mtime_ns: 10,
+      revision: 'version-10',
       path: '/profile/config.yaml',
-      size: 20
+
     })
     vi.spyOn(api, 'getConfig')
       .mockResolvedValueOnce({ display: {} })
@@ -177,9 +177,9 @@ describe('Dashboard i18n framework', () => {
 
     const missing = await readConfiguredLocaleChange(null)
     getRevision.mockResolvedValue({
-      mtime_ns: 11,
+      revision: 'version-11',
       path: '/profile/config.yaml',
-      size: 21
+
     })
     const invalid = await readConfiguredLocaleChange(missing.revision)
 
@@ -191,24 +191,24 @@ describe('Dashboard i18n framework', () => {
     const getRevision = vi
       .spyOn(api, 'getConfigRevision')
       .mockResolvedValueOnce({
-        mtime_ns: 11,
+        revision: 'version-11',
         path: '/profile/config.yaml',
-        size: 20
+
       })
       .mockResolvedValueOnce({
-        mtime_ns: 11,
+        revision: 'version-11',
         path: '/profile/config.yaml',
-        size: 20
+
       })
       .mockResolvedValueOnce({
-        mtime_ns: 12,
+        revision: 'version-12',
         path: '/profile/config.yaml',
-        size: 21
+
       })
       .mockResolvedValueOnce({
-        mtime_ns: 13,
+        revision: 'version-13',
         path: '/profile/config.yaml',
-        size: 22
+
       })
     vi.spyOn(api, 'getConfig').mockResolvedValue({
       display: { language: 'zh' }

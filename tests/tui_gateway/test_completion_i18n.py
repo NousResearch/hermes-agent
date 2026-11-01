@@ -59,6 +59,22 @@ def test_commands_catalog_exposes_stable_presentation_ids():
     assert resp["result"]["description_keys"]["/btw"] == "btw"
 
 
+def test_tui_catalog_reuses_core_command_copy_in_requested_language():
+    from agent.i18n import t
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    messages = server.handle_request({
+        "id": "copy", "method": "i18n.catalog", "params": {"lang": "zh", "surface": "tui"},
+    })["result"]["messages"]
+    model = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "model")
+    assert messages["slash.model"] == t(
+        "slash.shared.usage_suffix", lang="zh", description=t("slash.model.description", lang="zh"),
+        name="model", args_hint=model.args_hint,
+    )
+    assert "--global" in messages["slash.model"]
+    assert "[model|reset]" in messages["slash.model"]
+
+
 
 def test_user_command_description_retains_its_ownership(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {

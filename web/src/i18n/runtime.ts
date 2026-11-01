@@ -102,7 +102,7 @@ export function readConfiguredLocale(config: Record<string, unknown>): Locale {
 }
 
 function configRevisionSignature(revision: ConfigRevisionResponse): string {
-  return JSON.stringify([revision.path, revision.mtime_ns, revision.size])
+  return JSON.stringify([revision.path, revision.revision])
 }
 
 export interface ConfiguredLocaleChange {

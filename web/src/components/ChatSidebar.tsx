@@ -233,6 +233,8 @@ export function ChatSidebar({
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
+  // Nous window plans, Large model: the backend's one-line warning for that switch (never a confirm).
+  const [switchNotice, setSwitchNotice] = useState<string | null>(null)
 
   const refreshEffectiveModel = useCallback(() => {
     void api
@@ -679,6 +681,7 @@ export function ChatSidebar({
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
             setModelNotice(null)
             setPendingReloadModel(null)
+            setSwitchNotice(null)
             const result = await api.setModelAssignment(
               {
                 confirm_expensive_model: confirmExpensiveModel,
@@ -692,6 +695,7 @@ export function ChatSidebar({
             // and calls back; don't announce until the user confirms.
             if (!result.confirm_required) {
               refreshEffectiveModel()
+              setSwitchNotice(result.notice ?? null)
               // Ask before reloading: applying the model starts a fresh chat.
               setPendingReloadModel(model.split('/').slice(-1)[0])
             }
@@ -706,10 +710,12 @@ export function ChatSidebar({
 
       <ModelReloadConfirm
         model={pendingReloadModel}
+        notice={switchNotice}
         onCancel={() => {
           const m = pendingReloadModel
           setPendingReloadModel(null)
-          setModelNotice(t.chatSidebar.modelSetRequiresReload.replace('{model}', m ?? ''))
+          setModelNotice(t.chatSidebar.modelSetRequiresReload.replace('{model}', m ?? '') +
+            (switchNotice ? ` ${switchNotice}` : ''))
         }}
       />
     </aside>

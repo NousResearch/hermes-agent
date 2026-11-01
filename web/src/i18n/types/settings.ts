@@ -1,9 +1,9 @@
 export interface SettingsTranslations {
   // ── Plugins page ──
   pluginsPage: {
-    updateScanBody: string
-    updateScanBlocked: string
-    updateConsentBody: string
+    updateScanBody: (name: string, count: number) => string
+    updateScanBlocked: (name: string) => string
+    updateConsentBody: (name: string, sha: string) => string
     contextEngineLabel: string
     dashboardSlots: string
     disableRuntime: string
@@ -236,6 +236,40 @@ export interface SettingsTranslations {
     invalidJson: string
     yaml: string
     categories: {
+      database: string
+      attachments: string
+      web: string
+      worktrees: string
+      tool_output: string
+      tool_loop_guardrails: string
+      openrouter: string
+      bedrock: string
+      webapp: string
+      vision: string
+      wake_word: string
+      loops: string
+      moa: string
+      curator: string
+      slack: string
+      mattermost: string
+      matrix: string
+      kanban: string
+      tools: string
+      model_catalog: string
+      monitoring: string
+      hosted_rooms: string
+      gateway: string
+      streaming: string
+      sessions: string
+      lsp: string
+      x_search: string
+      vault: string
+      secrets: string
+      bot_desktop: string
+      proxy: string
+      desktop: string
+      vertex: string
+      local_runtime: string
       general: string
       agent: string
       terminal: string
@@ -705,6 +739,12 @@ export interface SettingsTranslations {
   }
 
   // ── System administration page ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
+  }
   systemPage: {
     gatewayLogsHint: string
     gatewayRestartFailed: string
@@ -863,8 +903,6 @@ export interface SettingsTranslations {
     }
     memory: {
       title: string
-      externalProvider: string
-      builtInOnly: string
       statusReady: string
       statusNeedsSetup: string
       statusUnavailable: string
@@ -873,7 +911,6 @@ export interface SettingsTranslations {
       providerSetup: string
       configureInPlugins: string
       providerMissing: string
-      builtInFiles: string
       resetMemory: string
       resetUser: string
       resetAll: string

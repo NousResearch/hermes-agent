@@ -176,7 +176,7 @@ platforms:
         priority_mode: prepend  # prepend | append | replace
         priority:
           - my_plugin_command
-          - songsee          # skill commands work here too
+          - excalidraw       # skill commands work here too
 ```
 
 `priority_mode` controls how your list combines with Hermes' built-in priority list:
@@ -644,6 +644,19 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - Renaming the bot's `@username` in BotFather is picked up automatically — Hermes follows the new handle for mention routing without a gateway restart. Collectible (Fragment) usernames that don't end in `bot` are supported too.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+
+### Letting the bot stay silent in a group
+
+A bot that reads every group message can answer exactly `[SILENT]` (or another [silence token](index.md#intentional-silence-tokens)) when a message doesn't need it. Whether that silence stands depends on who the message addresses:
+
+| Group message | Bare silence token |
+|---|---|
+| Mentions the bot, replies to it, matches `mention_patterns`, or is a `/command` | Replaced by a short notice, so a question to the bot never vanishes |
+| Replies to another member, or opens by @mentioning someone else | Stays silent |
+| Any other message without a `?` | Stays silent |
+| Any other message with a `?` (it may be a question for the bot) | Replaced by the notice |
+
+A message still gets the notice while the bot's own identity is unknown, or when it replies to a message whose author is unknown or that was posted as a chat (a linked channel's post, an anonymous admin). A voice note or audio file without a caption also gets the notice, because its words are not in the message text. A forum topic's root message is not a reply to another member.
 
 ### Multiple Hermes bots in one group
 

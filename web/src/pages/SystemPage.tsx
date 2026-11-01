@@ -837,10 +837,9 @@ export default function SystemPage() {
 
   const gatewayRunning = status?.gateway_running;
   const canUpdateHermes = status?.can_update_hermes !== false;
-  const activeMemoryProvider = memory?.active
-    ? memory.providers.find((provider) => provider.name === memory.active)
-    : null;
-  const validEvents = hooks?.valid_events?.length ? hooks.valid_events : HOOK_EVENTS_FALLBACK;
+  const validEvents = hooks?.valid_events?.length
+    ? hooks.valid_events
+    : HOOK_EVENTS_FALLBACK;
 
   return (
     <div className="flex flex-col gap-8">
@@ -1255,70 +1254,7 @@ export default function SystemPage() {
       </section>
 
       {/* ── Memory ────────────────────────────────────────────────── */}
-      <section className="flex flex-col gap-3">
-        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Brain className="h-4 w-4" /> {t.systemPage.memory.title}
-        </H2>
-        <Card>
-          <CardContent className="flex flex-col gap-4 py-4">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-              <span>
-                {t.systemPage.memory.externalProvider}{" "}
-                <span className="font-mono text-foreground">{memory?.active || t.systemPage.memory.builtInOnly}</span>
-              </span>
-              {activeMemoryProvider && (
-                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
-                  {activeMemoryProvider.status === "ready"
-                    ? t.systemPage.memory.statusReady
-                    : activeMemoryProvider.status === "needs_config"
-                      ? t.systemPage.memory.statusNeedsSetup
-                      : activeMemoryProvider.status === "unavailable"
-                        ? t.systemPage.memory.statusUnavailable
-                        : t.systemPage.memory.statusMissing}
-                </Badge>
-              )}
-              <Link to="/plugins" className="underline">
-                {t.systemPage.memory.changeInPlugins}
-              </Link>
-              <span className="ml-auto">
-                {t.systemPage.memory.providerSetup}{" "}
-                <Link to="/plugins" className="underline">
-                  {t.systemPage.memory.configureInPlugins}
-                </Link>
-              </span>
-            </div>
-
-            {activeMemoryProvider?.status === "missing" && (
-              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-                {t.systemPage.memory.providerMissing}
-              </p>
-            )}
-
-            <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
-              <span className="text-xs text-muted-foreground">
-                {t.systemPage.memory.builtInFiles} — MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} ·
-                USER.md: {formatBytes(memory?.builtin_files.user ?? 0)}
-              </span>
-              <div className="flex items-center gap-2 ml-auto">
-                <Button
-                  size="sm"
-                  ghost
-                  className="text-destructive"
-                  onClick={() => memoryReset.requestDelete("memory")}
-                >
-                  {t.systemPage.memory.resetMemory}
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
-                  {t.systemPage.memory.resetUser}
-                </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
-                  {t.systemPage.memory.resetAll}
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </section>
+      <MemorySection memory={memory} onReset={memoryReset.requestDelete} />
 
       {/* ── Credential pool ───────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
@@ -1769,5 +1705,88 @@ export default function SystemPage() {
         ))}
       </section>
     </div>
+  );
+}
+
+/** Memory card: which provider is active and the always-on built-in layer (#145175). */
+function MemorySection({
+  memory,
+  onReset,
+}: {
+  memory: MemoryStatus | null;
+  onReset: (target: "all" | "memory" | "user") => void;
+}) {
+  const { t } = useI18n();
+  const copy = t.systemPage.memory;
+  const statusLabels = {
+    ready: copy.statusReady,
+    needs_config: copy.statusNeedsSetup,
+    unavailable: copy.statusUnavailable,
+    missing: copy.statusMissing,
+  };
+  const activeMemoryProvider = memory?.active
+    ? memory.providers.find((provider) => provider.name === memory.active)
+    : null;
+
+  return (
+      <section className="flex flex-col gap-3">
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
+          <Brain className="h-4 w-4" /> {copy.title}
+        </H2>
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>
+                {t.systemMemory.activeProvider}:{" "}
+                <span className="font-mono text-foreground">
+                  {memory?.active || t.systemMemory.noProvider}
+                </span>
+              </span>
+              {activeMemoryProvider && (
+                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
+                  {statusLabels[activeMemoryProvider.status]}
+                </Badge>
+              )}
+              <Link to="/plugins" className="underline">
+                {copy.changeInPlugins}
+              </Link>
+              <span className="ml-auto">
+                {copy.providerSetup}{" "}
+                <Link to="/plugins" className="underline">
+                  {copy.configureInPlugins}
+                </Link>
+              </span>
+            </div>
+
+            {activeMemoryProvider?.status === "missing" && (
+              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                {copy.providerMissing}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+              <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                <span>
+                  <span className="text-foreground">{t.systemMemory.builtinLayer}</span>
+                  {" "}· MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
+                  {formatBytes(memory?.builtin_files.user ?? 0)}
+                </span>
+                <span>{t.systemMemory.builtinNote}</span>
+              </div>
+              <div className="flex items-center gap-2 ml-auto">
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("memory")}>
+                  {copy.resetMemory}
+                </Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("user")}>
+                  {copy.resetUser}
+                </Button>
+                <Button size="sm" ghost className="text-destructive" onClick={() => onReset("all")}>
+                  {copy.resetAll}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
   );
 }

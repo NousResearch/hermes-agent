@@ -34,6 +34,7 @@ import type {
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
@@ -672,7 +673,7 @@ export default function ChannelsPage() {
   );
 }
 
-function WhatsAppOnboardingPanel({
+export function WhatsAppOnboardingPanel({
   onChanged,
   onRestartNeeded,
   platform,
@@ -696,8 +697,15 @@ function WhatsAppOnboardingPanel({
   const [phase, setPhase] = useState<"idle" | "starting" | "waiting" | "connected" | "applying">("idle");
   const [mode, setMode] = useState<"bot" | "self-chat">(configuredMode ?? "bot");
   const [allowedUsers, setAllowedUsers] = useState("");
+  const [confirmRepair, setConfirmRepair] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!setup && phase === "idle" && configuredMode) {
+      setMode(configuredMode);
+    }
+  }, [configuredMode, phase, setup]);
 
   const updateQr = useCallback(async (payload?: string | null) => {
     if (!payload) return;
@@ -773,7 +781,9 @@ function WhatsAppOnboardingPanel({
     setError("");
   };
 
-  const start = async () => {
+  const start = async (resetSession = false) => {
+    setConfirmRepair(false);
+    setSetup(null);
     setPhase("starting");
     setError("");
     setQrDataUrl("");
@@ -781,6 +791,7 @@ function WhatsAppOnboardingPanel({
       const res = await api.startWhatsAppOnboarding({
         mode,
         allowed_users: allowedUsers,
+        reset_session: resetSession,
       });
       setSetup(res);
       if (res.qr_payload) {
@@ -897,6 +908,7 @@ function WhatsAppOnboardingPanel({
       : !allowedUsers.trim() && hasSavedAllowedUsers
         ? copy.whatsappKeepAllowlist
         : copy.whatsappPairingFallback;
+  const pairingBusy = ["starting", "waiting", "applying"].includes(phase);
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -906,15 +918,33 @@ function WhatsAppOnboardingPanel({
             size="sm"
             className="uppercase"
             onClick={() => void start()}
-            disabled={phase === "starting" || phase === "waiting" || phase === "applying"}
+            disabled={pairingBusy}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
             {phase === "starting" ? copy.starting : copy.pairWithQr}
+          </Button>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setConfirmRepair(true)}
+            disabled={pairingBusy}
+          >
+            {copy.whatsappRePair}
           </Button>
           {platform.configured && (
             <span className="text-xs text-muted-foreground">{copy.existingWhatsAppConfigured}</span>
           )}
         </div>
+
+        <ConfirmDialog
+          open={confirmRepair}
+          title={copy.whatsappRepairTitle}
+          description={copy.whatsappRepairDescription}
+          confirmLabel={copy.whatsappRepairConfirm}
+          destructive
+          onCancel={() => setConfirmRepair(false)}
+          onConfirm={() => void start(true)}
+        />
 
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
           <div className="grid gap-1.5">

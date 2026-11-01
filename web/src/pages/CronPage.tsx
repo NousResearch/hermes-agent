@@ -621,7 +621,7 @@ export default function CronPage() {
         if (jobsRequestGenerationRef.current === generation && selectedProfileRef.current === profile)
           setLoading(false);
       });
-  }, []);
+  }, [t.common]);
 
   useEffect(() => {
     api

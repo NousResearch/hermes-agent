@@ -113,7 +113,7 @@ export default function McpPage() {
       .getMcpServers()
       .then((res) => setServers(res.servers))
       .catch((e) => showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error"));
-  }, [format, showToast, t.mcp.error]);
+  }, [format, showToast, t.common, t.mcp.error]);
 
   const loadCatalog = useCallback(() => {
     return api
@@ -123,7 +123,7 @@ export default function McpPage() {
         setDiagnostics(res.diagnostics);
       })
       .catch((e) => showToast(format(t.mcp.error, { error: errorMessage(e, t.common) }), "error"));
-  }, [format, showToast, t.mcp.error]);
+  }, [format, showToast, t.common, t.mcp.error]);
 
   useEffect(() => {
     Promise.all([loadServers(), loadCatalog()]).finally(() => setLoading(false));
@@ -263,7 +263,7 @@ export default function McpPage() {
           throw e;
         }
       },
-      [format, loadServers, showToast, t.mcp],
+      [format, loadServers, showToast, t.common, t.mcp.deleted, t.mcp.error],
     ),
   });
 
@@ -292,7 +292,7 @@ export default function McpPage() {
         setInstallingName(null);
       }
     },
-    [format, loadCatalog, loadServers, showToast, t.mcp],
+    [format, loadCatalog, loadServers, showToast, t.common, t.mcp.installFailed, t.mcp.installed, t.mcp.installingBackground],
   );
 
   const handleInstallClick = (entry: McpCatalogEntry) => {

@@ -303,7 +303,7 @@ export default function ProfilesPage() {
       })
       .catch((e) => showToast(`${t.status.error}: ${errorMessage(e, t.common)}`, "error"))
       .finally(() => setLoading(false));
-  }, [showToast, t.status.error]);
+  }, [showToast, t.common, t.status.error]);
 
   useEffect(() => {
     load();
@@ -436,7 +436,7 @@ export default function ProfilesPage() {
         }
       }
     },
-    [closeEditor, editingSoulFor, showToast, t.status.error],
+    [closeEditor, editingSoulFor, showToast, t.common, t.status.error],
   );
 
   const handleSaveSoul = async (name: string) => {
@@ -613,7 +613,7 @@ export default function ProfilesPage() {
           throw e;
         }
       },
-      [load, showToast, t.profiles.deleted, t.status.error],
+      [load, showToast, t.common, t.profiles.deleted, t.status.error],
     ),
   });
 

@@ -5,10 +5,10 @@
 // maps of strings; a string overriding a function-valued en leaf is wrapped into
 // `(...args) => format(str, args)` with positional `{0}`, `{1}` placeholders.
 
-import { isRecord, mergeTranslations, type TranslationOverride } from '@hermes/shared/i18n'
 import { atom } from 'nanostores'
 
 import { en } from './en.js'
+import { isRecord, mergeTranslations, type TranslationOverride } from './merge.js'
 import type { CatalogPack, TranslationKey, Translations } from './types.js'
 
 export const DEFAULT_LOCALE = 'en'

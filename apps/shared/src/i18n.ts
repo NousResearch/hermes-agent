@@ -174,3 +174,15 @@ export const LOCALE_ENDONYMS = Object.fromEntries(
 ) as Record<Locale, string>
 export type EndonymLocale = Locale
 export const RTL_LOCALES: ReadonlySet<string> = new Set(LOCALES.filter(locale => localeDirection(locale) === 'rtl'))
+
+/** Mirror the active locale onto `<html lang dir>`. No-op without a document
+ *  (SSR, tests). `rtl` lets a registry that knows more locales than
+ *  `RTL_LOCALES` (a plugin-registered language) decide the direction. */
+export function applyDocumentLocale(locale: string, rtl: boolean = RTL_LOCALES.has(locale)): void {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  document.documentElement.lang = locale
+  document.documentElement.dir = rtl ? 'rtl' : 'ltr'
+}

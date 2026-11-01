@@ -228,6 +228,48 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.useRealTimers() }
   })
 
+  it('remembers clarify-batch-v1 from runtime.describe and forgets it on reconnect to an owner without it', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+
+    const open = async () => {
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+
+      return socket
+    }
+
+    const describe = async (socket: FakeWebSocket, capabilities?: string[]) => {
+      const request = socket.sent.map(text => JSON.parse(text) as { id: number; method: string })
+        .find(frame => frame.method === 'runtime.describe')!
+
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }, capabilities } }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      return socket
+    }
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const first = await describe(await open(), ['clarify-batch-v1'])
+      expect(gw.clarifyBatch).toBe(true)
+
+      first.close()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
+      expect(FakeWebSocket.instances.at(-1)).not.toBe(first)
+      const second = await open()
+      // The previous owner's list must not outlive it while the new owner is still describing.
+      expect(gw.clarifyBatch).toBe(false)
+      await describe(second)
+      expect(gw.clarifyBatch).toBe(false)
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
   it('treats a failed runtime.describe as a transport failure: redial, re-describe, then ready (B2-21)', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

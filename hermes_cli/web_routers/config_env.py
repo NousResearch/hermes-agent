@@ -15,9 +15,10 @@ from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
     redacted_credential_preview, scoped_to_thread,
 )
+from hermes_cli.config_backend import config_cache_version, refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _apply_main_model_assignment, _denormalize_config_from_web, drop_model_key, _normalize_config_for_web, _schema_with_dynamic_provider_options,
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -93,19 +94,15 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
 
 @config_router.get("/api/config/revision")
 async def get_config_revision(profile: Optional[str] = None):
-    """Return the identity and disk revision of the profile-scoped config."""
+    """Return a backend-owned revision for the profile-scoped config."""
 
-    def _revision() -> dict[str, str | int]:
+    def _revision() -> dict[str, str]:
         path = get_config_path()
         try:
-            stat = path.stat()
+            revision = repr(config_cache_version(path))
         except FileNotFoundError:
-            return {"path": str(path), "mtime_ns": 0, "size": 0}
-        return {
-            "path": str(path),
-            "mtime_ns": stat.st_mtime_ns,
-            "size": stat.st_size,
-        }
+            revision = ""
+        return {"path": str(path), "revision": revision}
 
     return await scoped_to_thread(profile, _revision)
 
@@ -209,7 +206,7 @@ def _catalog_provider_env_metadata() -> dict:
 
     # Env vars declared with a NON-provider category (e.g. the shared
     # GITHUB_TOKEN, a Skills-Hub "tool" credential) must not be promoted into a
-    # provider card even when a provider (Copilot) lists them as auth aliases.
+    # provider card even when a provider lists them as auth aliases.
     _non_provider_keys = {
         k for k, v in OPTIONAL_ENV_VARS.items()
         if (v or {}).get("category") and (v or {}).get("category") != "provider"
@@ -739,9 +736,13 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
-            cfg["model"].pop("api_key", None)
+            drop_model_key(cfg["model"], "api_key")
 
     return endpoint_id, entry
+
+
+# Sections a custom-endpoint default assignment writes together: the route and its provider entry.
+_ROUTE_SECTIONS = ("model", "providers", "custom_providers")
 
 
 @router.get("/api/providers/custom-endpoints")
@@ -770,7 +771,10 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
+            # make_default: the model route and the provider definition it names are one change,
+            # so a lock on either refuses both (never a model.provider naming an omitted entry).
+            with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
+                save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -823,7 +827,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
-                model_cfg.pop("api_key", None)
+                drop_model_key(model_cfg, "api_key")
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as
                 # plaintext; copy the raw template when that's what's on disk.
@@ -836,7 +840,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            save_config(cfg)
+            with refusing_locked_omissions(*_ROUTE_SECTIONS):
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 
 

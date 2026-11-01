@@ -348,6 +348,11 @@ export const workspaceEn: Pick<
       whatsappExistingSession: 'Existing WhatsApp session found',
       whatsappKeepAllowlist: 'Hermes will keep the saved WhatsApp allowlist.',
       whatsappLinkedDevice: 'WhatsApp device linked',
+      whatsappRePair: 'Re-pair with QR',
+      whatsappRepairTitle: 'Replace the saved WhatsApp link?',
+      whatsappRepairDescription:
+        'Use this if WhatsApp logged out or removed this linked device. Disable WhatsApp and restart the gateway first. The old session will be kept in a private backup. Scan the new QR from Linked Devices on your phone, then Save and restart to enable WhatsApp again.',
+      whatsappRepairConfirm: 'Back up and re-pair',
       whatsappPairingFallback:
         'If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.',
       whatsappQrExpired: 'WhatsApp QR setup expired. Start a new QR setup to try again.',

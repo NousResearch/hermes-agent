@@ -314,6 +314,10 @@ export interface WorkspaceTranslations {
       whatsappExistingSession: string
       whatsappKeepAllowlist: string
       whatsappLinkedDevice: string
+      whatsappRePair: string
+      whatsappRepairTitle: string
+      whatsappRepairDescription: string
+      whatsappRepairConfirm: string
       whatsappPairingFallback: string
       whatsappQrExpired: string
       whatsappQrInstructions: string

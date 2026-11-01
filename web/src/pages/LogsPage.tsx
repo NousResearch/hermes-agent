@@ -77,7 +77,7 @@ export default function LogsPage() {
       })
       .catch((err) => setError(errorMessage(err, t.common)))
       .finally(() => setLoading(false));
-  }, [file, lineCount, level, component]);
+  }, [file, lineCount, level, component, t.common]);
 
   useLayoutEffect(() => {
     setAfterTitle(

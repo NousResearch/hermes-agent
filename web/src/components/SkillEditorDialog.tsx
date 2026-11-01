@@ -89,7 +89,7 @@ function EditorBody({ editName, profile, onClose, onSaved }: Omit<SkillEditorDia
     return () => {
       cancelled = true;
     };
-  }, [editName, profile]);
+  }, [editName, profile, t.common]);
 
   const handleSave = async () => {
     setError(null);

@@ -84,7 +84,7 @@ export default function PairingPage() {
     } finally {
       setClearing(false);
     }
-  }, [format, loadPairing, showToast, t.pairing]);
+  }, [format, loadPairing, showToast, t.common, t.pairing.clearConfirm, t.pairing.cleared, t.pairing.error]);
 
   const userRevoke = useConfirmDelete({
     onDelete: useCallback(
@@ -105,7 +105,7 @@ export default function PairingPage() {
           throw e;
         }
       },
-      [approved, format, loadPairing, showToast, t.pairing],
+      [approved, format, loadPairing, showToast, t.common, t.pairing.error, t.pairing.revoked],
     ),
   });
 

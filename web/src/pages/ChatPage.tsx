@@ -359,7 +359,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [titleScope],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!isActive) {
       setTitle(null);
       return;
@@ -1551,7 +1551,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [hasActivated, channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce]);
+  }, [hasActivated, channel, clearReconnectTimer, resumeParam, scopedProfile, reconnectNonce, terminalTheme, t.common, searchParams, setSearchParams]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
   // ONLY while the chat tab is actually visible. ChatPage stays mounted

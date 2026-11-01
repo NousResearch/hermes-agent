@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { applyDocumentLocale } from "@hermes/shared/document-locale";
+import { applyDocumentLocale } from "@hermes/shared/i18n";
 
 import { getManagementProfile } from "../lib/api";
 import type { Locale } from "./types";

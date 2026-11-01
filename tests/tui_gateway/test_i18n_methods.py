@@ -1,5 +1,4 @@
-"""``i18n.languages`` lists bundled + pack languages; ``i18n.catalog`` returns the pack/overlay layer per
-surface and nothing bundled; both answer for the requested profile's home."""
+"""Profile-scoped language layers; TUI command copy also reuses the core catalog."""
 
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
 
     ctx = PluginContext(PluginManifest(name="hermes-lang-pl", source="user", path=str(home)), PluginManager())
     ctx.register_locale("pl", {"approval": {"denied": "Odrzucono"}}, endonym="Polski")
-    ctx.register_locale("pl", {"status": {"ready": "Gotowy"}}, surface="tui")
+    ctx.register_locale("pl", {"status": {"ready": "Gotowy"}, "slash": {"model": "Pack model"}}, surface="tui")
     ctx.register_locale("pl", {"settings": {"title": "Ustawienia"}}, surface="desktop", rtl=False)
 
     languages = _call(server, "i18n.languages", {})["result"]["languages"]
@@ -48,7 +47,10 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
     core = _call(server, "i18n.catalog", {"lang": "pl"})["result"]
     assert core == {"lang": "pl", "surface": "core", "messages": {"approval.denied": "Odrzucono"}}
     tui = _call(server, "i18n.catalog", {"lang": "PL", "surface": "tui"})["result"]
-    assert tui == {"lang": "pl", "surface": "tui", "messages": {"status.ready": "Gotowy"}}
+    from tui_gateway.command_discovery import command_presentation_messages
+    assert tui == {"lang": "pl", "surface": "tui", "messages": {
+        **command_presentation_messages("pl"), "status.ready": "Gotowy", "slash.model": "Pack model",
+    }}
     desktop = _call(server, "i18n.catalog", {"lang": "pl", "surface": "desktop"})["result"]
     assert desktop["messages"] == {"settings.title": "Ustawienia"}
     # The overlay layer is served too; bundled German stays out of the wire payload.

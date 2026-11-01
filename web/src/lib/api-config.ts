@@ -1,9 +1,8 @@
 import { appendProfileParam, fetchJSON, getManagementProfile } from "./api";
 
 export interface ConfigRevisionResponse {
-  mtime_ns: number;
   path: string;
-  size: number;
+  revision: string;
 }
 
 /** Profile-scoped configuration reads and writes share the dashboard transport. */

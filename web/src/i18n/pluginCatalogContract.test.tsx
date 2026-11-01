@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -9,7 +11,7 @@ import { I18nContext, formatTranslation, resolveTranslations } from './runtime'
 import type { Locale } from './types'
 
 async function loadPlugin(name: string) {
-  const url = new URL(`../../../plugins/${name}/dashboard/dist/index.js`, import.meta.url).href
+  const url = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), '../../../plugins', name, 'dashboard/dist/index.js')).href
   await import(/* @vite-ignore */ url)
   return getPluginComponent(name)!
 }

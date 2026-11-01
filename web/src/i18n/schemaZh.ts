@@ -1,6 +1,20 @@
 // Chinese labels for config schema keys used by AutoField.
 
 export const SCHEMA_ZH_LABEL: Record<string, string> = {
+  'agent.stream_max_lifetime': 'Agent → 流式响应最长时限(秒)',
+  'browser.executable_path': '浏览器 → 可执行文件路径',
+  'browser.user_data_dir': '浏览器 → 用户数据目录',
+  'browser.chromium_args': '浏览器 → Chromium 启动参数',
+  'worktrees.install_state_retention_days': '工作树 → 安装状态保留天数',
+  'compression.prepare_ahead': '压缩 → 提前准备',
+  'webapp.enabled': 'Web 应用 → 启用',
+  'webapp.host': 'Web 应用 → 监听地址',
+  'webapp.port': 'Web 应用 → 端口',
+  'webapp.public_url': 'Web 应用 → 公开访问地址',
+  'hosted_rooms.discussion.max_rounds': '托管房间 → 讨论 → 最大轮数',
+  'hosted_rooms.discussion.max_messages': '托管房间 → 讨论 → 消息总数上限',
+  'sessions.orphan_end_grace_s': '会话 → 无查看者会话结束宽限期(秒)',
+  'vault.key_storage': '凭据保险库 → 密钥存储方式',
   'display.cli_layout': '显示 → 经典命令行布局',
   'telegram.extra.dm_topic_auto_transfer': 'Telegram → 扩展 → 私聊自动转入新话题',
   'terminal.process_wait_auto_notify': '终端 → 等待时自动通知',

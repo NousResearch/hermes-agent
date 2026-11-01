@@ -362,7 +362,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [isExpanded, session.id, session.profile, messages]);
+  }, [isExpanded, session.id, session.profile, messages, t.common]);
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
@@ -814,7 +814,7 @@ export default function SessionsPage() {
     };
   }, [loading, setAfterTitle, total]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setEnd(
       <Button outlined size="sm" onClick={() => setPruneOpen(true)} prefix={<Archive />}>
         {t.sessions.pruneOld}

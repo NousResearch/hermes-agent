@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
@@ -437,7 +437,7 @@ export default function PluginsPage() {
     t.pluginsPage.rescanFailed,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setAfterTitle(
       <Button
         ghost
@@ -1076,9 +1076,9 @@ function PluginRowCard(props: PluginRowCardProps) {
                   void setRuntimeLoading(row.name, async () => {
                     const pp = t.pluginsPage;
                     const applied = await runDashboardPluginUpdate(row.name, {
-                      consentBody: (name, sha) => format(pp.updateConsentBody, { name, sha }),
-                      scanBody: (name, count) => format(pp.updateScanBody, { name, count }),
-                      scanBlocked: (name) => format(pp.updateScanBlocked, { name }),
+                      consentBody: pp.updateConsentBody,
+                      scanBody: pp.updateScanBody,
+                      scanBlocked: pp.updateScanBlocked,
                     });
                     if (applied) showToast(pp.updateGit, "success");
                   });

@@ -34,8 +34,8 @@ beforeEach(() => {
   root = createRoot(container)
   vi.spyOn(api, 'getConfigRevision').mockResolvedValue({
     path: '/profile/config.yaml',
-    mtime_ns: 1,
-    size: 1
+    revision: 'version-1',
+
   })
 })
 afterEach(async () => {

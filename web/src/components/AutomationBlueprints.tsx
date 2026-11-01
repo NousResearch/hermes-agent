@@ -188,7 +188,7 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
     return () => {
       cancelled = true;
     };
-  }, [profile]);
+  }, [profile, t.common]);
 
   if (loadError) {
     return <p className="text-sm text-red-500">{format(t.automationBlueprints.loadFailed, { error: loadError })}</p>;

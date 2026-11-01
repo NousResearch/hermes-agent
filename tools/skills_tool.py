@@ -317,6 +317,18 @@ def skills_list(category: str | None = None, task_id: str | None = None) -> str:
         return tool_error(str(e), success=False)
 
 
+def _legacy_portable_skill_name(pm, namespace, bare):
+    """Portable plugin skills were named ``agent-plugin-<slug>-<sha8>:<skill>`` before they took the
+    plugin's own name; prompts and cron jobs saved since then may still carry that form. Resolved
+    through what that exact plugin registered, so a skill it lost to a name clash is not found."""
+    if not namespace.startswith("agent-plugin-"):
+        return None
+    keys = {key for key, loaded in pm._plugins.items()
+            if loaded.manifest.portable and loaded.manifest.data_namespace == namespace}
+    return next((qualified for qualified, entry in pm._plugin_skills.items()
+                 if entry.get("plugin_key") in keys and entry.get("bare_name") == bare), None)
+
+
 def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     """``plugin:skill`` dispatch: ``(result_json, None)`` when answered, else ``(None,
     local_category_name)`` to fall through to the flat-tree scan — categorized local skills also use
@@ -324,10 +336,19 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
     from agent.skill_utils import is_valid_namespace, parse_qualified_name
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     namespace, bare = parse_qualified_name(name)
+    if namespace == "plugin" and ":" in bare:
+        # The skills index lists plugin skills under a "plugin" heading, and models write that
+        # heading as a prefix ("plugin:agent-plugin-blender-5a80e4ba:blender"). A bare skill name
+        # never holds a colon, so the remainder is the real qualified name.
+        name = bare
+        namespace, bare = parse_qualified_name(name)
     if not is_valid_namespace(namespace):
         return _fail(f"Invalid namespace '{namespace}' in '{name}'. Namespaces must match [a-zA-Z0-9_-]+."), None
     discover_plugins()  # idempotent
     pm = get_plugin_manager()
+    if legacy := _legacy_portable_skill_name(pm, namespace, bare):
+        name = legacy
+        namespace = legacy.partition(":")[0]
     active_memory_provider = None
     try:
         from plugins.memory import _get_active_memory_provider, _prune_inactive_memory_provider_skills
@@ -592,7 +613,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 def skill_view(
     name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
-    or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
+    or path ("axolotl", "03-fine-tuning/axolotl"); "<plugin>:<skill>" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
     slash/preload callers render the message themselves."""
     try:
@@ -711,13 +732,13 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Load a skill's SKILL.md, or one of its linked references, templates or scripts. The first call returns SKILL.md plus a 'linked_files' dict; call again with file_path to read one.",
     "parameters": {
         "type": "object",
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill'.",
             },
             "file_path": {
                 "type": "string",

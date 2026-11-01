@@ -820,10 +820,25 @@ class ToolRegistry:
             if scope is not None and not target:
                 self._scoped_tools.pop(scope, None)
             if not self._toolset_entries(entry.toolset, scope):
-                self._toolset_checks.pop(entry.toolset, None)
-                self._drop_toolset_aliases(entry.toolset)
+                # One scope losing its last tool of a toolset says nothing about the others: the
+                # alias table and the checks map are process-global, so dropping them here un-names
+                # the toolset for every scope that still owns it. In a multiplexed gateway a routed
+                # profile's scope teardown therefore removed the 'mcp-<server>' aliases while the
+                # launch profile still held all of that server's tools, and toolset selection then
+                # skipped the toolset in *every* session (tools registered, none exposed).
+                if not self._toolset_owned_in_any_scope(entry.toolset):
+                    self._toolset_checks.pop(entry.toolset, None)
+                    self._drop_toolset_aliases(entry.toolset)
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
+
+    def _toolset_owned_in_any_scope(self, toolset: str) -> bool:
+        """True when any scope (the global table or a profile overlay) still holds a *toolset* tool."""
+        with self._lock:
+            if any(e.toolset == toolset for e in self._tools.values()):
+                return True
+            return any(any(e.toolset == toolset for e in slot.values())
+                       for slot in self._scoped_tools.values())
 
     def move_to_scope(self, names, scope: str) -> None:
         """Move process-global registrations into *scope*'s overlay (a single-profile process that

@@ -1,0 +1,33 @@
+# Proposed catalog entry. Nous approval requires upstream review and merge.
+manifest_version: 1
+name: postroom
+connector_slug: postroom
+description: Prepare social post previews, schedule approved posts, inspect delivery and read available workspace analytics.
+source: https://social.notacompanynameyet.com/
+transport:
+  type: http
+  url: https://social.notacompanynameyet.com/mcp
+auth:
+  type: oauth
+  oauth:
+    scope: "social.read social.write"
+suggest:
+  keywords:
+    - postroom
+  hosts:
+    - social.notacompanynameyet.com
+  examples:
+    - Show my Postroom publishing queue.
+    - Prepare a social post preview for my approval.
+post_install: |
+  Sign into your own Postroom workspace through browser OAuth.
+  Inspect available accounts with yet_profile and yet_accounts before drafting.
+  A prepared preview is not scheduled. Show the exact content, destinations,
+  media and time and obtain explicit approval before yet_approve.
+  Preserve the existing draft_id; never blindly retry an uncertain publishing write.
+  Verify delivery with yet_post_status. Available analytics may be partial.
+  TikTok uses inbox upload and requires completion in TikTok.
+  Do not use a shared operator connection for unrelated users.
+  To reconnect or change the tool selection:
+    hermes mcp login postroom
+    hermes mcp configure postroom

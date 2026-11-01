@@ -102,19 +102,34 @@ def _active_service(authority):
 
 
 def _room_members(service, room_id, approved):
-    service._owned_authority(room_id)
-    room = service._room(room_id)
-    members = room['members']
-    homes = service.profile_homes()
+    try:
+        service._owned_authority(room_id)
+    except Exception as exc:
+        raise RelayAuthorizationDenied('room_not_owned_by_gateway') from exc
+    try:
+        room = service._room(room_id)
+        members = room['members']
+        homes = service.profile_homes()
+    except Exception as exc:
+        raise RelayAuthorizationDenied('room_state_unavailable') from exc
     profiles = [m.get('profile') for m in members]
-    if (len(profiles) != len(approved) or set(profiles) != set(approved)
-            or any((m.get('target') or {}).get('kind', 'local') != 'local'
-                   or m.get('profile') not in homes for m in members)
-            or len({m['member_id'] for m in members}) != len(members)
-            or sum(m.get('profile') == 'server' and m.get('handle') == 'server'
-                   for m in members) != 1
-            or not any(b.room_id == room_id for b in service.bindings())):
-        raise RuntimeStoreError('permission_denied')
+    if len(profiles) != len(approved) or set(profiles) != set(approved):
+        raise RelayAuthorizationDenied('room_profile_roster_mismatch')
+    if any((m.get('target') or {}).get('kind', 'local') != 'local'
+           or m.get('profile') not in homes for m in members):
+        raise RelayAuthorizationDenied('room_member_not_local_or_served')
+    if len({m['member_id'] for m in members}) != len(members):
+        raise RelayAuthorizationDenied('room_member_ids_ambiguous')
+    if sum(m.get('profile') == 'server' and m.get('handle') == 'server'
+           for m in members) != 1:
+        raise RelayAuthorizationDenied('server_member_missing_or_ambiguous')
+    try:
+        if not any(b.room_id == room_id for b in service.bindings()):
+            raise RelayAuthorizationDenied('room_binding_missing')
+    except RelayAuthorizationDenied:
+        raise
+    except Exception as exc:
+        raise RelayAuthorizationDenied('room_binding_unavailable') from exc
     return {m['member_id']: m['profile'] for m in members}
 
 
@@ -147,8 +162,10 @@ def _authorize(runner, recipient, message):
     # fails closed for legacy/unowned rooms, so no supported API can mutate this roster before send.
     try:
         members = _room_members(service, grant['room_id'], grant['members'])
+    except RelayAuthorizationDenied:
+        raise
     except Exception as exc:
-        raise RelayAuthorizationDenied('room_ownership_or_roster_mismatch') from exc
+        raise RelayAuthorizationDenied('room_state_unavailable') from exc
     # Session IDs/keys rotate on /new and compression; dedupe by the bound inbound message instead.
     stable = {name: identity[name] for name in
               ('PLATFORM', 'CHAT_TYPE', 'USER_ID', 'CHAT_ID', 'PROFILE', 'MESSAGE_ID')}

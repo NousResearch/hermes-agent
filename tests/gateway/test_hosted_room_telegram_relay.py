@@ -685,3 +685,25 @@ def test_incomplete_bound_context_reports_only_coarse_check(relay):
     assert result == {'status': 'denied', 'reason': 'relay_not_authorized',
                       'check': 'bound_context_incomplete'}
     assert events(relay) == []
+
+
+def test_room_owner_denial_has_safe_stage(relay, monkeypatch):
+    monkeypatch.setattr(relay.service, '_owned_authority',
+        lambda room_id: (_ for _ in ()).throw(RuntimeStoreError('owner mismatch')))
+    result = relay.call()
+    assert result == {'status': 'denied', 'reason': 'relay_not_authorized',
+                      'check': 'room_not_owned_by_gateway'}
+    assert events(relay) == []
+
+
+def test_roster_denial_has_safe_stage(relay, monkeypatch):
+    original = relay.service._room
+    def with_extra(room_id):
+        room = original(room_id)
+        room['members'].append({'member_id': 'extra', 'profile': 'extra', 'handle': 'extra'})
+        return room
+    monkeypatch.setattr(relay.service, '_room', with_extra)
+    result = relay.call()
+    assert result == {'status': 'denied', 'reason': 'relay_not_authorized',
+                      'check': 'room_profile_roster_mismatch'}
+    assert events(relay) == []

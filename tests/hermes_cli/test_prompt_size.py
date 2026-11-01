@@ -45,6 +45,29 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 
+def test_tier_labels_attribute_skills_to_volatile(isolated_home, monkeypatch):
+    """Tier descriptions agree with real assembly without changing size accounting."""
+    from agent.system_prompt import build_system_prompt_parts
+    from hermes_cli import prompt_size
+
+    _seed_skill(isolated_home, "tier-demo", "A skill in the volatile catalog")
+    agent = _build_inspection_agent("cli")
+    monkeypatch.setattr(prompt_size, "_build_inspection_agent", lambda platform: agent)
+    parts = build_system_prompt_parts(agent)
+    assert "<available_skills>" in parts["volatile"]
+    assert "<available_skills>" not in parts["stable"]
+
+    data = compute_prompt_breakdown("cli")
+    stable, context, volatile = data["sections"]
+    assert "skills" not in stable[0]
+    assert "skills" in volatile[0]
+    for section, key in zip((stable, context, volatile), ("stable", "context", "volatile")):
+        assert section[1:] == (len(parts[key]), len(parts[key].encode("utf-8")))
+    assert data["skills_index"]["bytes"] > 0
+    rendered = render_breakdown(data)
+    assert stable[0] in rendered and volatile[0] in rendered
+
+
 def test_runs_offline_without_credentials(isolated_home, monkeypatch):
     """No provider credentials configured → still produces a breakdown."""
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "NOUS_API_KEY",

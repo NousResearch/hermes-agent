@@ -2,6 +2,8 @@
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from agent import i18n
+from agent.i18n import t
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -85,9 +87,20 @@ async def test_approval_boundary_finalizes_and_disables_native(mock_adapter, con
         pass
 
 
+@pytest.fixture(params=["en", "zh", "ja"])
+def display_language(request, monkeypatch):
+    monkeypatch.setenv("HERMES_LANGUAGE", request.param)
+    i18n.reset_language_cache()
+    yield request.param
+    i18n.reset_language_cache()
+
+
 @pytest.mark.asyncio
-async def test_approval_boundary_uses_placeholder_when_no_accumulated(mock_adapter, consumer_config):
-    """When there's no accumulated text, finalize with a visible placeholder."""
+async def test_approval_boundary_uses_placeholder_when_no_accumulated(
+    mock_adapter, consumer_config, display_language,
+):
+    """When there's no accumulated text, finalize with a visible placeholder in the
+    user's display language (it used to be hardcoded Chinese for everyone)."""
     consumer = GatewayStreamConsumer(
         adapter=mock_adapter,
         chat_id="test_chat",
@@ -115,7 +128,7 @@ async def test_approval_boundary_uses_placeholder_when_no_accumulated(mock_adapt
     ]
     assert len(finalize_calls) == 1
     finalize_text = finalize_calls[0].args[0]
-    assert finalize_text == "⏸ 等待审批中..."
+    assert finalize_text == t("gateway.exec_approval.native_stream_placeholder", lang=display_language)
 
     consumer.finish()
     await asyncio.sleep(0.05)

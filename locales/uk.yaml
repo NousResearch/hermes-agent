@@ -629,6 +629,7 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", або {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    native_stream_placeholder: "⏸ Очікую на підтвердження..."
   notify:
     media_kind:
       audio: "аудіо"

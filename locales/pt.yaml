@@ -629,6 +629,7 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: ", ou {choice}.\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}: {reason}\n\n"
+    native_stream_placeholder: "⏸ Aguardando aprovação..."
   notify:
     media_kind:
       audio: "áudio"

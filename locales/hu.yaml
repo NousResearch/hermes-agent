@@ -638,6 +638,7 @@ gateway:
       {command}
       ```
       {reason_label}: {reason}
+    native_stream_placeholder: "⏸ Jóváhagyásra várok..."
 
   notify:
     media_kind:

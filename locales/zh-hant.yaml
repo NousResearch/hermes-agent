@@ -629,6 +629,7 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    native_stream_placeholder: "⏸ 等待審批中..."
   notify:
     media_kind:
       audio: "音訊"

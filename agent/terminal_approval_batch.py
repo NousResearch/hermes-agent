@@ -62,7 +62,9 @@ class _TerminalSlot:
                     if not ref.args.get("background"):
                         command = tt.trailing_amp_background_command(command) or command
                     self.guard_key = (command, config["env_type"], tt._docker_has_host_access(config))
-                    self.decision = tt._check_all_guards(*self.guard_key)
+                    from agent.tool_decision import notes_deferred
+                    with notes_deferred():  # reported when the call consumes it, not now
+                        self.decision = tt._check_all_guards(*self.guard_key)
                 finally:
                     reset_current_observability_context(tokens)
         finally:
@@ -76,7 +78,7 @@ class _TerminalSlot:
         from agent import tool_executor as te
         token = _slot.set(self)
         pc, batch = self.parsed, self.batch
-        ref = pc.ref(batch.task_id)
+        ref = pc.ref(batch.task_id, batch.dispatch_turn_id[pc.ref(batch.task_id).call_id])
         try:
             with te._registered_tool_worker(batch.agent) as tid:
                 self.tids.append(tid)
@@ -97,6 +99,8 @@ class _TerminalBatch:
         from agent.tool_executor import _ConcurrentToolAuthorizationGate
         from tools.daemon_pool import DaemonThreadPoolExecutor
         self.agent, self.messages, self.task_id = agent, messages, task_id
+        from agent.tool_decision import DispatchTurn
+        self.dispatch_turn_id = {pc.ref(task_id).call_id: DispatchTurn(getattr(agent, "_current_turn_id", "")) for pc in parsed}
         self.cancelled = threading.Event()
         self.pending_approvals = []  # guarded by tools.approval._lock
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
@@ -147,6 +151,12 @@ class _TerminalBatch:
                 _interrupt_worker_tids(self.agent, slot.tids)
                 slot.future.cancel()
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+
+def current_dispatch_turn(call_id, turn_id):
+    from agent.tool_decision import DispatchTurn
+    batch = _batch.get()
+    return batch.dispatch_turn_id[call_id] if batch is not None else (DispatchTurn(turn_id) if turn_id is not None else None)
 
 
 def prepare_current_terminal(ref):

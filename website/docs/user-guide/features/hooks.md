@@ -450,6 +450,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; any valid `block` wins over any `approve` (then the first valid `approve`), and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
+| [`tool_decision`](#tool_decision) | Observer | Once per model-issued tool call (one with a `tool_call_id`), subject to the limits below, immediately before its terminal `post_tool_call`: the final verdict and the gate that decided it; return ignored. Calls skipped by an interrupt before dispatch fire none; unfinished concurrent slots report `abandoned`. | `tool_name`, `args_sha256`, `verdict`, `source`, `initiator`, `session_id`, `turn_id`, `tool_call_id`, `task_id`, `api_request_id` | No raw arguments: only a sha256 correlation digest. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
@@ -671,6 +672,48 @@ def track_metrics(tool_name, result, duration_ms=0, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_tool_call", track_metrics)
+```
+
+---
+
+### `tool_decision`
+
+Fires **once per tool call, subject to the limits below** (every call that carries a `tool_call_id`), with the final allow/refuse verdict and the gate that decided it, so an audit or policy plugin can record every decision in one place. It fires immediately before the call's terminal `post_tool_call`, on every dispatch path (sequential and concurrent agent loop, inline agent tools, direct `handle_function_call`). Approval prompts for shell commands and `execute_code` run inside the tool, so the verdict is only final when the call returns; a refused call fires as soon as it is refused. Core keeps no sink.
+
+**Callback signature:**
+
+```python
+def my_callback(tool_name: str, args_sha256: str, verdict: str, source: str, initiator: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | `str` | The tool the decision is about |
+| `args_sha256` | `str` | sha256 hex of the arguments' canonical JSON (sorted keys, compact separators), after any `pre_tool_call` `modify`; falls back to hashing `repr(args)` if JSON serialization fails. Raw arguments are never passed. Short arguments can be guessed from their digest: treat this as a correlation key, not as hiding the arguments. |
+| `verdict` | `str` | `allowed` (no gate engaged), `auto_approved` (a flagged action approved without a human: allowlist, smart approval, yolo or `approvals.mode: off` on a flagged action, an unattended `approve` mode), `user_approved`, `denied_by_user`, `denied_by_rule` (`approvals.deny`), `blocked_by_hook` (`pre_tool_call`), `blocked_by_policy` (hardline floor, guardrail, toolset scope, unattended deny, smart deny, ...), `timeout` (nobody answered the approval prompt), `approval_pending` (queued for `/approve`; the call did not run), `abandoned` (execution timed out, was interrupted, or returned no worker result, unless a gate already refused) |
+| `source` | `str` | What decided: e.g. `pre_tool_call`, `approval_prompt`, `allowlist`, `smart_approval`, `yolo`, `approvals.deny`, `hardline`, `toolset_scope`, `tool_guardrail`, `acp_edit_approval`; empty for `allowed` |
+| `initiator` | `str` | Best effort: `cron`, `subagent`, `api` (api_server / webhook sessions), else `session` |
+| `session_id`, `turn_id`, `tool_call_id`, `task_id`, `api_request_id` | `str` | Correlation ids; empty when not available. Join with `post_tool_call` on `tool_call_id`. |
+
+**Return value:** ignored. A raising or slow subscriber never changes the verdict or blocks the call (callbacks are timeout-bounded like `post_tool_call`).
+
+**Limits:** Connector batches emit one event per entry under id `<id>#n`, in addition to the wrapper call. `turn_id` is captured at dispatch, including for late workers; use session, dispatch turn and call id to correlate events after compaction. Dispatches without a `tool_call_id` (tools an `execute_code` script calls back into, direct programmatic calls) fire no `tool_decision`, because their gate verdicts cannot be attributed; the `execute_code` call itself reports its own verdict. Calls skipped by an interrupt before dispatch fire none, but unfinished concurrent slots report `abandoned` even if no gate ran. Shell commands run under yolo or `approvals.mode: off` skip dangerous-command detection, so they report `allowed`. With more than 1,024 timed-out tool calls still running, a late finisher may be reported twice.
+
+**Example — append every decision to a JSONL audit log:**
+
+```python
+import json, time
+from pathlib import Path
+
+AUDIT = Path.home() / "tool-decisions.jsonl"
+
+def record(**event):
+    event.pop("telemetry_schema_version", None)
+    with AUDIT.open("a") as fh:
+        fh.write(json.dumps({"ts": time.time(), **event}) + "\n")
+
+def register(ctx):
+    ctx.register_hook("tool_decision", record)
 ```
 
 ---

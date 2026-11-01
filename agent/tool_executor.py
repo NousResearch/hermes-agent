@@ -45,6 +45,7 @@ from agent.inline_tool_executors import (
 )
 from agent.message_metadata import stamp_data_use
 from agent.session_persistence import sync_rewritten_tool_rows
+from agent.tool_decision import DispatchTurn
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -283,12 +284,14 @@ class _ToolCallRef:
     task_id: str
     call_id: str
     trace: list
+    dispatch_turn_id: Optional[str] = None
 
     def middleware_kwargs(self) -> dict[str, Any]:
         """Keyword form ``_run_agent_tool_execution_middleware`` (and tests patching it) expect."""
         return {
             "function_name": self.name, "function_args": self.args, "effective_task_id": self.task_id,
             "tool_call_id": self.call_id, "middleware_trace": self.trace,
+            "dispatch_turn_id": self.dispatch_turn_id,
         }
 
     def emit_post(self, agent, result, *, trace=None, **outcome) -> None:
@@ -302,6 +305,7 @@ class _ToolCallRef:
             result=result,
             effective_task_id=self.task_id,
             tool_call_id=self.call_id,
+            dispatch_turn_id=self.dispatch_turn_id,
             middleware_trace=list(self.trace if trace is None else trace),
             **outcome,
         )
@@ -454,8 +458,9 @@ class _ParsedCall:
     parse_error: Optional[str]
     scope_block: Optional[str]
 
-    def ref(self, task_id: str) -> _ToolCallRef:
-        return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace)
+    def ref(self, task_id: str, dispatch_turn_id: Optional[str] = None) -> _ToolCallRef:
+        from agent.terminal_approval_batch import current_dispatch_turn
+        return _ToolCallRef(self.name, self.args, task_id, _pairing_tool_call_id(self.tool_call), self.middleware_trace, current_dispatch_turn(_pairing_tool_call_id(self.tool_call), dispatch_turn_id))
 
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
@@ -678,7 +683,7 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
         block_msg, modified_args = _dispatch_pre_tool_call_hooks(
             ref.name,
             ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
+            **dict(tool_hook_ids(agent, ref.task_id, ref.call_id, ref.dispatch_turn_id), turn_id=ref.dispatch_turn_id),
             middleware_trace=list(ref.trace),
         )
         return block_msg, (ref.args if modified_args is None else modified_args)
@@ -774,6 +779,7 @@ def _run_agent_tool_execution_middleware(
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
+    dispatch_turn_id: Optional[str] = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from agent import relay_tools
@@ -796,7 +802,7 @@ def _run_agent_tool_execution_middleware(
         return _dispatch_authorized_once(
             agent,
             state,
-            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
+            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace, dispatch_turn_id),
             execute=execute,
             scope_block=scope_block,
             display_index=display_index,
@@ -913,6 +919,7 @@ def _run_sequential_tool_execution_middleware(
     scope_block: str | None = None,
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
+    dispatch_turn_id: Optional[str] = None,
 ) -> _ManagedToolResult:
     """Run one sequential call on a worker thread under the concurrent executor's deadline.
     Interactive tools (``clarify``) own their wait via ``agent.clarify_timeout``; the
@@ -923,7 +930,8 @@ def _run_sequential_tool_execution_middleware(
 
     timeout_s = None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS else _resolve_sequential_tool_timeout()
     timeout_s = _extend_tool_timeout(function_name, timeout_s)
-    ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace)
+    ref = _ToolCallRef(function_name, function_args, effective_task_id, tool_call_id, middleware_trace,
+                       DispatchTurn(dispatch_turn_id if dispatch_turn_id is not None else getattr(agent, "_current_turn_id", "")))
     kwargs = dict(ref.middleware_kwargs(), execute=execute, scope_block=scope_block, display_index=display_index)
     from agent.terminal_approval_batch import take_prepared_call
     prepared = take_prepared_call(tool_call_id)
@@ -1337,10 +1345,11 @@ class _ConcurrentBatch:
         self.effective_task_id = effective_task_id
         self.parsed_calls = parsed_calls
         self.timeout_s = timeout_s
+        self.dispatch_turn_id = [DispatchTurn(getattr(agent, "_current_turn_id", "")) for _ in parsed_calls]
         self.results: list[Optional[_ToolOutcome]] = [None] * len(parsed_calls)
         for i, pc in enumerate(parsed_calls):
             if pc.parse_error is not None:
-                self.results[i] = _ToolOutcome(pc.ref(effective_task_id), pc.parse_error, 0.0, True, True)
+                self.results[i] = _ToolOutcome(pc.ref(effective_task_id, self.dispatch_turn_id[i]), pc.parse_error, 0.0, True, True)
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
@@ -1366,6 +1375,7 @@ class _ConcurrentBatch:
                     skip_tool_request_middleware=True,
                     skip_tool_execution_middleware=True,
                     tool_request_middleware_trace=list(ref.trace),
+                    dispatch_turn_id=ref.dispatch_turn_id,
                 ),
                 scope_block=scope_block,
                 display_index=index + 1,
@@ -1410,7 +1420,7 @@ class _ConcurrentBatch:
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id, self.dispatch_turn_id[index]), pc.scope_block, start_gate)
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
@@ -1556,7 +1566,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
         # A worker may finish between the deadline snapshot and this loop;
         # prefer its real result over a fabricated timeout.
         if r is None:
-            ref, is_error, blocked = pc.ref(effective_task_id), True, False
+            ref, is_error, blocked = pc.ref(effective_task_id, batch.dispatch_turn_id[i]), True, False
             function_result, tool_duration, effect_disposition = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
             )
@@ -1727,7 +1737,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                turn_id=ref.dispatch_turn_id,
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
@@ -1901,7 +1911,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             break
 
         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
-        ref = pc.ref(effective_task_id)
+        ref = pc.ref(effective_task_id, tool_hook_ids(agent, effective_task_id, None)["turn_id"])
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
                 return

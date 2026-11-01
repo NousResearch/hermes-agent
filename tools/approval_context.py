@@ -63,7 +63,7 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     except Exception:
         return  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
-        kwargs.setdefault("turn_id", _approval_turn_id.get())
+        kwargs.setdefault("turn_id", str(_approval_turn_id.get()))
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
         if _approval_session_id.get():
             kwargs.setdefault("session_id", _approval_session_id.get())
@@ -128,7 +128,7 @@ _Tokens = tuple[contextvars.Token[str], contextvars.Token[str], contextvars.Toke
 
 def set_current_observability_context(*, turn_id: str = "", tool_call_id: str = "", session_id: str = "") -> _Tokens:
     """Bind active tool correlation IDs to approval hooks."""
-    return (_approval_turn_id.set(turn_id or ""), _approval_tool_call_id.set(tool_call_id or ""),
+    return (_approval_turn_id.set(turn_id if turn_id is not None else ""), _approval_tool_call_id.set(tool_call_id or ""),
             _approval_session_id.set(session_id or ""))
 
 

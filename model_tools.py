@@ -643,7 +643,7 @@ class _CallIds:
 
     def hook_kwargs(self) -> dict[str, str]:
         """Same fields with None -> "" (hook/middleware wire contract)."""
-        return {k: v or "" for k, v in asdict(self).items()}
+        return {k: str(v or "") for k, v in asdict(self).items()}
 
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
@@ -673,8 +673,14 @@ def _emit_post_tool_call_hook(
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
     fields are derived from the result only past that gate when status is None."""
+    from agent.tool_decision import emit_for_call, note_suppressed_outcome
     if _post_tool_call_hook_suppressed.get():
+        note_suppressed_outcome(status=status, error_type=error_type, session_id=session_id or "",
+                                tool_call_id=tool_call_id or "", turn_id=turn_id)
         return
+    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs()
+    # tool_decision rides this funnel because it runs once per call on every dispatch path.
+    emit_for_call(tool_name=function_name, args=function_args, status=status, error_type=error_type, **dict(ids, turn_id=turn_id))
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
@@ -682,8 +688,7 @@ def _emit_post_tool_call_hook(
         if status is None:
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
         invoke_hook(
-            "post_tool_call", tool_name=function_name, args=function_args, result=result,
-            **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
+            "post_tool_call", tool_name=function_name, args=function_args, result=result, **ids,
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
@@ -771,7 +776,7 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
-                function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
+                function_name, function_args, middleware_trace=list(middleware_trace), **dict(ids.hook_kwargs(), turn_id=ids.turn_id),
             )
             if modified_args is not None:
                 function_args = modified_args
@@ -799,7 +804,7 @@ def _approval_observability(ids: _CallIds):
     """Bind the approval observability context (turn/tool_call/session ids) for the block."""
     try:
         from tools.approval_context import reset_current_observability_context, set_current_observability_context
-        tokens = set_current_observability_context(turn_id=ids.turn_id or "", tool_call_id=ids.tool_call_id or "",
+        tokens = set_current_observability_context(turn_id=ids.turn_id, tool_call_id=ids.tool_call_id or "",
                                                    session_id=ids.session_id or "")
     except Exception:
         yield
@@ -884,7 +889,8 @@ def handle_function_call(
         function_args = {}
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
-    ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
+    from agent.tool_decision import DispatchTurn
+    ids = _CallIds(task_id, session_id, tool_call_id, DispatchTurn(turn_id), api_request_id)
     start = time.monotonic()
 
     def _emit(result: Any, **extra: Any) -> Any:

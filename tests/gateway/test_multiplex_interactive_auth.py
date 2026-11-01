@@ -219,3 +219,42 @@ def test_channel_directory_path_follows_current_home(mux_home):
     with _profile_runtime_scope(mux_home / "profiles" / "secondary"):
         assert cd._directory_path() == Path(mux_home / "profiles" / "secondary" / "channel_directory.json")
     assert cd._directory_path() == Path(mux_home / "channel_directory.json")
+
+
+@pytest.mark.asyncio
+async def test_profile_platform_event_handler_does_not_hydrate_on_loop(mux_home, monkeypatch):
+    """The platform-event handlers run synchronously inside the adapter's event loop
+    (Discord fires one per message edit/delete). Entering ``_profile_runtime_scope``
+    with its default ``hydrate_secrets=True`` resolves external secret sources on that
+    loop, taking the process-global source lock (#99519 class) — the same fix e13b5e71ef
+    applied to the adapter auth-check callback. Startup and the per-profile message path
+    already hydrate off-loop; the callback must read their cache."""
+    import asyncio
+
+    import hermes_cli.env_loader as env_loader
+
+    hydrated = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)
+    runner = _runner(mux_home)
+
+    handler = runner._make_profile_platform_event_handler("secondary")
+    event = {"platform": "telegram", "event_type": "message_edited", "payload": {}}
+    await handler(event, SimpleNamespace(platform=Platform.TELEGRAM, user_id="555"))
+    assert hydrated == []
+
+
+@pytest.mark.asyncio
+async def test_default_profile_platform_event_handler_does_not_hydrate_on_loop(mux_home, monkeypatch):
+    """Primary/shared-bot platform events take the default-profile handler; same
+    on-loop hydration constraint as the secondary's (#99519 class)."""
+    import hermes_cli.env_loader as env_loader
+
+    hydrated = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)
+    runner = _runner(mux_home)
+    tg = _telegram(runner)
+
+    handler = runner._make_default_profile_platform_event_handler()
+    event = {"platform": "telegram", "event_type": "message_edited", "payload": {}}
+    await handler(event, SimpleNamespace(platform=Platform.TELEGRAM, user_id="555"))
+    assert hydrated == []

@@ -1,13 +1,13 @@
 name: opencode-free-acp
 title: OpenCode Free (ACP)
 repo: https://github.com/cryptobredda/hermes-opencode-free-acp
-sha: edc25305e325754b450e41daf41c6ba5c028324f
-version: "0.3.0"
+sha: 0ef669a84c024661c03d34768c118275e93aa713
+version: "0.4.0"
 requires_hermes: ">=0.22.2"
 maintainer: cryptobredda
 tier: community
 category: models
-platforms: [linux]
+platforms: [linux, macos, windows]
 docs_url: https://github.com/cryptobredda/hermes-opencode-free-acp#readme
 readme: true
 description: >-
@@ -19,21 +19,25 @@ description: >-
   included restricted workspace; forwards the conversation, tool schemas and
   results to OpenCode and its selected upstream model. The CLI uses its normal
   HOME/configuration/login and may load user-configured vendor plugins/hooks;
-  its normal network calls, local records and vendor terms apply. Child
+  its normal network calls, local records and vendor terms apply. Windows batch
+  launchers use the OS cmd.exe with fixed quoted arguments, AutoRun and delayed
+  expansion disabled; processes join a private cleanup Job Object before running.
+  Linux/macOS use an owned process group. These are not OS sandboxes. Child
   environment is allowlisted; Hermes/provider keys and YOLO settings are not
   inherited. Plugin code reads no credential stores, writes no runtime state,
   makes no direct network calls, installs no binaries and sends no telemetry.
   Native ACP permission/file/terminal requests are refused, native tool events
   abort the request, and selection must be confirmed before inference. This is
-  not an OS sandbox or an authorization to use OpenCode; broader vendor policies
-  can override workspace restrictions, and free availability/pricing/privacy
-  can change.
+  not authorization to use OpenCode; broader vendor policies can override
+  workspace restrictions, and free availability/pricing/privacy can change.
 known_issues:
-  - Requires a separately installed OpenCode v2 CLI; live-tested with OpenCode 2.1.2 on Linux.
+  - Requires a separately installed OpenCode v2 CLI; native Linux/macOS/Windows CLI and ACP/config checks pass with 2.1.2, without inference.
   - Requires plugins.isolation=in_process; isolated plugin-host execution is not supported.
   - Text and Hermes tools only; output is buffered, and token/cost usage is unknown.
   - Existing Hermes auxiliary and fallback overrides keep their configured billing behavior.
-  - Offline CI passes on Linux, macOS and Windows, but live CLI/model verification is Linux-only.
+  - Live model inference and end-to-end Hermes file-tool verification remain Linux-only; cross-platform CI covers transport and real CLI negotiation.
+  - Windows PowerShell .ps1 launchers are not executed; use .exe or .cmd. Batch paths containing percent expansion require the native .exe instead.
+  - Windows environments that prevent cleanup Job Objects fail closed. WSL installations must use a Linux OpenCode CLI rather than a Windows executable.
 capabilities:
   provides_tools: []
   provides_hooks: []

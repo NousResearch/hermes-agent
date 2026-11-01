@@ -41,6 +41,8 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
     cover a session_key that compression rotated mid-turn."""
+    if session.get("_stopped_for_process_exit"):
+        return
     home = _session_home(session)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:

@@ -108,12 +108,23 @@ export async function desktopSessionCreateParams(
   // model. Omit model/provider unless the source is 'manual'.
   const isManualSelection = getCurrentModelSource() === 'manual'
 
+  // $currentProvider also carries the runtime's resolved provider class, echoed by the
+  // session.info heartbeat through syncRuntimeMetadataToView: a session on ANY named
+  // custom provider (custom:*) repaints the composer's provider as the generic `custom`.
+  // Shipping that class as the create pick freezes a credentialless bare-custom route —
+  // the gateway refuses it with auth_permanent ("provider 'custom' resolved without
+  // credentials"). This create never carries base_url/api_key, so a bare `custom` can
+  // never resolve; the picker only offers real catalog slugs (myhosted, polza, …), so a
+  // bare class here is always a heartbeat echo. Drop it: the gateway resolves the model
+  // against the profile's own route, exactly like a create without a provider pick.
+  const pickedProvider = isManualSelection ? $currentProvider.get().trim() : ''
+
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
     serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',
-    provider: isManualSelection ? $currentProvider.get().trim() : ''
+    provider: pickedProvider !== 'custom' ? pickedProvider : ''
   }
 
   const profile =

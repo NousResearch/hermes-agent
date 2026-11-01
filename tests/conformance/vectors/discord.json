@@ -2,7 +2,7 @@
   "$comment": "GENERATED — do not hand-edit. Regenerate with hermes-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
   "oracle": {
     "repo": "NousResearch/hermes-agent",
-    "commit": "40eebc7d70f3d8e95c429c8aa482f31ba6c867f6",
+    "commit": "01a1037d1e6d7b6eb96a786ef282c3aea4818194",
     "generator": "scripts/generate_conformance_vectors.py",
     "generator_version": 1
   },
@@ -171,6 +171,34 @@
       "native_output": "## Report\n\nStatus: **green**. Details in `runbook.md`.\n\n- item *one*\n- item **two**\n\n```sh\nmake deploy\n```\n\nSee [dashboard](https://grafana.example.com/d/x)."
     },
     {
+      "id": "underscore-bold",
+      "category": "grid",
+      "expect": "parity",
+      "input": "This is __bold__ text.",
+      "native_output": "This is __bold__ text."
+    },
+    {
+      "id": "bold-inside-word",
+      "category": "grid",
+      "expect": "parity",
+      "input": "un**be**lievable",
+      "native_output": "un**be**lievable"
+    },
+    {
+      "id": "link-with-bold-text",
+      "category": "grid",
+      "expect": "parity",
+      "input": "[**bold link**](https://example.com)",
+      "native_output": "[**bold link**](https://example.com)"
+    },
+    {
+      "id": "code-with-bold-markers",
+      "category": "grid",
+      "expect": "parity",
+      "input": "use `**not bold**` correctly",
+      "native_output": "use `**not bold**` correctly"
+    },
+    {
       "id": "mdv2-reserved-chars",
       "category": "scar",
       "expect": "parity",
@@ -256,6 +284,34 @@
       "native_output": "[v2.0 (beta)](https://example.com/v2)"
     },
     {
+      "id": "italic-header",
+      "category": "scar",
+      "expect": "parity",
+      "input": "## *Italic Header*",
+      "native_output": "## *Italic Header*"
+    },
+    {
+      "id": "two-inline-codes",
+      "category": "scar",
+      "expect": "parity",
+      "input": "use `pip install` and `npm install`",
+      "native_output": "use `pip install` and `npm install`"
+    },
+    {
+      "id": "sanitize-zwj",
+      "category": "scar",
+      "expect": "parity",
+      "input": "Hello​‌‍ World",
+      "native_output": "Hello​‌‍ World"
+    },
+    {
+      "id": "sanitize-nbsp-var",
+      "category": "scar",
+      "expect": "parity",
+      "input": "Hello World Test",
+      "native_output": "Hello World Test"
+    },
+    {
       "id": "media-tag",
       "category": "adversarial",
       "expect": "parity",
@@ -289,6 +345,13 @@
       "expect": "parity",
       "input": "***what is this*** and ____that____",
       "native_output": "***what is this*** and ____that____"
+    },
+    {
+      "id": "triple-markers-alt",
+      "category": "adversarial",
+      "expect": "parity",
+      "input": "***bold italic***",
+      "native_output": "***bold italic***"
     },
     {
       "id": "empty-string",

@@ -475,7 +475,14 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             str(composer_profile.get("model") or "").strip(),
             str(composer_profile.get("provider") or "").strip(),
         ) if isinstance(composer_profile, dict) else None
-        if pinned_profile is None or pinned_profile == target:
+        override_dict = session.get("model_override") if isinstance(session.get("model_override"), dict) else {}
+        same_default_model_stale_provider = (
+            pinned_profile is None
+            and str(override_dict.get("model") or "").strip() == target[0]
+            and bool(target[1])
+            and str(override_dict.get("provider") or "").strip() != target[1]
+        )
+        if (pinned_profile is None and not same_default_model_stale_provider) or pinned_profile == target:
             return
         # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
         # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.

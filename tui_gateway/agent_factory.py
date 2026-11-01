@@ -144,6 +144,10 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     from hermes_state import SessionDB
     route = SessionDB.session_gateway_runtime(row)
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    cfg_model, cfg_provider = _config_model_target()
+    if not composer_profile and model and model == cfg_model and cfg_provider and provider and provider != cfg_provider:
+        provider = cfg_provider
+        base_url = api_mode = ""
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint

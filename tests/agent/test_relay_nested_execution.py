@@ -231,3 +231,52 @@ def test_resolve_execution_context_bypasses_inside_guard(relay_turn):
     # Outside the guard the context resolves normally again.
     runtime, session, _parent = relay_runtime.resolve_execution_context("session-1")
     assert runtime is not None and session is not None
+
+
+# --- new_execution_root: the delegate_task child's own root -----------------
+#
+# The bypass above is right for a NESTED call on the parent's blocked loop, but
+# wrong for a delegate_task child: it runs on a worker thread whose context was
+# copy_context()'d from the parent WHILE the parent was mid-callback, so the
+# guard's marker (and the parent's _CURRENT_TURN) ride in and suppress relay for
+# every child LLM call — the child's session/turn scopes open but nothing hangs
+# under them, and nothing reaches ATOF. new_execution_root clears both for the
+# child's own root; the child's own nested callbacks re-raise the guard as before.
+
+
+def test_new_execution_root_clears_and_restores_inherited_markers():
+    depth, turn = relay_runtime._MANAGED_CALLBACK_DEPTH, relay_runtime._CURRENT_TURN
+    depth_token, turn_token = depth.set(2), turn.set("parent-turn")
+    try:
+        with relay_runtime.new_execution_root():
+            assert depth.get() == 0
+            assert turn.get() is None
+        # Both restored on exit — a sibling turn in the same context is unaffected.
+        assert depth.get() == 2
+        assert turn.get() == "parent-turn"
+    finally:
+        turn.reset(turn_token)
+        depth.reset(depth_token)
+
+
+def test_new_execution_root_restores_managed_execution_under_inherited_guard(relay_turn):
+    """With the parent's callback marker inherited (the regression), resolution is
+    suppressed; inside new_execution_root the child resolves and runs managed again."""
+    with relay_runtime.managed_callback_guard():
+        runtime, session, _ = relay_runtime.resolve_execution_context("session-1")
+        assert runtime is None and session is None
+        with relay_runtime.new_execution_root():
+            runtime, session, _ = relay_runtime.resolve_execution_context("session-1")
+            assert runtime is not None and session is not None
+
+
+def test_delegated_child_context_restores_managed_execution_under_inherited_guard(relay_turn):
+    """The seam the real child runs through applies the reset (delegate_tool_child_run
+    wraps child.run_conversation in delegated_child_context)."""
+    from agent.delegation_context import delegated_child_context
+
+    with relay_runtime.managed_callback_guard():
+        assert relay_runtime.resolve_execution_context("session-1")[0] is None
+        with delegated_child_context("session-1"):
+            runtime, session, _ = relay_runtime.resolve_execution_context("session-1")
+            assert runtime is not None and session is not None

@@ -43,6 +43,14 @@ export function jobTitle(job: CronJob): string {
 // Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.
 export const NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000
 
+// States that cannot fire again without an explicit resume. A job parked in one of them keeps
+// its last next_run_at on disk — pause deliberately preserves the slot so a resume can honour
+// the missed run — so no surface may read that stale instant as an upcoming run. `error` is
+// deliberately absent: an errored job is still scheduled and keeps firing, so its next_run_at
+// is a genuine future slot. Shared by nextRunOverdueMs below and the sidebar's ordering so
+// the two cannot drift (#143084).
+export const NOT_FIREABLE_STATES = new Set(['paused', 'completed', 'disabled'])
+
 // Milliseconds a job's stored next_run_at has sat in the past beyond that grace, or null when
 // the slot is upcoming, within grace, unparseable, or the job is not expected to fire. A slot
 // parked in the past is the only user-visible trace of a dead scheduler (#114309), so no
@@ -53,7 +61,7 @@ export function nextRunOverdueMs(
 ): null | number {
   const state = jobState(job as CronJob)
 
-  if (state === 'paused' || state === 'completed' || state === 'disabled' || !job.next_run_at) {
+  if (NOT_FIREABLE_STATES.has(state) || !job.next_run_at) {
     return null
   }
 

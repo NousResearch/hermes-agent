@@ -154,3 +154,65 @@ describe('SidebarCronJobsSection run peek — zombie cron runs (#88443)', () => 
     expect(isStoredTranscriptReadOnly(output.id)).toBe(false)
   })
 })
+
+describe('SidebarCronJobsSection ordering', () => {
+  it('shows the jobs about to run ahead of paused jobs whose stale next_run_at is in the past', () => {
+    const base = 1_800_000_000_000
+
+    render(
+      <SidebarCronJobsSection
+        jobs={[
+          // A paused job keeps the next_run_at it will never honor, and that
+          // slot is always in the past — the smallest key in the comparator.
+          { id: 'paused-weeks', name: 'Paused weeks ago', enabled: true, next_run_at: new Date(base - 21 * 86_400_000).toISOString(), state: 'paused' },
+          { id: 'paused-days', name: 'Paused days ago', enabled: true, next_run_at: new Date(base - 3 * 86_400_000).toISOString(), state: 'paused' },
+          { id: 'live-later', name: 'Live later', enabled: true, next_run_at: new Date(base + 3_600_000).toISOString(), state: 'scheduled' },
+          { id: 'live-soon', name: 'Live soonest', enabled: true, next_run_at: new Date(base + 60_000).toISOString(), state: 'scheduled' },
+          { id: 'live-none', name: 'No next run yet', enabled: true, state: 'scheduled' }
+        ]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+      />
+    )
+
+    // Only the first INITIAL_VISIBLE_JOBS rows render; the visible peek must be
+    // the jobs that can still fire, not the paused pair with stale slots.
+    const rows = screen
+      .getAllByRole('button', { name: 'Show runs' })
+      .map(row => row.textContent?.trim())
+
+    expect(rows).toEqual(['Live soonest', 'Live later', 'No next run yet'])
+  })
+
+  it('keeps an errored job in the upcoming order — it is still scheduled and its next_run_at is real (#143084)', () => {
+    const base = 1_800_000_000_000
+
+    render(
+      <SidebarCronJobsSection
+        jobs={[
+          { id: 'errored-later', name: 'Errored but scheduled', enabled: true, next_run_at: new Date(base + 3_600_000).toISOString(), state: 'error' },
+          { id: 'paused', name: 'Paused keeps stale slot', enabled: true, next_run_at: new Date(base - 3_600_000).toISOString(), state: 'paused' },
+          { id: 'live-soon', name: 'Live soonest', enabled: true, next_run_at: new Date(base + 60_000).toISOString(), state: 'scheduled' }
+        ]}
+        label="Cron Jobs"
+        onManageJob={vi.fn()}
+        onOpenRun={vi.fn()}
+        onToggle={vi.fn()}
+        onTriggerJob={vi.fn()}
+        open
+      />
+    )
+
+    // The errored job stays among the upcoming rows by its real next_run_at; only
+    // the paused job sinks below the jobs that can still fire.
+    const rows = screen
+      .getAllByRole('button', { name: 'Show runs' })
+      .map(row => row.textContent?.trim())
+
+    expect(rows).toEqual(['Live soonest', 'Errored but scheduled', 'Paused keeps stale slot'])
+  })
+})

@@ -552,7 +552,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if translate_path:
             arg = _bash_safe_path(arg)
         elif _IS_WINDOWS and getattr(self.env, "is_local", False):
-            arg = arg.replace("\\", "\\\\")
+            # Backslashes preceding double quotes are handled by Windows argv
+            # parsing (CommandLineToArgvW); double only backslashes not followed
+            # by a double quote so they survive local argv transport (#142111).
+            arg = re.sub(r'(\\+)(")?', lambda m: m.group(0) if m.group(2) else m.group(1) * 2, arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 

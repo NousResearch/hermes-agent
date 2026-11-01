@@ -1,4 +1,5 @@
 """Tests for Mattermost platform adapter."""
+import asyncio
 import json
 import os
 import time
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
+from gateway.platforms.base import SendResult
 from gateway.run import (
     _resolve_gateway_display_bool,
     _resolve_progress_thread_id,
@@ -453,6 +455,129 @@ class TestMattermostFileUpload:
         assert result.success is True
         assert result.message_id == "post_with_file"
 
+    @pytest.mark.asyncio
+    async def test_send_voice_removes_converted_file_after_upload(self, tmp_path, monkeypatch):
+        source = tmp_path / "voice.ogg"
+        converted = tmp_path / "voice.mp3"
+        source.write_bytes(b"ogg")
+        converted.write_bytes(b"mp3")
+        from plugins.platforms.mattermost import adapter as mattermost
+
+        monkeypatch.setattr(mattermost, "_transcode_voice_to_mp3", AsyncMock(return_value=str(converted)))
+        self.adapter._send_local_file = AsyncMock(return_value=SendResult(success=True, message_id="post"))
+
+        result = await self.adapter.send_voice("channel", str(source), caption="voice")
+
+        assert result.success is True
+        self.adapter._send_local_file.assert_awaited_once_with(
+            "channel", str(converted), "voice", None, metadata=None,
+        )
+        assert source.exists()
+        assert not converted.exists()
+
+    @pytest.mark.asyncio
+    async def test_send_voice_removes_converted_file_when_upload_fails(self, tmp_path, monkeypatch):
+        source = tmp_path / "voice.opus"
+        converted = tmp_path / "voice.mp3"
+        source.write_bytes(b"opus")
+        converted.write_bytes(b"mp3")
+        from plugins.platforms.mattermost import adapter as mattermost
+
+        monkeypatch.setattr(mattermost, "_transcode_voice_to_mp3", AsyncMock(return_value=str(converted)))
+        self.adapter._send_local_file = AsyncMock(side_effect=RuntimeError("upload failed"))
+
+        with pytest.raises(RuntimeError, match="upload failed"):
+            await self.adapter.send_voice("channel", str(source))
+
+        assert source.exists()
+        assert not converted.exists()
+
+    @pytest.mark.asyncio
+    async def test_voice_transcode_cancellation_terminates_child_and_cleans_temp(self, tmp_path, monkeypatch):
+        source = tmp_path / "voice.ogg"
+        output = tmp_path / "voice.mp3"
+        source.write_bytes(b"ogg")
+        from plugins.platforms.mattermost import adapter as mattermost
+
+        class Process:
+            def __init__(self):
+                self.returncode = None
+                self.started = asyncio.Event()
+                self.finished = asyncio.Event()
+                self.terminated = False
+
+            async def communicate(self):
+                self.started.set()
+                await self.finished.wait()
+                return b"", b""
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+                self.finished.set()
+
+            async def wait(self):
+                await self.finished.wait()
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+                self.finished.set()
+
+        process = Process()
+        fd = os.open(output, os.O_CREAT | os.O_WRONLY)
+        monkeypatch.setattr(mattermost.tempfile, "mkstemp", lambda **_kwargs: (fd, str(output)))
+        monkeypatch.setattr(mattermost.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+
+        task = asyncio.create_task(mattermost._transcode_voice_to_mp3(str(source)))
+        await process.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert process.terminated is True
+        assert not output.exists()
+
+    @pytest.mark.asyncio
+    async def test_voice_transcode_timeout_terminates_child_and_cleans_temp(self, tmp_path, monkeypatch):
+        source = tmp_path / "voice.ogg"
+        output = tmp_path / "voice.mp3"
+        source.write_bytes(b"ogg")
+        from plugins.platforms.mattermost import adapter as mattermost
+
+        class Process:
+            def __init__(self):
+                self.returncode = None
+                self.finished = asyncio.Event()
+                self.terminated = False
+
+            async def communicate(self):
+                await self.finished.wait()
+                return b"", b""
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+                self.finished.set()
+
+            async def wait(self):
+                await self.finished.wait()
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+                self.finished.set()
+
+        process = Process()
+        fd = os.open(output, os.O_CREAT | os.O_WRONLY)
+        monkeypatch.setattr(mattermost.tempfile, "mkstemp", lambda **_kwargs: (fd, str(output)))
+        monkeypatch.setattr(mattermost.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+        monkeypatch.setattr(mattermost, "_VOICE_TRANSCODE_TIMEOUT_SECONDS", 0)
+
+        assert await mattermost._transcode_voice_to_mp3(str(source)) is None
+        assert process.terminated is True
+        assert not output.exists()
+
 
 # ---------------------------------------------------------------------------
 # Dedup cache
@@ -708,4 +833,3 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
-

@@ -134,6 +134,13 @@ _SPEND_CAP_RE = re.compile(r"\bspend(?:ing)?\s+cap\b")
 _GOOGLE_THROTTLE_REASONS = frozenset({"RATE_LIMIT_EXCEEDED"})
 _GOOGLE_ERROR_INFO_TYPE = "/google.rpc.ErrorInfo"
 _GOOGLE_RETRY_INFO_TYPE = "/google.rpc.RetryInfo"
+_GOOGLE_QUOTA_FAILURE_TYPE = "/google.rpc.QuotaFailure"
+# A ``QuotaFailure`` violation on a daily window, or on a quota whose value is 0 (the key has no
+# entitlement to the model at all, e.g. a free-tier key on a Pro model), replays until tomorrow or
+# forever, however short its ``RetryInfo`` says the wait is (omp#17127). AI Studio sends no
+# ``ErrorInfo`` on these, so this is the only structured signal.
+_GOOGLE_DAILY_QUOTA_RE = re.compile(r"per_?day|daily")
+_GOOGLE_ZERO_QUOTA_RE = re.compile(r"\s*0+(?:\.0+)?\s*")
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body
 # for a content-filter rejection (#82154). Verdict stays ``billing`` but is
@@ -1129,9 +1136,11 @@ def _status_429(c: _Ctx) -> Verdict:
     # billing reasons must not burn the retry budget as a throttle, and a per-minute throttle
     # (whose "Quota exceeded ... per_minute" prose reads as a quota wall) must not bench the key.
     google_reason = _google_rpc_reason(c.body)
-    if google_reason in _GOOGLE_BILLING_REASONS or (not google_reason and _SPEND_CAP_RE.search(c.msg)):
+    violations = _google_quota_violations(c.body)
+    if (google_reason in _GOOGLE_BILLING_REASONS or any(map(_google_violation_is_terminal, violations))
+            or (not google_reason and _SPEND_CAP_RE.search(c.msg))):
         return _V_BILLING
-    if google_reason in _GOOGLE_THROTTLE_REASONS:
+    if google_reason in _GOOGLE_THROTTLE_REASONS or violations:
         reset = _google_retry_delay_seconds(c.body)
         if reset is None:
             reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
@@ -1364,8 +1373,9 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 
 
 def _google_rpc_details(body: Any, type_suffix: str) -> Iterator[dict]:
-    """``error.details[]`` entries of one ``@type`` from a Google ``RESOURCE_EXHAUSTED`` body."""
-    err = _error_obj(body)
+    """``error.details[]`` entries of one ``@type`` from a Google ``RESOURCE_EXHAUSTED`` body. The
+    OpenAI SDK hands over the already-unwrapped ``error`` object on OpenAI-compatible routes."""
+    err = _error_obj(body) or (body if isinstance(body, dict) else {})
     if str(err.get("status") or "").strip().upper() != "RESOURCE_EXHAUSTED":
         return
     details = err.get("details")
@@ -1380,6 +1390,24 @@ def _google_rpc_reason(body: Any) -> str:
         if isinstance(detail.get("reason"), str) and detail["reason"].strip():
             return detail["reason"].strip().upper()
     return ""
+
+
+def _google_quota_violations(body: Any) -> list[dict]:
+    """Every ``google.rpc.QuotaFailure`` violation of a Google 429."""
+    violations: list[dict] = []
+    for detail in _google_rpc_details(body, _GOOGLE_QUOTA_FAILURE_TYPE):
+        found = detail.get("violations")
+        violations += [v for v in found if isinstance(v, dict)] if isinstance(found, list) else []
+    return violations
+
+
+def _google_violation_is_terminal(violation: dict) -> bool:
+    """A daily-window or zero-entitlement quota: no short retry will clear it."""
+    value = violation.get("quotaValue")
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool) and _GOOGLE_ZERO_QUOTA_RE.fullmatch(str(value)):
+        return True
+    scope = f"{violation.get('quotaId') or ''} {violation.get('quotaMetric') or ''}".lower()
+    return bool(_GOOGLE_DAILY_QUOTA_RE.search(scope))
 
 
 def _google_retry_delay_seconds(body: Any) -> Optional[float]:

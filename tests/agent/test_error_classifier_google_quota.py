@@ -47,3 +47,33 @@ def test_google_429_throttle_reason_stays_rate_limit_with_retry_info():
     assert result.reason == FailoverReason.rate_limit
     assert result.retryable is not False
     assert 20 < result.error_context["reset_at"] - time.time() <= 27
+
+
+@pytest.mark.parametrize(("quota_id", "value", "error_info", "unwrapped", "expected"), [
+    ("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "5", False, False, FailoverReason.rate_limit),
+    ("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "100", False, False, FailoverReason.billing),
+    ("GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "0", False, False, FailoverReason.billing),
+    ("GenerateRequestsPerDayPerProjectPerModel", "1000", True, False, FailoverReason.billing),
+    # OpenAI-compatible route: the SDK's ``.body`` is the already-unwrapped ``error`` object.
+    ("GenerateRequestsPerDayPerProjectPerModel-FreeTier", "100", False, True, FailoverReason.billing),
+])
+def test_google_429_quota_failure_window_decides(quota_id, value, error_info, unwrapped, expected):
+    """AI Studio's free-tier 429s carry only ``QuotaFailure`` + ``RetryInfo`` (no ErrorInfo), and
+    always a short retryDelay. A daily window or a zero quota (no entitlement to the model) replays
+    until tomorrow or forever, so it is billing even beside ErrorInfo ``RATE_LIMIT_EXCEEDED``;
+    a per-minute one stays a throttle with RetryInfo as ``reset_at`` (ported from can1357/oh-my-pi#17127)."""
+    details = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                "violations": [{"quotaId": quota_id, "quotaValue": value,
+                                "quotaMetric": "generativelanguage.googleapis.com/generate_content_free_tier_requests"}]},
+               {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "33s"}]
+    if error_info:
+        details.insert(0, {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "RATE_LIMIT_EXCEEDED"})
+    message = f"You exceeded your current quota, please check your plan and billing details. limit: {value}. Please retry in 33.6s."
+    body = {"error": {"code": 429, "message": message, "status": "RESOURCE_EXHAUSTED", "details": details}}
+    result = classify_api_error(
+        MockAPIError(f"Gemini HTTP 429 (RESOURCE_EXHAUSTED): {message}", status_code=429,
+                     body=body["error"] if unwrapped else body), provider="gemini",
+    )
+    assert result.reason == expected
+    if expected == FailoverReason.rate_limit:
+        assert 25 < result.error_context["reset_at"] - time.time() <= 33

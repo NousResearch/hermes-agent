@@ -4272,6 +4272,11 @@ class GatewayRunner(
         is_current: Any = None
 
 
+# Captured at definition time so ``--replace`` can read the stop budget even when a test
+# monkeypatches the module-level ``GatewayRunner`` name.
+_REAL_GATEWAY_RUNNER_CLASS = GatewayRunner
+
+
 def _run_planned_stop_watcher(
     stop_event: threading.Event, runner, loop: asyncio.AbstractEventLoop, shutdown_handler, *,
     poll_interval: float = 0.5) -> None:

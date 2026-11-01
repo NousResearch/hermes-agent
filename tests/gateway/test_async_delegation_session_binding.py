@@ -96,6 +96,35 @@ class TestGatewayPinningFailsClosed:
         runner.session_store.switch_session.assert_not_called()
         runner.session_store.advance_compression_session.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_subagent_pinned_completion_never_rebinds_chat_route(self):
+        # A background process started BY a subagent pins to the subagent's session id; even when the
+        # row lacks the _delegate_from marker and its live source was relabeled to the chat platform,
+        # created_source='subagent' fails closed: the chat route is never rebound onto it.
+        current = self._entry("sess_chat")
+        runner = self._make_runner(
+            {
+                "sess_chat": {"id": "sess_chat", "ended_at": None, "source": "telegram",
+                              "created_source": "telegram"},
+                "sess_sub": {"id": "sess_sub", "ended_at": None, "source": "telegram",
+                             "created_source": "subagent", "parent_session_id": "sess_chat"},
+            }
+        )
+        resolved = await runner._resolve_async_delegation_session(current, "sess_sub")
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_subagent_without_resolvable_parent_fails_closed(self):
+        current = self._entry("sess_chat")
+        runner = self._make_runner(
+            {"sess_sub": {"id": "sess_sub", "ended_at": None, "source": "telegram",
+                          "created_source": "subagent", "parent_session_id": "sess_gone"}}
+        )
+        resolved = await runner._resolve_async_delegation_session(current, "sess_sub")
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
 
     @pytest.mark.asyncio
     async def test_live_spawning_session_rebinds_from_different_route(self):
@@ -480,7 +509,9 @@ async def test_delegate_completion_preserves_real_route_ownership(
         rejected = case in {
             "over_limit", "missing", "cycle", "malformed", "nonobject", "invalid_marker",
             "empty_marker", "null_marker", "markerless", "null_config", "absent_config",
-            "current_boundary", "parent_boundary", "child_boundary", "intermediate_boundary", "compression_foreign",
+            # A subagent-created row relabeled to the chat platform is still a subagent
+            # (created_source is immutable): never rebind the chat route onto it.
+            "generic_parent", "current_boundary", "parent_boundary", "child_boundary", "intermediate_boundary", "compression_foreign",
         }
         resolved = []
 
@@ -512,7 +543,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
             row = ad.get_durable_delegation(event["delegation_id"])
             assert row is not None
             assert row["delivery_state"] == ("dropped" if rejected else "delivered")
-        expected = "continuation" if case == "compression" else pinned if case == "generic_parent" else route_before
+        expected = "continuation" if case == "compression" else route_before
         assert resolved == ([] if rejected else [expected])
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
@@ -521,7 +552,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
         current = store.lookup_by_session_key(entry.session_key)
         assert current is not None
         assert current.session_id == (route_before if rejected else expected)
-        if case not in {"generic_parent", "compression"}:
+        if case != "compression":
             for sid, row in before.items():
                 after = db.get_session(sid)
                 for field in ("ended_at", "end_reason", "source", "session_key", "model_config"):

@@ -713,7 +713,10 @@ still drain: the removed built-in browser tools (`browser_navigate`,
 `browser_back`, `browser_press`, `browser_console`, `browser_get_images`,
 `browser_vision`) remain valid tool names, and `camofox` remains a valid browser
 backend label. Camofox now ships as the `camofox` catalog plugin, so its tools
-report `plugin`.
+report `plugin`. The same holds for the five `browser_vault_*` tools that became
+one `browser_vault` tool, and for the `spotify` toolset and its `spotify_*` tools,
+which now ship as the `spotify` catalog plugin and report `plugin` / `custom`.
+A value a stable release shipped never leaves the contract.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more

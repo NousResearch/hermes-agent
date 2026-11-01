@@ -1571,6 +1571,17 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 # settings into the launch process env for every later launch-profile turn.
 _hermes_home = get_process_hermes_home()
 
+# #71180 persisted home-channel shutdown dedup. The send path lives in run_shutdown;
+# re-export so tests and callers share gateway.run's surface.
+from gateway.shutdown_notify_dedup import (
+    DEFAULT_SHUTDOWN_NOTIFY_COOLDOWN_SECONDS,
+    _record_shutdown_notify_sent,
+    _should_suppress_shutdown_notify,
+    _shutdown_notify_cooldown_seconds,
+    _shutdown_notify_dest_key,
+    _shutdown_notify_sent_path,
+)
+
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'

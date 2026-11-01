@@ -1,8 +1,10 @@
 """Tests for process wait timeout-result clarity (not-an-error semantics)."""
 
+import time
+
 import pytest
 
-from tools.process_registry import ProcessRegistry
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 @pytest.fixture
 def registry(tmp_path, monkeypatch):
@@ -72,3 +74,74 @@ class TestWaitYieldRelease:
             assert not is_thread_yield_requested(t.ident)
         finally:
             registry.kill_process(sid)
+
+
+class TestPtyWaitReconcile:
+    """wait()/poll() must reconcile a PTY session whose reader never observes
+    the exit instead of spinning to the deadline (#137437: on Windows ConPTY
+    the reader's ``pty.isalive()`` stayed satisfied long after the child was
+    gone, so five consecutive waits each burned the full 420s tool ceiling)."""
+
+    class _StuckPty:
+        """A PTY whose liveness probe stays satisfied after the child died."""
+
+        exitstatus = None
+
+        def __init__(self):
+            self.closed = False
+
+        def isalive(self):
+            return True
+
+        def close(self):
+            self.closed = True
+
+    def _pty_session(self, registry, sid="proc_pty_stuck"):
+        session = ProcessSession(
+            id=sid, command="ssh host 'timeout 1800 true'", task_id="t-ptyrec",
+            started_at=time.time())
+        session.pid = 4194304
+        session.host_start_time = 111
+        session._pty = self._StuckPty()
+        registry._running[session.id] = session
+        return session
+
+    def test_wait_returns_exited_when_os_reports_pid_gone(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            ProcessRegistry, "_is_host_pid_alive", staticmethod(lambda pid: False))
+        session = self._pty_session(registry)
+        r = registry.wait(session.id, timeout=5)
+        assert r["status"] == "exited"
+        # The reader never reaped an exit status: unknown, not success.
+        assert r["exit_code"] == -1
+        assert session._completion_event.is_set()
+        assert session._pty.closed
+
+    def test_wait_exits_when_pid_was_recycled_onto_a_stranger(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            ProcessRegistry, "_is_host_pid_alive", staticmethod(lambda pid: True))
+        monkeypatch.setattr(
+            ProcessRegistry, "_safe_host_start_time", staticmethod(lambda pid: 222))
+        session = self._pty_session(registry)
+        r = registry.wait(session.id, timeout=5)
+        assert r["status"] == "exited"
+
+    def test_wait_keeps_waiting_while_pid_is_alive_and_ours(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            ProcessRegistry, "_is_host_pid_alive", staticmethod(lambda pid: True))
+        monkeypatch.setattr(
+            ProcessRegistry, "_safe_host_start_time", staticmethod(lambda pid: 111))
+        session = self._pty_session(registry)
+        r = registry.wait(session.id, timeout=1)
+        assert r["status"] == "timeout"
+        assert r["process_running"] is True
+        assert session.exited is False
+
+    def test_pty_exitstatus_is_used_when_present(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            ProcessRegistry, "_is_host_pid_alive", staticmethod(lambda pid: False))
+        session = self._pty_session(registry)
+        session._pty.exitstatus = 3
+        r = registry.poll(session.id)
+        assert r["status"] == "exited"
+        assert r["exit_code"] == 3

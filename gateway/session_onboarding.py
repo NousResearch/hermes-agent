@@ -152,11 +152,14 @@ async def _create_chat(connection):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_local import commit_local_session
     authority = connection.authority
-    staged = stage_local_session(authority, connection.actor, {'source': 'gui', 'request_id': uuid.uuid4().hex},
-                                 client_local=connection.native_owner,
-                                 desktop_local=getattr(connection.transport, 'desktop_local', False))
-    if not (staged['policy'] or {}).get('model'):
-        raise OnboardingRefusal(5080, 'No model is set up to run onboarding on.')
+    try:
+        staged = stage_local_session(authority, connection.actor, {'source': 'gui', 'request_id': uuid.uuid4().hex},
+                                     client_local=connection.native_owner,
+                                     desktop_local=getattr(connection.transport, 'desktop_local', False))
+    except RuntimeStoreError as exc:
+        if exc.reason == 'invalid_params' and exc.field == 'model':
+            raise OnboardingRefusal(5080, 'No model is set up to run onboarding on.') from exc
+        raise
     await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=staged))
     return restore_local_session(authority, staged['session_id']).session_id
 

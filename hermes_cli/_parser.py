@@ -246,6 +246,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         "With -q/--query-file: answer the query and exit (legacy "
         "single-query behavior) instead of seeding an interactive "
         "session. Implied on non-TTY stdio and by -Q/--quiet."))
+    add("--interrupt-on-exit", action="store_true", help=(
+        "With --oneshot: on SIGINT/SIGTERM, cancel this client's queued input or "
+        "interrupt its running turn before exiting (default: detach). "
+        "Requires a reachable gateway; SIGKILL cannot be handled."))
     add("--image", help="Optional local image path to attach to a single query")
     inherited(chat_parser, "-m", "--model", default=SUPPRESS,
               help="Model to use (e.g., anthropic/claude-sonnet-4)")

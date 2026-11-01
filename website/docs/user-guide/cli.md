@@ -176,6 +176,35 @@ for the exact supported subset and trust boundary.
 `hermes chat` (and the bare `hermes` prompt when `display.interface` is `cli`) no longer runs the agent inside your terminal process. It discovers or starts the profile's gateway (`hermes gateway ensure`), creates or resumes the session there, and attaches over the gateway's local WebSocket — the same session a Desktop window, the TUI, or a Telegram topic can open at the same time. Closing the terminal detaches (`Detached; accepted work continues at the gateway.`); it does not cancel the turn. Your working directory, `--model`, `--provider`, `--reasoning`, `--toolsets`, `--max-turns`, `--skills`, `--checkpoints`, `--yolo`, `--accept-hooks`, `--pass-session-id`, `--ignore-rules`, `--base-url`/`--api-key`, and `--safe-mode`/`--ignore-user-config` are frozen into the session at creation; `--resume` may repeat the same values but cannot change them. `--resume <id-or-title>` and `-c <title>` name the session; the gateway resolves the title (exact id first, then the latest `"<title> #N"` continuation, followed to its live tip) among the sessions you may read, and reports `No session found matching '…'` (exit 1) otherwise. Bare `-c` and `--resume latest` resume this workspace's most recent CLI session through the gateway. `-c <title> --create-if-missing` creates a session with that title when none exists and resumes it when one does, so programmatic callers (Bot Mode's `Bot Chat` turns) get a deterministic thread. Options that only make sense for an in-process agent — `--image`, `--worktree`/`-w`, `--no-restore-cwd`, `--run-budget`, `--verbose`/`-v`, `--compact`, and `--create-if-missing` without `-c <name>` — are refused up front (`Unsupported gateway CLI options: …`, exit 2); the refusal lists, per flag, where that capability lives now (the TUI flag, the `config.yaml` key, or the `hermes` subcommand), and nothing falls back to a local agent. A `--safe-mode` / `--ignore-user-config` launch reads no profile default model, so it must name one; the refusal prints a complete example such as `hermes chat --safe-mode --provider openrouter --model anthropic/claude-sonnet-4 -q "hello"`. In this mode the slash surface is `/stop`, `/approve <id> <choice>`, `/answer <id> <text>`, `/discard <admission_id>`, `/branch [title]`, `/model <model> [--provider name]`, `/compress [here [N] | <focus>] [--preview]`, `/yolo [on|off]`, `/help` and `/quit`; other slash commands print `Unsupported gateway CLI command; use /help.` Use the TUI (`hermes --tui`) for the full slash registry.
 :::
 
+### Cancelling unattended one-shot clients
+
+By default, exiting a gateway client detaches it; accepted work continues. To
+make a watchdog or user cancellation stop only that invocation's work, opt in:
+
+```bash
+hermes chat --oneshot --interrupt-on-exit --format stream-json --source tool -q "Run this step"
+```
+
+With `--interrupt-on-exit`, SIGINT and SIGTERM cancel this client's queued input
+or request a hard interrupt of its running turn. The client uses its own
+admission receipt and execution generation, so it never stops another turn in a
+resumed session. `--source tool` alone does not change signal behavior. The flag
+requires `--oneshot` and cannot be combined with `--tui`; it works with text and
+stream-json output.
+
+The client keeps its gateway connection open for up to three seconds to obtain
+a cancellation acknowledgement, then exits 130 for SIGINT or 143 for SIGTERM.
+If cancellation cannot be confirmed, it exits 1 and warns that work may continue.
+Stream-json output ends with one `result` carrying that exit code. Give a watchdog
+more than three seconds of grace before escalating to SIGKILL. If a signal arrives
+while submission is in flight, the client waits within the same budget for the
+receipt before cancelling; a missing receipt is an unconfirmed cancellation.
+
+This is a stop request, not a rollback or a guarantee that all tool side effects
+have ceased before the client exits. SIGKILL, a crashed client, or an unreachable
+gateway cannot deliver a stop request. Normal completion and exits caused by an
+approval/clarification gate keep their existing behavior.
+
 If a running turn loses its owner while your finite CLI query is queued, the CLI
 exits with code `3`. Your accepted input stays queued. Resume the printed session
 interactively, inspect the unknown turn, and use `/discard <admission_id>` to

@@ -234,20 +234,39 @@ async def read(connection, ref, params, *, kind):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    live = authority.sessions[ref.session_id]
+    # In a worker thread (it inherits the dispatch's owner scope): the projection takes the session's
+    # event lock, which every streamed token takes too, reads state.db (compression lineage, local
+    # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
+    # open session, so on the loop they were a large share of loop time with many sessions running.
+    return await asyncio.to_thread(_read_projection, authority, authority.sessions[ref.session_id], ref, params, kind)
+
+
+def _read_projection(authority, live, ref, params, kind):
     with live.event_stream.lock:
-        if kind == 'control':
-            # Persisted per session id, never the route's live objects: readable after a messaging
-            # route moved on to another conversation.
-            return {'control': control_snapshot(authority, ref)}
-        _require_current_route(authority, ref)
-        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
-        if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
-        if kind == 'tail':
-            return subagent_tail(records, params['subagent_id'])
-        return {'processes': process_snapshot(authority, ref, agent, records)}
+        try:
+            return _project(authority, ref, params, kind)
+        except KeyError:
+            # Popped from authority.sessions before or during the projection (retire_live_sessions runs
+            # on the loop without this lock): the projection re-indexes the map, and a popped session is
+            # not_found.
+            if authority.sessions.get(ref.session_id) is not live:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
+
+def _project(authority, ref, params, kind):
+    if kind == 'control':
+        # Persisted per session id, never the route's live objects: readable after a messaging
+        # route moved on to another conversation.
+        return {'control': control_snapshot(authority, ref)}
+    _require_current_route(authority, ref)
+    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
+    if kind == 'subagents':
+        return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
+                              for record in records], 'delegations': []}
+    if kind == 'tail':
+        return subagent_tail(records, params['subagent_id'])
+    return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
 def _owned_targets(connection, ref, params, *, select):

@@ -28,6 +28,34 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
 
+def _stage_copy(source: Path, staged: Path) -> None:
+    """Copy *source* to *staged*, refusing any directory that leads into the destination.
+
+    TMPDIR can sit inside the plugin being checked, or a symlink/junction inside the plugin can
+    point at TMPDIR; either way the copy walks its own output until the path is too long or the
+    disk is full. Paths are resolved so link aliases cannot hide the overlap.
+    """
+    dest = staged.resolve()
+    skipped = shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc")
+
+    def _refuse_overlap(path: Path) -> None:
+        real = path.resolve()
+        if dest.is_relative_to(real) or real.is_relative_to(dest):
+            raise _DoctorLoadError(
+                f"Refusing to stage {source}: {path} leads into Doctor's temporary directory "
+                f"{staged.parent}, so the copy would recurse into itself. Point TMPDIR outside "
+                "the plugin and remove links to it.")
+
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        for name in names:
+            if os.path.isdir(os.path.join(directory, name)):
+                _refuse_overlap(Path(directory, name))
+        return skipped(directory, names)
+
+    _refuse_overlap(source)
+    shutil.copytree(source, staged, ignore=_ignore)
+
+
 @contextmanager
 def _doctor_runtime(plugin_path: Path):
     """Load one plugin through the real runtime and restore global state afterwards.
@@ -45,10 +73,9 @@ def _doctor_runtime(plugin_path: Path):
         bundled.mkdir(parents=True)
         plugins_root.mkdir(parents=True)
         staging_root = plugins_root / plugin_path.name
-        ignore = shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc")
         if _has_manifest(plugin_path):
             staged = staging_root
-            shutil.copytree(plugin_path, staged, ignore=ignore)
+            _stage_copy(plugin_path, staged)
         else:
             # A category: stage only its plugin under the category name (discovery keys it
             # ``category/plugin``), never the loose files or skipped dirs beside it.
@@ -58,7 +85,7 @@ def _doctor_runtime(plugin_path: Path):
                 raise _DoctorLoadError(
                     f"{plugin_path} holds {len(members)} plugins ({names}); point Doctor at one of them")
             staged = staging_root / members[0].name
-            shutil.copytree(members[0], staged, ignore=ignore)
+            _stage_copy(members[0], staged)
         stack.enter_context(patch.dict(os.environ, {
             "HERMES_HOME": str(home),
             "HERMES_BUNDLED_PLUGINS": str(bundled),

@@ -2378,7 +2378,6 @@ def save_config(
 
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
-        config = _strip_managed_keys_for_save(config)
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2391,7 +2390,8 @@ def save_config(
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
-        normalized = current_normalized = _canonicalize_config(config)
+        # Strip after rebase and canonicalization: either can restore a pinned leaf.
+        normalized = current_normalized = _strip_managed_keys_for_save(_canonicalize_config(config))
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
                 normalized, _canonicalize_config(_raw_for_paths),

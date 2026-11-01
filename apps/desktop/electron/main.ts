@@ -1535,6 +1535,12 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
+  if (process.platform === 'linux') {
+    if (typeof win.setOpacity === 'function') {win.setOpacity(1)}
+
+    return
+  }
+
   const opacity = windowOpacityFor(translucencyState)
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
@@ -1580,7 +1586,7 @@ function applyWindowTranslucency(win, changed = { backing: true, material: true,
         applyWindowsBackdrop(win, translucencyState, changed, getWindowBackgroundColor())
       } else {
         if (changed.backing && typeof win.setBackgroundColor === 'function') {
-          win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+          win.setBackgroundColor((process.platform === 'linux' || !glassActive(translucencyState)) ? getWindowBackgroundColor() : '#00000000')
         }
 
         // Animate deliberate macOS frost changes, not unrelated tint updates.

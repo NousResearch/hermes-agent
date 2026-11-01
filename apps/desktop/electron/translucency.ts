@@ -15,7 +15,7 @@ import type { BrowserWindow } from 'electron'
 
 import {
   backgroundMaterialFor,
-  glassActive,
+  glassActive as sharedGlassActive,
   type TranslucencyState,
   windowOpacityFor,
   type WindowsBackgroundMaterial
@@ -37,8 +37,21 @@ export function applyWindowsBackdrop(
   }
 
   if (changed.backing || changed.material) {
-    win.setBackgroundColor(glassActive(state) ? '#00000000' : themedColor)
+    win.setBackgroundColor(isPlatformGlassActive(state) ? '#00000000' : themedColor)
   }
+}
+
+function isPlatformGlassActive(state: TranslucencyState): boolean {
+  if (process.platform === 'linux') {return false}
+
+  return glassActive(state)
+}
+
+
+export function glassActive(state: TranslucencyState): boolean {
+  if (process.platform === 'linux') {return false}
+
+  return sharedGlassActive(state)
 }
 
 export {
@@ -50,7 +63,6 @@ export {
   defaultTranslucencyValues,
   GLASS_MATERIALS,
   GLASS_SCOPES,
-  glassActive,
   type GlassMaterial,
   glassMaterialForPicker,
   glassMaterialsFor,
@@ -64,6 +76,7 @@ export {
   normalizeState,
   resolveTranslucency,
   setTranslucencyValues,
+  glassActive as sharedGlassActive,
   TRANSLUCENCY_CURVE,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
@@ -98,7 +111,7 @@ export {
  * 'did-finish-load' — so creation must not rely on a post-creation fixup.
  */
 export function windowBackingOptions(state: TranslucencyState, themedColor: string): { backgroundColor?: string } {
-  return glassActive(state) ? {} : { backgroundColor: themedColor }
+  return isPlatformGlassActive(state) ? {} : { backgroundColor: themedColor }
 }
 
 /**
@@ -146,6 +159,7 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
  */
 export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
+  if (process.platform === 'linux') {return { opacity: 1 }}
   const opacity = windowOpacityFor(state)
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}

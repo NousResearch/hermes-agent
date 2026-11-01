@@ -649,7 +649,7 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
-        # Cards sent before a restart (or by an older build) carry cmd/desc in the button data instead.
+        # Cards from an older build carry cmd/desc in the button data instead.
         cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
         if not has_blocking_approval(session_key):
             body = _approval_body(cmd, desc)

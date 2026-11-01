@@ -188,7 +188,14 @@ def _cmd_run(args) -> int:
 
 def _set_paused(paused: bool) -> int:
     from agent import curator
-    curator.set_paused(paused)
+    # The flag only takes effect once it is on disk (the scheduler reads the state
+    # file), so an unpersisted pause must exit non-zero instead of printing success.
+    if not curator.set_paused(paused):
+        verb = "pause" if paused else "resume"
+        print(f"curator: failed to {verb} — the state file could not be written, so the "
+              f"curator is NOT {'paused' if paused else 'resumed'}. Check that "
+              "skills/.curator_state is writable.", file=sys.stderr)
+        return 1
     print("curator: paused" if paused else "curator: resumed")
     return 0
 

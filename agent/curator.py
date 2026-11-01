@@ -227,7 +227,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
-        if row.get("pinned") or name in protected:
+        if row.get("pinned") or row.get("locked") or name in protected:
             continue
         # First sight with no persisted record: anchor its clock to now and defer.
         if not row.get("_persisted", True):

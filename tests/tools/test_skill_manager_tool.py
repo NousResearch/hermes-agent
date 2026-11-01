@@ -1464,16 +1464,20 @@ class TestLockedGuard:
         assert lifted["success"] is True, lifted
         assert "Do the new thing." in (locked / "SKILL.md").read_text()
 
-    def test_foreground_write_to_locked_skill_goes_through(self, tmp_path, monkeypatch):
-        """Documented: the lock gates autonomous origins only. A user-directed edit still lands."""
+    def test_foreground_mutations_are_refused_too(self, tmp_path, monkeypatch):
+        """The lock is the user's: a normal turn asking for the edit is refused like the review fork."""
         from tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-skill")
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
             assert skill_usage.set_locked("locked-skill", True)
-            res = json.loads(skill_manage(name="locked-skill", **self._PATCH))
-        assert res["success"] is True, res
-        assert "Do the new thing." in (d / "SKILL.md").read_text()
+            before = self._tree(d)
+            results = [json.loads(skill_manage(name="locked-skill", **op)) for op in self._MUTATIONS]
+            after = self._tree(d)
+        for op, res in zip(self._MUTATIONS, results):
+            assert res["success"] is False and "hermes curator unlock locked-skill" in res["error"], (op, res)
+        assert after == before
 
     def test_batch_refuses_before_any_sibling_op_is_applied(self, tmp_path, monkeypatch):
         from tools import skill_usage

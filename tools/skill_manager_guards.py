@@ -222,37 +222,34 @@ def _background_review_read_before_write_guard(
 
 
 def _locked_guard(name: str, action: str) -> Optional[dict[str, Any]]:
-    """Refuse autonomous mutations (review fork, curator consolidation pass) of a skill the user
-    locked with ``hermes curator lock``. Foreground user-directed writes are not gated: the lock is
-    against unattended drift, not against the user. ``create`` is exempt (the existing collision
-    check already refuses a name that resolves anywhere). Unlike the pin guard this fails CLOSED on
-    an unreadable sidecar — silently relaxing a lock the user set is the failure it exists to
-    prevent. The lock is keyed by directory name, so the bare, categorized (``cat/name``) and
-    frontmatter-name forms the tool accepts all resolve to the same record."""
-    if action == "create" or not name or not _is_background_review():
+    """Refuse every mutating ``skill_manage`` action on a skill the user locked (``hermes curator
+    lock`` / the Desktop lock switch), whoever asks: foreground turns, the background review and the
+    curator pass alike. ``create`` is exempt (the collision check already refuses a name that resolves
+    anywhere). An unreadable sidecar fails CLOSED for the autonomous passes (silently relaxing a
+    lock is the failure this exists to prevent) and open for normal turns, so one corrupt file does
+    not freeze every skill edit. Keyed by directory name, so the bare, ``cat/name`` and
+    frontmatter-name forms all resolve to the same record."""
+    if action == "create" or not name:
         return None
-    refuse = f"Refusing background curator {action} for"
     try:
         from tools import skill_manager_tool as _smt
         from tools import skill_usage
         candidates = {name, Path(name).name}
         if existing := _smt._find_skill(name):
             candidates.add(existing["path"].name)
-        locked = any(skill_usage.is_locked(candidate) for candidate in candidates)
+        locked = next((c for c in candidates if skill_usage.is_locked(c)), None)
     except Exception:
         logger.warning("locked skill guard lookup failed for %s", name, exc_info=True)
+        if not _is_background_review():
+            return None  # a corrupt sidecar must not freeze every skill edit in normal turns
         return _refusal(
-            f"{refuse} skill '{name}': the lock state could not be verified because the "
-            f"skills/.usage.json sidecar is unreadable. Leave the skill alone and report it; the user "
+            f"Refusing {action} for skill '{name}': its lock state could not be verified because the "
+            f"skills/.usage.json sidecar is unreadable. Leave the skill alone and tell the user; they "
             f"can repair the sidecar or run `hermes curator unlock {name}`.", _locked=True)
     if locked:
-        return _refusal(
-            f"{refuse} locked skill '{name}': the user locked it against autonomous changes. Do not "
-            f"retry and do not recreate it under another name; describe the proposed change in your "
-            f"summary instead. The user lifts the lock with `hermes curator unlock {name}`.",
-            _locked=True)
+        from tools.skill_lock import skill_refusal
+        return _refusal(f"Refusing {action}: {skill_refusal(locked)}", _locked=True)
     return None
-
 
 def _background_review_preflight(action: str, name: str) -> Optional[dict[str, Any]]:
     """Guards that run on the bare action/name before any handler, for the single-op AND the

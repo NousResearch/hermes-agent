@@ -107,7 +107,7 @@ def _cmd_status(args) -> int:
     _print_curator_config(curator)
     if locked := skill_usage.locked_skill_names():
         print(f"\nlocked ({len(locked)}): {', '.join(locked)}  "
-              f"(autonomous content writes refused; `hermes curator unlock <skill>` lifts it)")
+              f"(the agent cannot change these; `hermes curator unlock <skill>` lifts it)")
     rows = skill_usage.curated_report()
     if not rows:
         print("\nno curator-managed skills")
@@ -242,9 +242,8 @@ def _cmd_unpin(args) -> int: return _set_pin(args, False)
 
 def _set_lock(args, locked: bool) -> int:
     """``hermes curator lock|unlock``: a user declaration stored beside ``pinned`` in the active
-    profile's skills/.usage.json. Not restricted to agent-created skills — hand-written skills are
-    the main thing people lock — but the name must resolve in this profile, so a typo never forges a
-    record for a skill that does not exist."""
+    profile's skills/.usage.json, enforced by tools/skill_lock on every agent write path. Any skill
+    can be locked, but the name must resolve in this profile, so a typo never forges a record."""
     from tools import skill_usage
     from tools.skill_manager_tool import _find_skill
     verb = "lock" if locked else "unlock"
@@ -258,12 +257,12 @@ def _set_lock(args, locked: bool) -> int:
         print(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
         return 1
     if locked:
-        print(f"curator: locked '{key}' — the background review and curator passes can no longer patch, "
-              f"edit, write or remove files in it, or delete it (skill_manage refuses; the skill stays "
-              f"readable, listed and auto-loadable). Edits you ask for in a normal turn and your own "
-              f"editor are unaffected. Unlock with `hermes curator unlock {key}`.")
+        print(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "
+              f"patch and terminal refuse, in normal turns and the background passes alike, and the "
+              f"curator won't archive it. It stays readable and auto-loadable, and you can still edit it "
+              f"yourself. Unlock with `hermes curator unlock {key}`.")
     else:
-        print(f"curator: unlocked '{key}' — the autonomous passes may improve it again.")
+        print(f"curator: unlocked '{key}'. The agent may edit it again.")
     return 0
 
 
@@ -680,9 +679,8 @@ _SUBCOMMANDS = (
     ("resume", "Resume a paused curator", _cmd_resume),
     ("pin", "Pin a skill so the curator never auto-transitions it", _cmd_pin, _SKILL),
     ("unpin", "Unpin a skill", _cmd_unpin, _SKILL),
-    ("lock", "Lock a skill's content against the background review and curator passes "
-             "(skill_manage refuses their patch/edit/write_file/remove_file/delete; the skill stays "
-             "readable and auto-loadable; edits you ask for are unaffected)", _cmd_lock, _SKILL),
+    ("lock", "Lock a skill so the agent cannot change it (skill_manage, write_file, patch and terminal "
+             "refuse; it stays readable and auto-loadable; your own edits are unaffected)", _cmd_lock, _SKILL),
     ("unlock", "Lift a content lock", _cmd_unlock, _SKILL),
     ("list-unmanaged", "List curation-eligible skills with no provenance marker",
      _cmd_list_unmanaged),

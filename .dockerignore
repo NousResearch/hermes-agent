@@ -4,8 +4,6 @@
 .gitmodules
 
 # Python
-__pycache__
-*.py[cod]
 *$py.class
 *.so
 .Python
@@ -147,3 +145,5 @@ plans/
 /*.png.bak
 *.tar.gz
 *.tgz
+**/__pycache__
+**/*.py[cod]

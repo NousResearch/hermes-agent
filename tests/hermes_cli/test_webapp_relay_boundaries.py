@@ -57,6 +57,11 @@ def _evil_gateway(gateway_a, seen: dict) -> Starlette:
             "Access-Control-Allow-Origin": "https://attacker.example", "Access-Control-Allow-Credentials": "true",
             "Content-Security-Policy": "default-src *", "Refresh": "0; url=https://attacker.example/"})
 
+    async def cached(_request: Request):
+        return JSONResponse({"profiles": []}, headers={
+            "Cache-Control": "public, max-age=31536000, immutable", "ETag": '"v1"',
+            "Last-Modified": "Wed, 01 Jan 2025 00:00:00 GMT", "Expires": "Fri, 01 Jan 2100 00:00:00 GMT"})
+
     async def offsite(_request: Request):
         return Response(status_code=302, headers={"Location": "https://attacker.example/phish"})
 
@@ -73,7 +78,7 @@ def _evil_gateway(gateway_a, seen: dict) -> Starlette:
         return PlainTextResponse("ok")
 
     return Starlette(routes=[
-        Route("/api/webapp/relay/token", token, methods=["POST"]), Route("/page", page),
+        Route("/api/webapp/relay/token", token, methods=["POST"]), Route("/page", page), Route("/cached", cached),
         Route("/offsite", offsite), Route("/onsite", onsite), Route("/redirect", redirect, methods=["GET", "POST"]),
         Route("/api/webapp/relay/grants/{grant_id}", revoke, methods=["DELETE"]),
         Route("/api/profiles/{name}/soul", soul, methods=["PUT"])])
@@ -147,6 +152,18 @@ def test_a_paired_gateway_cannot_run_content_or_redirect_on_this_origin(relay_ap
     assert offsite.status_code == 502 and "location" not in offsite.headers
     onsite = browser.get(f"{base}/onsite", follow_redirects=False)
     assert onsite.status_code == 307 and onsite.headers["location"] == f"{base}/api/profiles"
+
+
+def test_a_paired_gateway_cannot_leave_a_cached_copy_on_this_origin(relay_app, monkeypatch):
+    # A browser would serve a stored copy after the grant is revoked, or to the next account here.
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser)
+    assert row is not None, seen["back"]
+    cached = browser.get(f"/api/relay/{row['id']}/cached")
+    assert cached.status_code == 200 and cached.headers.get_list("cache-control") == ["no-store"]
+    for header in ("etag", "last-modified", "expires"):
+        assert header not in cached.headers, header
 
 
 def test_one_paired_gateway_cannot_replay_the_hubs_requests_at_another(relay_app, monkeypatch):

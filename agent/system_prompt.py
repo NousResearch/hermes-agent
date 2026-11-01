@@ -293,9 +293,12 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if "session_search" in names else None,
         SKILLS_GUIDANCE if "skill_manage" in names else None,
-        _kanban_guidance,
     ]
-    return " ".join(g for g in tool_guidance if g) or None
+    # The plain paragraphs share one space-joined paragraph (byte-stable for every non-worker
+    # session); KANBAN_GUIDANCE opens with a heading, so a space would glue it mid-line onto
+    # the paragraph above and its sections would read as part of the preceding block.
+    paragraph = " ".join(g for g in tool_guidance if g)
+    return "\n\n".join(g for g in (paragraph, _kanban_guidance) if g) or None
 
 
 def _skills_prompt(agent: Any) -> str:

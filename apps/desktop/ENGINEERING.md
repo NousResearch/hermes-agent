@@ -202,9 +202,11 @@ reopens the gesture-less forced-navigation class the advisory closed.
   Hidden/minimized windows retain default throttling; show/restore reapplies the
   current stream policy. Do not use focus as visibility or stop background data
   delivery. Native activity leases can wake a hidden owner without restoring it.
-  Voice-enabled owners conservatively retain their existing streaming cadence:
-  speech output still consumes frame-published text, even though microphone
-  detection itself follows the audio clock.
+  Only window-local live voice conversations retain streaming paint: their speech
+  output still consumes frame-published text, even though microphone detection
+  follows the audio clock. The shared read-aloud preference is not ownership.
+  Completed interim replies publish without waiting for a frame so read-aloud
+  can speak tool-progress narration while hidden; partial text stays coalesced.
 - Functional stream deadlines are not display loops. Delta coalescing and the
   400 ms post-commit journal debounce use `src/lib/stream-work-clock.ts`, racing
   the ordinary renderer timer with one pending native wake per owning renderer.

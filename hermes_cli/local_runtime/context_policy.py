@@ -113,6 +113,27 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
                           kv_on_gpu=kv_bytes + overhead_bytes <= budget.usable_vram_bytes)
 
 
+# Past half of host memory a spill starts pushing the desktop into swap: the 35B/64K launch that
+# froze a 30.6 GiB laptop (#102865) spilled 18.35 GiB. This only warns; planning still budgets
+# the whole host, so the model still launches if the user picked it.
+_HOST_SPILL_WARN_FRACTION = 0.5
+
+
+def host_memory_warning(decision: WindowDecision | PhysicsRefusal,
+                        budget: HardwareBudget) -> str | None:
+    """A warning when a spilled plan would take most of host memory, else None.
+
+    Unified memory has no separate host pool; its headroom is already in the budget.
+    """
+    if (budget.uma or not isinstance(decision, WindowDecision) or not decision.spilled
+            or decision.spill_bytes <= budget.ram_available_bytes * _HOST_SPILL_WARN_FRACTION):
+        return None
+    gib = 1 << 30
+    return (f"Uses about {decision.spill_bytes / gib:.1f} GiB of system memory "
+            f"(of {budget.ram_available_bytes / gib:.1f} GiB); the computer may swap "
+            "and stop responding while it runs")
+
+
 @dataclass
 class LaunchPlan:
     decision: WindowDecision | PhysicsRefusal

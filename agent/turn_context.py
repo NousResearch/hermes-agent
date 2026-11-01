@@ -24,6 +24,7 @@ from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
 from agent.plugin_live_notes import pop_plugin_notices
+from agent.skill_selection import stage_skill_shortlist_note
 from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
 from agent.message_metadata import (
@@ -921,7 +922,8 @@ def _merge_gateway_notes(
     _turn_notes = "\n\n".join(
         part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
-                          consume_skills_index_note(agent)) if part
+                          consume_skills_index_note(agent),
+                          _pop_turn_note(agent, "_skill_shortlist_note")) if part
     )
     if not _turn_notes:
         return plugin_user_context
@@ -1252,6 +1254,7 @@ def build_turn_context(
     # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
     # prompt in memory for the whole conversation and would never re-check its skills index.
     stage_skills_index_note(agent, active_system_prompt, messages)
+    stage_skill_shortlist_note(agent, active_system_prompt, messages, original_user_message)
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )

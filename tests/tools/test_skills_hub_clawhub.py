@@ -712,5 +712,16 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertLess(mock_get.call_count, 200)
 
 
+
+class TestCJKQueryTerms(unittest.TestCase):
+    def test_cjk_query_scores_cjk_skill_and_not_ascii_skill(self):
+        """CJK query terms used to be dropped, so a Chinese search scored nothing (#78985)."""
+        def meta(name, description):
+            return SkillMeta(name=name, description=description, source="clawhub",
+                             identifier=name, trust_level="community", tags=[])
+        self.assertGreater(ClawHubSource._search_score("公众号", meta("wechat-publish", "发布文章到微信公众号")), 0)
+        self.assertEqual(ClawHubSource._search_score("公众号", meta("slack-send", "Post a message to Slack")), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

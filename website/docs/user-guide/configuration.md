@@ -841,6 +841,17 @@ skills:
 
 Resolved once per session when the system prompt is first built (so the prompt stays cache-stable; edits apply to the next session). Missing or disabled skills warn and are skipped; `--ignore-rules` / `HERMES_IGNORE_RULES=1` suppresses the list. Profile-scoped. See [CLI — persistent auto-load](./cli.md#persistent-auto-load-via-config).
 
+### Per-turn skill shortlist
+
+The system-prompt skill index is a static catalog with one clipped line per skill; on a large library the model often skips the skill that fits. `skills.selection: shortlist` ranks each request against the skills that index already offers (full description plus the optional `metadata.hermes.situations` phrases) and names **at most three** in a one-line note on **this turn's user message only**. The system prompt is not rebuilt, so prompt caching stays intact, and the saved transcript keeps your original message.
+
+```yaml
+skills:
+  selection: shortlist   # catalog (default) | shortlist
+```
+
+It only suggests: the model still decides, and no skill is loaded for it. Small talk, slash commands, messages that name a skill outright and pasted blocks (code fences, quoted replies, logs) get no note; a skill already loaded this session is not suggested again; the same suggestion set is shown once per session. See [Skills — per-turn shortlist](./features/skills.md#per-turn-shortlist-optional).
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

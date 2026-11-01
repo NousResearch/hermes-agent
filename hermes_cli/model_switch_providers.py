@@ -89,6 +89,28 @@ class _NativePickerModelList(list[str]):
     """A successful native catalog, including an authoritative empty one."""
 
 
+_OLLAMA_CLOUD_FOLD_SLUGS = frozenset({"ollama", "ollama-cloud"})
+
+
+def same_ollama_model(slug: str | None, a: str | None, b: str | None) -> bool:
+    """True when ``a`` and ``b`` name the same model on an ollama-family provider: ollama
+    endpoints list ids BARE in ``/v1/models``, yet accept their ``:cloud`` tag form
+    interchangeably on completions, so a pinned ``:cloud`` pick and the bare catalog entry
+    are one model with two spellings — a picker must not show both. Only the ollama slug set
+    folds; OpenRouter-style ``:suffix`` ids name distinct models and never fold."""
+    if str(slug or "").strip().lower() not in _OLLAMA_CLOUD_FOLD_SLUGS:
+        return False
+
+    def _fold(model_id: str | None) -> str:
+        return str(model_id or "").strip().lower().removesuffix(":cloud")
+
+    folded_a, folded_b = _fold(a), _fold(b)
+
+    # Two absent ids are not one model: an empty pick must match nothing, or a
+    # row with no `-fast` sibling would read as current for an empty selection.
+    return bool(folded_a) and bool(folded_b) and folded_a == folded_b
+
+
 def _fetch_picker_live_models(
     api_key: Any, api_url: str, native_catalog_provider: str, preserve_native_models: bool,
     headers: dict[str, str] | None = None, timeout: float = 5.0,
@@ -1311,7 +1333,8 @@ def list_authenticated_providers(
 
 
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
-    """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
+    """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model
+    (skipped when the row already lists it under an equivalent ollama ``:cloud``/bare spelling), sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
     try:
@@ -1340,6 +1363,11 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                 from hermes_cli.models import _model_requires_account_discovery
 
                 if _model_requires_account_discovery(row.get("slug"), current_model):
+                    break
+                # Ollama accepts a model's bare id and its `:cloud` tag form interchangeably,
+                # and its catalog lists the bare form — a pinned `:cloud` pick already has its
+                # row, and injecting it verbatim would render the same model twice.
+                if any(same_ollama_model(str(row.get("slug") or ""), current_model, str(m)) for m in models):
                     break
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1

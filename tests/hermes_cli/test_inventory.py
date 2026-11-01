@@ -158,6 +158,32 @@ def test_build_models_payload_hides_moa_without_raw_preset():
     assert [r["slug"] for r in payload["providers"]] == ["openrouter"]
 
 
+def test_build_models_payload_deduplicates_each_provider_catalog_in_order():
+    """Regression for #136818: catalog probes may return repeated model IDs."""
+    rows = [
+        {
+            "slug": "azure-foundry",
+            "name": "Azure AI Foundry",
+            "models": ["Phi-3.5-mini-instruct", "text-embedding-ada-002",
+                       "Phi-3.5-mini-instruct"],
+            "total_models": 3,
+            "is_current": True,
+            "is_user_defined": False,
+            "source": "discovered",
+        },
+    ]
+    ctx = _empty_ctx(provider="azure-foundry", model="Phi-3.5-mini-instruct")
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+    ):
+        payload = build_models_payload(ctx)
+
+    row = payload["providers"][0]
+    assert row["models"] == ["Phi-3.5-mini-instruct", "text-embedding-ada-002"]
+    assert row["total_models"] == 2
+
+
 
 
 

@@ -66,6 +66,7 @@ tts:
     # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices
   streaming:
     min_len: 20                 # Streaming TTS: shortest first sentence (chars) spoken on its own; CJK setups use ~6
+    finalize_timeout_seconds: 10  # After the reply text ends, how long streaming TTS may go without new audio before the rest is cut off
   minimax:
     region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo

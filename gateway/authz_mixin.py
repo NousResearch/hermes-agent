@@ -236,18 +236,47 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
-    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
-        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
-        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
-        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
-        platform is its own credential boundary and never borrows the primary. Restored/cached sources
-        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+    def _routed_primary_adapter(self, source: Optional[SessionSource]):
+        """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.
+
+        Destination-gated: the most specific default-bot route matching *source*'s chat must name
+        *source*'s profile, and that profile must own no bot on the platform. A platform-only lookup
+        (``_adapters_for_profile``, ``send_message``, the platform-events API) never reaches here, so a
+        satellite cannot write to an arbitrary chat through the primary's credentials.
+        """
+        from gateway.delivery import resolve_delivery_transport
+        from gateway.profile_routing import match_profile_route
+        platform = getattr(source, "platform", None)
+        profile = (getattr(source, "profile", None) or "").strip()
+        if platform is None or not profile or not self._is_shared_bot_satellite(profile, platform):
+            return None
+        if platform in (self._profile_adapters_map().get(profile) or {}):
+            return None
+        config = self.config
+        route = match_profile_route(
+            config.profile_routes, platform.value, guild_id=getattr(source, "scope_id", None),
+            chat_id=getattr(source, "chat_id", None), thread_id=getattr(source, "thread_id", None),
+            parent_chat_id=getattr(source, "parent_chat_id", None), user_id=getattr(source, "user_id", None),
+        )
+        if route is None or route.profile != profile:
+            return None
+        transport = resolve_delivery_transport(platform, config, self._primary_adapters())
+        return transport.adapter if transport is not None else None
+
+    def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
+        """A served profile that a ``profile_routes`` entry targets through the default profile's bot
+        (gateway/AGENTS.md). With no *platform*, it must own no bot at all: such a profile drains
+        through the primary's adapters (its ``_profile_adapters`` entry is the ``{}`` startup
+        placeholder). With *platform*, only a bot it owns on THAT platform makes it a credential
+        boundary there — the per-destination borrow in ``_routed_primary_adapter``. Restored/cached
+        sources carry no transport ref, so this keeps heartbeats, completions and goal notices
+        deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
         # A bot of its own that is down (failed to connect, or dropped) still makes it a credential boundary.
-        if (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name):
+        owned = (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name)
+        if owned and (platform is None or platform in owned):
             return False
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
@@ -330,7 +359,9 @@ class GatewayAuthorizationMixin:
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        # A satellite with no bot on the platform borrows the primary only for its routed chats.
+        return (self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+                or self._routed_primary_adapter(source))
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

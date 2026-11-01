@@ -7,6 +7,7 @@ through ``hermes_cli.plugins`` so tests that patch them on the origin keep worki
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import importlib
@@ -62,6 +63,18 @@ class PluginLoadTimeout(Exception):
 def in_plugin_load_worker() -> bool:
     """True on a deadline worker thread; re-entrant discovery from there must not block on its own parent."""
     return _IN_PLUGIN_LOAD.get() is not None
+
+
+async def _async_delivery_manager():
+    """Wait off-loop for discovery, except when register() re-enters its own sweep."""
+    from hermes_cli import plugins
+
+    manager = plugins.get_plugin_manager()
+    # A thread hop loses RLock ownership and makes the owner wait on its own waiter.
+    owns_discovery = getattr(manager, "_discovery_is_owned_by_current_thread", lambda: False)()
+    if not owns_discovery and (not getattr(manager, "_discovered", True) or plugins.plugin_discovery_in_flight()):
+        return await asyncio.to_thread(plugins._delivery_manager)
+    return manager
 
 
 def _resolve_plugin_load_timeout() -> float:
@@ -280,6 +293,31 @@ def installed_in_selected_environment(requirements: list[str]) -> bool:
 
 
 class PluginLoaderMixin:
+    def _enter_discovery(self) -> None:
+        """Mark the current thread as the active discovery owner (re-entrant)."""
+        current_thread = threading.get_ident()
+        with self._discovery_state_lock:
+            if self._discovery_owner is None:
+                self._discovery_owner = current_thread
+            self._discovery_depth += 1
+
+    def _exit_discovery(self) -> None:
+        """Release one discovery frame for the current owner."""
+        with self._discovery_state_lock:
+            self._discovery_depth -= 1
+            if self._discovery_depth == 0:
+                self._discovery_owner = None
+
+    def _discovery_is_in_progress(self) -> bool:
+        """Return whether plugin registration is still running."""
+        with self._discovery_state_lock:
+            return self._discovery_owner is not None
+
+    def _discovery_is_owned_by_current_thread(self) -> bool:
+        """Return whether this thread is registering plugins now."""
+        with self._discovery_state_lock:
+            return self._discovery_owner == threading.get_ident()
+
     def on_plugin_loaded(self, callback: Callable[[list[dict[str, Any]]], Any]) -> Callable[[], None]:
         """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
         :meth:`discover_and_load` (never emitted by an install RPC) with one

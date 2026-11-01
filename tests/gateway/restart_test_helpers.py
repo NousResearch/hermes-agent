@@ -15,8 +15,8 @@ from gateway.session import SessionSource
 
 
 class RestartTestAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+    def __init__(self, platform: Platform = Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 
@@ -42,9 +42,10 @@ def make_restart_source(
     chat_id: str = "123456",
     chat_type: str = "dm",
     thread_id: str | None = None,
+    platform: Platform = Platform.TELEGRAM,
 ) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id=chat_id,
         chat_type=chat_type,
         user_id="u1",
@@ -54,10 +55,11 @@ def make_restart_source(
 
 def make_restart_runner(
     adapter: BasePlatformAdapter | None = None,
+    platform: Platform = Platform.TELEGRAM,
 ) -> tuple[GatewayRunner, BasePlatformAdapter]:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={platform: PlatformConfig(enabled=True, token="***")}
     )
     runner._running = True
     runner._shutdown_event = asyncio.Event()
@@ -164,8 +166,8 @@ def make_restart_runner(
     runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
 
-    platform_adapter = adapter or RestartTestAdapter()
+    platform_adapter = adapter or RestartTestAdapter(platform)
     platform_adapter.set_message_handler(AsyncMock(return_value=None))
     platform_adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
-    runner.adapters = {Platform.TELEGRAM: platform_adapter}
+    runner.adapters = {platform: platform_adapter}
     return runner, platform_adapter

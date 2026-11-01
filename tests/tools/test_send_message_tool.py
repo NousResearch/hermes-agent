@@ -726,6 +726,109 @@ class TestMatrixMediaLiveAdapterReuse:
             ("disconnect",),
         ]
 
+
+class TestMatrixOneShotIdentity:
+    """One-shot Matrix sends must never log in as the gateway's device.
+
+    A second login with the gateway's pinned device id invalidates the live token and stops
+    its sync, which failed every later cron delivery (2026-10-25 incident).
+    """
+
+    @staticmethod
+    def _fake_module(instances, *, live_error=None):
+        class FakeMatrixAdapter:
+            def __init__(self, config):
+                self.config = config
+                self._device_id = (getattr(config, "extra", None) or {}).get("device_id", "")
+                self._store_dir = None
+                instances.append(self)
+
+            def _resolve_store_dir(self):
+                from pathlib import Path
+                self._store_dir = Path("/srv/hermes/platforms/matrix/store")
+                return self._store_dir
+
+            async def connect(self):
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                if live_error:
+                    return SimpleNamespace(success=False, message_id=None, error=live_error)
+                return SimpleNamespace(success=True, message_id="$oneshot")
+
+            async def disconnect(self):
+                pass
+
+        return SimpleNamespace(MatrixAdapter=FakeMatrixAdapter)
+
+    def _run(self, module, config_extra, live_adapter=None, message="hi"):
+        runner = SimpleNamespace(adapters={Platform.MATRIX: live_adapter}) if live_adapter else None
+        # A stand-in for gateway.run: importing the real one touches the live hermes home.
+        fake_gateway_run = SimpleNamespace(_gateway_runner_ref=lambda: runner)
+        with patch.dict(sys.modules, {
+            "gateway.run": fake_gateway_run,
+            "plugins.platforms.matrix.adapter": module,
+        }):
+            return asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra=config_extra),
+                    "!room:example.com",
+                    message,
+                )
+            )
+
+    def test_ephemeral_send_uses_its_own_device_and_store(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_ONESHOT_DEVICE_ID", raising=False)
+        instances = []
+        result = self._run(self._fake_module(instances), {"device_id": "gw-device"})
+
+        assert result["success"] is True
+        assert len(instances) == 1
+        assert instances[0].config.extra["device_id"] == "gw-device-oneshot"
+        # The gateway's configured device is left untouched for the live adapter.
+        assert instances[0]._resolve_store_dir().name == "store-gw-device-oneshot"
+
+    def test_device_id_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ONESHOT_DEVICE_ID", "cron-sender")
+        instances = []
+        self._run(self._fake_module(instances), {"device_id": "gw-device"})
+        assert instances[0].config.extra["device_id"] == "cron-sender"
+
+    def test_dead_live_session_retries_on_one_shot_device(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_ONESHOT_DEVICE_ID", raising=False)
+
+        class DeadLive:
+            async def send(self, chat_id, message, metadata=None):
+                return SimpleNamespace(success=False, message_id=None, error="Invalid token")
+
+        instances = []
+        result = self._run(
+            self._fake_module(instances), {"device_id": "gw-device"}, live_adapter=DeadLive())
+
+        assert result["success"] is True and result["message_id"] == "$oneshot"
+        assert instances and instances[0].config.extra["device_id"] == "gw-device-oneshot"
+
+    def test_no_pinned_gateway_device_uses_a_stable_fallback(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_ONESHOT_DEVICE_ID", raising=False)
+        instances = []
+        self._run(self._fake_module(instances), {})
+
+        assert instances[0].config.extra["device_id"] == "hermes-oneshot"
+
+    def test_content_failure_does_not_resend(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_ONESHOT_DEVICE_ID", raising=False)
+
+        class BrokenLive:
+            async def send(self, chat_id, message, metadata=None):
+                return SimpleNamespace(success=False, message_id=None, error="event too large")
+
+        instances = []
+        result = self._run(
+            self._fake_module(instances), {"device_id": "gw-device"}, live_adapter=BrokenLive())
+
+        assert "event too large" in result["error"]
+        assert instances == []  # no duplicate send attempt
+
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
 # ---------------------------------------------------------------------------

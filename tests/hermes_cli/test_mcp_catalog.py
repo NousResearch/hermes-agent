@@ -625,6 +625,27 @@ class TestInstall:
         with pytest.raises(mcp_catalog.CatalogError, match="UNDECLARED_ID"):
             mcp_catalog._parse_manifest(path)
 
+    def test_oauth_catalog_install_stays_disabled_until_tool_selection_finishes(self, catalog_dir, monkeypatch):
+        """The first config write for OAuth installs must not wake open sessions into browser auth."""
+        auth = {"type": "oauth"}
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/mcp"}, auth=auth))
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import load_config
+
+        observed = []
+
+        def assert_disabled_during_selection(entry, *, prior_selection, prior_exclude):
+            observed.append(load_config()["mcp_servers"][entry.name]["enabled"])
+
+        monkeypatch.setattr(mcp_catalog, "_apply_tool_selection", assert_disabled_during_selection)
+
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        assert observed == [False]
+        assert load_config()["mcp_servers"]["demo"]["enabled"] is True
+
 
 # ---------------------------------------------------------------------------
 # Uninstall

@@ -152,6 +152,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/quit` | Exit the CLI (also: `/exit`). |
+| `/relaunch` | Restart only this classic CLI process using fresh installed code and resume its exact session. Preserves the active Hermes home, working directory, and inheritable launch options; session settings use normal resume. Refuses during an active turn. Uses normal quit cleanup for local resources and the gateway's normal session-close policy for background jobs and delegations; it does not restart the gateway or other consoles. An empty session pruned during shutdown starts fresh. The current worktree is kept, without creating another. Not available in the modern TUI. |
 
 ### Dynamic CLI slash commands
 

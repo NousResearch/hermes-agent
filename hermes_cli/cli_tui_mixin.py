@@ -1457,7 +1457,7 @@ class CLITuiMixin:
         and never invalidates the app, so the just-cleared input area would keep showing the
         submitted text (looking unsent, inviting a re-submit) until some unrelated redraw.
         """
-        if self._should_handle_model_command_inline(text, has_images=has_images):
+        if self._should_handle_model_command_inline(text, has_images=has_images) or (not has_images and text.lower().split(maxsplit=1)[:1] == ["/relaunch"]):
             if not self.process_command(text):
                 self._should_exit = True
                 if event.app.is_running:

@@ -86,6 +86,11 @@ def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
         drain_legacy_pending()
     except Exception as _legacy_exc:
         _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc, exc_info=True)
+    try:
+        from cron.delivery_outcome import reconcile_bot_chat_deliveries
+        reconcile_bot_chat_deliveries()
+    except Exception as exc:
+        _sched.logger.warning("Bot Chat outcome reconciliation failed: %s", exc, exc_info=True)
     _sched._maybe_reap_dead_owners()
 
 

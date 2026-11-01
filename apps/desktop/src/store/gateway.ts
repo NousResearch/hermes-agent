@@ -24,14 +24,9 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { isPermanentLocalGatewayEnsureError } from '@/lib/local-gateway-ensure-failure'
 import { initialGatewayProfile } from '@/lib/platform'
-import {
-  isTimeoutError,
-  RECONNECT_ATTEMPT_TIMEOUT_MS,
-  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-  withTimeout
-} from '@/lib/with-timeout'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
-import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
+import { isMissingConnectionError, isMissingProfileError, isStalledDialError } from '@/store/gateway-dial-failures'
 import { isKeptRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import {
@@ -371,7 +366,11 @@ function dispatchServerRequest(request: ServerRequest, profile: string, connecti
     return false
   }
 
-  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile: canonicalOwnerProfile(request) ?? profile })
+  g.config.onServerRequest({
+    ...request,
+    ...(connectionId ? { connectionId } : {}),
+    profile: canonicalOwnerProfile(request) ?? profile
+  })
 
   return true
 }
@@ -889,30 +888,24 @@ async function openSecondary(entry: Secondary): Promise<void> {
 // ensureActiveGatewayOpen) re-arms it with a fresh budget.
 const SECONDARY_STALLED_DIAL_BUDGET = 3
 
-function isStalledDialError(error: unknown): boolean {
-  if (isTimeoutError(error)) {
-    return true
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('timed out while waiting for a free slot')
-}
-
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error
 
-  if (reauthError && priority !== 'foreground') {
-    throw reauthError
+  if (priority !== 'foreground') {
+    if (reauthError) {
+      throw reauthError
+    }
+
+    if (!entry.wantOpen) {
+      throw new Error(`Backend for "${entry.profile}" is parked; open it to retry.`)
+    }
+
+    return
   }
 
+  // Polling must not lift parking or refill the retry budget.
   g.reauthFailures.delete(entry.scope)
-
-  // Only an explicit (foreground) re-arm resets dial history: every background request rearms
-  // its scope before dialing, so clearing it here would lift the throttle on each poll.
-  if (priority === 'foreground') {
-    g.dialFailures.delete(entry.scope)
-  }
+  g.dialFailures.delete(entry.scope)
 
   entry.wantOpen = true
   entry.stalledDials = 0
@@ -993,8 +986,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
   try {
     await openSecondary(entry)
   } catch (error) {
-    // Restart the background-request cooldown from the ladder's own failure too, or a poll
-    // could slip a dial in between two ladder attempts on an older, expired window.
+    // Failed retries restart cooldown so pollers cannot slip between ladder attempts.
     recordDialFailure(entry, error)
 
     if (isGatewayReauthRequired(error)) {
@@ -1022,18 +1014,13 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
       return
     }
 
-    // An ensure refusal no redial can fix (incompatible runtime, no ensure protocol, an invalid
-    // endpoint, an unsafe control path): each automatic redial would spawn another
-    // `hermes gateway ensure` against the same install forever. Park at once, keeping the entry:
-    // an explicit open, focus/wake nudge or Reconnect re-arms it after the user's repair.
+    // Permanent refusals stay parked until an explicit open, recovery signal or connection edit.
     if (isPermanentLocalGatewayEnsureError(error)) {
       console.warn(`[gateway] parking scope="${entry.scope}": local gateway ensure refused permanently`, error)
       entry.wantOpen = false
       entry.stalledDials = 0
     } else if (isStalledDialError(error)) {
-      // Only a successful open resets the stall budget (the 'open' state
-      // listener): a treadmill that alternates slot-wait timeouts with a
-      // spawned-but-unresponsive socket must still run out of budget.
+      // Fast failures between stalls must not refill the budget.
       entry.stalledDials += 1
 
       if (entry.stalledDials >= SECONDARY_STALLED_DIAL_BUDGET) {
@@ -1088,7 +1075,10 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   // sockets prove it through this closure. Stamp before registry fan-in,
   // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
-    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
+    const scopedEvent = stampSecondaryProfileOwner(
+      { ...event, ...(connectionId ? { connectionId } : {}) },
+      canonicalOwnerProfile(event) ?? profile
+    )
 
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
@@ -1747,27 +1737,18 @@ export async function openGatewayForProfile(
   await gatewayForProfile(profile, false, spawnPriority)
 }
 
-// ── Connection-scoped agents (multi-source roster) ─────────────────────────
-// The (connectionId, profile) analogues of the profile functions above. A
-// null connectionId falls straight through to the profile path. An explicit
-// `local` id remains registry-scoped so it cannot inherit legacy remote v1
-// routing. Feature-detected: without the Electron getConnectionFor door these
-// throw, and roster surfaces disable non-local rows instead.
+// Null agents use legacy routing; explicit `local` agents need the registry getConnectionFor bridge.
 
-// `activationLease`: hold the same prune lease ensureGatewayForAgent holds for
-// the whole dial. Phase one of the two-phase source switch (store/connections
-// selectConnection) opens the target here and activates it right after; without
-// the lease a live-work recompute during the cold spawn would dispose the entry
-// mid-dial and the click would die (#89622). Plain pre-warms stay prunable —
-// a hovered-but-never-activated socket must not be pinned off another source's
-// live work.
+// Pending picks lease against pruning (#89622); pre-warms do not. The keeper
+// joins the automatic retry ladder without rearming parked entries or resetting backoff.
 export async function openGatewayForAgent(
   connectionId: null | string,
   profile: string,
   {
     activationLease = false,
+    automaticReconnect = false,
     spawnPriority = 'background'
-  }: { activationLease?: boolean; spawnPriority?: SpawnPriority } = {}
+  }: { activationLease?: boolean; automaticReconnect?: boolean; spawnPriority?: SpawnPriority } = {}
 ): Promise<void> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
@@ -1789,11 +1770,19 @@ export async function openGatewayForAgent(
 
   const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
   entry.retained = true
+
+  if (automaticReconnect) {
+    if (!entry.connectPromise && entry.reconnectTimer === null) {
+      await reconnectSecondary(entry)
+    }
+
+    return
+  }
+
   rearmSecondary(entry, spawnPriority)
 
   if (activationLease) {
-    // Stays held after a successful open: the activation that follows releases
-    // it (applyActive path), and one that never comes lets it expire.
+    // Activation releases this; an abandoned pick lets it expire.
     entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
   }
 

@@ -4,7 +4,7 @@ import type { DesktopConnectionsRegistry } from '@/global'
 
 const released: string[] = []
 const keepRoute = vi.fn((connectionId: string, _profile: string) => () => released.push(connectionId))
-const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
+const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string, _options: unknown) => undefined)
 const live = new Set<string>()
 
 vi.mock('@/store/gateway', () => ({
@@ -62,15 +62,15 @@ it('keeps every registered gateway the primary socket does not serve connected, 
     ['vps', 'default']
   ])
   expect(openGatewayForAgent.mock.calls).toEqual([
-    ['homelab', 'default'],
-    ['vps', 'default']
+    ['homelab', 'default', { automaticReconnect: true }],
+    ['vps', 'default', { automaticReconnect: true }]
   ])
 
   // A dropped socket is redialed on the next tick; a live one is left alone.
   live.add('homelab')
   openGatewayForAgent.mockClear()
   vi.advanceTimersByTime(30_000)
-  expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default']])
+  expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default', { automaticReconnect: true }]])
 
   $connectionsRegistry.set(registry(['local', 'homelab']))
   expect(released).toEqual(['vps'])
@@ -83,7 +83,7 @@ it('with a remote primary, keeps This device only where Hermes is installed (nev
   stop = startPersistentGateways()
   await vi.advanceTimersByTimeAsync(0)
 
-  expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default']])
+  expect(openGatewayForAgent.mock.calls).toEqual([['vps', 'default', { automaticReconnect: true }]])
 
   stop()
   openGatewayForAgent.mockClear()
@@ -92,7 +92,7 @@ it('with a remote primary, keeps This device only where Hermes is installed (nev
   await vi.advanceTimersByTimeAsync(0)
 
   expect(openGatewayForAgent.mock.calls).toEqual([
-    ['vps', 'default'],
-    ['local', 'default']
+    ['vps', 'default', { automaticReconnect: true }],
+    ['local', 'default', { automaticReconnect: true }]
   ])
 })

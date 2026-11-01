@@ -109,6 +109,12 @@ enable, disable, or uninstall. Catalog entries are stored under
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
 
+For a hosted API-key example, see
+[Baizhi Cloud Agent Toolkit](../../integrations/baizhi-cloud.md): choose the
+catalog entry, enter a key through Hermes' credential prompt, and verify the
+discovered tools. The guide also covers manual setup when the entry is not
+available in your installed catalog.
+
 The third-party n8n bridge is no longer available for catalog installation.
 Existing installations keep their `mcp_servers` configuration, credentials,
 installed files, and selected tools. They continue to load as configured MCP

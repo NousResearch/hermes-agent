@@ -80,6 +80,9 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from .adapter_markdown import (
+    _latex_to_tokens, _list_interrupts_paragraph, _matrix_markdown, _tokens_to_mx_maths,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -631,58 +634,6 @@ def _scoped_recovery_key() -> str:
     the default profile's key and verification fails with "Key MAC does not match"."""
     return _get_scoped_secret("MATRIX_RECOVERY_KEY", "").strip()
 
-
-# --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
-# Element (feature_latex_maths) typesets <div|span data-mx-maths="TEX"> at display time.
-# Our sanitizer allowlists tags/attrs, so data-mx-maths cannot pass through HTML
-# sanitization directly. Instead, math is swapped for opaque sentinel tokens before
-# Markdown conversion (protecting TeX from escaping) and expanded back to math
-# markup after sanitization. Tokens are plain printable text with no special
-# HTML/Markdown meaning, so both the Markdown converter and the sanitizer
-# pass them through verbatim.
-_TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
-_TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
-_TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
-
-
-def _latex_to_tokens(text: str) -> tuple[str, list[tuple[str, str]]]:
-    """Replace ``$$...$$``/``$...$`` with sentinel tokens.
-
-    Returns the tokenized text plus an ordered ``(tag, tex)`` store, where tag
-    is ``div`` for display math and ``span`` for inline math. Dollars that do
-    not form a pair (prices, literals) are left untouched.
-    """
-    if not text or "$" not in text:
-        return text, []
-    store: list[tuple[str, str]] = []
-
-    def _sub_display(match: re.Match[str]) -> str:
-        store.append(("div", match.group(1).strip()))
-        return _TEX_DISPLAY_TOKEN % (len(store) - 1)
-
-    def _sub_inline(match: re.Match[str]) -> str:
-        store.append(("span", match.group(1).strip()))
-        return _TEX_INLINE_TOKEN % (len(store) - 1)
-
-    text = re.sub(r"\$\$([^\n$]+?)\$\$", _sub_display, text)
-    text = re.sub(r"(?<![\\$\w])\$([^\n$]+?)\$(?!\w)", _sub_inline, text)
-    return text, store
-
-
-def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
-    """Expand sentinel tokens into ``data-mx-maths`` markup (TeX HTML-escaped)."""
-
-    def _expand(match: re.Match[str]) -> str:
-        idx = int(match.group(1))
-        if idx >= len(store):
-            # Not one of our tokens (user-typed text that collides with the
-            # sentinel format) — leave it verbatim.
-            return match.group(0)
-        tag, tex = store[idx]
-        escaped = _html_escape(tex, quote=True)
-        return f'<{tag} data-mx-maths="{escaped}">{escaped}</{tag}>'
-
-    return _TEX_TOKEN_RE.sub(_expand, html)
 
 def _sanitize_matrix_html(html: str) -> str:
     sanitizer = _MatrixHtmlSanitizer()
@@ -3017,13 +2968,16 @@ class MatrixAdapter(BasePlatformAdapter):
         text, tex_store = _latex_to_tokens(text)
         with suppress(ImportError):
             import markdown as _md
-            md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
+            md = _matrix_markdown(_md, ["fenced_code", "tables", "nl2br", "sane_lists"])
             if "html_block" in md.preprocessors:
                 md.preprocessors.deregister("html_block")
-            html = md.convert(text)
+            html = md.convert(_list_interrupts_paragraph(text))
             md.reset()
-            if html.count("<p>") == 1:
-                html = html.replace("<p>", "").replace("</p>", "")
+            # Unwrap only a message that is one bare paragraph; a heading or list beside it
+            # needs the paragraph's break, or the two run together.
+            stripped = html.strip()
+            if stripped.count("<p>") == 1 and stripped.startswith("<p>") and stripped.endswith("</p>"):
+                html = stripped[3:-4]
             return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
         return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
 
@@ -3162,7 +3116,7 @@ def _standalone_payloads(message: str) -> list[dict[str, Any]]:
         payload = {"msgtype": "m.text", "body": chunk}
         if _md is not None:
             tokenized, tex_store = _latex_to_tokens(chunk)
-            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
+            html = _matrix_markdown(_md, ["fenced_code", "tables"]).convert(_list_interrupts_paragraph(tokenized))
             formatted = {"format": "org.matrix.custom.html", "formatted_body": _tokens_to_mx_maths(
                 re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)}
             if _content_bytes({**payload, **formatted}) <= _MAX_CONTENT_BYTES:

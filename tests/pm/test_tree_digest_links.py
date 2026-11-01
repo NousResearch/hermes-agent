@@ -1,10 +1,12 @@
 """Realized digests bind link text without reading the linked directory."""
+import logging
 import os
 from pathlib import Path
 
 import pytest
 
-from pm.store import tree_digest
+from pm.install import _entry_verified
+from pm.store import Store, tree_digest
 
 
 def test_digest_without_pathlib_junction_api(tmp_path, monkeypatch):
@@ -86,3 +88,56 @@ def test_junctions_bind_target_text_without_walking_outside(tmp_path, monkeypatc
         junction.rmdir()
     assert (left / "content").read_bytes() == b"changed outside the tree"
     assert (right / "content").read_bytes() == b"same bytes"
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+class _VerifiedPackage:
+    name = "pkg"
+
+    def verify(self, entry, target):
+        return None
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
+def test_unreadable_subtree_digests_as_absent_by_default_and_raises_on_demand(tmp_path):
+    root = tmp_path / "tree"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    (locked / "payload").write_bytes(b"secret")
+    (root / "unlocked").write_bytes(b"plain")
+    locked.chmod(0o000)
+    try:
+        without = tmp_path / "without"
+        without.mkdir()
+        (without / "unlocked").write_bytes(b"plain")
+        # Historic default: the unreadable subtree contributes nothing.
+        assert tree_digest(root) == tree_digest(without)
+        with pytest.raises(PermissionError):
+            tree_digest(root, onerror=_raise)
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")
+def test_unreadable_entry_stays_installed_instead_of_reinstalling(tmp_path, caplog):
+    entry = tmp_path / "store" / "pkg-entry"
+    (entry / "locked").mkdir(parents=True)
+    (entry / "locked" / "payload").write_bytes(b"secret")
+    fact = {"entry": "pkg-entry", "digest": tree_digest(entry)}
+    store = Store(tmp_path / "store")
+    (entry / "locked").chmod(0o000)
+    try:
+        with caplog.at_level(logging.WARNING):
+            assert _entry_verified(_VerifiedPackage(), fact, store, "x86_64-unknown-linux")
+        assert "instead of reinstalling" in caplog.text
+        # Readable bytes still verify normally: drift keeps triggering a repair.
+        (entry / "locked").chmod(0o755)
+        (entry / "locked" / "payload").write_bytes(b"tampered")
+        assert not _entry_verified(_VerifiedPackage(), fact, store, "x86_64-unknown-linux")
+    finally:
+        (entry / "locked").chmod(0o755)

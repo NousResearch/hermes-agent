@@ -73,6 +73,22 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
   [/-latest$/i, 'Latest']
 ]
 
+const REGION_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/-us$/i, 'US'],
+  [/-eu$/i, 'EU'],
+  [/-apac$/i, 'APAC'],
+  [/-emea$/i, 'EMEA']
+]
+
+// Fireworks exposes the same model name through its direct-model and router
+// namespaces. Keep that namespace in the display name so the picker and pill
+// retain the distinction after the provider path is otherwise normalized away.
+function fireworksRouteLabel(model: string): string {
+  const route = model.trim().match(/^accounts\/fireworks\/(routers|models)\//i)?.[1]?.toLowerCase()
+
+  return route === 'routers' ? 'Router' : route === 'models' ? 'Model' : ''
+}
+
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 // Vendors write their own names in casing the model id does not carry, and
@@ -141,8 +157,9 @@ function prettifyBase(base: string): string {
 // EITHER order: `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model.
 // One decomposition feeds both the catalog rows and the composer pill, so
 // the two screens can never disagree on which variant an id carries.
-function splitTrailingTags(base: string): { base: string; variant: string; quant: string } {
+function splitTrailingTags(base: string): { base: string; variant: string; region: string; quant: string } {
   let variant = ''
+  let region = ''
   let quant = ''
 
   for (let progress = true; progress;) {
@@ -152,6 +169,18 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
       for (const [pattern, label] of VARIANT_TAGS) {
         if (pattern.test(base)) {
           variant = label
+          base = base.replace(pattern, '')
+          progress = true
+
+          break
+        }
+      }
+    }
+
+    if (!region) {
+      for (const [pattern, label] of REGION_TAGS) {
+        if (pattern.test(base)) {
+          region = label
           base = base.replace(pattern, '')
           progress = true
 
@@ -173,15 +202,15 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
     }
   }
 
-  return { base, variant, quant }
+  return { base, variant, region, quant }
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
+  let { base, variant, region, quant } = splitTrailingTags(modelBaseId(model))
 
-  const tags = [variant, quant].filter(Boolean)
+  const tags = [variant, region, quant].filter(Boolean)
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
@@ -196,7 +225,10 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  const name = prettifyBase(base) || model.trim() || 'No model'
+  const route = fireworksRouteLabel(model)
+
+  return { name: route ? `${name} (${route})` : name, tag: tags.join(' ') }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant

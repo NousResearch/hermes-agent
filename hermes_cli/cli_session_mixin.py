@@ -375,7 +375,7 @@ class CLISessionMixin:
         lines.extend(status_lines(fields, "created", "last_activity", "tokens", "agent_running"))
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+    def _list_recent_sessions(self, limit: int | None = 10) -> list[dict[str, Any]]:
         """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
@@ -395,32 +395,13 @@ class CLISessionMixin:
 
         Returns True when something was shown, False if no session list was available.
         """
-        from cli import _cli_visible_print
+        from hermes_cli.cli_session_browser import render_recent_sessions
+
         sessions = self._list_recent_sessions(limit=limit)
+        self._listed_resume_sessions = sessions
         if not sessions:
             return False
-
-        from hermes_cli.timefmt import relative_time as _relative_time
-
-        _cli_visible_print()
-        if reason == "history":
-            _cli_visible_print(t("cli.session.recent_intro"))
-        else:
-            _cli_visible_print(f"  {t('cli.session.recent_header')}")
-        _cli_visible_print()
-        _cli_visible_print(
-            f"  {'#':<3} {t('cli.session.column_title'):<32} {t('cli.session.column_preview'):<40} "
-            f"{t('cli.session.column_last_active'):<13} {t('cli.session.column_id')}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for idx, session in enumerate(sessions, start=1):
-            title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
-            last_active = _relative_time(session.get("last_active"), session_id=session.get("id"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
-        _cli_visible_print()
-        _cli_visible_print(f"  {t('cli.session.resume_usage')}")
-        _cli_visible_print(f"  {t('cli.session.resume_example')}")
-        _cli_visible_print()
+        render_recent_sessions(sessions, reason=reason)
         return True
 
     def show_history(self):

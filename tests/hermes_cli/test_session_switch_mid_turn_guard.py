@@ -51,7 +51,9 @@ def cli(tmp_path, monkeypatch):
     db.close()
 
 
-@pytest.mark.parametrize("command", ["/branch explore", "/resume other", "/sessions other"])
+@pytest.mark.parametrize("command", [
+    "/branch explore", "/resume other", "/sessions other", "/sessions", "/sessions list", "/resume",
+])
 def test_session_switch_refused_mid_turn(cli, command):
     cli._agent_running = True
     handler = {"/branch": cli._handle_branch_command, "/resume": cli._handle_resume_command,

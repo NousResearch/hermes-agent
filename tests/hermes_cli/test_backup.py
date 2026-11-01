@@ -2821,3 +2821,143 @@ def _count_rows(db_path: Path) -> tuple[int, int]:
         )
     finally:
         conn.close()
+
+
+class TestBackupExcludeDirs:
+    """``updates.backup_exclude_dirs`` drops configured provider-asset prefixes from the shared
+    backup walk (manual ``hermes backup`` and pre-update zips alike)."""
+
+    @staticmethod
+    def _write_config(root, entries):
+        def _yaml(e):
+            return f"    - '{e}'\n" if isinstance(e, str) else f"    - {e}\n"
+        body = "updates:\n  backup_exclude_dirs:\n" + "".join(_yaml(e) for e in entries)
+        (root / "config.yaml").write_text(body)
+
+    @staticmethod
+    def _tree(root):
+        (root / "mnemosyne" / "models").mkdir(parents=True)
+        (root / "mnemosyne" / "models" / "MiniCPM.gguf").write_bytes(b"\x00" * 64)
+        with sqlite3.connect(root / "mnemosyne" / "keep.db") as conn:
+            conn.execute("CREATE TABLE t (x)")
+        (root / "foo").mkdir()
+        (root / "foo" / "x.txt").write_text("x")
+        (root / "foobar").mkdir()
+        (root / "foobar" / "y.txt").write_text("y")
+        (root / "notes.txt").write_text("n")
+
+    def test_configured_prefix_skipped_in_full_walk_and_pre_update_zip(self, tmp_path):
+        """(a) the configured dir is pruned from the walk and absent from the pre-update zip."""
+        import zipfile
+
+        from hermes_cli.backup import _iter_backup_files, create_pre_update_backup
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        self._write_config(root, ["mnemosyne/models"])
+
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert str(Path("mnemosyne/models/MiniCPM.gguf")) not in selected
+        assert str(Path("mnemosyne/keep.db")) in selected
+
+        out = create_pre_update_backup(hermes_home=root, keep=1)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+        assert not any(n.startswith("mnemosyne/models/") for n in names)
+        assert "mnemosyne/keep.db" in names
+
+    def test_prefix_matches_on_component_boundary(self, tmp_path):
+        """(b) excluding ``foo`` drops ``foo/...`` but must keep sibling ``foobar/...``."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        self._write_config(root, ["foo"])
+
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert str(Path("foo/x.txt")) not in selected
+        assert str(Path("foobar/y.txt")) in selected
+
+    def test_absent_or_empty_key_changes_nothing(self, tmp_path):
+        """(c) no config, a config without the key, and an empty list all match baseline."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        out = tmp_path / "out.zip"
+
+        baseline = {str(rel) for _, rel in _iter_backup_files(root, out)}
+        assert str(Path("mnemosyne/models/MiniCPM.gguf")) in baseline  # no rule covers it today
+        assert str(Path("foo/x.txt")) in baseline
+
+        # config.yaml itself is an ordinary backed-up file, so compare with it set aside.
+        def _selected():
+            return {str(rel) for _, rel in _iter_backup_files(root, out)} - {"config.yaml"}
+
+        (root / "config.yaml").write_text("updates:\n  backup_keep: 5\n")
+        assert _selected() == baseline
+
+        self._write_config(root, [])
+        assert _selected() == baseline
+
+    def test_unsafe_entries_are_ignored_and_valid_ones_still_apply(self, tmp_path, caplog):
+        """(d) absolute, ``..``-escaping, and root-equivalent entries are dropped with a warning
+        and never widen the exclusion; valid entries next to them still apply."""
+        from hermes_cli.backup import _configured_backup_exclude_prefixes, _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        (tmp_path / "outside").mkdir()
+        (tmp_path / "outside" / "secret.txt").write_text("s")
+        self._write_config(root, [str(tmp_path / "outside"), "../outside", ".", "", 7, "foo",
+                                  "C:/outside", "C:\\outside", "C:foo"])
+
+        with caplog.at_level("WARNING"):
+            prefixes = _configured_backup_exclude_prefixes(root)
+        assert prefixes == [("foo",)]
+        assert sum("Ignoring" in r.getMessage() for r in caplog.records) == 8
+
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert str(Path("notes.txt")) in selected
+        assert str(Path("mnemosyne/keep.db")) in selected
+        assert str(Path("foo/x.txt")) not in selected
+
+    def test_falsy_non_list_value_warns_and_changes_nothing(self, tmp_path, caplog):
+        """Present-but-falsy non-list values (``false``, ``0``, ``{}``) warn instead of passing
+        through the empty-key fast path silently."""
+        from hermes_cli.backup import _configured_backup_exclude_prefixes
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        for value in ("false", "0", "{}"):
+            (root / "config.yaml").write_text(f"updates:\n  backup_exclude_dirs: {value}\n")
+            with caplog.at_level("WARNING"):
+                assert _configured_backup_exclude_prefixes(root) == []
+        assert sum("expected a list" in r.getMessage() for r in caplog.records) == 3
+
+    def test_file_named_like_entry_stays_archived(self, tmp_path):
+        """Entries name directories: a regular FILE whose path equals an entry is not excluded."""
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._tree(root)
+        self._write_config(root, ["notes.txt"])
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+        assert str(Path("notes.txt")) in selected
+
+    def test_yaml_helper_quotes_entries(self, tmp_path):
+        """A literal ``-`` entry must round-trip as the name ``-``, not YAML null: pins the
+        helper's quoting so ``\"\"`` genuinely exercises the root-reduce branch."""
+        from hermes_cli.backup import _configured_backup_exclude_prefixes
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._write_config(root, ["-"])
+        assert _configured_backup_exclude_prefixes(root) == [("-",)]

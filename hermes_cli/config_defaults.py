@@ -2352,6 +2352,12 @@ DEFAULT_CONFIG = {
         # Full backup zips to retain (older pruned after each success; floored to 1 so the newest is
         # always kept). The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
+        # HERMES_HOME-relative directories left out of ``hermes backup`` and pre-update full
+        # backups, for regenerable provider assets the built-in rules don't name (e.g. a local
+        # embedding model under ``mnemosyne/models``). Path-component prefixes, directories only:
+        # ``foo`` excludes ``foo/...`` but not ``foobar``, and a regular file named ``foo`` stays
+        # archived. Restore/import is unaffected, so old archives still load.
+        "backup_exclude_dirs": [],
         # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
         # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset

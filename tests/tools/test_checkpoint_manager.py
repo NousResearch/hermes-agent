@@ -986,18 +986,18 @@ class TestPruneCheckpointsPreV2PreviewExecutionParity:
         finally:
             (repo / "HERMES_WORKDIR").chmod(0o644)  # allow tmp cleanup
 
-    def test_none_marker_is_confirmable_orphan_and_deleted(self, tmp_path):
+    def test_none_marker_is_not_confirmable_and_kept(self, tmp_path):
         base = tmp_path / "checkpoints"
         repo = self._seed_shadow(base, "cccc" * 4, None)  # no marker file
 
         info = store_status(checkpoint_base=base)
         entry = info["pre_v2_projects"][0]
-        assert entry["orphan_confirmable"] is True
-        assert entry["unconfirmable_reason"] is None
+        assert entry["orphan_confirmable"] is False
+        assert entry["unconfirmable_reason"] == "no workdir recorded (marker absent)"
 
         result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
-        assert result["deleted_orphan"] == 1
-        assert not repo.exists()
+        assert result["deleted_orphan"] == 0
+        assert repo.exists()
 
     def test_preview_set_equals_execution_set(self, tmp_path):
         """The core invariant: the set of pre-v2 repos the preview marks
@@ -1017,19 +1017,19 @@ class TestPruneCheckpointsPreV2PreviewExecutionParity:
         try:
             info = store_status(checkpoint_base=base)
             # Map each shadow path back to its semantic key, then compare
-            # confirmable sets. Only the missing-marker and genuinely-deleted-
-            # workdir repos are confirmable; blank and unreadable markers are
-            # preserved.
+            # confirmable sets. Only a recorded workdir that is observably
+            # gone is confirmable; blank / unreadable / absent-marker repos are
+            # all preserved (none of them confirm the project is gone).
             by_path = {str(repo): name for name, repo in repos.items()}
             confirmable = {
                 by_path[p["path"]] for p in info["pre_v2_projects"] if p["orphan_confirmable"]
             }
-            assert confirmable == {"none", "gone"}
+            assert confirmable == {"gone"}
 
             result = prune_checkpoints(retention_days=0, checkpoint_base=base, delete_orphans=True)
-            assert result["deleted_orphan"] == 2
+            assert result["deleted_orphan"] == 1
             deleted = {name for name, repo in repos.items() if not repo.exists()}
-            assert deleted == {"none", "gone"}
+            assert deleted == {"gone"}
         finally:
             for repo in repos.values():
                 marker = repo / "HERMES_WORKDIR"

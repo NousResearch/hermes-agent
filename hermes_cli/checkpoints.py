@@ -133,7 +133,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
         pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if p.get("orphan_confirmable")]
         if orphans or pre_v2_orphans:
             print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
-                  "orphan checkpoint project(s) whose workdir is not currently reachable:")
+                  "orphan checkpoint project(s) that are not currently live (recorded "
+                  "workdir missing, deleted, or unreachable):")
             print()
             for p in orphans:
                 # A v2 record with a blank/missing workdir still gets deleted by
@@ -154,7 +155,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
             print("that comes back during the prompt is kept. Stale entries older than the")
             print("retention window are removed by the same run per --retention-days and")
             print("reported separately in the final counts below.")
-            if not _confirm("Delete these orphan projects?"):
+            if not _confirm("Delete these orphan projects (this also removes stale "
+                            "entries per --retention-days)?"):
                 print("Aborted.")
                 return 1
         # Bind deletion to exactly what was displayed/confirmed: a project that goes orphan

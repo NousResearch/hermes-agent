@@ -235,8 +235,17 @@ def _orphan_verdict(
     if marker_unreadable:
         return False, "shadow repo marker is unreadable"
     if workdir is None:
-        # An unset workdir is an orphan in both layouts.
-        return True, None
+        # An unset workdir means different things per layout:
+        #  - pre-v2: the HERMES_WORKDIR marker is absent entirely — no record of
+        #    where the project was, so we cannot confirm it is gone. Conservative:
+        #    keep it, exactly like a blank marker (both are "cannot confirm").
+        #  - v2: the production call sites normalize a missing workdir to "" via
+        #    `meta.get("workdir") or ""` before calling here, so this None branch
+        #    is reachable only from tests (blank_workdir_confirmable=True makes
+        #    None behave like the blank workdir the production path sees).
+        if blank_workdir_confirmable:
+            return True, None
+        return False, "no workdir recorded (marker absent)"
     if not workdir:
         # A blank (empty-string) workdir is confirmable only in the v2 shared
         # store, where a missing workdir means "project gone"; pre-v2 keeps it.

@@ -275,12 +275,16 @@ def test_orphan_verdict_layout_rules():
     # Pre-v2 (no parent-identity channel, blank workdir kept).
     assert v("", require_parent_identity=False, blank_workdir_confirmable=False) == (
         False, "blank workdir recorded")
+    # Pre-v2 with an absent marker (workdir None) is kept too: no record of
+    # where the project was, so we cannot confirm it is gone.
     assert v(None, require_parent_identity=False, blank_workdir_confirmable=False) == (
-        True, None)
+        False, "no workdir recorded (marker absent)")
     assert v("/w", marker_unreadable=True, require_parent_identity=False,
              blank_workdir_confirmable=False) == (
         False, "shadow repo marker is unreadable")
-    # v2 shared store: blank/missing workdir is confirmable.
+    # v2 shared store: blank/missing workdir is confirmable (the production
+    # path normalizes a missing workdir to "" before calling, so None here is
+    # reachable only from tests).
     assert v("", require_parent_identity=True, blank_workdir_confirmable=True) == (
         True, None)
     assert v(None, require_parent_identity=True, blank_workdir_confirmable=True) == (

@@ -443,3 +443,62 @@ class TestOverflowNotificationFormatting:
         out = format_process_notification(evt)
         assert "notifications resumed" in out
         assert "exit code" not in out
+
+
+# =========================================================================
+# notify argument coercion (#123345)
+# =========================================================================
+
+class TestNotifyCoercion:
+    """``notify`` is the one terminal argument whose schema is a ``boolean | array``
+    union, so a model that stringifies a boolean (``"true"``) has nowhere else for it to
+    go. The sibling boolean arguments already ride Python truthiness; ``notify`` used to
+    reject the same spelling outright.
+    """
+
+    @staticmethod
+    def _raw(notify):
+        from tools.terminal_tool import _handle_terminal
+        return _handle_terminal(
+            {"command": "echo hi", "background": True, "notify": notify}, task_id="t1",
+        )
+
+    @classmethod
+    def _run(cls, notify):
+        return json.loads(cls._raw(notify))
+
+    def test_string_boolean_spellings_are_accepted(self):
+        for spelling in ("true", "True", "yes", "on", "1", "enabled"):
+            result = self._run(spelling)
+            assert not result.get("error"), f"notify={spelling!r} was rejected: {result}"
+
+    def test_falsy_string_spellings_are_accepted(self):
+        for spelling in ("false", "False", "no", "off", "0", "disabled"):
+            result = self._run(spelling)
+            assert not result.get("error"), f"notify={spelling!r} was rejected: {result}"
+
+    def test_truthy_string_maps_to_notify_on_complete(self):
+        with patch("tools.terminal_tool.terminal_tool") as call:
+            call.return_value = '{"output": "ok"}'
+            self._run("true")
+        assert call.call_args.kwargs["notify_on_complete"] is True
+        assert call.call_args.kwargs["watch_patterns"] is None
+
+    def test_falsy_string_maps_to_notify_on_complete_false(self):
+        with patch("tools.terminal_tool.terminal_tool") as call:
+            call.return_value = '{"output": "ok"}'
+            self._run("false")
+        assert call.call_args.kwargs["notify_on_complete"] is False
+
+    def test_pattern_list_still_maps_to_watch_patterns(self):
+        with patch("tools.terminal_tool.terminal_tool") as call:
+            call.return_value = '{"output": "ok"}'
+            self._run(["Application startup complete"])
+        assert call.call_args.kwargs["watch_patterns"] == ["Application startup complete"]
+        assert call.call_args.kwargs["notify_on_complete"] is False
+
+    def test_unreadable_value_still_rejected(self):
+        for bad in ("maybe", {"a": 1}, object()):
+            result = self._run(bad)
+            assert "error" in result
+            assert "notify must be" in result["error"]

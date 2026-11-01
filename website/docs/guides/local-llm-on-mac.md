@@ -20,7 +20,7 @@ We cover three backends:
 
 | Backend | Install | Best at | Format |
 |---------|---------|---------|--------|
-| **llama.cpp** | `brew install llama.cpp` | Fastest time-to-first-token, quantized KV cache for low memory | GGUF |
+| **llama.cpp** | `brew install llama.cpp` | Fast time-to-first-token, quantized KV cache for low memory | GGUF |
 | **omlx** | [omlx.ai](https://omlx.ai) | Fastest token generation, native Metal optimization | MLX (safetensors) |
 | **vllm-metal** | [Installation guide](https://docs.vllm.ai/projects/vllm-metal/en/latest/installation/) | vLLM's serving API on Apple Silicon | MLX (safetensors), [GGUF](https://docs.vllm.ai/projects/vllm-metal/en/latest/gguf/) |
 
@@ -220,14 +220,14 @@ All servers allowed four concurrent requests with a 65,536-token context limit a
 
 ### Results
 
-| Engine | Concurrent traces | Mean TTFT | Aggregate output | Hit output cap |
-|--------|------------------:|----------:|-----------------:|---------------:|
-| llama.cpp 0.8.0 | 1 | 1,511.1 ms | 36.8 tok/s | 5/50 |
-| oMLX 0.7.3 | 1 | 1,104.7 ms | 44.1 tok/s | 7/50 |
-| vllm-metal 0.32.0 | 1 | 1,326.2 ms | 36.3 tok/s | 4/50 |
-| llama.cpp 0.8.0 | 4 | 2,422.6 ms | 49.0 tok/s | 5/50 |
-| oMLX 0.7.3 | 4 | 2,507.1 ms | 76.3 tok/s | 5/50 |
-| vllm-metal 0.32.0 | 4 | 1,757.3 ms | 64.6 tok/s | 4/50 |
+| Engine | Concurrent traces | Mean TTFT | Aggregate output |
+|--------|------------------:|----------:|-----------------:|
+| llama.cpp 0.8.0 | 1 | 1,511.1 ms | 36.8 tok/s |
+| oMLX 0.7.3 | 1 | 1,104.7 ms | 44.1 tok/s |
+| vllm-metal 0.32.0 | 1 | 1,326.2 ms | 36.3 tok/s |
+| llama.cpp 0.8.0 | 4 | 2,422.6 ms | 49.0 tok/s |
+| oMLX 0.7.3 | 4 | 2,507.1 ms | 76.3 tok/s |
+| vllm-metal 0.32.0 | 4 | 1,757.3 ms | 64.6 tok/s |
 
 TTFT measures time to the first streamed content, reasoning, or tool-call delta. Aggregate throughput is total output tokens divided by the 50-request wall time. See the [benchmark details](https://github.com/NousResearch/hermes-agent/pull/147355) for trace IDs, model revisions, and launch settings.
 

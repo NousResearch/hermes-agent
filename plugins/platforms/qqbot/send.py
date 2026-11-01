@@ -12,6 +12,8 @@ import time
 from tools.send_message_senders import (
     _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS, _VOICE_EXTS, _error, _success)
 
+from .api_errors import QQAPIError, raise_for_qq_error
+
 logger = logging.getLogger("tools.send_message_tool")
 
 
@@ -42,10 +44,9 @@ async def _qqbot_api_json(client, headers: dict, method: str, path: str,
         data = resp.json() if resp.content else {}
     except Exception:
         data = {}
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"QQ Bot API error [{resp.status_code}] {path}: "
-            f"{data.get('message', data) or resp.text[:200]}")
+    if resp.status_code >= 400 and isinstance(data, dict) and not data.get("message", data):
+        data = {**data, "message": resp.text[:200]}
+    raise_for_qq_error(resp.status_code, path, data)
     return data if isinstance(data, dict) else {}
 
 
@@ -112,7 +113,13 @@ async def _qqbot_send_text_message(client, headers, chat_id, message: str) -> di
     for kind, url in endpoints:
         resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code in {200, 201}:
-            return _success("qqbot", chat_id, message_id=resp.json().get("id"))
+            data = resp.json()
+            try:
+                raise_for_qq_error(resp.status_code, url, data)
+            except QQAPIError as exc:
+                statuses.append(f"{kind}={exc}")
+                continue
+            return _success("qqbot", chat_id, message_id=data.get("id"))
         statuses.append(f"{kind}={resp.status_code}")
     return _error(f"QQBot send failed: {' '.join(statuses)}")
 

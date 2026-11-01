@@ -119,6 +119,7 @@ import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
 import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
+import { playTerminalBell } from "@/lib/terminal-bell";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -1071,6 +1072,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // reads this instead of `resumeParam` directly (#93518).
     let effectiveResume = resumeParam;
     let onDataDisposable: { dispose(): void } | null = null;
+    let onBellDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     let onScrollDisposable: { dispose(): void } | null = null;
     let eraseSuppressionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1527,6 +1529,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         }
       });
 
+      onBellDisposable = term.onBell(playTerminalBell);
+
       onResizeDisposable = term.onResize(({ cols, rows }) => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(`\x1b[RESIZE:${cols};${rows}]`);
@@ -1551,6 +1555,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearResumeLoadingTimers();
       setResumeHydrating(false);
       onDataDisposable?.dispose();
+      onBellDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();

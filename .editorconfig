@@ -1,0 +1,43 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{json,jsonc}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.ps1]
+end_of_line = crlf
+
+[*.bat]
+end_of_line = crlf
+indent_size = 2
+
+[*.tsx]
+indent_size = 2
+
+[*.ts]
+indent_size = 2
+
+[*.js]
+indent_size = 2
+
+[*.css]
+indent_size = 2
+
+[*.html]
+indent_size = 2

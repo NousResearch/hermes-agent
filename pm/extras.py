@@ -285,9 +285,21 @@ def legacy_selection(project_root: Path) -> list[str]:
     the migration asks to reinstall a feature that already worked. The old
     venv's site-packages is read, never imported: the migrating process may
     not run from it.
+
+    The shipped Windows launchers instead keep the interpreter out of the
+    checkout (``$HERMES_HOME/venvs/<name>``, #116148). That venv is found the
+    same way the updater finds it — ``project_venv_dir``'s running-interpreter
+    fallback, provenance-checked — so its lazily installed extras are carried
+    too.
     """
+    from hermes_constants import project_venv_dir
+
     root = Path(project_root)
-    trees = [tree for venv in (root / "venv", root / ".venv")
+    venvs = [root / "venv", root / ".venv"]
+    launcher_venv = project_venv_dir(root)
+    if launcher_venv is not None and launcher_venv not in venvs:
+        venvs.append(launcher_venv)
+    trees = [tree for venv in venvs
              for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
              if tree.is_dir()]
     carried = sorted(

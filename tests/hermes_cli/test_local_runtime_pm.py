@@ -1,5 +1,7 @@
 """Backend selection uses reviewed target pins and never installs on lookup."""
 
+from contextlib import nullcontext
+
 import pytest
 
 import pm
@@ -57,3 +59,72 @@ def test_missing_pin_is_refused_instead_of_constructing_download_url(tmp_path, m
     assert binaries.pinned_tag("cpu") == "b123"
     with pytest.raises(binaries.BinaryResolutionError, match="not pinned"):
         binaries.resolve_backend("cpu", target=pm.current_target())
+
+
+def test_configured_binary_is_used_without_a_pm_install(tmp_path):
+    """Regression for #140818: a user-built llama-server bypasses the PM engine."""
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    engine = binaries.configured_engine(str(binary))
+
+    assert engine is not None
+    assert engine.binary == binary
+    assert engine.backend == "custom"
+
+
+@pytest.mark.parametrize("path", ["relative/llama-server", "/missing/llama-server"])
+def test_configured_binary_refuses_unusable_paths(path):
+    with pytest.raises(binaries.BinaryResolutionError, match="binary"):
+        binaries.configured_engine(path)
+
+
+def test_boot_uses_configured_binary_before_the_pm_engine(tmp_path, monkeypatch):
+    """Regression for #140818: configured forks retain managed lifecycle support."""
+    from hermes_cli.local_runtime import bootstrap
+
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    captured = {}
+
+    class FakeSupervisor:
+        base_url = "http://127.0.0.1:8080/v1"
+
+        def __init__(self, executable, *_args, **_kwargs):
+            captured["binary"] = executable
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "adopt_legacy_models", lambda: None)
+    monkeypatch.setattr(bootstrap, "_cross_process_boot_lock", nullcontext)
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap._generate_presets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap._start_idle_sweeper", lambda *_args: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap._stop_at_exit", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda *_args: pytest.fail("PM engine should not be queried"))
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", FakeSupervisor)
+
+    supervisor = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "binary": str(binary)}}, force=True)
+
+    assert supervisor is not None
+    assert captured["binary"] == binary
+
+
+def test_hardware_probe_uses_configured_binary_before_the_pm_engine(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import hardware
+
+    binary = tmp_path / "llama-server"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                        lambda: {"local_runtime": {"binary": str(binary)}})
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.serving_engine", lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_engine",
+                        lambda *_args: pytest.fail("PM engine should not be queried"))
+
+    assert hardware._configured_engine().binary == binary

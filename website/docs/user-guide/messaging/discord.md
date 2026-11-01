@@ -536,6 +536,24 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+Long prompts can live in their own markdown files. Give an entry a `file` (and optionally an inline `prompt`, placed before the file's text) instead of a string:
+
+```yaml
+discord:
+  channel_prompts:
+    "1234567890":
+      prompt: "You are a Senior QA Engineer."   # optional
+      file: channel-prompts/qa.md               # relative to ~/.hermes (the active profile's home)
+    "9876543210":
+      file: ~/hermes-config/channel-prompts/design.md
+```
+
+- Relative paths resolve from the active profile's home directory; `~` and `${VAR}` are expanded.
+- Prompt files are read when the gateway loads its config, so restart the gateway (`hermes gateway restart`) after editing one.
+- A file that cannot be read logs a warning and the entry keeps only its inline `prompt`; an entry left empty falls back to the parent channel's prompt.
+- The file's text is used as-is: template directives such as `{% include %}` are not expanded.
+- Prompt files are system-prompt text, not [skills](../features/skills.md); to load a skill in a channel, use `channel_skill_bindings`.
+
 #### `discord.history_backfill`
 
 **Type:** boolean — **Default:** `true`

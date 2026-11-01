@@ -325,6 +325,8 @@ mattermost:
 
 Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+An entry can also point at a markdown file instead of holding the text inline (`"channel_id_abc123": {file: channel-prompts/research.md}`); see [Discord channel prompts](discord.md#discordchannel_prompts) for the full syntax.
+
 ## Security
 
 :::warning

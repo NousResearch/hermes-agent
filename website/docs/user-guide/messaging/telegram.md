@@ -1405,6 +1405,8 @@ Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, top
 
 Numeric YAML keys are automatically normalized to strings.
 
+An entry can also point at a markdown file instead of holding the text inline (`"42": {file: channel-prompts/writing.md}`); see [Discord channel prompts](discord.md#discordchannel_prompts) for the full syntax.
+
 ## Troubleshooting
 
 | Problem | Solution |

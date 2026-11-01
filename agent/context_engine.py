@@ -68,6 +68,24 @@ class ContextEngine(ABC):
     threshold_percent: float = 0.75
     protect_first_n: int = 3
     protect_last_n: int = 6
+
+    # Fraction of ``threshold_tokens`` a compaction pass aims to leave behind.
+    # The host multiplies this by ``threshold_tokens`` to derive the idle-
+    # compaction floor (``turn_context_compaction.py``: don't summarize a thread that is
+    # already smaller than what compaction would reduce it to). Engines with a
+    # different post-compaction target should override it; the default mirrors
+    # ContextCompressor's own ``summary_target_ratio`` default so host behaviour
+    # is unchanged for the built-in engine.
+    summary_target_ratio: float = 0.20
+
+    # Last provider-reported ``prompt_tokens`` that was a REAL reading, as
+    # opposed to the ``-1`` "compaction just ran, awaiting real usage" sentinel
+    # written into ``last_prompt_tokens``. The host reports this when it skips a
+    # preflight compaction because ``should_defer_preflight_to_real_usage()``
+    # returned True, so an engine that implements that hook should keep this
+    # field current. Engines that don't implement the hook can leave it at 0.
+    last_real_prompt_tokens: int = 0
+
     # False keeps successful automatic compaction passes silent (routine background
     # maintenance); warnings, errors and manual /compress still surface.
     emit_automatic_compaction_status: bool = True

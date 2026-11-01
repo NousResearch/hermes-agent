@@ -27,8 +27,17 @@
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    /* 0s, not 0.01ms: transition-property defaults to `all`, so a non-zero duration turns on
+       `transition: all` for EVERY element and each tab switch (visibility/opacity flip on a
+       whole pane) pays for it (~3-5x main-thread time). See #146383. */
+    transition-duration: 0s !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Elements with an explicit transition utility keep a near-zero (not zero) duration so
+     `transitionend` still fires (e.g. generated-image-result unmounts its canvas on it). */
+  [class*='transition'] {
+    transition-duration: 0.01ms !important;
   }
 }
 

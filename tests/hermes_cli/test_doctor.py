@@ -142,7 +142,7 @@ class TestDoctorToolAvailabilitySummary:
         'run hermes setup' summary like any missing key (#9516)."""
         unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
                        {"name": "homeassistant", "env_vars": [], "tools": []}]
-        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen", "homeassistant"})
         monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
         monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", list)
         fake_model_tools = types.SimpleNamespace(
@@ -159,6 +159,55 @@ class TestDoctorToolAvailabilitySummary:
         image_line = next(line for line in out.splitlines() if "image_gen" in line)
         assert "hermes tools" in image_line and "system dependency" not in image_line and "unavailable" in image_line
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        assert any("hermes setup" in issue for issue in f.issues)
+
+    def test_disabled_toolsets_omit_unavailable_rows_and_summary(self, monkeypatch):
+        """#137529: a toolset removed from the CLI's enabled set (explicitly disabled or
+        default-off) is a config choice, not a fault — doctor must not warn about it or
+        send the operator hunting for keys the tool would never use."""
+        unavailable = [
+            {"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
+            {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
+        ]
+        monkeypatch.setattr(
+            doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"web"}
+        )
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "rl": {"name": "rl"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        assert "image_gen" not in out
+        assert "TINKER_API_KEY" not in out
+        assert not any("hermes setup" in issue for issue in f.issues)
+
+    def test_unresolvable_config_keeps_unavailable_rows(self, monkeypatch):
+        """Config resolution failure must fail open: doctor still reports every
+        unavailable toolset rather than silently hiding potential faults (#137529)."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}]
+        monkeypatch.setattr(
+            doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: None
+        )
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        assert "image_gen" in out
         assert any("hermes setup" in issue for issue in f.issues)
 
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):

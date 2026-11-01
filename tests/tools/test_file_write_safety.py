@@ -992,7 +992,7 @@ class TestProfileHomeExemptsHermesRoot:
         import tools.file_tools_write_guards as ft
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        root, profile = self._profile_layout(tmp_path)
+        _root, profile = self._profile_layout(tmp_path)
         repo = tmp_path / "repo"
         (repo / ".hermes").mkdir(parents=True)
         monkeypatch.delenv("HERMES_HOME", raising=False)

@@ -65,14 +65,21 @@ def _ledger_gateway_home(pid: int) -> str | None:
     return None
 
 
-def gateway_pid_in_update_scope(pid: int, scope: set[Path] | None = None) -> bool | None:
-    """Does gateway *pid* run on a home this update owns? ``None`` when its home cannot be read."""
+def gateway_pid_home(pid: int) -> str | None:
+    """The home gateway *pid* runs on: its live environment, else the exact-birth ledger witness;
+    ``None`` when neither proves one. Discovery, the Windows pause record and its readiness check
+    share it, so the home discovery proved is the home the restart debt keeps."""
     from hermes_cli.dashboard_procs import _hermes_home_for_pid
     try:
         home = _hermes_home_for_pid(pid)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- tri-state resolver: any environment-read failure is "unknown" and the ledger witness decides
         home = None
-    home = home or _ledger_gateway_home(pid)
+    return home or _ledger_gateway_home(pid)
+
+
+def gateway_pid_in_update_scope(pid: int, scope: set[Path] | None = None) -> bool | None:
+    """Does gateway *pid* run on a home this update owns? ``None`` when its home cannot be read."""
+    home = gateway_pid_home(pid)
     if home is None:
         return None
     return home_in_update_scope(home, scope)
@@ -159,3 +166,20 @@ def describe_skipped_runtime(kind: str, name: str, home: str | None) -> str:
     if home is None:
         return f"  ↷ {name}: {kind} whose Hermes home could not be read — left alone (not restarted)"
     return f"  ↷ {name}: {kind} of another Hermes home ({home}) — left alone (not restarted)"
+
+
+def announce_skipped_runtime(kind: str, name: str, home: str | None) -> None:
+    """Print :func:`describe_skipped_runtime` once per update run, and name the runtime on its receipt.
+
+    The pre-swap pause and the post-swap restart phase each scope the same host-wide gateway list,
+    and the restart phase runs in a fresh completion process, so only the run's receipt (handed to
+    that process) knows what the pause already announced. No open receipt: every call prints.
+    """
+    from hermes_cli import update_receipt
+    entry = [kind, name, home]
+    current = update_receipt._current.get()
+    announced = list((current.data if current is not None else {}).get("runtimes_left_alone") or [])
+    if entry in announced:
+        return
+    print(describe_skipped_runtime(kind, name, home))
+    update_receipt.record_fact("runtimes_left_alone", [*announced, entry])

@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
+from agent.lsp.edit_check import EditChecks
 from agent.lsp.servers import (
     SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
 )
@@ -33,8 +34,8 @@ DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 _DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
 MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
 
-_Key = Tuple[str, str]
-_Diags = List[Dict[str, Any]]
+_Key = tuple[str, str]
+_Diags = list[dict[str, Any]]
 
 
 def _float_or(value: Any, default: float) -> float:
@@ -44,7 +45,7 @@ def _float_or(value: Any, default: float) -> float:
         return default
 
 
-def _path_list(value: Any) -> Optional[List[str]]:
+def _path_list(value: Any) -> Optional[list[str]]:
     """A config list of paths, ``~``-expanded; ``None`` when the value is not a list of strings."""
     if value is None:
         return []
@@ -53,7 +54,7 @@ def _path_list(value: Any) -> Optional[List[str]]:
     return [os.path.expanduser(p) for p in value if p]
 
 
-def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
+def _parse_exclude_roots(value: Any) -> Optional[list[str]]:
     """``lsp.exclude_roots``; ``None`` (fail closed: every root excluded) for a malformed value."""
     if (roots := _path_list(value)) is None:
         eventlog.event_log.warning(
@@ -62,7 +63,7 @@ def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
     return roots
 
 
-def parse_trusted_workspaces(value: Any) -> List[str]:
+def parse_trusted_workspaces(value: Any) -> list[str]:
     """``lsp.trusted_workspaces``; a malformed value trusts nothing extra."""
     if (roots := _path_list(value)) is None:
         eventlog.event_log.warning(
@@ -103,7 +104,7 @@ class _BackgroundLoop:
         finally:
             try:
                 loop.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
@@ -139,12 +140,12 @@ class LSPService:
 
     def __init__(
         self, *, enabled: bool, wait_mode: str, wait_timeout: float, install_strategy: str,
-        binary_overrides: Optional[Dict[str, List[str]]] = None,
-        env_overrides: Optional[Dict[str, Dict[str, str]]] = None,
-        init_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
-        disabled_servers: Optional[List[str]] = None,
+        binary_overrides: Optional[dict[str, list[str]]] = None,
+        env_overrides: Optional[dict[str, dict[str, str]]] = None,
+        init_overrides: Optional[dict[str, dict[str, Any]]] = None,
+        disabled_servers: Optional[list[str]] = None,
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
-        extra_servers: Optional[List[ServerDef]] = None,
+        extra_servers: Optional[list[ServerDef]] = None,
         broken_retry_seconds: float = 0.0,
         warmup_timeout: float = 0.0,
         exclude_roots: Any = None,
@@ -159,14 +160,14 @@ class LSPService:
         self._init_overrides = init_overrides or {}
         self._disabled_servers = set(disabled_servers or [])
         self._idle_timeout = idle_timeout
-        self._extra_servers: List[ServerDef] = list(extra_servers or [])
+        self._extra_servers: list[ServerDef] = list(extra_servers or [])
         self._broken_retry = max(0.0, broken_retry_seconds)
         self._warmup_timeout = max(0.0, warmup_timeout)
         # ``None`` = misconfigured → fail closed (every root excluded) until the user fixes the key: a
         # bare string here means "exclude that workspace", and excluding nothing would re-pay the stall it
         # was meant to avoid.
-        self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
-        self._trusted_workspaces: List[str] = parse_trusted_workspaces(trusted_workspaces)
+        self._exclude_roots: Optional[list[str]] = _parse_exclude_roots(exclude_roots)
+        self._trusted_workspaces: list[str] = parse_trusted_workspaces(trusted_workspaces)
         self._untrusted_skipped: set = set()  # (server_id, root) pairs denied by workspace trust
         self._operator_roots = frozenset(operator_workspace_roots())  # see _note_operator_roots
 
@@ -175,26 +176,27 @@ class LSPService:
             self._loop.start()
 
         # Per-(server_id, workspace_root) state
-        self._clients: Dict[_Key, LSPClient] = {}
+        self._clients: dict[_Key, LSPClient] = {}
         # (server_id, root) → monotonic deadline after which the pair may be retried (inf = lifetime).
-        self._broken: Dict[_Key, float] = {}
-        self._spawning: Dict[_Key, asyncio.Future] = {}
-        self._last_used: Dict[_Key, float] = {}
+        self._broken: dict[_Key, float] = {}
+        self._spawning: dict[_Key, asyncio.Future] = {}
+        self._last_used: dict[_Key, float] = {}
         self._state_lock = threading.Lock()
         self._idle_reaper_task: Optional[asyncio.Task] = None
         # abs file path → diagnostics snapshot taken immediately before a write.
-        self._delta_baseline: Dict[str, _Diags] = {}
+        self._delta_baseline: dict[str, _Diags] = {}
+        self._edit_checks = EditChecks()  # loop-thread state of start_edit_check
 
         if self._enabled and self._idle_timeout > 0:
             self._loop.run(self._start_idle_reaper(), timeout=2.0)
 
     @classmethod
-    def create_from_config(cls) -> Optional["LSPService"]:
+    def create_from_config(cls) -> Optional[LSPService]:
         """Build a service from ``hermes_cli.config``; ``None`` if config can't load."""
         try:
             from hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP config load failed: %s", e)
             return None
         lsp_cfg = cfg.get("lsp") if isinstance(cfg, dict) else None
@@ -255,7 +257,7 @@ class LSPService:
             return None
         try:
             return (srv.server_id, srv.resolve_root(file_path, ws_root) or ws_root)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return (srv.server_id, ws_root)
 
     def enabled_for(self, file_path: str) -> bool:
@@ -354,11 +356,25 @@ class LSPService:
             budget = self._wait_budget(file_path)
             t = max(DIAGNOSTICS_DOCUMENT_WAIT + 3.0, budget + 3.0)
             diags = self._loop.run(self._snapshot_async(file_path, budget), timeout=t)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("baseline snapshot failed for %s: %s", file_path, e)
             self._mark_broken_for_file(file_path, e)
             diags = []
         self._set_delta_baseline(os.path.abspath(file_path), diags or [])
+
+    def start_edit_check(self, file_path: str, *, pre_text: Optional[str], post_text: Optional[str] = None,
+                         owner: Optional[str] = None, carry: tuple = ()):
+        """Non-blocking post-write check (``agent.lsp.edit_check``): a Future of the diagnostics the edit
+        introduced, or None when LSP doesn't handle the file.  Replaces snapshot_baseline +
+        get_diagnostics_sync on the write path, which blocked the write on both waits.  ``owner`` = the
+        editing session; ``carry`` = its undelivered notes for the file this check takes over.
+        ``pre_text`` / ``post_text`` = the edit's own before/after content: the check diagnoses these
+        snapshots, never whatever another session has written to the file since."""
+        if not self.enabled_for(file_path):
+            return None
+        from agent.lsp import edit_check
+        return edit_check.start(self, file_path, pre_text=pre_text, post_text=post_text, owner=owner,
+                                carry=carry)
 
     def _set_delta_baseline(self, abs_path: str, diags: _Diags) -> None:
         """Store a baseline, refreshing recency (pop + reinsert) so eviction tracks write order.
@@ -387,7 +403,7 @@ class LSPService:
             budget = self._wait_budget(file_path)
             t = timeout if timeout is not None else budget + 2.0
             diags = self._loop.run(self._open_and_wait_async(file_path, budget=budget), timeout=t)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             if isinstance(e, asyncio.TimeoutError):
                 eventlog.log_timeout(server_id, file_path)
                 logger.debug("LSP diagnostics timeout for %s: %s", file_path, e)
@@ -424,35 +440,51 @@ class LSPService:
         # Roll the baseline forward so the next call is a delta against this state.
         try:
             fresh = self._loop.run(self._current_diags_async(file_path), timeout=2.0) or []
-        except Exception:  # noqa: BLE001
+        except Exception:
             fresh = []
         if fresh:
             self._set_delta_baseline(abs_path, fresh)
         return diags
 
-    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
-        """Mark the file's ``(server_id, root)`` pair broken after an outer timeout/error.
-        The outer ``_loop.run`` timeout cancels the in-flight spawn before ``_get_or_spawn`` could record
-        the failure; without this every later write would re-pay the full timeout.  Also kills any
-        half-initialized client and logs the failure once."""
+    def _detach_broken(self, file_path: str, exc: BaseException) -> Optional[LSPClient]:
+        """Mark the file's ``(server_id, root)`` pair broken after an outer timeout/error, drop its
+        client from the live maps and log the failure once; returns the dropped client for the caller
+        to shut down.  The outer timeout cancels the in-flight spawn before ``_get_or_spawn`` could
+        record the failure; without this every later write would re-pay the full timeout.  The one
+        owner of this cleanup: ``_mark_broken_for_file`` (tool threads) and
+        ``_mark_broken_for_file_async`` (the loop) only differ in how they await the shutdown."""
         srv = self._server_for(file_path)
         key = self._broken_key(srv, file_path) if srv is not None else None
         if key is None:
-            return
+            return None
         already_broken = self._is_broken(key)
         self._mark_broken(key)
         with self._state_lock:
             ckey = self._live_key(srv, key[1])
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
+        if not already_broken:
+            eventlog.log_spawn_failed(key[0], key[1], exc)
+        return client
+
+    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
+        """Tool-thread bridge of :meth:`_detach_broken`: shuts the client down through the loop."""
+        client = self._detach_broken(file_path, exc)
         if client is not None:
             try:
                 # Fire-and-forget shutdown — we're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
-        if not already_broken:
-            eventlog.log_spawn_failed(key[0], key[1], exc)
+
+    async def _mark_broken_for_file_async(self, file_path: str, exc: BaseException) -> None:
+        """Loop-side :meth:`_detach_broken` (``_mark_broken_for_file`` would block on the loop it runs on)."""
+        client = self._detach_broken(file_path, exc)
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.shutdown(), timeout=1.0)
+            except Exception:  # best effort on an already-failed server; the pair is marked broken either way
+                logger.debug("shutdown of broken LSP client failed", exc_info=True)
 
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""
@@ -460,12 +492,12 @@ class LSPService:
             return
         try:
             self._loop.run(self._shutdown_async(), timeout=10.0)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP shutdown error: %s", e)
         self._loop.stop()
         clear_cache()
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Return a snapshot of the service for ``hermes lsp status``."""
         with self._state_lock:
             clients = [
@@ -512,7 +544,7 @@ class LSPService:
                 file_path, version, mode=self._wait_mode,
                 timeout=budget if budget is not None else self._wait_timeout,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             if snapshot:
                 logger.debug("snapshot open/wait failed: %s", e)
             else:
@@ -573,8 +605,14 @@ class LSPService:
             return await self._attach_root(srv, client, root)
         if not owner:
             try:
-                client = await spawning
-            except Exception:  # noqa: BLE001
+                # Shielded: cancelling this waiter (its caller timed out) must not cancel the spawn
+                # every other waiter of this root shares.
+                client = await asyncio.shield(spawning)
+            except asyncio.CancelledError:
+                if spawning.cancelled():
+                    return None  # the owner was cancelled mid-spawn
+                raise
+            except Exception:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
         try:
@@ -591,6 +629,8 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+            if not spawning.done():
+                spawning.cancel()  # owner cancelled/failed mid-spawn: release the waiters
 
     @staticmethod
     async def _attach_root(srv: ServerDef, client: LSPClient, root: str) -> LSPClient:
@@ -618,7 +658,7 @@ class LSPService:
         )
         try:
             await client.start()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             eventlog.log_spawn_failed(srv.server_id, root, e)
             return None
         return client
@@ -641,7 +681,7 @@ class LSPService:
                 await self._reap_idle_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 # A transient sweep error must not kill the reaper, or the accumulation leak it fixes comes back.
                 logger.debug("LSP idle reaper sweep error: %s", e)
 
@@ -671,7 +711,7 @@ class LSPService:
         root = os.path.abspath(workspace_root)
         try:
             return self._loop.run(self._release_async(root), timeout=15.0)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("LSP release of %s failed: %s", root, e)
             return 0
 
@@ -709,7 +749,7 @@ class LSPService:
             for folder in folders:
                 try:
                     await client.remove_workspace_folder(folder)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     logger.debug("LSP folder removal for %s failed: %s", folder, e)
         if clients:
             eventlog.log_released([(c.server_id, c.workspace_root) for c in clients], reason)

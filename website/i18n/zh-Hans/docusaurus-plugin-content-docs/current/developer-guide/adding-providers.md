@@ -127,7 +127,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 当你的 provider 需要以下任何内容时，使用下面的完整清单：
 
-- OAuth 或 token 刷新（Nous Portal、Codex、Qwen Portal、Copilot）
+- OAuth 或 token 刷新（Nous Portal、Codex、Qwen Portal）
 - 需要新适配器的非 OpenAI API 格式（Anthropic Messages、Codex Responses）
 - 自定义端点检测或多区域探测（z.ai、Kimi）
 - 精选的静态模型目录或实时 `/models` 获取

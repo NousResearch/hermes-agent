@@ -768,6 +768,8 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
+type InputHandler = (inp: string, k: Key, event: InputEvent) => void
+
 type PasteResult = { cursor: number; value: string } | null
 
 const isPasteResultPromise = (
@@ -796,6 +798,16 @@ export function TextInput({
   )
 
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  // Bumped on every submit so the value-sync effect below re-runs even when the parent's value
+  // ends where it started: text + Return in ONE stdin read (`tmux send-keys 'text' Enter`) emits
+  // the text and the submit's clear in the same React batch, so `value` never visibly changes and
+  // the submitted text would stay in the composer.
+  const [submitSeq, setSubmitSeq] = useState(0)
+  // Keys that arrive after a submit, before the parent's response has rendered (a kitty Enter
+  // and the next keystroke share one read). They replay once the value-sync effect has applied
+  // the parent's answer, so they edit the next draft instead of the submitted one.
+  const postSubmitKeys = useRef<null | Parameters<InputHandler>[]>(null)
+  const handleInputRef = useRef<InputHandler>(() => {})
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -958,7 +970,14 @@ export function TextInput({
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
     undo.current = []
     redo.current = []
-  }, [value])
+  }, [value, submitSeq])
+
+  // Declared after the value sync so it runs once the parent's answer to a submit is applied.
+  useEffect(() => {
+    const queued = postSubmitKeys.current
+    postSubmitKeys.current = null
+    queued?.forEach(([inp, k, event]) => handleInputRef.current(inp, k, event))
+  }, [submitSeq])
 
   // The composer unmounts while full-screen monitors own input. Keep its
   // insertion point with the shell, not with transient steer/secret inputs.
@@ -1378,8 +1397,20 @@ export function TextInput({
     }
   }
 
+  const submit = (text: string) => {
+    postSubmitKeys.current = []
+    setSubmitSeq(n => n + 1)
+    cbSubmit.current?.(text)
+  }
+
+  // Holds keys while a submit is pending. The replay goes through this gate too, so a replayed
+  // Enter queues the keys after it until its own submit has been answered.
+  const queueAfterSubmit = (handler: InputHandler): InputHandler =>
+    (handleInputRef.current = (inp, k, event) =>
+      postSubmitKeys.current ? void postSubmitKeys.current.push([inp, k, event]) : handler(inp, k, event))
+
   useInput(
-    (inp: string, k: Key, event: InputEvent) => {
+    queueAfterSubmit((inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
       // Configured voice shortcut wins over composer-level defaults like
@@ -1455,7 +1486,7 @@ export function TextInput({
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
-          cbSubmit.current?.(pending.value)
+          submit(pending.value)
         }
 
         return
@@ -1720,7 +1751,7 @@ export function TextInput({
       }
 
       commit(v, c)
-    },
+    }),
     { isActive: focus }
   )
 

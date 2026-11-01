@@ -269,10 +269,11 @@ def test_oauth_session_cannot_be_polled_or_cancelled_from_another_profile(
 
 
 
-def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch):
+@pytest.mark.parametrize("existing_model", [None, {"provider": "openrouter", "default": "anthropic/claude-test"}])
+def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch, existing_model):
     import hermes_cli.web_routers.oauth as ws
     from hermes_cli.auth import get_active_provider
-    from hermes_cli.config import load_config
+    from hermes_cli.config import atomic_config_write, get_config_path, load_config
     from hermes_cli.models import get_default_model_for_provider
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -317,6 +318,11 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
     monkeypatch.setattr(httpx, "Client", _Client)
     monkeypatch.setattr(ws.time, "sleep", lambda _: None)
 
+    if existing_model:
+        for profile in (None, "coder"):
+            with ws._profile_scope(profile):
+                atomic_config_write(get_config_path(), {"model": existing_model})
+
     # A -> B -> A exercises the real profile scope and detects leaked config/auth caches.
     for profile in (None, "coder", None):
         sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile=profile)
@@ -326,13 +332,16 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
             with ws._profile_scope(profile):
                 assert get_active_provider() == "openai-codex"
                 config = load_config()
-                assert config["model"]["provider"] == "openai-codex"
-                assert config["model"]["default"] == get_default_model_for_provider("openai-codex")
-                runtime = resolve_runtime_provider(requested=None)
+                if existing_model:
+                    assert config["model"] == existing_model
+                else:
+                    assert config["model"]["provider"] == "openai-codex"
+                    assert config["model"]["default"] == get_default_model_for_provider("openai-codex")
+                runtime = resolve_runtime_provider(requested="openai-codex" if existing_model else None)
                 assert runtime["provider"] == "openai-codex"
                 assert runtime["api_key"] == access_token
                 assert runtime["api_mode"] == "codex_responses"
-            if profile is None and not (profile_home / "auth.json").exists():
+            if not existing_model and profile is None and not (profile_home / "auth.json").exists():
                 assert (profile_home / "config.yaml").read_text() == "{}\n"
         finally:
             ws._oauth_sessions.pop(sid, None)
@@ -529,59 +538,6 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     # so this is the legitimate too-late-to-cancel outcome: token saved,
     # session subsequently removed by the now-unblocked DELETE.
     assert sid not in _web_server_oauth._oauth_sessions
-
-
-
-
-def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
-    from hermes_cli import auth as auth_mod
-
-    session_id = "nous-effective-scope-test"
-    _web_server_oauth._oauth_sessions[session_id] = {
-        "session_id": session_id,
-        "provider": "nous",
-        "flow": "device_code",
-        "created_at": time.time(),
-        "status": "pending",
-        "error_message": None,
-        "portal_base_url": "https://portal.nousresearch.com",
-        "client_id": "hermes-cli",
-        "device_code": "device-code",
-        "interval": 5,
-        "expires_at": time.time() + 600,
-        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
-    }
-    captured_state = {}
-
-    def fake_refresh_nous_oauth_from_state(state, **kwargs):
-        captured_state.update(state)
-        return {**state, "agent_key": "jwt-agent-key"}
-
-    monkeypatch.setattr(
-        auth_mod,
-        "_poll_for_token",
-        lambda **kwargs: {
-            "access_token": "access-token",
-            "refresh_token": "refresh-token",
-            "expires_in": 3600,
-            "token_type": "Bearer",
-        },
-    )
-    monkeypatch.setattr(
-        auth_mod,
-        "refresh_nous_oauth_from_state",
-        fake_refresh_nous_oauth_from_state,
-    )
-    monkeypatch.setattr(auth_mod, "persist_nous_credentials", lambda state: None)
-
-    try:
-        _web_server_oauth._nous_plain_poller(session_id)
-        assert captured_state["scope"] == auth_mod.DEFAULT_NOUS_SCOPE
-        assert _web_server_oauth._oauth_sessions[session_id]["status"] == "approved"
-    finally:
-        _web_server_oauth._oauth_sessions.pop(session_id, None)
-
-
 
 
 

@@ -13,6 +13,7 @@ import os
 import time
 from typing import Any, Optional, Tuple
 
+from agent.credential_source import VERTEX_OAUTH, tag_credential_source
 from agent.secret_scope import get_secret as _get_secret, is_multiplex_active
 
 try:
@@ -37,8 +38,8 @@ def _ensure_google_auth() -> bool:
     try:
         from pm import ensure_import
         ensure_import("vertex")
-        import google.auth as _auth  # noqa: F401 — rebinding the module globals below
-        import google.auth.transport.requests  # noqa: F401
+        import google.auth as _auth
+        import google.auth.transport.requests
         from google.oauth2 import service_account as _service_account
     except Exception as exc:
         logger.warning("google-auth package not installed (%s). Cannot use Vertex AI.", exc)
@@ -93,7 +94,7 @@ def _resolve_credentials_path(explicit: Optional[str]) -> Optional[str]:
     return None
 
 
-def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[Any, ...]]:
+def _sa_snapshot(resolved_path: Optional[str]) -> tuple[Optional[bytes], tuple[Any, ...]]:
     """Resolve (bytes-or-None, cache key) for one credential attempt.
 
     - No path (ADC): (None, ("__adc__",)) sentinel key.
@@ -115,7 +116,7 @@ def _sa_snapshot(resolved_path: Optional[str]) -> Tuple[Optional[bytes], Tuple[A
     return raw, (resolved_path, hashlib.sha256(raw).hexdigest())
 
 
-def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[Tuple[Any, Optional[str]]]:
+def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> Optional[tuple[Any, Optional[str]]]:
     """Build (credentials, project_id) for a cache miss; None when ADC must be refused."""
     if resolved_path:
         if sa_raw is not None:
@@ -145,7 +146,22 @@ def _needs_refresh(creds) -> bool:
     )
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def _cached_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes], cache_key: tuple[Any, ...]):
+    """(credentials, project_id) from the per-content cache, loading on a miss; None when refused."""
+    cached = _creds_cache.get(cache_key)
+    if cached is None:
+        cached = _load_credentials(resolved_path, sa_raw)
+        if cached is None:
+            return None
+        _creds_cache[cache_key] = cached
+        # A rotation leaves the old signature's entry behind; keep at most
+        # one Credentials per file so stale identities can't be reused.
+        for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
+            _creds_cache.pop(k, None)
+    return cached
+
+
+def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if not _ensure_google_auth():
         return None, None
@@ -155,16 +171,9 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
     sa_raw, cache_key = _sa_snapshot(resolved_path)
 
     try:
-        cached = _creds_cache.get(cache_key)
+        cached = _cached_credentials(resolved_path, sa_raw, cache_key)
         if cached is None:
-            cached = _load_credentials(resolved_path, sa_raw)
-            if cached is None:
-                return None, None
-            _creds_cache[cache_key] = cached
-            # A rotation leaves the old signature's entry behind; keep at most
-            # one Credentials per file so stale identities can't be reused.
-            for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
-                _creds_cache.pop(k, None)
+            return None, None
         creds, project_id = cached
         if _needs_refresh(creds):
             creds.refresh(google.auth.transport.requests.Request())
@@ -189,12 +198,42 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 def get_vertex_config(
     credentials_path: Optional[str] = None, region: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
     token, project_id = get_vertex_credentials(credentials_path)
     if not token or not project_id:
         return None, None
     return token, build_vertex_base_url(project_id, _resolve_region(region))
+
+
+def get_vertex_base_url(credentials_path: Optional[str] = None, region: Optional[str] = None) -> Optional[str]:
+    """The Vertex base_url WITHOUT minting a token (no OAuth exchange), or None when the credentials
+    cannot be loaded or no project resolves. For processes that route but never send — the
+    gateway-backed CLI, whose gateway session mints its own token for the turn."""
+    if not _ensure_google_auth():
+        return None
+    resolved_path = _resolve_credentials_path(credentials_path)
+    sa_raw, cache_key = _sa_snapshot(resolved_path)
+    try:
+        cached = _cached_credentials(resolved_path, sa_raw, cache_key)
+    except Exception:  # health: allow BLE001 -- same boundary as get_vertex_credentials: unloadable credentials are main's AuthError copy
+        logger.debug("Vertex AI credentials could not be loaded", exc_info=True)
+        _creds_cache.pop(cache_key, None)
+        return None
+    project_id = _resolve_project_override() or (cached[1] if cached else None)
+    return build_vertex_base_url(project_id, _resolve_region(region)) if cached and project_id else None
+
+
+def vertex_access_token() -> str:
+    """Callable API key: a fresh Vertex token, minted on first use and reused until near expiry.
+    One stable object, so a credential re-resolution never reads as a key change."""
+    token, _project_id = get_vertex_credentials()
+    if not token:
+        raise RuntimeError("Vertex AI OAuth token could not be minted (see the Vertex credential settings)")
+    return token
+
+
+tag_credential_source(vertex_access_token, VERTEX_OAUTH)
 
 
 def has_vertex_credentials() -> bool:

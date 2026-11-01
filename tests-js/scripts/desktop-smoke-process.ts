@@ -1,9 +1,12 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { z } from 'zod'
 
+import { parseSpawnLedger, SPAWN_LEDGER_FILENAME } from '../../apps/desktop/electron/backend-discovery.ts'
+import { resolveDesktopHermesHome } from '../../apps/desktop/electron/data-paths.mjs'
 import { within } from '../../tests/install/e2e-assets/smoke-env.mjs'
 
 export interface NativeProcess {
@@ -20,10 +23,20 @@ export interface NativeProcess {
   cwd?: string
 }
 
+/** The identified listener, with how it was tied to this app (ancestry, this home's ledger,
+ * or the canonical gateway this home's `gateway_state.json` names). */
+export interface BackendProcess extends NativeProcess {
+  ownership: 'child' | 'host-ledger' | 'host-gateway'
+  /** For a canonical gateway: the commit it stamped into its own `gateway_state.json` (`code_sha`). */
+  codeSha?: string
+}
+
 /** What the caller already knows about the app that owns this listener. */
 export interface OriginEvidence {
   /** The root the app itself reported resolving, from its own UI/identity channel. */
   appReportedRoot?: string
+  /** The commit the expected installation records (`readInstallationCommit`). */
+  installedCommit?: string
 }
 
 function nativeText(command: string, args: string[]): string {
@@ -139,13 +152,127 @@ function linuxListeningPid(port: number, candidates: NativeProcess[]): number[] 
   }).map((candidate: NativeProcess): number => candidate.pid)
 }
 
+/** Epoch seconds a live process started (psutil's `create_time` basis), or null when unreadable. */
+function processStartTime(pid: number): number | null {
+  try {
+    if (process.platform === 'linux') {
+      // psutil: boot time + field 22 (starttime, clock ticks), read after the `(comm)` field.
+      const fields = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').pop()!.trim().split(/\s+/)
+      const bootTime = Number(/^btime\s+(\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8'))?.[1])
+      const ticks = Number(nativeText('getconf', ['CLK_TCK']))
+
+      return bootTime + Number(fields[19]) / ticks
+    }
+
+    if (process.platform === 'darwin') {
+      // `Sun Oct  4 15:20:01 2026`, whole seconds. Rendered in UTC: local time
+      // repeats an hour when DST ends, which would misdate a backend by 3600 s.
+      const lstart = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+
+      const started = Date.parse(`${lstart} GMT`) / 1000
+
+      return Number.isNaN(started) ? null : started
+    }
+
+    const ms = nativeText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `([DateTimeOffset](Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop).CreationDate).ToUnixTimeMilliseconds()`])
+
+    return /^\d+$/.test(ms) ? Number(ms) / 1000 : null
+  } catch {
+    return null
+  }
+}
+
+const gatewayStateSchema = z.object({
+  pid: z.number().int().positive(), kind: z.literal('hermes-gateway'),
+  gateway_state: z.string(), start_time: z.number().nullable().optional(),
+  code_sha: z.string().nullable().optional(),
+}).passthrough()
+
+/** Whether `pid` is still the incarnation `gateway.status._get_process_start_time` recorded:
+ * raw `/proc/<pid>/stat` start ticks on Linux, psutil centiseconds elsewhere. An unrecorded
+ * start time carries only its PID, as in the product's `_start_times_conflict`. */
+function gatewayIncarnationMatches(pid: number, recorded: number | null | undefined): boolean {
+  if (recorded === null || recorded === undefined) {
+    return true
+  }
+
+  if (process.platform === 'linux') {
+    try {
+      return Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').pop()!.trim().split(/\s+/)[19]) === recorded
+    } catch {
+      return false
+    }
+  }
+
+  const started = processStartTime(pid)
+
+  return started !== null && Math.abs(started - recorded / 100) < 2
+}
+
+/** The running canonical gateway (`hermes gateway run`) recorded for `homes`. Desktop reaches a
+ * local backend through `hermes gateway ensure`, which attaches to that daemon or starts it
+ * detached, so it is neither an Electron descendant nor a `serve` spawn-ledger record. */
+function canonicalGateways(homes: string[], processes: NativeProcess[]): Map<number, string | undefined> {
+  return new Map([...new Set(homes)].flatMap((home: string): Array<[number, string | undefined]> => {
+    try {
+      const state = gatewayStateSchema.parse(JSON.parse(
+        fs.readFileSync(path.join(home, 'gateway_state.json'), 'utf8').replace(/^\uFEFF/, '')))
+
+      const live = state.gateway_state === 'running' && processes.some(candidate => candidate.pid === state.pid)
+        && gatewayIncarnationMatches(state.pid, state.start_time)
+
+      return live ? [[state.pid, state.code_sha ?? undefined]] : []
+    } catch { return [] /* Missing/unreadable state provides no attachment evidence. */ }
+  }))
+}
+
 /** Identify the actual listener, not a healthy helper or a command recorded before spawn. */
-export function localBackendProcess(port: number, electronPid: number): NativeProcess {
+export function localBackendProcess(port: number, electronPid: number, hermesHome?: string): BackendProcess {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error('Invalid backend port')
   }
 
-  const children = descendants(readNativeProcesses(), electronPid)
+  const processes = readNativeProcesses()
+  const children = descendants(processes, electronPid)
+  // An update can automatically reopen the app before this smoke starts. The
+  // new window legitimately attaches to that host backend instead of spawning
+  // its own child. Registration is only a candidate: the OS listener and the
+  // caller's existing installed-tree checks must independently agree.
+  let registered: number[] = []
+  let gateways = new Map<number, string | undefined>()
+
+  if (hermesHome) {
+    // The product writes one machine-root ledger for every profile, and the app
+    // reads it at its own resolved root (`main.ts` -> `spawnLedgerPath(HERMES_HOME)`,
+    // where a `<root>/profiles/<name>` home resolves to `<root>`).
+    const ledgerRoot = resolveDesktopHermesHome({ home: os.homedir(), env: { HERMES_HOME: hermesHome } })
+    // A named profile is served by the root's multiplexer; a standalone one by its own gateway.
+    gateways = canonicalGateways([hermesHome, ledgerRoot], processes)
+
+    try {
+      registered = parseSpawnLedger(fs.readFileSync(path.join(ledgerRoot, SPAWN_LEDGER_FILENAME), 'utf8'))
+        .filter(record => record.port === port && processes.some(candidate => candidate.pid === record.pid))
+        // A record names a (pid, create_time) incarnation; a reused PID is a different
+        // process. Same 2 s tolerance as the product's `_same_incarnation`; a record
+        // without a create_time (no psutil) carries only its PID, as in the product.
+        .filter((record) => {
+          if (record.createTime === null) {
+            return true
+          }
+
+          const started = processStartTime(record.pid)
+
+          return started !== null && Math.abs(started - record.createTime) < 2
+        })
+        .map(record => record.pid)
+    } catch { /* Missing/unreadable ledger provides no attachment evidence. */ }
+  }
+
+  const candidates = processes.filter(candidate => children.includes(candidate) || registered.includes(candidate.pid)
+    || gateways.has(candidate.pid))
+
   let pids: number[]
 
   if (process.platform === 'win32') {
@@ -155,16 +282,21 @@ export function localBackendProcess(port: number, electronPid: number): NativePr
     pids = nativeText('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp']).split('\n')
       .filter((line: string): boolean => /^p\d+$/.test(line)).map((line: string): number => Number(line.slice(1)))
   } else {
-    pids = linuxListeningPid(port, children)
+    pids = linuxListeningPid(port, candidates)
   }
 
-  const matches = children.filter((child: NativeProcess): boolean => pids.includes(child.pid))
+  const matches = candidates.filter((child: NativeProcess): boolean => pids.includes(child.pid))
 
   if (matches.length !== 1) {
-    throw new Error(`Expected one Electron-owned backend listener on port ${port}; found ${matches.length}`)
+    throw new Error(`Expected one Desktop-owned, registered host or canonical gateway backend listener on port ${port}; found ${matches.length}`)
   }
 
-  const backend = matches[0]
+  const ownership = children.includes(matches[0]) ? 'child' : registered.includes(matches[0].pid) ? 'host-ledger' : 'host-gateway'
+  const backend: BackendProcess = { ...matches[0], ownership }
+
+  if (ownership === 'host-gateway') {
+    backend.codeSha = gateways.get(backend.pid)
+  }
 
   if (process.platform === 'linux') {
     backend.executable = fs.readlinkSync(`/proc/${backend.pid}/exe`)
@@ -185,7 +317,34 @@ export function localBackendProcess(port: number, electronPid: number): NativePr
   return backend
 }
 
-export function assertBackendOrigin(backend: NativeProcess, root: string, origin: 'source' | 'bundled',
+// Some platforms expose no way to read another process's environment or cwd, so a
+// module-launched backend there can never name its tree in argv (Windows: the venv
+// launcher hands the interpreter over as a system python). When the listener is a
+// descendant of the app, and the caller has already asserted the root that app
+// reported resolving, those two facts together are the evidence. A ledger-registered
+// host backend is not tied to this app by ancestry, so the app's report says nothing
+// about it; it must carry its own argv/env/cwd evidence. Requiring the process
+// evidence to be absent keeps this from loosening a platform that can read one.
+function appVouchesForBackend(backend: BackendProcess, evidence: OriginEvidence,
+  sameTree: (value?: string) => boolean): boolean {
+  const processEvidenceUnreadable = backend.cwd === undefined
+    && backend.pythonPath === undefined && backend.virtualEnv === undefined
+
+  if (!processEvidenceUnreadable || evidence.appReportedRoot === undefined || !sameTree(evidence.appReportedRoot)) {
+    return false
+  }
+
+  // A canonical gateway is not the app's descendant (`gateway ensure` starts it detached),
+  // and Windows cannot read its cwd, the evidence `main` uses for it. It must vouch for
+  // itself: the commit it stamped into its own gateway_state.json is the installed one.
+  if (backend.ownership === 'host-gateway') {
+    return evidence.installedCommit !== undefined && backend.codeSha === evidence.installedCommit
+  }
+
+  return backend.ownership === 'child'
+}
+
+export function assertBackendOrigin(backend: BackendProcess, root: string, origin: 'source' | 'bundled',
   evidence: OriginEvidence = {}): void {
   if (origin === 'bundled') {
     if (path.basename(root) !== 'agent-payload' || !within(root, backend.executable)) {
@@ -251,18 +410,7 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
       || (backend.virtualEnv !== undefined && backend.virtualEnv.trim() !== ''
           && sameTree(path.dirname(backend.virtualEnv)))
 
-    // Some platforms expose no way to read another process's environment or cwd, so a
-    // module-launched backend there can never name its tree in argv (Windows: the venv
-    // launcher hands the interpreter over as a system python). The listener has already
-    // been tied to the app process that owns it, and the caller has already asserted the
-    // root that app reported resolving, so those two facts together are the evidence.
-    // Requiring the process evidence to be absent keeps this from loosening a platform
-    // that can read one.
-    const processEvidenceUnreadable = backend.cwd === undefined
-      && backend.pythonPath === undefined && backend.virtualEnv === undefined
-
-    const appOwnsBackend = processEvidenceUnreadable
-      && evidence.appReportedRoot !== undefined && sameTree(evidence.appReportedRoot)
+    const appOwnsBackend = appVouchesForBackend(backend, evidence, sameTree)
 
     if (!sameTree(backend.cwd) && !namesInstallRoot && !usesInstallEnvironment && !appOwnsBackend) {
       throw new Error('Source backend listener imports a different source tree'

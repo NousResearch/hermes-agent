@@ -18,6 +18,7 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+    issuer: str = ""  # Verified issuer; empty for non-federated providers.
 
 
 @dataclass(frozen=True)
@@ -104,13 +105,18 @@ class DashboardAuthProvider(ABC):
     Subclasses MUST set ``name`` (stable lowercase id) and ``display_name``. Capability flags:
     ``supports_password`` (credential form + ``complete_password_login``; OAuth methods may be
     ``NotImplementedError`` stubs), ``supports_token`` (``verify_token`` for the token-auth seam),
-    ``supports_session`` (False for token-only credentials such as drain, never offered a login).
+    ``supports_session`` (False for token-only credentials such as drain, never offered a login),
+    ``interactive_login`` (False for a provider that verifies credentials but has no browser
+    sign-in flow — kept out of the login page, ``/api/auth/providers`` and the auto-SSO redirect
+    even though its ``verify_session`` is real; a session provider presenting a provisioned
+    shared token is the bundled consumer).
     """
     name: str = ""
     display_name: str = ""
     supports_password: bool = False
     supports_token: bool = False
     supports_session: bool = True
+    interactive_login: bool = True
 
     @abstractmethod
     def start_login(self, *, redirect_uri: str) -> LoginStart: ...
@@ -128,7 +134,7 @@ class DashboardAuthProvider(ABC):
     @abstractmethod
     def revoke_session(self, *, refresh_token: str) -> None: ...
 
-    def complete_password_login(self, *, username: str, password: str) -> "Session":
+    def complete_password_login(self, *, username: str, password: str) -> Session:
         """Verify a username/password pair and mint a :class:`Session` (only called when
         ``supports_password``). Raise ``InvalidCredentialsError`` on rejection (SHOULD be constant
         time for unknown users — no timing oracle) and ``ProviderError`` when the store is
@@ -137,7 +143,7 @@ class DashboardAuthProvider(ABC):
             f"{type(self).__name__} does not support password login "
             "(set supports_password = True and override complete_password_login)")
 
-    def verify_token(self, *, token: str) -> "Optional[TokenPrincipal]":
+    def verify_token(self, *, token: str) -> Optional[TokenPrincipal]:
         """Verify a non-interactive bearer token; return its principal. Mirrors ``verify_session``:
         return ``None`` (never raise) for an unrecognised token so the seam falls through; raise
         ``ProviderError`` ONLY for a genuine backing-store outage. Shared secrets MUST be compared

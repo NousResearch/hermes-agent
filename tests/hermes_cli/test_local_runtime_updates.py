@@ -64,7 +64,7 @@ def test_boot_uses_previous_pm_engine_without_installing(runtime_env, monkeypatc
     binary = record_engine(store, "10362")
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(endpoint, "_state_endpoint", lambda: None)
-    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *args: None)
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda *args, **kwargs: None)
     monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda *args: None)
 
     def forbidden(*args, **kwargs):

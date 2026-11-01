@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
-    fingerprint as _token_fingerprint, resolve_cache_home,
+    current_cache_path, fingerprint as _token_fingerprint, remove_cache_file, resolve_cache_home,
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 
 _BWS_RUN_TIMEOUT = 30
 
-# <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
+# <hermes_home>/bws_cache.json holds only secret VALUES (never the access
 # token); kept out of .env so users editing .env don't commit BSM-sourced secrets.
-_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
+_CacheKey = tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
 _DISK_CACHE_BASENAME = "bws_cache.json"
 _ENCRYPTED_CACHE_BASENAME = "bws_cache.enc.json"
 _ENCRYPTED_CACHE_VERSION = 1
@@ -55,7 +55,11 @@ _disk_cache_path = _DISK_CACHE.path
 
 
 def _encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
-    return resolve_cache_home(home_path) / "cache" / _ENCRYPTED_CACHE_BASENAME
+    return resolve_cache_home(home_path) / _ENCRYPTED_CACHE_BASENAME
+
+
+def _current_encrypted_disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    return current_cache_path(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
 
 
 # First matching rule wins. The BSM identity endpoint rejects a revoked /
@@ -90,7 +94,7 @@ def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
         try:
             pm.ensure("bws")
             return pm.installed_package("bws").binary
-        except Exception as exc:  # noqa: BLE001 — never block startup
+        except Exception as exc:
             logger.warning("bws auto-install failed: %s", exc)
     return None
 
@@ -139,9 +143,9 @@ def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entr
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, serialized_key.encode("utf-8"))
         payload = {"version": _ENCRYPTED_CACHE_VERSION, "key": serialized_key,
                    "salt": _b64e(salt), "nonce": _b64e(nonce), "ciphertext": _b64e(ciphertext)}
-        atomic_write_json(_encrypted_disk_cache_path(home_path), payload)
+        atomic_write_json(_current_encrypted_disk_cache_path(home_path), payload)
         _STORE.disk.clear(home_path)
-    except Exception:  # noqa: BLE001 — best-effort cache only
+    except Exception:
         return
 
 
@@ -153,7 +157,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-        payload = json.loads(_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
+        payload = json.loads(_current_encrypted_disk_cache_path(home_path).read_text(encoding="utf-8-sig"))
         serialized_key = _cache_key_str(cache_key)
         if (not isinstance(payload, dict)
                 or payload.get("version") != _ENCRYPTED_CACHE_VERSION
@@ -169,7 +173,7 @@ def _read_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, max_a
             return None
         entry_age = time.time() - entry.fetched_at
         return None if entry_age < 0 or entry_age > max_age_seconds else entry
-    except Exception:  # noqa: BLE001 — cache miss on parse/decrypt/I/O errors
+    except Exception:
         return None
 
 
@@ -181,7 +185,7 @@ def fetch_bitwarden_secrets(
     cache_ttl_seconds: float = 300, use_cache: bool = True, server_url: str = "",
     home_path: Optional[Path] = None, encrypted_cache_enabled: bool = False,
     encrypted_cache_max_stale_seconds: float = 0,
-) -> Tuple[Dict[str, str], List[str]]:
+) -> tuple[dict[str, str], list[str]]:
     """Pull the secrets for ``project_id`` from BSM → ``(secrets, warnings)``.
 
     ``server_url``: region / self-hosted instance (empty = US Cloud). With
@@ -258,7 +262,7 @@ def _summarize_bws_stderr(raw: str) -> str:
     """Reduce a bws (color-eyre) error dump to its numbered cause lines joined with
     ``; `` (dropping ``Location:``/``Backtrace`` on); raw text if unrecognized."""
     text = raw.replace("\x1b", "").strip()
-    causes: List[str] = []
+    causes: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith(("Location:", "Backtrace omitted", "Run with ")):
@@ -268,7 +272,7 @@ def _summarize_bws_stderr(raw: str) -> str:
     return "; ".join(causes) if causes else text
 
 
-def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> Tuple[Dict[str, str], List[str]]:
+def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> tuple[dict[str, str], list[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     # The bws child intentionally receives the access token; a profile-local
     # fetch must not inherit sibling credentials (source_child_env).
@@ -295,8 +299,8 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
     if not isinstance(payload, list):
         raise RuntimeError(f"bws returned unexpected shape: {type(payload).__name__}")
 
-    secrets: Dict[str, str] = {}
-    warnings: List[str] = []
+    secrets: dict[str, str] = {}
+    warnings: list[str] = []
     for item in payload:
         key, value = (item.get("key"), item.get("value")) if isinstance(item, dict) else (None, None)
         if not isinstance(key, str) or not isinstance(value, str):
@@ -390,10 +394,7 @@ class BitwardenSource(SecretSource):
 def clear_caches(home_path: Optional[Path] = None) -> None:
     """Drop in-process AND disk caches (plaintext and encrypted), e.g. after a token rotation."""
     _STORE.clear(home_path)
-    try:
-        _encrypted_disk_cache_path(home_path).unlink()
-    except (FileNotFoundError, OSError):
-        pass
+    remove_cache_file(resolve_cache_home(home_path), _ENCRYPTED_CACHE_BASENAME)
 
 
 _reset_cache_for_tests = clear_caches

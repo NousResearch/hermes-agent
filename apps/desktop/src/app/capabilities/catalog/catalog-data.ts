@@ -1,7 +1,10 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
+import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
+
+import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
 
 export type CatalogKind = 'skills' | 'plugins'
 
@@ -37,13 +40,16 @@ export interface CatalogEntry {
   addedAt?: string
   updatedAt?: string
   stars: number | null
+  /** 1-based curated hero rank from the catalog feed (`catalog-curation.json`). */
+  featured?: number
   search: string
 }
 
-const DOCS_ORIGIN = 'https://hermes-agent.nousresearch.com'
 // The public domain redirects here without CORS headers on the redirect.
 // Use the docs' actual static host, not GitHub's API or repository endpoints.
 const CATALOG_BASE = 'https://nousresearch.github.io/hermes-agent/docs/api'
+/** A download with no new bytes for this long is aborted (inactivity, not total time). */
+const CATALOG_STALL_MS = 60_000
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter(v => typeof v === 'string') : [])
 
@@ -74,6 +80,110 @@ function webUrl(value: unknown): string | null {
 export const catalogLabel = (value: string) =>
   value.includes('.') ? value : value.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+const isoDate = (value: unknown) => (Number.isFinite(Date.parse(text(value))) ? text(value) : undefined)
+
+/** Where an entry points: install id, source/docs links, artwork. */
+function catalogLinks(kind: CatalogKind, row: any, rawName: string, source: string) {
+  return {
+    installIdentifier:
+      kind === 'skills'
+        ? skillCatalogInstallIdentifier({
+            name: rawName,
+            source,
+            identifier: text(row.identifier),
+            installIdentifier: text(row.installIdentifier)
+          })
+        : null,
+    sourceUrl: webUrl(row.repo || row.sourceUrl),
+    docsUrl:
+      webUrl(row.docsUrl) || (text(row.docsPath) ? `${CATALOG_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
+    imageUrl: curationOwnsArtwork(kind, row) ? officialCatalogArtwork(kind, row) : catalogImageUrl(row.image),
+    screenshots:
+      kind === 'plugins'
+        ? strings(row.screenshots)
+            .map(catalogImageUrl)
+            .filter((url): url is string => url !== null)
+        : []
+  }
+}
+
+/** Ranking signals: dates, stars, curated rank. */
+function catalogSignals(kind: CatalogKind, row: any) {
+  return {
+    addedAt: isoDate(row.addedAt),
+    updatedAt: isoDate(row.updatedAt),
+    stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
+    featured: typeof row.featured === 'number' && row.featured > 0 ? row.featured : curatedFeaturedRank(kind, row)
+  }
+}
+
+function catalogEntry(kind: CatalogKind, row: any): CatalogEntry {
+  const rawName = text(row.name)
+  // Registry rows occasionally carry a stray front-matter delimiter ("---")
+  // as their name; show the slug instead of a blank title.
+  const name = /[\p{L}\p{N}]/u.test(rawName) ? rawName : text(row.identifier) || rawName
+  const source = text(kind === 'plugins' ? row.tier : row.source)
+  const identifier = text(row.identifier) || rawName
+  const caps = row.capabilities ?? {}
+  const category = text(row.category) || 'uncategorized'
+  const categoryLabel = text(row.categoryLabel) || category
+  const tags = strings(row.tags)
+  const tools = strings(caps.providesTools)
+  const hooks = strings(caps.providesHooks)
+  const middleware = strings(caps.providesMiddleware)
+  const commands = strings(row.commands)
+  const platforms = strings(row.platforms)
+  const requirements = strings(kind === 'plugins' ? caps.requiresEnv : row.envVars)
+  const author = text(row.maintainer ?? row.author)
+  const description = text(row.description)
+
+  return {
+    id: `${source}:${identifier}`,
+    name,
+    description,
+    overview: text(row.overview),
+    category,
+    categoryLabel,
+    source,
+    author,
+    identifier,
+    repo: text(row.repo),
+    sha: text(row.sha),
+    subdir: text(row.subdir),
+    version: text(row.version),
+    requiresHermes: text(row.requiresHermes),
+    tags,
+    tools,
+    hooks,
+    middleware,
+    commands,
+    license: text(row.license) || undefined,
+    platforms,
+    requirements,
+    ...catalogLinks(kind, row, rawName, source),
+    ...catalogSignals(kind, row),
+    search: [
+      name,
+      description,
+      text(row.overview),
+      author,
+      category,
+      categoryLabel,
+      source,
+      ...tags,
+      ...tools,
+      ...hooks,
+      ...platforms,
+      ...requirements,
+      ...commands,
+      ...middleware
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+  }
+}
+
 export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
   if (!Array.isArray(data)) {
     throw new Error('Invalid catalog response')
@@ -82,93 +192,11 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
   const entries = new Map<string, CatalogEntry>()
 
   for (const row of data) {
-    if (!row || typeof row !== 'object' || !text(row.name)) {
-      continue
+    if (row && typeof row === 'object' && text(row.name)) {
+      const entry = catalogEntry(kind, row)
+
+      entries.set(entry.id, entry)
     }
-
-    const name = text(row.name)
-    const source = text(kind === 'plugins' ? row.tier : row.source)
-    const identifier = text(row.identifier) || name
-    const id = `${source}:${identifier}`
-    const caps = row.capabilities ?? {}
-    const category = text(row.category) || 'uncategorized'
-    const categoryLabel = text(row.categoryLabel) || category
-    const tags = strings(row.tags)
-    const tools = strings(caps.providesTools)
-    const hooks = strings(caps.providesHooks)
-    const middleware = strings(caps.providesMiddleware)
-    const commands = strings(row.commands)
-    const platforms = strings(row.platforms)
-    const requirements = strings(kind === 'plugins' ? caps.requiresEnv : row.envVars)
-    const author = text(row.maintainer ?? row.author)
-    const description = text(row.description)
-
-    entries.set(id, {
-      id,
-      name,
-      description,
-      overview: text(row.overview),
-      category,
-      categoryLabel,
-      source,
-      author,
-      identifier,
-      installIdentifier:
-        kind === 'skills'
-          ? skillCatalogInstallIdentifier({
-              name,
-              source,
-              identifier: text(row.identifier),
-              installIdentifier: text(row.installIdentifier)
-            })
-          : null,
-      repo: text(row.repo),
-      sha: text(row.sha),
-      subdir: text(row.subdir),
-      version: text(row.version),
-      requiresHermes: text(row.requiresHermes),
-      tags,
-      tools,
-      hooks,
-      middleware,
-      commands,
-      license: text(row.license) || undefined,
-      platforms,
-      requirements,
-      sourceUrl: webUrl(row.repo || row.sourceUrl),
-      docsUrl:
-        webUrl(row.docsUrl) ||
-        (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
-      imageUrl: kind === 'plugins' ? catalogImageUrl(row.image) : null,
-      screenshots:
-        kind === 'plugins'
-          ? strings(row.screenshots)
-              .map(catalogImageUrl)
-              .filter((url): url is string => url !== null)
-          : [],
-      addedAt: Number.isFinite(Date.parse(text(row.addedAt))) ? text(row.addedAt) : undefined,
-      updatedAt: Number.isFinite(Date.parse(text(row.updatedAt))) ? text(row.updatedAt) : undefined,
-      stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
-      search: [
-        name,
-        description,
-        text(row.overview),
-        author,
-        category,
-        categoryLabel,
-        source,
-        ...tags,
-        ...tools,
-        ...hooks,
-        ...platforms,
-        ...requirements,
-        ...commands,
-        ...middleware
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-    })
   }
 
   return [...entries.values()]
@@ -183,7 +211,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
 
   const armDeadline = () => {
     clearTimeout(timer)
-    timer = setTimeout(() => controller.abort(), 60_000)
+    timer = setTimeout(() => controller.abort(), CATALOG_STALL_MS)
   }
 
   armDeadline()
@@ -234,7 +262,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
     // Chromium can turn our abort into "The user aborted a request." The
     // controller, not that browser-dependent exception name, owns the cause.
     if (controller.signal.aborted) {
-      throw new Error('Catalog download timed out after 60 seconds without progress. Please try again.')
+      throw new Error(`Catalog download timed out after ${CATALOG_STALL_MS / 1000} seconds without progress. Please try again.`)
     }
 
     throw error

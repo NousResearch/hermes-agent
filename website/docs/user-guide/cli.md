@@ -596,7 +596,7 @@ Long conversations are automatically summarized when approaching context limits:
 # In ~/.hermes/config.yaml
 compression:
   enabled: true
-  threshold: 0.50    # Compress at 50% of context limit by default
+  threshold: 0.50    # Compress at 50% of context limit by default (75% below 512K windows)
 
 # Summarization model configured under auxiliary:
 auxiliary:

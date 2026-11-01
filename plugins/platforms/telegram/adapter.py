@@ -6383,13 +6383,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
     def _is_own_message(self, message: Message) -> bool:
-        """True when sent by this bot itself (echoed getUpdates must not count as incoming unread)."""
+        """Reject outbound echoes and private-topic mirrors addressed to this bot's own chat."""
         if not self._bot:
             return False
+        bot_id = getattr(self._bot, "id", None)
+        # Private-topic mode also mirrors owner-authored messages into the bot's own DM chat.
+        if bot_id is not None and getattr(getattr(message, "chat", None), "id", None) == bot_id:
+            return True
         from_user = getattr(message, "from_user", None)
         if from_user is None:
             return False
-        bot_id = getattr(self._bot, "id", None)
         user_id = getattr(from_user, "id", None)
         return bot_id is not None and user_id is not None and bot_id == user_id
 

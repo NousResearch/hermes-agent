@@ -147,6 +147,14 @@ moa:
 
 Unknown or malformed values fall back to `user_turn`.
 
+What counts as "a user message" excludes Hermes's own synthetic user-role
+scaffolding — continuation nudges after a truncated response or a cut stream,
+compression continuations, loop prompts. A response that hits the output limit
+is continued inside the **same** turn, so the advisors are not re-run for it:
+before that rule existed, each continuation re-ran the whole advisor fan-out on
+the grown context, which multiplied a single turn's advisor spend by the number
+of continuations.
+
 :::note Default change
 Prior to July 2026 the default cadence was `per_iteration`. The default is
 now `user_turn` — the cheapest, lowest-impact cadence — until per-mode

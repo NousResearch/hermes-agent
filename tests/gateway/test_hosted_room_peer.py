@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -73,6 +75,41 @@ def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
     assert (home / ".room-link-grant-secret").stat().st_size == 32
 
 
+def test_gateway_room_grant_secret_is_atomic_without_hard_links(tmp_path, monkeypatch):
+    """Android's ``os`` has no ``link`` (sibling of #140080): concurrent workers still agree."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delattr(os, "link")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        secrets = list(pool.map(lambda _index: gateway_room_grant_secret(), range(8)))
+
+    assert len(set(secrets)) == 1
+    assert (home / ".room-link-grant-secret").stat().st_size == 32
+    assert not list(home.glob(".room-link-grant-secret.*"))
+
+
+def test_gateway_room_grant_secret_keeps_a_winner_when_hard_links_are_refused(
+    tmp_path, monkeypatch
+):
+    """A filesystem that refuses hard links must not overwrite a secret another worker published."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    winner = b"w" * 32
+
+    def _winner_publishes_then_link_is_refused(_source, destination):
+        Path(destination).write_bytes(winner)
+        raise PermissionError(errno.EPERM, "hard links are not permitted")
+
+    monkeypatch.setattr(os, "link", _winner_publishes_then_link_is_refused)
+    adopted = gateway_room_grant_secret()
+    reader_home = tmp_path / "reader"
+    reader_home.mkdir()
+    (reader_home / ".room-link-grant-secret").write_bytes(winner)
+
+    assert (home / ".room-link-grant-secret").read_bytes() == winner
+    assert adopted == gateway_room_grant_secret(reader_home)
+    assert not list(home.glob(".room-link-grant-secret.*"))
 
 
 def test_room_link_protocol_fixture_matches_backend_contract():

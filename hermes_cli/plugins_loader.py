@@ -20,9 +20,10 @@ import types
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Union
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
@@ -104,6 +105,24 @@ def _reserve_abandoned_loader_slot() -> None:
 
 
 def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[], Any]) -> Any:
+    """Log local import/register wall time, including the deadline wait, once per load attempt."""
+    started = monotonic()
+    profile = profile_name_for_home(get_hermes_home()) or "custom"
+    outcome = "success"
+    try:
+        return _run_with_load_deadline(plugin_key, ctx, fn)
+    except PluginLoadTimeout:
+        outcome = "timeout"
+        raise
+    except BaseException:
+        outcome = "error"
+        raise
+    finally:
+        logger.info("Plugin load plugin=%r profile=%r outcome=%s elapsed_ms=%.3f",
+                    plugin_key, profile, outcome, (monotonic() - started) * 1000)
+
+
+def _run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[], Any]) -> Any:
     """Run ``fn`` (a plugin's import + ``register()``) under the per-plugin deadline.
 
     The worker inherits the caller's context (the Hermes-home override is a ContextVar). On timeout the

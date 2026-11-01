@@ -5,7 +5,8 @@ from gateway.platform_env import EnvCred, getenv, home_step
 
 
 def _api_key(config: GatewayConfig, sms_config: PlatformConfig) -> None:
-    sms_config.api_key = getenv("TWILIO_AUTH_TOKEN")
+    if token := getenv("TWILIO_AUTH_TOKEN"):
+        sms_config.api_key = token
 
 
 ENV_ENABLE_CREDENTIALS = ("TWILIO_ACCOUNT_SID",)

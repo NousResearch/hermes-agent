@@ -7,7 +7,9 @@ from utils import is_truthy_value
 
 def _e2ee(config: GatewayConfig, matrix_config: PlatformConfig) -> None:
     mode = getenv("MATRIX_E2EE_MODE").strip().lower()
-    matrix_config.extra["encryption"] = mode in ("required", "require", "optional", "prefer", "preferred") or is_truthy_value(getenv("MATRIX_ENCRYPTION"))
+    legacy = getenv("MATRIX_ENCRYPTION")
+    if mode or legacy or "encryption" not in matrix_config.extra:
+        matrix_config.extra["encryption"] = mode in ("required", "require", "optional", "prefer", "preferred") or is_truthy_value(legacy)
     if mode:
         matrix_config.extra["e2ee_mode"] = mode
     env_extras(matrix_config.extra, (("device_id", "MATRIX_DEVICE_ID"),))

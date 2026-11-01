@@ -248,6 +248,13 @@ async def ensure_hosted_service(runner):
 
 
 async def _ensure_hosted_service(runner, authority):
+    # Fast path: _hosted_room_worker_watcher calls this every second for every serving profile.
+    # Entering owner_scope re-reads the profile's .env and terminal scope synchronously on the
+    # event loop, so with a few hundred multiplexed profiles the loop spends most of its time here
+    # and managed workers miss their receipt budget. An installed service needs no work.
+    existing = getattr(authority, 'hosted_room_service', None)
+    if existing is not None and getattr(existing, '_transport_installed', False):
+        return
     with owner_scope(authority):
         service = getattr(authority, 'hosted_room_service', None)
         if service is None:

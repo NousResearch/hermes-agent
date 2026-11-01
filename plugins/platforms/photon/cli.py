@@ -161,7 +161,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     # 4. Register the operator's phone number as a Spectrum user (idempotent).
     phone = args.phone or _prompt(color("[4/5] Your iMessage phone number (E.164, e.g. +15551234567): ", Colors.CYAN))
     agent_number = registered_phone = registered_user_id = None
-    routing_live = True
+    routing_live = False  # only an opted-in, registered number makes setup "complete"
     if not phone:
         print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
@@ -185,6 +185,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # service sets once the human texts the assigned line from their phone (the API cannot
         # set it). Name the line and wait for the opt-in; a re-run on an opted-in row passes.
         if photon_auth.user_opted_in(user):
+            routing_live = True
             print("  ✓ number is opted in — routing is live")
         elif not agent_number:  # nothing to text yet, so a wait could never end in an opt-in
             routing_live = False
@@ -230,6 +231,10 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print("  ✓ photon platform enabled in config.yaml")
     except Exception as e:
         print(f"      (could not enable Photon in config: {e})", file=sys.stderr)
+    if not phone:  # saved, but nothing can route until a number is registered and opted in
+        print("\n⚠ Photon setup saved, but iMessage routing is NOT live: no phone number is registered.\n"
+              "  Finish with:  hermes photon setup --phone +15551234567")
+        return 0
     if not routing_live:  # saved, but not "complete": the gateway cannot reach this number yet
         print(f"\n⚠ Photon setup saved, but iMessage routing is NOT live: text {agent_number or 'your assigned line'} "
               f"once from {phone}.\n  Check with `hermes photon status`; start the gateway once it shows opted in.")

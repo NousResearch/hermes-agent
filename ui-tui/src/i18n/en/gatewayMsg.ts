@@ -23,7 +23,8 @@ export const gatewayMsgEn = {
     },
     clarify: {
       // Reason shown as "(…)" after an abandoned clarify prompt.
-      timedOut: 'timed out'
+      timedOut: 'timed out',
+      answerUnconfirmed: 'answer could not be confirmed'
     },
     agents: {
       workingNudge: 'subagents working · /agents to watch live'

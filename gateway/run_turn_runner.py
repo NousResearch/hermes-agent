@@ -183,6 +183,38 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     return t("gateway.errors.no_credentials"), auth_permanent, False
 
 
+def _resolve_runtime_footer_metadata(agent, user_config: dict | None, platform_key: str) -> dict:
+    """Resolve footer usage while the turn's routed profile scope is active.
+
+    The API credential is used only to key/schedule the background usage fetch;
+    it is deliberately not returned in the result consumed by the footer renderer.
+    """
+    from gateway.runtime_footer import resolve_footer_config
+    from gateway.runtime_footer_usage import get_cached
+    from hermes_constants import get_hermes_home
+
+    footer_config = resolve_footer_config(user_config, platform_key)
+    fields = set(footer_config.get("fields") or ())
+    needs_usage = footer_config.get("enabled") and bool(fields & {"account", "quota"})
+    provider = getattr(agent, "provider", None) if agent is not None else None
+    base_url = getattr(agent, "base_url", None) if agent is not None else None
+    api_key = getattr(agent, "api_key", None) if agent is not None else None
+    account_usage = None
+    if needs_usage and provider:
+        account_usage = get_cached(
+            provider,
+            base_url=base_url,
+            api_key=api_key,
+            hermes_home=str(get_hermes_home()),
+        )
+    return {
+        "provider": provider,
+        "base_url": base_url,
+        "account_usage": account_usage,
+        "footer_config": footer_config,
+    }
+
+
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1388,6 +1420,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # what the in-process one-shot took straight from `run_conversation`.
             **{key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result},
         }
+        footer_metadata = _resolve_runtime_footer_metadata(
+            agent,
+            ctx.user_config,
+            platform_key,
+        )
+        footer_metadata["reasoning_effort"] = (
+            getattr(runner, "_reasoning_config", {}) or {}
+        ).get("effort")
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
@@ -1413,6 +1453,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # stored receipt cuts there instead of re-guessing from text (multimodal or rewritten input + a nudge).
             **({"current_turn_user_idx": result["current_turn_user_idx"]} if "current_turn_user_idx" in result else {}),
             **usage,
+            **footer_metadata,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
         previewed = result.get("response_previewed", False)

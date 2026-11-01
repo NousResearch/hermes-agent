@@ -599,7 +599,8 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         disabled = {"a/one"}
         monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: disabled)
         monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: disabled)
-        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled", lambda *n, platform=None: not disabled.isdisjoint(n))
+        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled",
+                            lambda *n, platform=None, **kw: not disabled.isdisjoint(n))
         monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
         pb.clear_skills_system_prompt_cache()
         assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "other", "xdup"]

@@ -1,6 +1,7 @@
 """Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
+import logging
 import platform
 import subprocess
 import threading
@@ -15,6 +16,7 @@ from agent.anthropic_credentials import (
     _refresh_oauth_token,
     _find_claude_code_keychain_item,
     _keychain_mirror_command,
+    _keychain_argv_command,
     _merge_keychain_credential_payload,
     _mirror_claude_code_credentials_to_keychain,
 )
@@ -397,6 +399,18 @@ class TestKeychainMirrorCommand:
         hex_blob = line.split(" -X ", 1)[1].strip()
         assert json.loads(bytes.fromhex(hex_blob)) == payload
 
+    def test_argv_fallback_hex_encodes_the_secret_without_shell_quoting(self):
+        """The argv fallback (#123184) runs without a shell, so the account rides as-is and the
+        secret still only ever appears hex-encoded."""
+        payload = _merge_keychain_credential_payload({"claudeAiOauth": {}}, "A1", 'r"q\\x', 1)
+        argv = _keychain_argv_command('al"ice smith', payload)
+
+        assert argv[:5] == ["security", "add-generic-password", "-U", "-a", 'al"ice smith']
+        assert argv[5:7] == ["-s", "Claude Code-credentials"]
+        assert argv[7] == "-X"
+        assert "A1" not in argv and 'r"q\\x' not in argv and "-w" not in argv
+        assert json.loads(bytes.fromhex(argv[8])) == payload
+
 
 class TestFindClaudeCodeKeychainItem:
     """``_find_claude_code_keychain_item`` parses one ``find-generic-password -g`` call. ``security``
@@ -443,6 +457,10 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
         run = MagicMock(return_value=MagicMock(returncode=0))
         monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_keychain_payload",
+            lambda: _merge_keychain_credential_payload(item[1], "A1", "R1", 1),
+        )
 
         _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="not-R0")
         run.assert_not_called()
@@ -452,3 +470,109 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         assert argv == ["security", "-i"]
         assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
             "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}
+
+    @pytest.mark.platforms("macos")
+    def test_oversized_payload_falls_back_to_argv(self, monkeypatch, caplog):
+        """#123184: ``security -i`` truncates long lines and runs the truncated first half as-is.
+        Skipping the write would leave the already-spent refresh token in the item and log Claude
+        Code out anyway — so the mirror falls back to a direct argv write, still hex-encoded."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"},
+                        "mcpOAuth": {"srv": "x" * 3000}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_keychain_payload",
+            lambda: _merge_keychain_credential_payload(item[1], "A1", "R1", 1),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert run.call_count == 1
+        (argv,), kwargs = run.call_args
+        assert argv[:2] == ["security", "add-generic-password"] and "input" not in kwargs
+        assert argv[4] == "bob" and argv[6] == "Claude Code-credentials"
+        merged = _merge_keychain_credential_payload(item[1], "A1", "R1", 1)
+        assert json.loads(bytes.fromhex(argv[8])) == merged
+        assert any("via argv" in r.message for r in caplog.records)
+
+    @pytest.mark.platforms("macos")
+    def test_payload_under_the_line_limit_is_still_mirrored_over_stdin(self, monkeypatch):
+        """The guard must not over-trigger: a payload that fits the line limit keeps being
+        written over stdin (a large-but-legal mcpOAuth set)."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"},
+                        "mcpOAuth": {"srv": "x" * 1500}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_keychain_payload",
+            lambda: _merge_keychain_credential_payload(item[1], "A1", "R1", 1),
+        )
+
+        _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert run.call_count == 1
+        assert run.call_args[0][0] == ["security", "-i"]
+        assert len(run.call_args[1]["input"]) <= 4000
+
+    @pytest.mark.platforms("macos")
+    def test_a_line_at_exactly_the_limit_is_still_mirrored(self, monkeypatch):
+        """The limit is on the line's *content*: a line of exactly the limit length is accepted
+        by ``security -i``, so the newline ``_keychain_mirror_command`` appends must not tip the
+        guard into taking the argv fallback."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item
+        )
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_keychain_payload",
+            lambda: _merge_keychain_credential_payload(item[1], "A1", "R1", 1),
+        )
+        merged = _merge_keychain_credential_payload(item[1], "A1", "R1", 1)
+        _, line = _keychain_mirror_command("bob", merged)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._SECURITY_I_LINE_LIMIT", len(line.rstrip("\n"))
+        )
+
+        _mirror_claude_code_credentials_to_keychain(
+            "A1", "R1", 1, spent_refresh_token="R0"
+        )
+
+        assert run.call_count == 1
+        assert run.call_args[0][0] == ["security", "-i"]
+
+    @pytest.mark.platforms("macos")
+    def test_truncated_store_is_detected_after_the_write(self, monkeypatch, caplog):
+        """#123184 field report: ``security`` exits 0 even when the stored payload was truncated —
+        the mirror re-reads the item and warns when the fresh refresh token did not land."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        # The re-read yields the old payload, as if the write silently truncated.
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._read_claude_code_keychain_payload", lambda: item[1]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert any("verification failed" in r.message for r in caplog.records)
+
+    @pytest.mark.platforms("macos")
+    def test_mirror_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
+        """#123184: a failed mirror logged only at DEBUG, hiding the damage — the split second
+        half of an oversized line fails while the truncated first half already ran."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        run = MagicMock(return_value=MagicMock(returncode=1, stderr='security: unknown command "ABCD"'))
+        monkeypatch.setattr(subprocess, "run", run)
+
+        with caplog.at_level(logging.WARNING, logger="agent.anthropic_credentials"):
+            _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
+
+        assert any("Keychain mirror failed" in r.message for r in caplog.records)

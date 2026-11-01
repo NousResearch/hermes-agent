@@ -1,4 +1,9 @@
-import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type {
+  MessageCompletePayload,
+  SubagentEventPayload,
+  ToolCompletePayload,
+  ToolLabel
+} from '@hermes/shared/gateway-events'
 
 import {
   REASONING_PULSE_MS,
@@ -23,6 +28,7 @@ import {
   toolTrailLine,
   verboseToolTrailLine
 } from '../lib/text.js'
+import { toolRefusalNote } from '../lib/toolRefusal.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
@@ -38,7 +44,8 @@ function toolTrailLines(
   labels: readonly ToolLabel[],
   summary: string,
   resultText: string,
-  took?: number
+  took?: number,
+  refused = false
 ): string[] {
   const heads = labels.length ? labels.map(formatToolLabel) : [formatToolCall(name, done?.context || '')]
   const verbose = Boolean(done?.verboseArgs || resultText)
@@ -49,8 +56,8 @@ function toolTrailLines(
     }
 
     return verbose
-      ? verboseToolTrailLine(head, false, took, done?.verboseArgs, resultText || summary)
-      : toolTrailLine(head, false, summary, took)
+      ? verboseToolTrailLine(head, refused, took, done?.verboseArgs, resultText || summary)
+      : toolTrailLine(head, refused, summary, took)
   })
 }
 
@@ -911,21 +918,24 @@ class TurnController {
     this.pulseReasoningStreaming()
   }
 
-  recordToolComplete(
-    toolId: string,
-    fallbackName?: string,
-    summary?: string,
-    duration?: number,
-    todos?: unknown,
-    resultText?: string,
-    labels?: ToolLabel[]
-  ) {
+  recordToolComplete(payload: ToolCompletePayload, resultText?: string) {
     if (this.interrupted) {
       return
     }
 
-    this.recordTodos(todos)
-    const lines = this.completeTool(toolId, fallbackName, summary, duration, resultText, labels)
+    this.recordTodos(payload.todos ?? undefined)
+    // A refused call never ran: say why and mark it ✗ instead of a ✓ that reads as done.
+    const refusal = toolRefusalNote(payload.result)
+
+    const lines = this.completeTool(
+      payload.tool_id,
+      payload.name,
+      refusal || (payload.summary ?? undefined),
+      payload.duration_s ?? undefined,
+      resultText,
+      payload.labels ?? undefined,
+      Boolean(refusal)
+    )
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, ...lines]
     this.flushPendingToolsIntoLastSegment()
@@ -950,14 +960,16 @@ class TurnController {
   }
 
   // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
-  // a failed tool surfaces through its result text, so every trail line renders as non-error.
+  // a failed tool surfaces through its result text, so a trail line renders as non-error unless the
+  // call was `refused` (an approval or guard blocked it, so it never ran).
   private completeTool(
     toolId: string,
     fallbackName?: string,
     summary?: string,
     duration?: number,
     resultText?: string,
-    eventLabels?: ToolLabel[]
+    eventLabels?: ToolLabel[],
+    refused = false
   ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
@@ -966,7 +978,7 @@ class TurnController {
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
     const took = duration ?? fallbackDuration
 
-    const lines = toolTrailLines(done, name, labels, summary || '', resultText || '', took)
+    const lines = toolTrailLines(done, name, labels, summary || '', resultText || '', took, refused)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 

@@ -217,6 +217,31 @@ describe('tool feed visibility policy', () => {
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
   })
 
+  it('keeps a denied execute_code call, which has no exit_code, from a real tool.complete payload', async () => {
+    // code_execution_tool._error_result for a refused approval: blocked, not failed, but the user
+    // still has to read that it did not run.
+    setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
+
+    const { container } = render(
+      completionHarness({
+        name: 'execute_code',
+        tool_id: 'code-denied-1',
+        args: { code: 'import shutil; shutil.rmtree("/srv")' },
+        result: {
+          status: 'error',
+          error: 'BLOCKED: User denied execute_code script execution (matched shutil.rmtree).',
+          tool_calls_made: 0,
+          duration_seconds: 0,
+          user_summary: 'You denied this code — it did not run.'
+        }
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
+  })
+
   it('still hides a successful call driven through the same tool.complete mapping', async () => {
     setShowReasoningFromConfig(false)
     setShowToolActivityFromConfig('off')

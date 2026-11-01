@@ -4487,7 +4487,8 @@ export const zhOverrides = {
         ran: '已运行',
         running: '正在运行',
         ranCode: '已运行代码',
-        runningCode: '正在编写脚本'
+        runningCode: '正在编写脚本',
+        blocked: '已阻止'
       },
       prefixes: {
         browser: '浏览器',

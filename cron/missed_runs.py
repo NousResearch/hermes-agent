@@ -127,6 +127,7 @@ def retire_expired_oneshot(d: Any) -> bool:
     from cron.jobs import (
         ONESHOT_GRACE_SECONDS, _current_cron_store, _elapsed_seconds, record_cron_missed)
     from cron.jobs_oneshot_diagnostics import write_missed
+    from cron.scheduler_ownership import _claim_owner_is_dead
 
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
@@ -139,13 +140,20 @@ def retire_expired_oneshot(d: Any) -> bool:
             _current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS):
         return False
     claim = d.job.get("run_claim")
+    fire_claim = d.job.get("fire_claim")
     # An outage-covered claim that never reached its fire claim never started: it stays covered.
-    if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
+    if isinstance(claim, dict) and claim.get("outage") and not fire_claim:
         return False
-    if not (claim or d.job.get("fire_claim")):
-        write_missed(d.job, d.next_run)
-        d.scan.retire(d.job["id"])
-        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
-        d.scan.on_saved.append(lambda job=d.job, first=d.next_run: _book_missed(
-            job, 1, first, "one-shot past its grace window; catch-up off", capped=False))
+    # A claim means "a run is in flight elsewhere" only while its owner can still be running. One
+    # whose owner provably died on this host — killed between claim_dispatch() and mark_job_run() —
+    # otherwise suppresses both retirement and the missed-run diagnostic forever (#147102). Foreign
+    # hosts and owners that cannot be probed stay live: only proof of death retires the record.
+    claims = [c for c in (claim, fire_claim) if c]
+    if any(not _claim_owner_is_dead(c) for c in claims if isinstance(c, dict)):
+        return True
+    write_missed(d.job, d.next_run)
+    d.scan.retire(d.job["id"])
+    d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
+    d.scan.on_saved.append(lambda job=d.job, first=d.next_run: _book_missed(
+        job, 1, first, "one-shot past its grace window; catch-up off", capped=False))
     return True

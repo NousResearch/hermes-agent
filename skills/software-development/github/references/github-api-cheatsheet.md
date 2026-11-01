@@ -68,6 +68,23 @@ Merge methods: `"merge"`, `"squash"`, `"rebase"`
 
 Note: The Issues API also returns PRs. Filter with `"pull_request" not in item` when parsing.
 
+## Notifications / Watching
+
+| Action | Method | Endpoint |
+|--------|--------|----------|
+| List notifications | GET | `/notifications` |
+| Mark all notifications read | PUT | `/notifications` |
+| Get a thread | GET | `/notifications/threads/{thread_id}` |
+| Mark thread as read | PATCH | `/notifications/threads/{thread_id}` |
+| Mark repo notifications read | PUT | `/repos/{owner}/{repo}/notifications` |
+| Get thread subscription | GET | `/notifications/threads/{thread_id}/subscription` |
+| Set thread subscription | PUT | `/notifications/threads/{thread_id}/subscription` |
+| Delete thread subscription | DELETE | `/notifications/threads/{thread_id}/subscription` |
+| Get repo subscription (watch status) | GET | `/repos/{owner}/{repo}/subscription` |
+| Set repo subscription (watch/ignore) | PUT | `/repos/{owner}/{repo}/subscription` |
+| Delete repo subscription (unwatch) | DELETE | `/repos/{owner}/{repo}/subscription` |
+| List your watched repos | GET | `/user/subscriptions` |
+
 ## CI / GitHub Actions
 
 | Action | Method | Endpoint |

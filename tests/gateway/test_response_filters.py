@@ -2,6 +2,7 @@ from gateway.response_filters import (
     is_autonomous_silence_response,
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
+    is_partial_silence_marker,
 )
 
 
@@ -33,6 +34,33 @@ def test_translated_sentinel_is_silence_in_every_form_the_english_one_is():
 def test_prose_mentioning_the_translated_sentinel_is_delivered():
     assert not is_intentional_silence_response("status: 静默 means the lane is quiet")
     assert not is_autonomous_silence_response("the lane said 静默 mid-sentence and kept talking")
+
+
+def test_code_spanned_sentinel_is_silence_in_both_lanes():
+    """#140444: told the response must be exactly ``NO_REPLY``, a model renders it as a markdown
+    code span. U+0060 is category ``Sk``, not ``P``, so it survived edge stripping and the bare
+    control token was delivered to the chat. Doubled spans and fenced blocks collapse through the
+    same run-consuming strip; the streaming hold-back canonicalizes through the same helper."""
+    for variant in (
+        "`NO_REPLY`",
+        "`[SILENT]`",
+        "``[SILENT]``",
+        "```\nNO_REPLY\n```",
+        "`静默`",
+        "`no reply`",
+    ):
+        assert is_intentional_silence_response(variant), variant
+        assert is_autonomous_silence_response(variant), variant
+    assert is_partial_silence_marker("`NO")
+
+
+def test_code_span_strip_keeps_prose_and_bracket_structure():
+    # A fence is edge decoration only: naming the token mid-sentence is still prose, and a
+    # malformed ``[SILENT`` cannot collapse into ``SILENT`` just because it was code-spanned.
+    prose = "the lane wrote `NO_REPLY` and kept talking"
+    assert not is_intentional_silence_response(prose)
+    assert not is_autonomous_silence_response(prose)
+    assert not is_intentional_silence_response("`[SILENT`")
 
 
 def test_autonomous_lane_agrees_with_interactive_lane_on_cjk_punctuation_variants():

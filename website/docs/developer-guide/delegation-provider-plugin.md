@@ -113,7 +113,8 @@ A route is a dict with any of:
   route does not offer refuses the task; otherwise it applies to that child only and is re-applied
   after the child is built, so a custom provider's `extra_body` cannot restore another tier.
 - `max_iterations`: a whole number of 1 or more. The turn limit for children on this route; overrides
-  `delegation.max_iterations`.
+  `delegation.max_iterations`. The settings editor's save path also caps it at 2^53 − 1, the largest
+  whole number its JavaScript transport carries exactly.
 - `child_timeout_seconds`: a number of 0 or more. The idle timeout for children on this route, with the
   same meaning as `delegation.child_timeout_seconds` (0 disables it; values under 30 are raised to 30);
   overrides the global value.

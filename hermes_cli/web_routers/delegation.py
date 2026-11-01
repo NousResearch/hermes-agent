@@ -150,6 +150,17 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
     return value or None
 
 
+def _shown(value: Any) -> str:
+    """The refused value as the error shows it, cut so a pasted novel does not come back as the detail."""
+    text = repr(value)
+    return text if len(text) <= 40 else f"{text[:37]}..."
+
+
+# The desktop editor transports max_iterations as a JS number; anything above Number.MAX_SAFE_INTEGER would come
+# back rounded or as null on the next save of the route map, so the save path refuses it up front.
+_MAX_EDITOR_TURNS = 2**53 - 1
+
+
 def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
     """The route's ``max_iterations``/``child_timeout_seconds``: the editor sends text, so decimal strings become
     numbers; blank omits the field; anything else the route rules refuse is a 400."""
@@ -160,11 +171,11 @@ def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
     if isinstance(turns, str):
         turns = turns.strip() or None
     if turns is not None:
-        if isinstance(turns, str) and turns.isdecimal():
+        if isinstance(turns, str) and turns.isdecimal() and len(turns) <= len(str(_MAX_EDITOR_TURNS)):
             turns = int(turns)
-        if not valid_route_max_iterations(turns):
-            raise _bad_request(f"{label}: max_iterations must be a whole number of 1 or more "
-                               f"(got {entry.get('max_iterations')!r}).")
+        if not valid_route_max_iterations(turns) or turns > _MAX_EDITOR_TURNS:
+            raise _bad_request(f"{label}: max_iterations must be a whole number from 1 to {_MAX_EDITOR_TURNS} "
+                               f"(got {_shown(entry.get('max_iterations'))}).")
         limits["max_iterations"] = turns
     seconds = entry.get("child_timeout_seconds")
     if isinstance(seconds, str):
@@ -177,7 +188,7 @@ def _clean_route_limits(label: str, entry: dict) -> dict[str, Any]:
                 seconds = None
         if not valid_route_child_timeout(seconds):
             raise _bad_request(f"{label}: child_timeout_seconds must be a number of 0 or more "
-                               f"(got {entry.get('child_timeout_seconds')!r}).")
+                               f"(got {_shown(entry.get('child_timeout_seconds'))}).")
         if isinstance(seconds, float) and seconds.is_integer():
             seconds = int(seconds)
         limits["child_timeout_seconds"] = seconds

@@ -130,4 +130,40 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.match(logs[0], /network down/);
 }
 
+// A stale answer (isLatest: false, the build baked into the library) is the
+// shape every Baileys fetcher returns when its own fetch fails, and WhatsApp
+// rejects pairing against it with HTTP 405. Later sources run in order and
+// the first current version wins (#88516).
+{
+  const logs = [];
+  const resolveVersion = createVersionResolver(
+    async () => ({ version: [2, 3000, 1035194821], isLatest: false }),
+    {
+      log: line => logs.push(line),
+      fallbackFetchVersionFns: [
+        async () => { throw new Error('sw.js 429'); },
+        async () => ({ version: [2, 3000, 1045340097], isLatest: true }),
+      ],
+    },
+  );
+  assert.deepEqual(await resolveVersion(), [2, 3000, 1045340097]);
+  assert.equal(logs.length, 2);
+  assert.match(logs[0], /stale WhatsApp build \(2\.3000\.1035194821\)/);
+  assert.match(logs[1], /sw\.js 429/);
+}
+
+// Pair-only mode (requireCurrent) refuses to hand a stale build to the
+// socket: with no source current and nothing cached it throws one actionable
+// error instead of looping on 405; without the flag the stale build is still
+// returned, since it is what Baileys itself would use.
+{
+  const stale = async () => ({ version: [2, 3000, 1035194821], isLatest: false });
+  const pairing = createVersionResolver(stale, {
+    log: () => {}, fallbackFetchVersionFns: [stale], requireCurrent: true,
+  });
+  await assert.rejects(pairing(), /Could not fetch current WhatsApp Web version/);
+  const linked = createVersionResolver(stale, { log: () => {}, fallbackFetchVersionFns: [stale] });
+  assert.deepEqual(await linked(), [2, 3000, 1035194821]);
+}
+
 console.log('bridge.reconnect.test.mjs: all assertions passed');

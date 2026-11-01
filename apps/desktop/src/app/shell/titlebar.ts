@@ -23,8 +23,10 @@ export function titlebarIconSizeCss(scale = 1): string {
 
 export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
-// Windows/Linux (native overlay is on the right) and macOS fullscreen
-// (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
+// Windows/Linux with right-placed controls (the common layout) and macOS
+// fullscreen (traffic lights are hidden). Matches the right-cluster's 0.75rem
+// padding. Also the gap kept between the cluster and left-placed native
+// controls (macOS-style KDE/GTK button layouts).
 export const TITLEBAR_EDGE_INSET = 14
 
 // macOS Tahoe = Darwin 25+. Keep in sync with electron/titlebar-overlay-width.ts.
@@ -95,9 +97,17 @@ export const titlebarHeaderShadowClass =
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
-  isFullscreen = false
+  isFullscreen = false,
+  nativeLeftInset = 0
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
+
+  // Left-placed native controls on Windows/Linux (macOS-style KDE/GTK button
+  // layouts): the WCO reports the controls' footprint, so seat the cluster
+  // just past them instead of under them.
+  if (nativeLeftInset > 0) {
+    return { left: nativeLeftInset + TITLEBAR_EDGE_INSET, top }
+  }
 
   // No left-side native controls to dodge:
   //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.

@@ -322,6 +322,9 @@
 .hermes-kanban-unassigned {
   font-style: italic;
 }
+.hermes-kanban-model-chip {
+  color: var(--color-muted-foreground);
+}
 .hermes-kanban-ago {
   margin-left: auto;
 }

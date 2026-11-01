@@ -250,3 +250,13 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+@pytest.mark.parametrize("msg, available", [
+    ("max_tokens exceeds the limit of 65536 (request id: abc)", 65536),
+    ("'max_tokens': 65536 is greater than the maximum of 4096 - 'max_tokens'", 4096),
+    ("max_tokens cannot be greater than max_model_len=8192 (request id: abc)", 8192),
+])
+def test_bare_provider_output_cap_comparisons(msg, available):
+    assert parse_available_output_tokens_from_error(msg) == available
+    assert is_output_cap_error(msg) is True

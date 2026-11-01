@@ -1,0 +1,8 @@
+name: bounded
+description: >-
+  Bounded, deterministic context selection: bounds every provider request to a hard
+  budget derived from the model context window, preserving the system prompt, the
+  current request and the newest pending tool chain while never mutating persisted
+  history. Selection only; compression remains the wrapped compressor's lifecycle.
+version: 0.1.0
+author: Nous Research

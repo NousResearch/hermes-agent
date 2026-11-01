@@ -217,7 +217,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
                    env=_CLEAN_GIT_ENV)
     kw._ensure_git_worktree(repo, tmp_path / "wt3", "safe3")
     worktree_ops._reap_prune_verdicts(str(repo), [(tmp_path / "wt2", 0.0, False, "reap", None)], 0.0)
-    worktree_ops._prune_orphaned_branches(str(repo))
+    worktree_ops._prune_orphaned_branches(str(repo), max_age_hours=0)  # pr-1 is seconds old
     worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
     assert _fired(marker) == []
     branches = subprocess.run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"],

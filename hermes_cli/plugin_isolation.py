@@ -53,7 +53,7 @@ HOST_SKIPPED_CTX_METHODS: dict[str, str] = {
 
 # Live ctx facades the host reaches by method call; each call returns plain data.
 HOST_REMOTE_FACADES: frozenset[str] = frozenset({
-    "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends",
+    "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends", "sessions",
 })
 
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table

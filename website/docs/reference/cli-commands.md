@@ -1780,6 +1780,7 @@ Subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `list` | List recent sessions. |
+| `show <session-id> [--json]` | One session's metadata, compression lineage, delegate subagents and token/cost totals (accepts a unique id prefix). `--json` prints one object, `{"schema_version": 1, "session", "lineage", "subagents", "usage"}`, from the same read-only projection plugins get through [`ctx.sessions`](../developer-guide/plugins/index.md#read-session-history); an unknown id prints nothing on stdout, reports on stderr and exits 2. |
 | `browse` | Interactive session picker with search and resume. Each row shows a lifecycle status tag (`done` / `intr` / `err` / `empty`, derived from the session's final message) and its message count. Press `d` on a highlighted row (while the search filter is empty) to delete that session after a y/N confirmation; while a filter is active, `d` types into the search instead. |
 | `export <output> [--session-id ID]` | Export sessions to JSONL. |
 | `delete <session-id>` | Delete one session. |

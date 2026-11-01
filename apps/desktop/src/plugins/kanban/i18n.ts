@@ -174,6 +174,9 @@ type KanbanMessages = {
   /** Tooltip on the page-header trigger — names the ACTION, since the visible
    *  text is the board's own name and reads as a static label otherwise. */
   switchBoard: string
+  pinBoards: string
+  pinnedBoards: string
+  pinnedBoardsHint: string
   newBoardDots: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
@@ -406,6 +409,9 @@ export const en: KanbanMessages = {
   board: 'Board',
   newBoard: 'New board',
   switchBoard: 'Switch board',
+  pinBoards: 'Pin boards',
+  pinnedBoards: 'Pinned boards',
+  pinnedBoardsHint: 'Drag to reorder, or use Alt + Left/Right while focused.',
   newBoardDots: 'New board…',
   exportDots: 'Export…',
   importDots: 'Import…',
@@ -633,6 +639,9 @@ const ja: KanbanMessages = {
   board: 'ボード',
   newBoard: '新しいボード',
   switchBoard: 'ボードを切り替え',
+  pinBoards: 'ボードを固定',
+  pinnedBoards: '固定したボード',
+  pinnedBoardsHint: 'ドラッグして並べ替えます。フォーカス中は Alt + 左右キーも使えます。',
   newBoardDots: '新しいボード…',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
@@ -858,6 +867,9 @@ const zh: KanbanMessages = {
   board: '面板',
   newBoard: '新建面板',
   switchBoard: '切换面板',
+  pinBoards: '固定面板',
+  pinnedBoards: '已固定面板',
+  pinnedBoardsHint: '拖动可重新排序，或在聚焦时按 Alt + 左/右方向键。',
   newBoardDots: '新建面板…',
   exportDots: '导出…',
   importDots: '导入…',
@@ -1082,6 +1094,9 @@ const zhHant: KanbanMessages = {
   board: '面板',
   newBoard: '新增面板',
   switchBoard: '切換面板',
+  pinBoards: '固定面板',
+  pinnedBoards: '已固定面板',
+  pinnedBoardsHint: '拖曳可重新排序，或在焦點選取時按 Alt + 左/右方向鍵。',
   newBoardDots: '新增面板…',
   exportDots: '匯出…',
   importDots: '匯入…',
@@ -1128,7 +1143,37 @@ const zhHant: KanbanMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const KANBAN_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: {
+    pinBoards: 'تثبيت اللوحات',
+    pinnedBoards: 'اللوحات المثبتة',
+    pinnedBoardsHint: 'اسحب لإعادة الترتيب، أو استخدم Alt + يسار/يمين أثناء التركيز.'
+  },
+  ru: {
+    pinBoards: 'Закрепить доски',
+    pinnedBoards: 'Закреплённые доски',
+    pinnedBoardsHint: 'Перетащите для изменения порядка или нажмите Alt + влево/вправо, когда кнопка в фокусе.'
+  },
+  fr: {
+    pinBoards: 'Épingler des tableaux',
+    pinnedBoards: 'Tableaux épinglés',
+    pinnedBoardsHint: 'Faites glisser pour réordonner, ou utilisez Alt + gauche/droite lorsque le bouton a le focus.'
+  },
+  de: {
+    pinBoards: 'Boards anheften',
+    pinnedBoards: 'Angeheftete Boards',
+    pinnedBoardsHint: 'Zum Umordnen ziehen oder bei fokussiertem Button Alt + Links/Rechts drücken.'
+  },
+  es: {
+    pinBoards: 'Fijar tableros',
+    pinnedBoards: 'Tableros fijados',
+    pinnedBoardsHint: 'Arrastra para reordenar o usa Alt + izquierda/derecha con el botón enfocado.'
+  }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

@@ -15,9 +15,13 @@ import {
   DialogHeader,
   DialogTitle,
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   host,
   Input,
@@ -38,16 +42,20 @@ import { type ReactNode, useEffect, useState } from 'react'
 
 import {
   $boardSlug,
+  $pinnedBoards,
   boardsKey,
   createBoard,
   deleteBoard,
   fetchBoards,
   fetchProjects,
+  kanbanConnectionScope,
   pluginOs,
   projectsKey,
+  setBoardPinned,
   updateBoard,
   useKanbanScope
 } from './api'
+import { PinnedBoardTabs } from './pinned-board-tabs'
 import { runExportBoardFlow, runImportBoardFlow } from './transfer'
 import type { BoardMeta } from './types'
 import { errText, FIELD_LABEL, useKanban } from './ui'
@@ -290,6 +298,7 @@ export function BoardSwitcher() {
   const qc = useQueryClient()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
+  const pinned = useValue($pinnedBoards)
   const { data: boards } = useQuery({ queryFn: fetchBoards, queryKey: boardsKey(scope), staleTime: 30_000 })
   const [adding, setAdding] = useState(false)
   const [settingsFor, setSettingsFor] = useState<BoardMeta | null>(null)
@@ -341,79 +350,110 @@ export function BoardSwitcher() {
 
   return (
     <>
-      <DropdownMenu>
-        <Tip label={k.switchBoard}>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label={`${k.board}: ${label}`}
-              className="h-full min-w-0 max-w-full gap-1.5 px-2"
-              size="sm"
-              variant="ghost"
-            >
-              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
-              <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
-              <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
-              {typeof current?.total === 'number' && (
-                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
-              )}
-              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-            </Button>
-          </DropdownMenuTrigger>
-        </Tip>
-        <DropdownMenuContent align="center">
-          {boards.boards.map(meta => (
-            <DropdownMenuItem
-              key={meta.slug}
-              onSelect={() => $boardSlug.set(meta.slug === boards.current ? '' : meta.slug)}
-            >
-              {meta.name || meta.slug}
-              {typeof meta.total === 'number' && (
-                <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{meta.total}</span>
-              )}
-              {meta.slug === currentSlug && <Codicon className="ml-auto" name="check" size="0.8rem" />}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          {current && (
-            <>
-              <DropdownMenuItem onSelect={() => setRenameFor(current)}>
-                <Codicon name="edit" size="0.8rem" />
-                {k.renameDots}
+      <div className="flex min-w-0 max-w-full items-center gap-1">
+        <DropdownMenu>
+          <Tip label={k.switchBoard}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                aria-label={`${k.board}: ${label}`}
+                className="h-full min-w-0 max-w-full shrink gap-1.5 px-2"
+                size="sm"
+                variant="ghost"
+              >
+                <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
+                <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
+                <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
+                {typeof current?.total === 'number' && (
+                  <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
+                )}
+                <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
+              </Button>
+            </DropdownMenuTrigger>
+          </Tip>
+          <DropdownMenuContent align="center">
+            {boards.boards.map(meta => (
+              <DropdownMenuItem
+                key={meta.slug}
+                onSelect={() => $boardSlug.set(meta.slug === boards.current ? '' : meta.slug)}
+              >
+                {meta.name || meta.slug}
+                {typeof meta.total === 'number' && (
+                  <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{meta.total}</span>
+                )}
+                {meta.slug === currentSlug && <Codicon className="ml-auto" name="check" size="0.8rem" />}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
-                <Codicon name="settings-gear" size="0.8rem" />
-                {k.settingsDots}
-              </DropdownMenuItem>
-            </>
-          )}
-          <DropdownMenuItem onSelect={() => setAdding(true)}>
-            <Codicon name="add" size="0.8rem" />
-            {k.newBoardDots}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {current && (
-            <DropdownMenuItem onSelect={() => void runExport(current.slug)}>
-              <Codicon name="package" size="0.8rem" />
-              {k.exportDots}
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Codicon name="pinned" size="0.8rem" />
+                {k.pinBoards}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {boards.boards.map(meta => (
+                  <DropdownMenuCheckboxItem
+                    checked={pinned.includes(meta.slug)}
+                    key={meta.slug}
+                    onCheckedChange={checked => {
+                      if (scope === kanbanConnectionScope()) {
+                        setBoardPinned(meta.slug, checked === true)
+                      }
+                    }}
+                    onSelect={event => event.preventDefault()}
+                  >
+                    {meta.name || meta.slug}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            {current && (
+              <>
+                <DropdownMenuItem onSelect={() => setRenameFor(current)}>
+                  <Codicon name="edit" size="0.8rem" />
+                  {k.renameDots}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setSettingsFor(current)}>
+                  <Codicon name="settings-gear" size="0.8rem" />
+                  {k.settingsDots}
+                </DropdownMenuItem>
+              </>
+            )}
+            <DropdownMenuItem onSelect={() => setAdding(true)}>
+              <Codicon name="add" size="0.8rem" />
+              {k.newBoardDots}
             </DropdownMenuItem>
-          )}
-          <DropdownMenuItem onSelect={() => void runImport()}>
-            <Codicon name="cloud-download" size="0.8rem" />
-            {k.importDots}
-          </DropdownMenuItem>
-          {/* `default` is the fallback every board reverts to — the backend
+            <DropdownMenuSeparator />
+            {current && (
+              <DropdownMenuItem onSelect={() => void runExport(current.slug)}>
+                <Codicon name="package" size="0.8rem" />
+                {k.exportDots}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem onSelect={() => void runImport()}>
+              <Codicon name="cloud-download" size="0.8rem" />
+              {k.importDots}
+            </DropdownMenuItem>
+            {/* `default` is the fallback every board reverts to — the backend
               refuses to remove it, so it never offers the action. */}
-          {current && current.slug !== DEFAULT_BOARD && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setDeleteFor(current)} variant="destructive">
-                <Codicon name="trash" size="0.8rem" />
-                {t.common.delete}
-              </DropdownMenuItem>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+            {current && current.slug !== DEFAULT_BOARD && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => setDeleteFor(current)} variant="destructive">
+                  <Codicon name="trash" size="0.8rem" />
+                  {t.common.delete}
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <PinnedBoardTabs
+          boards={boards.boards}
+          currentSlug={currentSlug}
+          scope={scope}
+          serverCurrent={boards.current}
+        />
+      </div>
       <NewBoardDialog onClose={() => setAdding(false)} open={adding} />
       <RenameBoardDialog board={renameFor} onClose={() => setRenameFor(null)} />
       <BoardSettingsDialog board={settingsFor} onClose={() => setSettingsFor(null)} />

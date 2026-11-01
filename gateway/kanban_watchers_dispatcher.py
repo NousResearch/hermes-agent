@@ -293,8 +293,14 @@ class _KanbanDispatcher:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
             return 0
         if not outcome.ok:
-            # Common no-op reasons (no aux client) must not spam logs every tick.
-            logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
+            # An over-bound refusal is a card the operator must fix (trim it or
+            # raise the limit), so surface it; ordinary no-op reasons (no aux
+            # client) must not spam logs every tick.
+            over = getattr(outcome, "body_length", 0) > getattr(outcome, "prompt_body_limit", 0)
+            if over:
+                logger.warning("kanban auto-decompose [%s]: %s refused (over-bound body): %s", slug, tid, outcome.reason)
+            else:
+                logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0
         if outcome.fanout and outcome.child_ids:
             logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))

@@ -655,6 +655,12 @@ def _session_live_status(sid: str, session: dict) -> str:
     return "working" if session.get("running") else "idle"
 
 
+def _live_liveness(sid: str, session: dict) -> dict:
+    """The liveness keys every resume/attach payload owes: a client reads a missing key as an old
+    gateway, not as `idle` (#144728)."""
+    return {"running": bool(session.get("running")), "status": _session_live_status(sid, session)}
+
+
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
     with contextlib.suppress(Exception), _session_db(session) as db:

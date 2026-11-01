@@ -74,3 +74,32 @@ class TestMiniMaxModelValidation:
     # -------------------------------------------------------------------------
 
 
+
+    # -------------------------------------------------------------------------
+    # MiniMax-M3.1-Flash: curated entry + case-insensitive match, and the live
+    # models_url so catalog discovery probes {base}/v1/models (not {base}/models).
+    # -------------------------------------------------------------------------
+    def test_minimax_m31_flash_recognized_lowercase(self):
+        result = validate_requested_model("minimax-m3.1-flash", "minimax")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_minimax_m31_flash_recognized_canonical_case(self):
+        result = validate_requested_model("MiniMax-M3.1-Flash", "minimax")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+
+    def test_minimax_curated_catalog_lists_m31_flash(self):
+        from hermes_cli.models_catalog_static import _MINIMAX_MODELS
+        assert "MiniMax-M3.1-Flash" in _MINIMAX_MODELS
+        # MiniMax-M3 stays first: it is the non-interactive fallback default (models[0]).
+        assert _MINIMAX_MODELS[0] == "MiniMax-M3"
+
+    def test_minimax_profiles_expose_live_models_url(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("minimax")
+        assert profile.models_url == "https://api.minimax.io/anthropic/v1/models"
+        cn = get_provider_profile("minimax-cn")
+        assert cn.models_url == "https://api.minimaxi.com/anthropic/v1/models"

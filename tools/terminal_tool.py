@@ -1357,6 +1357,61 @@ def _run_foreground(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
 
+    # ACP client-terminal routing (containerized agent): if the IDE client
+    # advertises terminal/* support AND the effective working directory is
+    # host-side (absent in this container), execute the command in the IDE's
+    # Terminal tool window instead of the container. The dangerous-command
+    # guard + ACP permission request already ran before _run_foreground was
+    # called, so this is the "approved -> run in the IDE terminal" step.
+    # No-op (falls through to local execution below) when the bridge is
+    # unset (CLI/gateway), the client didn't advertise terminal support
+    # (llm.chat.agent.acp.terminal.enabled registry flag off), or the target
+    # working directory is container-visible.
+    if env_type == "local":
+        try:
+            from acp_adapter.client_fs import (
+                get_client_fs_bridge,
+                is_host_side_path,
+                run_command_via_client,
+            )
+
+            _cfs_bridge = get_client_fs_bridge()
+            if _cfs_bridge is not None and getattr(_cfs_bridge, "terminal", False):
+                if workdir:
+                    # Explicit target: route iff it is host-side (an IDE
+                    # project path). A container-local workdir
+                    # (/opt/obsidian, /tmp, /opt/hermes, ...) falls through
+                    # to normal local execution below.
+                    if is_host_side_path(str(workdir)):
+                        _cfs_term = run_command_via_client(
+                            _cfs_bridge, command, workdir=str(workdir),
+                            timeout=float(effective_timeout),
+                        )
+                        if _cfs_term is not None:
+                            return _cfs_term
+                else:
+                    # No explicit workdir: for a containerized IDE agent the
+                    # user's project (the IDE session cwd) is the natural
+                    # working directory — NOT the container install dir
+                    # (/opt/hermes) the terminal tool would otherwise default
+                    # to. Route to the IDE project terminal when that project
+                    # root is host-side; otherwise fall through to local.
+                    _proj_cwd = getattr(_cfs_bridge, "project_cwd", None)
+                    if _proj_cwd and is_host_side_path(str(_proj_cwd)):
+                        _cfs_term = run_command_via_client(
+                            _cfs_bridge, command, workdir=str(_proj_cwd),
+                            timeout=float(effective_timeout),
+                        )
+                        if _cfs_term is not None:
+                            return _cfs_term
+        except Exception as _cfs_term_err:
+            logger.warning("ACP client-terminal routing error: %s", _cfs_term_err, exc_info=True)
+            return json.dumps({
+                "output": "", "exit_code": -1,
+                "error": f"Client-terminal routing failed: {_cfs_term_err}",
+                "status": "blocked",
+            }, ensure_ascii=False)
+
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(

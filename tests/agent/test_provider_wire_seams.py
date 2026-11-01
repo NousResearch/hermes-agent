@@ -105,7 +105,7 @@ def test_image_request_client_carries_image_client_headers(wire_profile):
     image_request = {"model": "m", "messages": [{"role": "user", "content": [
         {"type": "text", "text": "x"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]}]}
     with patch.object(agent, "_is_openai_client_closed", return_value=False), patch.object(
-            agent, "_create_openai_client", side_effect=lambda kw, *, reason, shared: built.append(kw) or MagicMock()):
+            agent, "_create_openai_client", side_effect=lambda kw, *, reason, shared, _follow_redirects=None: built.append(kw) or MagicMock()):
         agent._create_request_openai_client(reason="t", api_kwargs=image_request)
     assert built[-1]["default_headers"]["X-Wire-Images"] == "1"
     assert built[-1]["default_headers"]["X-Wire"] == "1"

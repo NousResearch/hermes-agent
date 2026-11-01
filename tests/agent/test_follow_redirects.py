@@ -1,4 +1,5 @@
 """Primary redirect policy reaches real clients without changing transport ownership."""
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -254,6 +255,50 @@ def test_installed_openai_fallback_uses_primary_policy(configure):
         assert "http_client" not in agent._client_kwargs
         agent.client.close()
     finally:
+        auxiliary.close()
+
+
+@pytest.mark.parametrize("policy", [False, True])
+def test_resolved_fallback_replacement_preserves_query_on_request(configure, monkeypatch, policy):
+    from agent.auxiliary_client import resolve_provider_client
+
+    base_url = "https://redirect.example/v1?api-version=2026-01-01&deployment=fixture"
+    monkeypatch.setenv("FALLBACK_TEST_API_KEY", "fallback-secret")
+    configure({"redirect-provider": {
+        "base_url": base_url, "key_env": "FALLBACK_TEST_API_KEY", "follow_redirects": policy,
+    }})
+    auxiliary, model = resolve_provider_client("redirect-provider", model="fixture-model")
+    agent = _agent()
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": "fixture", "object": "chat.completion", "created": 0, "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                         "finish_reason": "stop"}],
+        })
+
+    def build_transport(base_url, *, verify, follow_redirects):
+        return httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=follow_redirects)
+
+    monkeypatch.setattr(agent, "_build_keepalive_http_client", build_transport)
+    messages = [{"role": "user", "content": "fallback request body"}]
+    try:
+        _swap_fallback_clients(agent, auxiliary, agent.provider, model, str(auxiliary.base_url), agent.api_mode)
+        assert agent.client is not auxiliary
+        assert agent.client._client.follow_redirects is policy
+        result = agent.client.chat.completions.create(model=model, messages=messages)
+        assert result.choices[0].message.content == "ok"
+        assert len(requests) == 1
+        request = requests[0]
+        assert request.url.path == "/v1/chat/completions"
+        assert dict(request.url.params) == {"api-version": "2026-01-01", "deployment": "fixture"}
+        assert request.headers["Authorization"] == "Bearer fallback-secret"
+        assert json.loads(request.content) == {"model": model, "messages": messages}
+    finally:
+        if getattr(agent, "client", None) is not None:
+            agent.client.close()
         auxiliary.close()
 
 

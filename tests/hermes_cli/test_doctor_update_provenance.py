@@ -18,7 +18,8 @@ import hermes_cli.doctor_state as ds
 
 
 # --- plugin provenance rows ---------------------------------------------
-def _make_plugin(plugins: Path, name, *, sidecar=None, git=False, manifest_update_url=None):
+def _make_plugin(plugins: Path, name, *, sidecar=None, git=False, manifest_update_url=None,
+                 install_json=None):
     pdir = plugins / name
     pdir.mkdir(parents=True, exist_ok=True)
     if sidecar is not None:
@@ -33,6 +34,8 @@ def _make_plugin(plugins: Path, name, *, sidecar=None, git=False, manifest_updat
         (pdir / ".git" / "config").write_text(
             '[remote "origin"]\n\turl = https://example.com/x.git\n', encoding="utf-8"
         )
+    if install_json is not None:
+        (pdir / "install.json").write_text(json.dumps(install_json), encoding="utf-8")
     if manifest_update_url is not None:
         (pdir / "plugin.yaml").write_text(
             f"name: {name}\nupdate_url: {manifest_update_url}\n", encoding="utf-8"
@@ -49,16 +52,22 @@ def test_mixed_provenance_diagnostic_is_read_only(tmp_path, monkeypatch, capsys)
     plugins = tmp_path / 'plugins'
     url = 'https://example.com/x'
     cases = [
-        ('drifty', {'source': 'git', 'update_url': url}, False, None, 'warn', 'reinstall'),
-        ('dropped', None, False, None, 'info', 'manually'),
-        ('cloned', None, True, None, 'info', 'adopt'),
-        ('fine', {'source': 'git', 'update_url': url}, True, url, 'ok', 'good standing'),
-        ('sneaky', {'source': 'git'}, True, 'https://evil.example/x', 'warn', 'no url was saved'),
-        ('swapped', {'source': 'git', 'update_url': url}, True, 'https://evil.example/x', 'warn', 'update_url mismatch'),
-        ('removed', {'source': 'git', 'update_url': url}, True, None, 'warn', 'update_url mismatch'),
+        ('drifty', {'source': 'git', 'update_url': url}, False, None, None, 'warn', 'reinstall'),
+        ('dropped', None, False, None, None, 'info', 'manually'),
+        ('cloned', None, True, None, None, 'info', 'adopt'),
+        ('fine', {'source': 'git', 'update_url': url}, True, url, None, 'ok', 'good standing'),
+        ('sneaky', {'source': 'git'}, True, 'https://evil.example/x', None, 'warn', 'no url was saved'),
+        ('swapped', {'source': 'git', 'update_url': url}, True, 'https://evil.example/x', None, 'warn', 'update_url mismatch'),
+        ('removed', {'source': 'git', 'update_url': url}, True, None, None, 'warn', 'update_url mismatch'),
+        # UPD-5 (est-qrazy): archive install — row + install.json, no .git —
+        # is class proven, never the drift warning with a git-clone remedy.
+        ('packed', {'source': 'archive', 'revision': 'c' * 40}, False, None,
+         {'version': '1.4.3', 'source_commit': 'c' * 40, 'packaged_at': '2026-10-01T00:00:00Z'},
+         'ok', 'artifact-pinned'),
     ]
-    for name, sidecar, git, manifest, *_ in cases:
-        _make_plugin(plugins, name, sidecar=sidecar, git=git, manifest_update_url=manifest)
+    for name, sidecar, git, manifest, marker, *_ in cases:
+        _make_plugin(plugins, name, sidecar=sidecar, git=git, manifest_update_url=manifest,
+                     install_json=marker)
     before = {p: p.read_bytes() for p in plugins.rglob('*') if p.is_file()}
     rows = ds._plugin_provenance_rows(plugins)
     for name, *_, severity, remedy in cases:

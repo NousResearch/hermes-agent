@@ -428,11 +428,40 @@ def local_authority_gateway_id() -> str:
     return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
+# Positive readiness verdicts, cached per process and keyed by database path. Driver threads
+# re-probe the store on every poll and the full probe (one PRAGMA table_info per required table,
+# the index lookup, the legacy-import marker check) costs far more than the read it guards. A
+# verdict holds while the file identity (device, inode) and PRAGMA schema_version are unchanged:
+# any DDL bumps schema_version and a replaced file changes the inode, so both re-verify. Negative
+# verdicts are never cached — the migrate/initialize path stays on the full probe — and the
+# legacy-import marker row is append-only, so a positive verdict cannot go stale on the data side.
+_ready_verdicts: dict[str, tuple[int, int, int]] = {}
+
+
+def _readiness_identity(
+    conn: sqlite3.Connection, db_path: Path
+) -> tuple[int, int, int] | None:
+    """Fingerprint a ready store for the verdict cache; ``None`` when the path cannot be stat'ed."""
+    try:
+        st = db_path.stat()
+    except OSError:
+        return None
+    row = conn.execute("PRAGMA schema_version").fetchone()
+    return None if row is None else (st.st_dev, st.st_ino, int(row[0]))
+
+
 def _store_ready(conn: sqlite3.Connection, db_path: Path) -> bool:
     """The store can serve rooms once its schema is current and the pre-isolation import has run."""
     from gateway.hosted_rooms_legacy_import import settled
 
-    return _schema_is_current(conn) and settled(conn, db_path)
+    identity = _readiness_identity(conn, db_path)
+    if identity is not None and _ready_verdicts.get(str(db_path)) == identity:
+        return True
+    if not (_schema_is_current(conn) and settled(conn, db_path)):
+        return False
+    if identity is not None:
+        _ready_verdicts[str(db_path)] = identity
+    return True
 
 
 def _initialize_store(conn: sqlite3.Connection, db_path: Path) -> None:

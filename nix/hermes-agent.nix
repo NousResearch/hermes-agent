@@ -44,6 +44,16 @@
   dirty ? false,
   lastModified ? null,
   # Overridable parameters
+  # ``version`` is a RELEASE version: only meaningful when the pin is a tag. A moving
+  # branch revision has no release version at all, so stamping the "0.0.0" placeholder as
+  # ``baseVersion`` is worse than stamping nothing — "0.0.0" parses as a real version and
+  # compares as older than every requirement, which makes every plugin manifest declaring
+  # ``requires_hermes`` un-installable AND un-loadable (``requires_hermes_error`` is
+  # load-blocking). ``write_install_stamp.py`` already defines the tagless convention:
+  # record the commit, leave the base version unset, and let the runtime read it as
+  # "unknown" — which ``version_satisfies`` treats as "cannot gate on this". Set
+  # ``isRelease = true`` (with ``version``) when the source is pinned to a release tag.
+  isRelease ? false,
   version ? "0.0.0",
   distance ? 0,
   extraPythonPackages ? [ ],
@@ -67,8 +77,12 @@ let
       distance
     else
       throw "distance must be a non-negative integer";
+  # Null for a tagless pin: the reader turns a missing baseVersion into "unknown".
+  stampBaseVersion = if isRelease then version else null;
   stampDisplayVersion =
-    if stampDistance > 0 && rev != null then
+    if !isRelease then
+      (if rev != null then "git.${builtins.substring 0 7 rev}" else "unknown") + (if dirty then ".dirty" else "")
+    else if stampDistance > 0 && rev != null then
       "${version}+${toString stampDistance}.g${builtins.substring 0 7 rev}"
     else if stampDistance > 0 then
       throw "a non-zero distance requires an exact revision"
@@ -83,7 +97,7 @@ let
       commitDate = lastModified;
       inherit branch dirty;
       builtAt = null;
-      baseVersion = version;
+      baseVersion = stampBaseVersion;
       displayVersion = stampDisplayVersion;
       distance = stampDistance;
       source = "nix";
@@ -91,7 +105,7 @@ let
       pmRuntime = toString pmRuntime;
       updateMechanism = "external";
       payload = "bootstrap";
-      tag = null;
+      tag = if isRelease then version else null;
     }
   );
 

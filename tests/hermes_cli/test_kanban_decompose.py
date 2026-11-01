@@ -114,6 +114,66 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_llm_model_provider_reach_children(kanban_home):
+    """A fanout response that carries per-child model/provider fields produces
+    children whose model_override/provider_override are set, and children
+    without them inherit the root task's model override."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship a feature",
+            triage=True,
+            model_override="nous/~deepseek/deepseek-v4-flash-0731",
+            provider_override="nous",
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "local research",
+                "body": "do it locally",
+                "assignee": "researcher",
+                "model": "custom:llama-server/ornith-1.0-9b",
+                "provider": "lmstudio",
+                "parents": [],
+            },
+            {
+                "title": "cloud build",
+                "body": "build in cloud",
+                "assignee": "engineer",
+                "parents": [0],  # no model/provider -> inherit root
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert len(outcome.child_ids) == 2
+
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+
+    # c0 had an explicit per-child model -> its own override.
+    assert c0.model_override == "custom:llama-server/ornith-1.0-9b"
+    assert c0.provider_override == "lmstudio"
+    # c1 had none -> inherited the root's model override.
+    assert c1.model_override == "nous/~deepseek/deepseek-v4-flash-0731"
+    assert c1.provider_override == "nous"
+
+
 def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_home):
     """Unrouted children fall back to the ROOT task's assignee, not
     the decomposer's active profile (#114294). The active profile here is ``private``

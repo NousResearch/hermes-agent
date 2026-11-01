@@ -52,10 +52,10 @@ def _latest_body():
 def test_body_file_stores_body_verbatim_with_trailing_flags_intact(kanban_home, tmp_path, capsys):
     f = tmp_path / "body.md"
     f.write_text(BODY, encoding="utf-8")
-    assert _create(["PROBE", "--body-file", str(f), "--assignee", "baxter", "--priority", "7"]) == 0
+    assert _create(["PROBE", "--body-file", str(f), "--assignee", "default", "--priority", "7"]) == 0
     capsys.readouterr()
     task = _latest_body()
-    assert (task.body, task.assignee, task.priority) == (BODY, "baxter", 7)
+    assert (task.body, task.assignee, task.priority) == (BODY, "default", 7)
     # --body and --body-file cannot both win; refuse instead of picking one.
     assert _create(["PROBE", "--body", "inline", "--body-file", str(f)]) == 2
 

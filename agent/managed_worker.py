@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 import sys
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +160,35 @@ _INTERRUPTED = object()
 # The owner's control pipe closing under a live worker means the owner died (a closing owner
 # signals the worker itself). The agent is interrupted at once; cooperative tools get this long.
 ORPHAN_GRACE_SECONDS = 10
+# When the owner dies, in-flight background subagents (daemon threads in this process) are about to be
+# SIGKILLed with the process group. Give them a bounded drain to finish + persist a real terminal result
+# first; a killed one is otherwise recovered next boot only as "outcome unknown" (recover_abandoned_delegations).
+DELEGATION_DRAIN_SECONDS = 30
+
+
+def _drain_background_delegations(budget):
+    """Wait (bounded) for in-flight background subagents to finish + persist so an owner-death SIGKILL does
+    not amputate a near-done one mid-write. Best-effort and read-only; on timeout the caller's hard-exit
+    guarantee still fires (those get recovered next boot as outcome unknown). Returns units still in flight."""
+    try:
+        from tools.async_delegation import active_count
+    except Exception:
+        return 0
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            remaining = active_count()
+        except Exception:
+            return 0
+        if remaining <= 0:
+            return 0
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "managed worker: %d background delegation(s) still in flight after %.0fs drain; "
+                "hard-exit will end them (recovered next boot as outcome unknown)", remaining, budget,
+            )
+            return remaining
+        time.sleep(0.2)
 
 
 def _die_with_owner():
@@ -222,6 +252,10 @@ class WorkerControls:
                             state['event'].set()
         except (EOFError, OSError, ValueError) as exc:
             self.stop()
+            # The owner is gone (EOF/OSError) — before the hard-exit SIGKILLs this process group, give
+            # in-flight background subagents a bounded chance to finish + persist a real result.
+            if not isinstance(exc, ValueError):
+                _drain_background_delegations(DELEGATION_DRAIN_SECONDS)
             self.finish.set()
             if not isinstance(exc, ValueError):
                 _die_with_owner()

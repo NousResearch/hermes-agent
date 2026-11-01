@@ -506,3 +506,46 @@ def test_filter_reconcile_defers_until_live_tool_manifest_is_available(two_profi
 
     assert reg.reapply_tool_filters({"x": cfg}) == 0
     assert core._servers[(scope, "x")] is incomplete
+
+
+def test_filter_reconcile_preserves_native_over_utility_collision(two_profiles):
+    """#87112: changing the allowlist swaps native/utility handlers without reconnect."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x", "tools": {
+        "include": ["read_resource"], "prompts": False,
+    }}
+    scope = two_profiles("a")
+    srv = _server("x", cfg)
+    srv.session = SimpleNamespace(
+        read_resource=lambda *_a, **_k: None,
+        list_resources=lambda *_a, **_k: None,
+    )
+    srv._tools = [SimpleNamespace(
+        name="read_resource", description="Native read-resource tool",
+        inputSchema={"type": "object", "properties": {}}, annotations=None,
+    )]
+    disc._adopt_server("x", srv)
+    srv._registered_tool_names = reg._register_server_tools("x", srv, cfg)
+    tool = "mcp__x__read_resource"
+    first = registry.snapshot_registration(tool, scope=scope)
+    assert first is not None
+    assert first.description == "Native read-resource tool"
+
+    # Native is excluded, but the resource utility remains enabled.
+    utility_only = {**cfg, "tools": {"include": [], "prompts": False}}
+    assert reg.reapply_tool_filters({"x": utility_only}) == 1
+    second = registry.snapshot_registration(tool, scope=scope)
+    assert second is not None
+    assert second is not first
+    assert second.description != "Native read-resource tool"
+    assert reg.reapply_tool_filters({"x": utility_only}) == 0
+
+    # Re-enable the native tool. It must regain precedence over utility sugar.
+    assert reg.reapply_tool_filters({"x": cfg}) == 1
+    third = registry.snapshot_registration(tool, scope=scope)
+    assert third is not None
+    assert third.description == "Native read-resource tool"
+    assert third is not second
+    assert reg.reapply_tool_filters({"x": cfg}) == 0

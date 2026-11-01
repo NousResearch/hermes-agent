@@ -1,5 +1,5 @@
 /**
- * Edit Profile: appearance, title, description, and the advanced profile
+ * Edit Profile: appearance, title, role, description, and the advanced profile
  * config disclosure for an existing bot.
  */
 
@@ -13,7 +13,6 @@ import {
   DialogTitle,
   DisclosureCaret,
   host,
-  Input,
   queryClient,
   Textarea,
   useI18n,
@@ -23,6 +22,7 @@ import { useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { AvatarPicker } from './avatar-picker'
+import { botRole } from './bot-role'
 import { $botMeta, botSelectionKey, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled } from './dialog-parts'
 import { editedLook, type EditProfileLook } from './edit-profile-look'
@@ -30,6 +30,7 @@ import { useBots } from './i18n'
 import { displayName } from './labels'
 import { AdvancedProfileConfig, applyAdvancedConfig, emptyAdvancedState } from './profile-config'
 import { botRosterMeta, requestForBot } from './routing'
+import { TitleRoleFields } from './title-role-fields'
 import type { AvatarAppearance, RosterRow } from './types'
 
 // ── edit profile dialog ──────────────────────────────────────────────────────
@@ -69,16 +70,19 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
   // A thin row from another connection carries its backend's title on the
   // row itself; there may be no local record for it.
   const openingTitle = meta?.title || bot?.title || ''
+  const openingRole = botRole(bot, meta)
 
   const opening: EditProfileLook = {
     shape: appearance.shape,
     color: appearance.color,
     image: appearance.image ?? null,
+    role: openingRole,
     title: openingTitle
   }
 
   const [opened, setOpened] = useState(opening)
   const [title, setTitle] = useState(openingTitle)
+  const [role, setRole] = useState(openingRole)
   const [description, setDescription] = useState(bot?.description || '')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -96,6 +100,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
       setColor(appearance.color)
       setImage(appearance.image ?? null)
       setTitle(openingTitle)
+      setRole(openingRole)
       setOpened(opening)
       setDescription(bot.description || '')
       setBusy(false)
@@ -116,7 +121,7 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
     setBusy(true)
     let advancedFailed = false
 
-    const look = editedLook(opened, { shape, color, image, title })
+    const look = editedLook(opened, { shape, color, image, role, title })
     const persistence = look ? await saveBotMeta(bot, look) : null
 
     // Only an explicit remote failure is an error — 'unsupported' is the
@@ -219,14 +224,13 @@ export function EditProfileDialog({ bot, open, onClose }: EditProfileDialogProps
             onShape={setShape}
             shape={shape}
           />
-          {labeled(
-            b.editor.title,
-            <Input
-              onChange={event => setTitle(event.target.value)}
-              placeholder={displayName(bot, null)}
-              value={title}
-            />
-          )}
+          <TitleRoleFields
+            onRole={setRole}
+            onTitle={setTitle}
+            placeholder={displayName(bot, null)}
+            role={role}
+            title={title}
+          />
           {labeled(
             b.editor.description,
             <Textarea

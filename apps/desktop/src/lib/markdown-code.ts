@@ -2,6 +2,8 @@ import { normalize } from '@/lib/text'
 
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
 const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
+// Keep listing syntax literal instead of exposing it to inline Markdown or math.
+const LITERAL_FENCE_SIGNAL_RE = /[$`]|::|"[^"\r\n]*"[ \t]*\+/
 
 const COMMON_CODE_LANGUAGES = new Set([
   'bash',
@@ -372,6 +374,13 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return false
   }
 
+  // Literal listing syntax (shell variables, path segments, string
+  // concatenation) survives unwrapping badly - keep the fence so the block
+  // keeps its code card instead of feeding $ and :: to inline math.
+  if (LITERAL_FENCE_SIGNAL_RE.test(body)) {
+    return false
+  }
+
   return (
     (signals.bulletLines >= 2 && signals.hasMarkdown && signals.codeSignals <= 2) ||
     (signals.proseLines >= 3 && signals.codeSignals === 0)
@@ -383,6 +392,14 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
   const signals = codeSignals(code || '')
 
   if (!signals.trimmed || signals.codeSignals >= 3) {
+    return false
+  }
+
+  // Same literal-listing veto as isLikelyProseFence: a plain-text block
+  // carrying $ / backticks / :: / string concatenation keeps its code card.
+  // Checked before the bullet-prose return below so a bullet list that mixes
+  // prose lines with shell variables stays a listing too.
+  if (NON_CODE_FENCE_LANGUAGES.has(cleanLanguage) && LITERAL_FENCE_SIGNAL_RE.test(signals.trimmed)) {
     return false
   }
 

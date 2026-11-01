@@ -191,6 +191,7 @@ class ContextTokenStore:
     def __init__(self, hermes_home: str):
         self._root = _account_dir(hermes_home)
         self._cache: dict[str, str] = {}
+        self._generations: dict[str, int] = {}
         # Serializes the offloaded flushes so two concurrent set() calls
         # cannot land their writes out of order (last-writer-wins would drop
         # the newer token from disk).
@@ -211,6 +212,8 @@ class ContextTokenStore:
             return
         restored = {self._key(account_id, u): t for u, t in data.items() if isinstance(t, str) and t}
         self._cache.update(restored)
+        for key in restored:
+            self._generations[key] = self._generations.get(key, 0) + 1
         if restored:
             logger.info("weixin: restored %d context token(s) for %s", len(restored), _safe_id(account_id))
 
@@ -218,7 +221,24 @@ class ContextTokenStore:
         return self._cache.get(self._key(account_id, user_id))
 
     async def set(self, account_id: str, user_id: str, token: str) -> None:
-        self._cache[self._key(account_id, user_id)] = token
+        key = self._key(account_id, user_id)
+        self._cache[key] = token
+        self._generations[key] = self._generations.get(key, 0) + 1
+        await self._flush(account_id)
+
+    def snapshot(self, account_id: str, user_id: str) -> tuple[Optional[str], int]:
+        return self.get(account_id, user_id), self._generations.get(self._key(account_id, user_id), 0)
+
+    async def invalidate(self, account_id: str, user_id: str, snapshot: tuple[Optional[str], int]) -> None:
+        # A new inbound generation may carry the same opaque token.
+        if self.snapshot(account_id, user_id) != snapshot:
+            return
+        key = self._key(account_id, user_id)
+        self._cache.pop(key, None)
+        self._generations[key] = self._generations.get(key, 0) + 1
+        await self._flush(account_id)
+
+    async def _flush(self, account_id: str) -> None:
         # atomic_json_write() fsyncs, so the flush is offloaded off the loop; the payload is snapshotted
         # here (the worker never iterates ``_cache`` mid-mutation) and the lock keeps flushes in order.
         async with self._persist_lock:
@@ -882,11 +902,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         message_id = str(message.get("message_id") or "").strip()
         if not sender_id or sender_id == self._account_id or (message_id and self._dedup.is_duplicate(message_id)):
             return
-        # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
-            logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+        # Do not infer control updates from payload shape: ref_msg can wrap media.
+        if message.get("message_type", 1) != 1:
             return
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
@@ -897,6 +916,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
+        # Content dedup suppresses repeated business events, not fresh inbound generations.
+        if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
+            logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+            return
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
@@ -974,16 +997,17 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._rate_limit_circuit_until = max(self._rate_limit_circuit_until, time.monotonic() + self._rate_limit_circuit_open_seconds)
         return self._rate_limit_cooldown_remaining() > 0
 
-    async def _send_text_chunk(self, *, chat_id: str, chunk: str, context_token: Optional[str], client_id: str) -> None:
-        """Send one text chunk with retry/backoff under the adapter-wide text gate. A stale-session response (``-14``,
-        or ``-2`` with ``prepare failed``/``unknown error``) is re-sent once *without* ``context_token`` — iLink accepts
-        tokenless sends as a degraded fallback, which keeps cron pushes working when no user message refreshed the
-        session. A ``-2`` that survives that fails fast via ``_session_not_ready_error``."""
+    async def _send_text_chunk(self, *, chat_id: str, chunk: str, client_id: str) -> None:
+        """Read current context under the text gate for every attempt. Recover stale context once with
+        the same client_id: preserve a newer inbound generation, otherwise invalidate and try tokenless.
+        Recovery is best-effort, not a guarantee that iLink permits a proactive send."""
         async with self._send_text_gate:
             last_error: Optional[Exception] = None
-            retried_without_token = False
+            retried_context = False
             attempt = 0  # counts real failures only — the tokenless re-send must not eat the retry budget
             while True:
+                context_snapshot = self._token_store.snapshot(self._account_id, chat_id)
+                context_token = context_snapshot[0]
                 if self._rate_limit_cooldown_remaining() > 0:
                     raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                 try:
@@ -993,12 +1017,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
                     if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
                         errmsg = resp.get("errmsg") or resp.get("msg")
-                        if _is_session_expired(resp, ret, errcode) and not retried_without_token and context_token:
-                            retried_without_token, context_token = True, None
-                            self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
-                            logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
+                        if _is_session_expired(resp, ret, errcode) and not retried_context and context_token:
+                            retried_context = True
+                            await self._token_store.invalidate(self._account_id, chat_id, context_snapshot)
+                            logger.warning("[%s] session expired for %s; retrying with latest context", self.name, _safe_id(chat_id))
                             continue
-                        if _is_stale_session_ret(ret, errcode, errmsg):
+                        if _is_session_expired(resp, ret, errcode):
                             # break, not raise: a raise here is caught below and re-enters the retry ladder.
                             last_error = _session_not_ready_error(ret, errcode, errmsg)
                             break
@@ -1037,8 +1061,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
-        context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
+        delivered_message_ids: list[str] = []
+        chunks: list[str] = []
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
         with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
@@ -1057,14 +1082,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, client_id=client_id)
                 last_message_id = client_id
+                delivered_message_ids.append(client_id)
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
-            return SendResult(success=True, message_id=last_message_id)
+            return SendResult(success=True, message_id=last_message_id,
+                              continuation_message_ids=tuple(delivered_message_ids[:-1]))
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            # The failed tail may have reached iLink; receipts cover acknowledged chunks only.
+            # Mark the partial so consumers never replay the visible head. Do not claim safe resume.
+            raw = {
+                "partial_overflow": True, "delivered_chunks": len(delivered_message_ids),
+                "total_chunks": len(chunks), "delivered_message_ids": tuple(delivered_message_ids),
+                "last_message_id": last_message_id,
+            } if delivered_message_ids else None
+            return SendResult(success=False, error=str(exc), message_id=last_message_id,
+                              continuation_message_ids=tuple(delivered_message_ids[:-1]), raw_response=raw)
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —
@@ -1156,7 +1191,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not upload_url:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
         encrypted_query_param = await _upload_ciphertext(self._send_session, ciphertext=ciphertext, upload_url=upload_url)
-        context_token = self._token_store.get(self._account_id, chat_id)
         # iLink expects aes_key as base64(hex_string), not base64(raw_bytes) — otherwise images render as grey boxes.
         item_kwargs = {
             "encrypt_query_param": encrypted_query_param, "aes_key_for_api": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
@@ -1169,22 +1203,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         last_message_id = ""
         for item_list in item_lists:
             last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
+            retried_context = False
             while True:
+                context_snapshot = self._token_store.snapshot(self._account_id, chat_id)
+                context_token = context_snapshot[0]
                 resp = await _send_items(
                     self._send_session, base_url=self._base_url, token=self._token, to=chat_id, item_list=item_list,
                     context_token=context_token, client_id=last_message_id)
                 ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
                 if (ret is None or ret == 0) and (errcode is None or errcode == 0):
                     break
-                # Same stale-session fallback as _send_text_chunk: re-send once without context_token. Clearing the
-                # token also covers the remaining item lists (caption, then media) and bounds this loop.
-                if _is_session_expired(resp, ret, errcode) and context_token:
-                    context_token = None
-                    self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
-                    logger.warning("[%s] session expired for %s; re-sending media without context_token", self.name, _safe_id(chat_id))
+                # One context recovery per item, preserving any newer inbound generation.
+                if _is_session_expired(resp, ret, errcode) and context_token and not retried_context:
+                    retried_context = True
+                    await self._token_store.invalidate(self._account_id, chat_id, context_snapshot)
+                    logger.warning("[%s] session expired for %s; re-sending media with latest context", self.name, _safe_id(chat_id))
                     continue
                 errmsg = resp.get("errmsg") or resp.get("msg")
-                if _is_stale_session_ret(ret, errcode, errmsg):
+                if _is_session_expired(resp, ret, errcode):
                     raise _session_not_ready_error(ret, errcode, errmsg)
                 raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
         return last_message_id

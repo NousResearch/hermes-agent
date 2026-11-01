@@ -771,6 +771,64 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
 
+def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
+    """When ``board`` is passed to kanban_create, the workspace default
+    must resolve from that board's ``default_workdir``, not from the
+    global active board (which can be racing between concurrent sessions).
+
+    Regression test for #51864: ``_handle_create`` resolved the board
+    for DB connection but dropped it before calling ``create_task``,
+    so ``create_task`` fell back to ``get_current_board()`` for
+    workspace-path default resolution.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_TASK",
+        "HERMES_SESSION_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    kb._INITIALIZED_PATHS.clear()
+
+    (tmp_path / "alpha-proj").mkdir()
+    (tmp_path / "beta-proj").mkdir()
+    alpha_dir = str(tmp_path / "alpha-proj")
+    beta_dir = str(tmp_path / "beta-proj")
+    kb.create_board("alpha", default_workdir=alpha_dir)
+    kb.create_board("beta", default_workdir=beta_dir)
+
+    kb.set_current_board("beta")
+    assert kb.get_current_board() == "beta"
+
+    d = json.loads(kt._handle_create({
+        "title": "alpha task",
+        "assignee": "worker",
+        "board": "alpha",
+        "workspace_kind": "dir",
+    }))
+    assert d["ok"] is True, d
+
+    conn = kbc.connect(board="alpha")
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.workspace_kind == "dir"
+        assert task.workspace_path == alpha_dir
+        assert task.workspace_path != beta_dir
+    finally:
+        conn.close()
+
+
 def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc

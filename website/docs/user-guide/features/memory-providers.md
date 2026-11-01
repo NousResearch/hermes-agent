@@ -792,6 +792,43 @@ package command. Restart Hermes after successful dependency preparation.
 
 ---
 
+### deja
+
+:::info Plugin catalog
+`deja-memory` is maintained by [vshulcz](https://github.com/vshulcz/deja-vu) and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. Source and reference: [vshulcz/deja-vu (`extensions/hermes`)](https://github.com/vshulcz/deja-vu/tree/main/extensions/hermes).
+:::
+
+Memory from the coding sessions already on the machine. deja indexes the transcripts that Hermes, Claude Code, Codex, Cursor, Gemini CLI, OpenCode and other coding agents write to disk, including months recorded before it was installed, and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
+
+| | |
+|---|---|
+| **Best for** | Coding on a machine that already has agent history; recall that works the minute it is installed |
+| **Requires** | `hermes plugins install deja-memory` (from the plugin catalog) + the `deja` binary (`brew install deja-vu` or `npm i -g @vshulcz/deja-vu`) |
+| **Data storage** | Local index under `~/.cache/deja` (or `DEJA_INDEX_DIR`); nothing leaves the machine |
+| **Cost** | Free (MIT) |
+
+**Tools:** one tool, `deja`, with a `mode` argument — `recall` (search past sessions across every agent), `fix` (what was run after this error before), `blame` (which sessions touched a file and what they concluded), plus `context`, `how`, `orient` and `remember`. It is one tool rather than seven on purpose: a wired-in MCP server ships its tool definitions with every request, so they are paid for each turn whether the agent calls anything or not, and the modes schema costs 477 tokens against 828 for the seven separate tools it replaced.
+
+**Setup:**
+```bash
+brew install deja-vu && deja index
+hermes plugins install deja-memory   # from the plugin catalog
+
+hermes memory setup                  # select "deja-memory"
+# Or manually:
+hermes config set memory.provider deja-memory
+```
+
+**Key features:**
+- Starts full: the first session already knows what the last months decided, in Hermes and in every other agent on the disk
+- Per-turn recall is the same digest deja injects in Claude Code and Codex; silent when nothing matches
+- Keys and tokens are stripped as the index is built
+- Sessions are read where the agents write them; nothing is captured or mirrored
+
+See the [deja Hermes guide](https://vshulcz.github.io/deja-vu/guide/memory-for-hermes.html) and the [plugin README](https://github.com/vshulcz/deja-vu/tree/main/extensions/hermes).
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -805,12 +842,14 @@ package command. Restart Hermes after successful dependency preparation.
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **deja** (plugin catalog) | Local | Free | 1 | `hermes plugins install deja-memory` + `deja` binary | Indexes the session history already on disk across coding agents |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](../profiles.md):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **deja** keeps one machine-wide index outside `$HERMES_HOME`, shared by every profile and every agent on the machine
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

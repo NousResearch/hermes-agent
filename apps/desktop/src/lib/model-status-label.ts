@@ -60,6 +60,29 @@ export function modelBaseId(model: string): string {
   return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
 }
 
+// A bare id that ends in one of these names nothing on its own: `copilot/auto`
+// and `cursor/auto` both reduce to "Auto", so the picker shows two
+// indistinguishable rows and a session footer that can't say which brain
+// worked. The leading namespace is the only identity such an id carries.
+const GENERIC_MODEL_BASE = /^(?:auto|default|default-model|model|latest|chat)$/i
+
+/** The namespace a nameless model id leads with, for the label. Empty for every
+ *  id that already names itself: `copilot/auto` → `copilot`, but
+ *  `nvidia/deepseek-ai/deepseek-v4.1-flash` → `` (a bare id that says
+ *  "deepseek-v4.1-flash" needs no vendor pinned in front of it). The first
+ *  segment is the namespace; later ones are route detail (`…/litellm/…`), never
+ *  the identity, so they never leak into the label. */
+export function modelNamespace(model: string): string {
+  const trimmed = model.trim()
+  const slash = trimmed.lastIndexOf('/')
+
+  if (slash < 0 || !GENERIC_MODEL_BASE.test(trimmed.slice(slash + 1))) {
+    return ''
+  }
+
+  return trimmed.slice(0, trimmed.indexOf('/'))
+}
+
 // Trailing model-id variants that should render as a grayed tag beside the
 // name (e.g. "Opus 4.8" + "Fast") rather than collapsing two distinct ids to
 // the same display name. `-flash` splits look-alike pairs the same way
@@ -196,7 +219,15 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  // A nameless id carries its identity in the leading namespace, so the label
+  // leads with it: `copilot/auto` → "Copilot Auto", `cursor/auto` →
+  // "Cursor Auto". Ids that name themselves (every non-generic base) get no
+  // prefix — `nvidia/deepseek-ai/deepseek-v4.1-flash` stays "DeepSeek V4.1
+  // Flash". Leading the name, not trailing a tag, keeps it visible and searchable.
+  const namespace = prettifyBase(modelNamespace(model))
+  const named = prettifyBase(base) || model.trim()
+
+  return { name: [namespace, named].filter(Boolean).join(' ') || 'No model', tag: tags.join(' ') }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant

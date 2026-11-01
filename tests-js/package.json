@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "@hermes/root-tests",
   "private": true,
   "type": "module",

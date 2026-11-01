@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "find-in-page-native-fixture",
   "private": true,
   "type": "module",

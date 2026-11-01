@@ -259,6 +259,12 @@ It applies to every chained voice turn: CLI and TUI voice mode, the Desktop voic
 
 The voice model never forces a compaction: when the conversation is already larger than its context window, that turn runs on the session's model and a one-time notice says so. GPT-Live voice chat ignores this slot, because there the voice layer already is the fast model and delegates real work to the session's model.
 
+### Desktop playback controls
+
+While Hermes Desktop reads aloud or speaks a voice reply, use the pause button beside **Stop playback** to hold your place. The button becomes Resume while paused. Resuming continues the same audio; Stop playback discards it. An intentional pause does not count as stalled audio.
+
+In continuous voice mode with barge-in enabled, the microphone remains active while playback is paused. Speaking interrupts and discards the held reply so you can give a new instruction, just as it does during playback.
+
 ### Barge-in
 
 You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):

@@ -85,8 +85,91 @@ class TestMaybeApplyCodexAppServerRuntime:
 class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 
+    @pytest.mark.parametrize(
+        "config,kanban_root,expected",
+        [
+            (
+                {},
+                None,
+                [],
+            ),
+            (
+                {
+                    "model_reasoning_effort": "high",
+                    "sandbox_mode": "workspace-write",
+                    "ask_for_approval": "on-request",
+                    "network_access": True,
+                    "writable_roots": ["/work", "/work", "/tmp/😀"],
+                },
+                "/kanban",
+                [
+                    'model_reasoning_effort="high"',
+                    'sandbox_mode="workspace-write"',
+                    'approval_policy="on-request"',
+                    "sandbox_workspace_write.network_access=false",
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": False,
+                    "writable_roots": ["/ignored"],
+                },
+                "/kanban",
+                [
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=false",
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": True,
+                    "writable_roots": ["/work"],
+                },
+                None,
+                ['sandbox_mode="danger-full-access"'],
+            ),
+            (
+                {},
+                "/kanban",
+                [
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=false",
+                    'sandbox_workspace_write.writable_roots=["/kanban"]',
+                ],
+            ),
+        ],
+    )
+    def test_launch_config_resolves_session_scoped_overrides_without_conflicts(
+        self, config, kanban_root, expected
+    ) -> None:
+        from agent.transports.codex_app_server import resolve_codex_app_server_args
 
+        args = resolve_codex_app_server_args(
+            config=config,
+            kanban_root=kanban_root,
+        )
 
+        assert args == [part for value in expected for part in ("-c", value)]
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"model_reasoning_effort": "extreme"},
+            {"sandbox_mode": "host-write"},
+            {"ask_for_approval": "always"},
+            {"sandbox_mode": "workspace-write", "network_access": "yes"},
+            {"sandbox_mode": "workspace-write", "writable_roots": ["relative/path"]},
+        ],
+    )
+    def test_launch_config_rejects_invalid_values(self, config) -> None:
+        from agent.transports.codex_app_server import resolve_codex_app_server_args
+
+        with pytest.raises(ValueError, match="model.codex_app_server"):
+            resolve_codex_app_server_args(config=config)
 
     def test_check_binary_handles_missing_executable(self) -> None:
         from agent.transports.codex_app_server import check_codex_binary
@@ -261,7 +344,7 @@ class TestSpawnEnvIsolation:
         """Codex-runtime Kanban workers need to write board state outside
         their scratch/worktree workspace, but should not fall back to
         danger-full-access. Hermes passes a narrow app-server config override
-        for the Kanban root only.
+        for the Kanban root only and keeps it authoritative over legacy args.
         """
         import subprocess
         from agent.transports import codex_app_server as cas
@@ -299,18 +382,255 @@ class TestSpawnEnvIsolation:
             "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
         )
 
-        client = cas.CodexAppServerClient(codex_bin="codex")
+        client = cas.CodexAppServerClient(
+            codex_bin="codex",
+            extra_args=["-c", 'sandbox_mode="danger-full-access"'],
+        )
         client._closed = True
 
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
-        assert 'sandbox_mode="workspace-write"' in cmd
-        assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
-            in cmd
+        assert cmd[-6:] == [
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+            "-c",
+            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]',
+        ]
+
+    @pytest.mark.parametrize(
+        "permissive,session_expected",
+        [
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": True,
+                    "writable_roots": ["/"],
+                },
+                ['sandbox_mode="danger-full-access"'],
+            ),
+            (
+                {
+                    "sandbox_mode": "workspace-write",
+                    "network_access": True,
+                    "writable_roots": ["/"],
+                },
+                [
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=true",
+                    'sandbox_workspace_write.writable_roots=["/"]',
+                ],
+            ),
+        ],
+    )
+    def test_profile_config_widens_normal_session_but_not_owned_kanban_worker(
+        self, monkeypatch, permissive, session_expected
+    ):
+        """The same permissive ``model.codex_app_server`` config is honoured for a
+        normal session, while a dispatcher-owned worker stays bounded to
+        workspace-write + no network + only the dispatcher's Kanban root."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        spawned = []
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                spawned.append(list(cmd))
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes")
+        for key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_DB", "HERMES_KANBAN_ROOT"):
+            monkeypatch.delenv(key, raising=False)
+
+        normal = cas.CodexAppServerClient(codex_bin="codex", config=permissive)
+        normal._closed = True
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB", "/users/alice/.hermes/kanban/boards/smoke/kanban.db"
         )
-        assert "sandbox_workspace_write.network_access=false" in cmd
-        assert all("danger" not in part for part in cmd)
+        worker = cas.CodexAppServerClient(codex_bin="codex", config=permissive)
+        worker._closed = True
+
+        def overrides(cmd):
+            return [
+                cmd[i + 1]
+                for i, part in enumerate(cmd)
+                if part == "-c" and not cmd[i + 1].startswith("mcp_servers.")
+            ]
+
+        assert overrides(spawned[0]) == session_expected
+        assert overrides(spawned[1]) == [
+            'sandbox_mode="workspace-write"',
+            "sandbox_workspace_write.network_access=false",
+            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]',
+        ]
+
+    @pytest.mark.parametrize("context", ["delegated_child", "non_dispatcher_owned"])
+    def test_kanban_descendants_stay_bounded_by_permissive_profile_config(
+        self, monkeypatch, context
+    ):
+        """A delegate child (or cron run) inside a Kanban worker does not own the
+        task, but is still bounded: the generic profile config must not widen it."""
+        import subprocess
+        from agent.delegation_context import (
+            delegated_child_context,
+            non_dispatcher_owned_context,
+        )
+        from agent.transports import codex_app_server as cas
+
+        spawned = []
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                spawned.append(list(cmd))
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB", "/users/alice/.hermes/kanban/boards/smoke/kanban.db"
+        )
+        enter = {
+            "delegated_child": delegated_child_context,
+            "non_dispatcher_owned": non_dispatcher_owned_context,
+        }[context]
+        permissive = {
+            "sandbox_mode": "danger-full-access",
+            "network_access": True,
+            "writable_roots": ["/"],
+        }
+        with enter():
+            client = cas.CodexAppServerClient(codex_bin="codex", config=permissive)
+        client._closed = True
+
+        cmd = spawned[0]
+        assert [
+            cmd[i + 1]
+            for i, part in enumerate(cmd)
+            if part == "-c" and not cmd[i + 1].startswith("mcp_servers.")
+        ] == [
+            'sandbox_mode="workspace-write"',
+            "sandbox_workspace_write.network_access=false",
+        ]
+        # Bounded, but no writable root and no ownership of the task via MCP env.
+        assert not any(part.startswith("mcp_servers.") for part in cmd)
+
+    @pytest.mark.parametrize(
+        "config,db,expected",
+        [
+            (None, None, []),
+            (
+                {
+                    "sandbox_mode": "workspace-write",
+                    "network_access": True,
+                    "writable_roots": ["/work"],
+                },
+                None,
+                [
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=true",
+                    'sandbox_workspace_write.writable_roots=["/work"]',
+                ],
+            ),
+            (
+                {
+                    "sandbox_mode": "danger-full-access",
+                    "network_access": True,
+                    "writable_roots": ["/"],
+                },
+                "/users/alice/.hermes/kanban/boards/smoke/kanban.db",
+                [
+                    'sandbox_mode="workspace-write"',
+                    "sandbox_workspace_write.network_access=false",
+                ],
+            ),
+        ],
+        ids=["marker_only", "marker_only_permissive", "worker_descendant"],
+    )
+    def test_delegate_marker_is_never_a_writable_root(
+        self, monkeypatch, config, db, expected
+    ):
+        """The marker's value is the fenced (write-denied) root. A marker without
+        Kanban lineage changes nothing vs. a normal session; a worker descendant
+        (marker + board DB, no task) is clamped but gets no writable root."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        spawned = []
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                spawned.append(list(cmd))
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_ROOT", raising=False)
+        if db:
+            monkeypatch.setenv("HERMES_KANBAN_DB", db)
+        else:
+            monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        marker = "/users/alice/.hermes"
+        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", marker)
+        client = cas.CodexAppServerClient(codex_bin="codex", config=config)
+        client._closed = True
+
+        cmd = spawned[0]
+        applied = [
+            cmd[i + 1]
+            for i, part in enumerate(cmd)
+            if part == "-c" and not cmd[i + 1].startswith("mcp_servers.")
+        ]
+        assert applied == expected
+        assert not any(marker in item for item in applied)
+        assert not any(part.startswith("mcp_servers.") for part in cmd)
+
+    @pytest.mark.parametrize(
+        "config",
+        [{"network_access": "yes"}, {"writable_roots": ["relative"]}],
+    )
+    def test_invalid_values_raise_even_when_kanban_clamps(self, config):
+        from agent.transports import codex_app_server as cas
+
+        with pytest.raises(ValueError):
+            cas.resolve_codex_app_server_args(config=config, kanban_root="/k")
+
+    @pytest.mark.parametrize(
+        "config,kanban_root",
+        [
+            ({"sandbox_mode": "danger-full-access"}, "/k"),
+            ({"network_access": True, "writable_roots": ["/a"]}, None),
+        ],
+    )
+    def test_ignored_keys_log_a_warning(self, config, kanban_root, caplog):
+        import logging
+        from agent.transports import codex_app_server as cas
+
+        with caplog.at_level(logging.WARNING, logger=cas.logger.name):
+            cas.resolve_codex_app_server_args(config=config, kanban_root=kanban_root)
+
+        assert any("ignored" in r.getMessage() for r in caplog.records)
 
 
 class TestSpawnEnvSecretStripping:

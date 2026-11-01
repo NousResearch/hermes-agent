@@ -26,6 +26,11 @@ import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
 
 export const ruOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: 'Создаёт отдельное прямое подключение MCP, а не размещённый коннектор. Это имя обозначает его инструменты; выберите нужную учётную запись или рабочее пространство на странице входа провайдера. При ошибке или отмене новая запись остаётся доступной для повторной попытки или удаления.'
+    }
+  },
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,

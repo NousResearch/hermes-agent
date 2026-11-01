@@ -29,11 +29,13 @@ import {
   EMPTY_CONNECTORS_FILTER,
   forgetAbandoned,
   hostedCardKey,
+  localCardKey,
   localServerName
 } from './derive'
 import { DisconnectConfirm, type Disconnecting } from './disconnect-confirm'
 import { HostedConnectorDialog, type PendingRename } from './hosted-dialog'
 import { HostedNotice } from './hosted-notice'
+import { LocalAccounts } from './local-accounts'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
 import { openToolsList, resetOpenedTools } from './tools-summary'
@@ -179,6 +181,21 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const busySlug = hostedActions.busySlug
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
+  const localAccounts = openCard?.ways.local?.installed ? (
+    <LocalAccounts
+      catalog={mcp.catalog}
+      onChanged={mcp.onCatalogInstalled}
+      onOpenAccount={name => {
+        const target = cards.find(card => card.ways.local?.serverName === name)
+        setOpenKey(target ? cardKey(target) : localCardKey(name))
+      }}
+      pending={mcp.profilePending || mcp.configLoading}
+      profile={profile}
+      serverName={localServerName(openCard)}
+      servers={mcp.servers}
+    />
+  ) : undefined
+
   return (
     <div className="capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2">
       <ConnectorsDirectory
@@ -212,6 +229,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           controller={mcp}
           installFields={bundledEntry(openCard)?.required_env}
           installing={installing === cardKey(openCard)}
+          localAccounts={localAccounts}
           onClose={() => setOpenKey(null)}
           onConnect={() => void startConnect(openCard, false)}
           onInstall={env => void startInstall(openCard, env)}
@@ -242,6 +260,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           hosted={hosted}
           installFields={bundledEntry(openCard)?.required_env}
           installing={installing === cardKey(openCard)}
+          localAccounts={localAccounts}
           onClose={() => {
             setOpenKey(null)
             setPendingRename(null)

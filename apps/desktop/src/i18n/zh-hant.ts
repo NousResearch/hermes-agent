@@ -14,6 +14,11 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: '建立獨立的直接 MCP 連線，而非託管連接器。此名稱用於區分工具；請在服務商的登入頁面選擇所需的帳戶或工作區。登入失敗或取消後，新項目仍可重試或移除。'
+    }
+  },
 
   catalog: {
     add: '新增',

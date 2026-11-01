@@ -305,8 +305,8 @@ describe('the Scheduled jobs pane', () => {
   })
 })
 
-describe('returning to Sessions', () => {
-  it('drops a cold bot open still pending (#120277)', async () => {
+describe('hiding the Bots pane', () => {
+  it('keeps Bot Mode while a narrow overlay hides (#139663)', async () => {
     const store = paneStores()
     const harness = recordingContext()
     const { $pendingBotOpen } = await import('./shared')
@@ -318,8 +318,8 @@ describe('returning to Sessions', () => {
 
     store(`hermes-bots:pane`).set(false)
 
-    expect($pendingBotOpen.get()).toBeNull()
-    expect(mocks.setWorkspaceScope).toHaveBeenCalledWith('sessions')
+    expect($pendingBotOpen.get()).toEqual({ generation: 1, key: 'local::bravo' })
+    expect(mocks.setWorkspaceScope).not.toHaveBeenCalled()
 
     harness.dispose()
   })

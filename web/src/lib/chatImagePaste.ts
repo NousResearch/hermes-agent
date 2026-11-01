@@ -62,6 +62,18 @@ export function imageFilesFromTransfer(
   return files;
 }
 
+/** Consume a paste only when its clipboard payload contains image files. */
+export function handleImagePaste(
+  event: Pick<ClipboardEvent, "clipboardData" | "preventDefault">,
+  onImages: (files: File[]) => void,
+): boolean {
+  const files = imageFilesFromTransfer(event.clipboardData);
+  if (files.length === 0) return false;
+  event.preventDefault();
+  onImages(files);
+  return true;
+}
+
 /** Pull the first image blob out of a DataTransfer, or null if none present. */
 export function firstImageFromClipboard(
   data: DataTransfer | null,

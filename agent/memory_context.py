@@ -175,11 +175,32 @@ def build_memory_context_block(raw_context: str) -> str:
         # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
     clean = _drop_repeated_recall_lines(sanitized)
+
+    # External memory is recalled into the prompt labelled
+    # "authoritative reference data", but — unlike builtin MEMORY.md — it was never threat-scanned.
+    # A poisoned store would otherwise become durable, cross-profile prompt injection that survives
+    # resets and crosses profiles, auto-injected every turn with no model action. Scan the composed
+    # block at the same "context" scope the prompt builder and context-file sources apply to
+    # non-user-authored injected content; on a hit, swap the body for a [BLOCKED:] notice so the
+    # model sees the block was suppressed rather than silently missing (mirrors MEMORY.md load-time
+    # substitution). "strict" is deliberately avoided here: its aggressive persisted-path / hardcoded-
+    # secret / ssh patterns false-positive on legitimate memories that discuss security config.
+    from tools.threat_patterns import scan_for_threats
+
+    body = clean
+    findings = scan_for_threats(clean, scope="context") if clean else []
+    if findings:
+        logger.warning("External memory recall blocked at injection: %s", ", ".join(findings))
+        body = (
+            "[BLOCKED: recalled memory matched threat pattern(s) — "
+            f"{', '.join(findings)}. Removed from the prompt to prevent injection. "
+            "Review the external memory store and quarantine the poisoned entry.]"
+        )
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
         "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        f"{body}\n"
         "</memory-context>"
     )

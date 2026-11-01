@@ -783,6 +783,22 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+    # Append-only command-execution audit. Recorded after the approval
+    # guard so only code that will actually run is logged; body is redacted (code_file=True
+    # so URL-credential/code-specific rules apply) and the write never fails this tool.
+    try:
+        from tools.approval import get_current_session_key
+        from tools.exec_audit import record_exec
+        from tools.terminal_tool import _current_session_profile
+
+        record_exec(
+            tool="execute_code", body=code,
+            profile=_current_session_profile(),
+            session_key=(get_current_session_key(default="") or (task_id or "")),
+            task_id=task_id,
+        )
+    except Exception:
+        pass
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
     if env_type != "local":
         return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))

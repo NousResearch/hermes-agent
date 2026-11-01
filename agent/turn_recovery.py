@@ -1507,6 +1507,14 @@ def compute_error_backoff(
         wait_time, retry_count, max_retries, agent._client_log_context(),
         _backoff_policy or "default", api_error,
     )
+    # Structured twin of the live line for API clients (Otto's retry indicator).
+    from agent import provider_events
+    from agent.agent_runtime_helpers import extract_api_error_context
+    provider_events.emit(
+        agent, "rate_limited" if is_rate_limited else "retry",
+        attempt=retry_count, max=max_retries, wait_seconds=round(float(wait_time), 1),
+        reset_at=extract_api_error_context(api_error).get("reset_at") if is_rate_limited else None,
+        reason=provider_events.error_class(api_error))
     return wait_time
 
 

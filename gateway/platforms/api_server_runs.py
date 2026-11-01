@@ -365,6 +365,23 @@ def _mark_shutdown_requested(self) -> int:
     return marked
 
 
+# provider.status payload keys (agent.provider_events); anything else the agent adds stays off the wire.
+_PROVIDER_EVENT_KEYS = ("kind", "provider", "model", "to_provider", "to_model", "attempt", "max",
+                        "wait_seconds", "reset_at", "reason", "phase", "locked")
+
+
+def _make_provider_event_callback(run, run_id: str, loop: asyncio.AbstractEventLoop):
+    """Agent provider-health events (retry / rate_limited / usage_exhausted / fallback / failed) ->
+    ``provider.status`` run events, so a client can say why the reply is late while it waits."""
+    def _callback(event: dict[str, Any]) -> None:
+        if not isinstance(event, dict) or not event.get("kind"):
+            return
+        fields = {k: event[k] for k in _PROVIDER_EVENT_KEYS if event.get(k) is not None}
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "provider.status", **fields))
+    return _callback
+
+
 def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop, *, _api_server):
     """Return a callback that pushes structured events to the run SSE queue."""
     redact_sensitive_text = _api_server.redact_sensitive_text
@@ -799,7 +816,13 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         return history_err
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
-    route = self._resolve_route(body.get("model"))
+    runtime_request = self._session_runtime_request_from_body(body)
+    lock_error = self._runtime_lock_error(runtime_request)
+    if lock_error is not None:
+        return lock_error
+    # A run lock is per-turn: do not persist it as a standing session selection (voice/MoA).
+    locked = bool(runtime_request.get("require_model_lock"))
+    route = runtime_request.get("route") if locked else self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
     selection_error = self._request_route_conflict_error(
         session_id=session_id, gateway_session_key=gateway_session_key,
@@ -866,7 +889,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
-            route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+            route=route, confirmed_runtime_lock=locked,
+            room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
@@ -991,7 +1015,13 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, _run_usage(agent), _served_runtime(agent)
+        runtime = _served_runtime(agent)
+        if run.agent_kwargs.get("confirmed_runtime_lock"):
+            runtime = self._turn_runtime_metadata(
+                agent, route=run.agent_kwargs.get("route"),
+                requested_runtime={k: run.agent_kwargs.get(f"requested_{k}") for k in ("provider", "model")},
+                route_source="raw_request", confirmed_runtime_lock=True)
+        return r, _run_usage(agent), runtime
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[dict[str, Any]], None]:
@@ -1126,7 +1156,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    provider_event_callback=_make_provider_event_callback(run, run_id, loop))
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (
@@ -1136,6 +1167,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+            agent.provider_event_callback = _make_provider_event_callback(run, run_id, loop)
             self._active_run_agents[run_id] = agent
             approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
             result, usage, served_runtime = await _submit_api_worker(
@@ -1161,6 +1193,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
             _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            if status == "completed":
+                with suppress(Exception):
+                    from agent.provider_events import record_model_ok
+                    record_model_ok(str((served_runtime or {}).get("provider") or ""),
+                                    str((served_runtime or {}).get("model") or ""))
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

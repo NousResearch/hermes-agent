@@ -151,6 +151,15 @@ def handle_api_error(
 
     retry_count += 1
     elapsed_time = time.time() - api_start_time
+    # API clients learn about an exhausted allowance at once (which account, when it resets), not
+    # only after the retry/fallback walk ends; once per turn.
+    from agent import provider_events
+    if not getattr(_retry, "usage_exhausted_announced", False) and provider_events.is_usage_exhausted(
+            classified, error_context):
+        _retry.usage_exhausted_announced = True
+        provider_events.emit(
+            agent, "usage_exhausted", reset_at=(error_context or {}).get("reset_at"),
+            reason=provider_events.error_class(api_error))
     # Liveness/watchdog label only (never shown in chat), so the classifier's
     # "not retryable" verdict is named on the logged attempt line below instead.
     agent._touch_activity(f"API error recovery (attempt {retry_count}/{max_retries})")
@@ -357,6 +366,8 @@ def settle_unrecovered_error(
                 retry_count = compression_attempts = 0
                 return _verdict("break")
         # Terminal from here: collapse the continuation trail once, before the persist.
+        from agent import provider_events
+        provider_events.emit(agent, "failed", reason=provider_events.error_class(api_error))
         _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
@@ -372,10 +383,20 @@ def settle_unrecovered_error(
         logger.info("%sFree-tier cooldown outlasts the attended wait — ending retries after attempt %s",
                     agent.log_prefix, retry_count)
         retry_count = max_retries
+    # A turn pinned to one model (``require_model_lock``) has no fallback to wait for: an exhausted
+    # allowance ends it now, and a local endpoint that is down skips the transport rebuild and the
+    # minutes-long recovery ladder, so the client hears within seconds instead of ~4.5 minutes.
+    from agent import provider_events
+    _locked = provider_events.is_model_locked(agent)
+    _fast_fail_local = _locked and provider_events.is_local_endpoint(agent)
+    if _locked and provider_events.is_usage_exhausted(classified, agent._extract_api_error_context(api_error)):
+        logger.info("%sModel-locked turn hit a usage limit — not retrying", agent.log_prefix)
+        retry_count = max(retry_count, max_retries)
+        _fast_fail_local = True  # nothing to rebuild or wait out either
     if retry_count >= max_retries:
         # Before fallback, rebuild the primary client once per API call block for
         # transient transport errors (stale pool, TCP reset).
-        if not _retry.primary_recovery_attempted and agent._try_recover_primary_transport(
+        if not _fast_fail_local and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport(
             api_error, retry_count=retry_count, max_retries=max_retries,
         ):
             _retry.primary_recovery_attempted = True
@@ -398,7 +419,7 @@ def settle_unrecovered_error(
         # Fallback first (above); only with nothing left to move to does the bounded auto-recovery
         # ladder park the turn on a transient outage instead of ending it (#85426, #107307).
         from agent.turn_recovery_autorecover import auto_recover_after_exhaustion
-        _ladder = auto_recover_after_exhaustion(
+        _ladder = None if _fast_fail_local else auto_recover_after_exhaustion(
             agent, api_error, classified, _retry, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,
         )
@@ -406,6 +427,8 @@ def settle_unrecovered_error(
             if _ladder["action"] == "continue":
                 retry_count = 0
             return _verdict(_ladder["action"], _ladder.get("result"))
+        provider_events.emit(agent, "failed", attempt=attempts_made, max=max_retries,
+                             reason=provider_events.error_class(api_error))
         _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", max_retries_exhausted_result(
             agent, api_error, classified, attempts=attempts_made, is_rate_limited=is_rate_limited,

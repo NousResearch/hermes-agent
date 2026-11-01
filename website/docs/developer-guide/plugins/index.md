@@ -500,6 +500,16 @@ The rules:
 - Your own `headers` are sent too, except any that would replace the
   `Authorization` (or account) headers Hermes attaches.
 
+For an API that speaks websocket, call
+`credentialed_provider_websocket(provider, url, *, headers=None, timeout=30.0)`
+instead. Hermes attaches the sign-in to the opening handshake and returns the
+open connection (a `websockets` sync `ClientConnection`: `send`, `recv`,
+iteration, `close`, usable as a context manager). The same rules apply. `wss://`
+is checked against the provider's `https` origins, and plain `ws://` is always
+refused. A redirect fails the handshake with
+`websockets.exceptions.InvalidStatus` instead of being followed, and the
+connection Hermes returns no longer holds the token.
+
 `requires_auth` appears in `hermes plugins show <name>` and at install time, and
 a catalog re-pin that adds it asks the user before updating. Like capabilities,
 this is consent and visibility. It is **not a sandbox**: in-process plugin code

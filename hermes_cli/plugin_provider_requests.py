@@ -6,7 +6,8 @@ second refresher races Hermes's locked refresh and can sign the user out. Instea
 ``requires_auth: [openai-codex]`` in its ``plugin.yaml`` and calls :func:`credentialed_provider_request`.
 Hermes resolves the credential through its own locked-refresh path, attaches ``Authorization``
 itself, sends only to that provider's origins, never follows a redirect, and hands back
-status, headers and body.
+status, headers and body. :func:`credentialed_provider_websocket` does the same for a ``wss://``
+handshake and hands back the open connection.
 
 The caller is identified by file location: the nearest stack frame inside an installed plugin
 directory. Like capabilities this is consent and visibility, not a sandbox. In-process plugin code
@@ -20,6 +21,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
+from urllib.parse import urlparse
+
+from websockets.sync.client import ClientConnection
 
 from hermes_cli.urllib_security import url_origin
 
@@ -40,6 +44,17 @@ class ProviderResponse:
 
     def json(self) -> Any:
         return _json.loads(self.body)
+
+
+class ProviderWebSocket(ClientConnection):
+    """An open provider websocket (``send``, ``recv``, iterate, ``close``) that holds no credential."""
+
+    def handshake(self, *args: Any, **kwargs: Any) -> None:
+        debug, self.protocol.debug = self.protocol.debug, False  # its debug log prints every request header
+        try:
+            super().handshake(*args, **kwargs)
+        finally:
+            self.request, self.protocol.debug = None, debug  # the handshake request carries the bearer
 
 
 def _codex_auth(url: str) -> tuple[dict[str, str], str]:
@@ -131,24 +146,13 @@ def _declared_providers(plugin_dir: Path) -> list[str]:
     return declared_auth_providers(read_native_manifest(manifest)) if manifest else []
 
 
-def credentialed_provider_request(
-    provider: str, method: str, url: str, *, json: Any = None,
-    headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
-) -> ProviderResponse:
-    """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
-
-    *provider* is a Hermes sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
-    declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`); the plugin's own entry wins.
-    Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
-    does not list *provider* under ``requires_auth``, and any origin outside the provider's
-    allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
-    returned as-is, never followed. The result carries no credential.
-    """
+def _authorized(api: str, provider: str, url: str) -> tuple[frozenset, Callable[[str], tuple[dict[str, str], str]]]:
+    """``(origins, resolver)`` once the calling plugin may send its *provider* sign-in to *url*."""
     from hermes_cli.plugin_oauth import _plugin_oauth_spec
 
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:
-        raise PermissionError("credentialed_provider_request must be called from an installed plugin's code")
+        raise PermissionError(f"{api} must be called from an installed plugin's code")
     # The plugin's own oauth: entry first, so a core provider added later under the same id cannot take it over.
     spec = _plugin_oauth_spec(plugin_dir, provider)
     if spec is None:
@@ -162,6 +166,41 @@ def credentialed_provider_request(
     origins, resolve = spec
     if url_origin(url) not in origins:
         raise PermissionError(f"Refusing to send the {provider} sign-in to {url_origin(url)[1] or url!r}")
+    return origins, resolve
+
+
+def _auth_headers(
+    provider: str, url: str, origins: frozenset, resolve: Callable,
+) -> tuple[dict[str, str], Optional[BaseException]]:
+    """``(auth headers, None)``, or ``({}, refusal)`` for the caller to raise once outside every ``except``."""
+    import httpx
+
+    try:
+        auth_headers, credential_base = resolve(url)
+    except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
+        return {}, type(exc)(str(exc))
+    except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
+        return {}, _detached(exc)
+    if url_origin(credential_base) not in origins:
+        # A pooled gateway key belongs to its own host only (#121486).
+        return {}, PermissionError(f"This profile's {provider} credential routes to a custom endpoint; refusing")
+    return auth_headers, None
+
+
+def credentialed_provider_request(
+    provider: str, method: str, url: str, *, json: Any = None,
+    headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
+) -> ProviderResponse:
+    """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
+
+    *provider* is a Hermes sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
+    declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`); the plugin's own entry wins.
+    Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
+    does not list *provider* under ``requires_auth``, and any origin outside the provider's
+    allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
+    returned as-is, never followed. The result carries no credential.
+    """
+    origins, resolve = _authorized("credentialed_provider_request", provider, url)
     import httpx
 
     # Every error the plugin receives past this point is rebuilt without traceback, chain or request: those
@@ -169,32 +208,55 @@ def credentialed_provider_request(
     refusal: Optional[BaseException] = None
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         request = client.build_request(method, url, json=json, headers=dict(headers or {}))  # no credential yet
-        try:
-            auth_headers, credential_base = resolve(url)
-        except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
-            refusal = type(exc)(str(exc))
-        except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
-            refusal = _detached(exc)
-        else:
-            if url_origin(credential_base) not in origins:
-                # A pooled gateway key belongs to its own host only (#121486).
-                refusal = PermissionError(
-                    f"This profile's {provider} credential routes to a custom endpoint; refusing")
-            else:
-                for name in auth_headers:
-                    request.headers.pop(name, None)
-                request.headers.update(auth_headers)
-                try:
-                    response = client.send(request)
-                except httpx.HTTPError as exc:
-                    refusal = type(exc)(str(exc))
-            auth_headers = request = None
+        auth_headers, refusal = _auth_headers(provider, url, origins, resolve)
+        if refusal is None:
+            for name in auth_headers:
+                request.headers.pop(name, None)
+            request.headers.update(auth_headers)
+            try:
+                response = client.send(request)
+            except httpx.HTTPError as exc:
+                refusal = type(exc)(str(exc))
+        auth_headers = request = None
     if refusal is not None:
         raise refusal
     return ProviderResponse(response.status_code, dict(response.headers), response.content)
 
 
+def credentialed_provider_websocket(
+    provider: str, url: str, *, headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
+) -> ProviderWebSocket:
+    """Open the ``wss://`` websocket *url* with the user's *provider* sign-in attached by Hermes.
+
+    The rules of :func:`credentialed_provider_request`, with ``wss`` checked as the provider's ``https``
+    origins; any other scheme (plain ``ws`` included) is refused. A redirect fails the handshake
+    (``websockets.exceptions.InvalidStatus``) and is never followed. *timeout* bounds the opening
+    handshake. The returned connection no longer holds the credential.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "wss":
+        raise PermissionError(f"Refusing to send the {provider} sign-in over {parsed.scheme or url!r}: wss:// only")
+    https_url = parsed._replace(scheme="https").geturl()
+    origins, resolve = _authorized("credentialed_provider_websocket", provider, https_url)
+    from websockets.exceptions import WebSocketException
+    from websockets.sync.client import connect
+
+    auth_headers, refusal = _auth_headers(provider, https_url, origins, resolve)
+    if refusal is None:
+        replaced = {name.lower() for name in auth_headers}
+        handshake = {k: v for k, v in (headers or {}).items() if k.lower() not in replaced} | auth_headers
+        try:
+            websocket = connect(url, additional_headers=handshake, open_timeout=timeout,
+                                create_connection=ProviderWebSocket)
+        except (WebSocketException, OSError) as exc:  # its traceback reaches connect()'s headers
+            refusal = _detached(exc)
+        auth_headers = handshake = None
+    if refusal is not None:
+        raise refusal
+    return websocket
+
+
 __all__ = [
-    "ProviderNotSignedIn", "ProviderResponse", "credentialed_provider_request", "declared_auth_providers",
-    "requires_auth_notice",
+    "ProviderNotSignedIn", "ProviderResponse", "ProviderWebSocket", "credentialed_provider_request",
+    "credentialed_provider_websocket", "declared_auth_providers", "requires_auth_notice",
 ]

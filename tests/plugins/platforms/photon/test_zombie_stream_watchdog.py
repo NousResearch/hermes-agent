@@ -69,35 +69,70 @@ def test_probe_message_id_is_guid_shaped_and_unique() -> None:
         process.stdout.write(JSON.stringify({ first, second }));
         """
     )
-    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    # Spectrum addresses message resources as spc-msg-<uuid>; a bare uuid is
+    # rejected by the SDK's local validator before the probe hits the wire
+    # (#135175).
+    guid_re = (
+        r"^spc-msg-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab]"
+        r"[0-9a-f]{3}-[0-9a-f]{12}$"
+    )
     assert re.fullmatch(guid_re, out["first"])
     assert re.fullmatch(guid_re, out["second"])
     assert out["first"] != out["second"]
 
 def test_probe_rejection_classification_is_strict() -> None:
-    """Only not-found-shaped rejections prove liveness; everything else is
-    inconclusive — a rejected probe is NEVER treated as alive (#45580's
-    original /probe treated any rejection as alive, which was too loose)."""
+    """Only round-trip-proving rejections are alive: not-found for our
+    synthetic id, or a policy rejection answered by the server (shared-pool
+    plans reject the synthetic target via the allowlist). Everything else is
+    inconclusive — a rejected probe is NEVER blindly treated as alive
+    (#45580's original /probe treated any rejection as alive, which was too
+    loose), and a locally-invalid probe id must not fake liveness either."""
     out = _run_staleness_harness(
         """
         const results = {
           notFoundCode: classifyProbeRejection({ code: 5, message: "5 NOT_FOUND: nope" }),
           notFoundText: classifyProbeRejection(new Error("message not found")),
           sdkNotFound: classifyProbeRejection({ code: "notFound", message: "missing" }),
+          allowlistRejection: classifyProbeRejection({
+            name: "AuthenticationError",
+            message: "[spectrum-imessage] Target not allowed for this project",
+          }),
+          permissionDenied: classifyProbeRejection({ code: 7, message: "denied" }),
+          unauthenticated: classifyProbeRejection({ code: 16, message: "creds" }),
           unavailable: classifyProbeRejection({ code: 14, message: "14 UNAVAILABLE: connect failed" }),
           deadline: classifyProbeRejection({ code: 4, message: "4 DEADLINE_EXCEEDED" }),
+          localValidation: classifyProbeRejection({
+            name: "ValidationError",
+            code: 3,
+            message: "[spectrum-imessage] Expected message resource GUID",
+          }),
           generic: classifyProbeRejection(new Error("socket hang up")),
           weird: classifyProbeRejection("string error"),
         };
         process.stdout.write(JSON.stringify(results));
         """
     )
-    # Completed round-trips (server said not-found for our synthetic id).
-    for name in ("notFoundCode", "notFoundText", "sdkNotFound"):
+    # Completed round-trips (server said not-found for our synthetic id, or
+    # answered the probe with a policy rejection — the wire round-tripped).
+    for name in (
+        "notFoundCode",
+        "notFoundText",
+        "sdkNotFound",
+        "allowlistRejection",
+        "permissionDenied",
+        "unauthenticated",
+    ):
         assert out[name]["alive"] is True, name
         assert out[name]["inconclusive"] is False, name
-    # Everything else: not alive AND explicitly inconclusive.
-    for name in ("unavailable", "deadline", "generic", "weird"):
+    # Everything else: not alive AND explicitly inconclusive — including the
+    # SDK's local validation error (nothing reached the wire).
+    for name in (
+        "unavailable",
+        "deadline",
+        "localValidation",
+        "generic",
+        "weird",
+    ):
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
 

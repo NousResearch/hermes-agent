@@ -8,9 +8,11 @@
 // cheap authenticated unary read over the same channel. STRICT semantics:
 //
 //   - probe resolves, or rejects with a not-found-shaped error for our
-//     synthetic id            -> ALIVE (the wire round-tripped)
+//     synthetic id, or with a policy rejection answered by the server
+//                             -> ALIVE (the wire round-tripped)
 //   - probe rejects any other way (UNAVAILABLE, DEADLINE_EXCEEDED, network
-//     down, ...)              -> INCONCLUSIVE — never treated as alive, and
+//     down, local SDK validation, ...)
+//                             -> INCONCLUSIVE — never treated as alive, and
 //                                never treated as zombie-proof either
 //
 // A zombie is only declared when the stream is silent past the threshold AND
@@ -28,9 +30,19 @@ import { randomUUID } from "node:crypto";
 // gRPC NOT_FOUND is code 5; SDKs also surface it as "not found" / "NotFound"
 // message text. Anything not clearly not-found is inconclusive.
 const NOT_FOUND_RE = /not[\s_-]?found/i;
+// Shared-pool (Free/Pro) plans only allow targets registered as project
+// users, so the default synthetic probe target is answered by the server with
+// a policy rejection ("Target not allowed for this project") instead of
+// not-found. That answer still proves the round-trip completed.
+const POLICY_REJECTION_RE = /target[\s_-]?not[\s_-]?allowed/i;
+// gRPC PERMISSION_DENIED (7) / UNAUTHENTICATED (16) can only be answered by
+// the server; the local SDK never raises them before the request hits the
+// wire (INVALID_ARGUMENT stays excluded: the SDK validator raises it locally
+// for a malformed probe id, and that must not fake liveness).
+const SERVER_ANSWERED_CODES = new Set([7, 16, "permissionDenied", "unauthenticated"]);
 /** Return a unique message id accepted by Spectrum's message-id parser. */
 export function createProbeMessageId() {
-  return randomUUID();
+  return `spc-msg-${randomUUID()}`;
 }
 
 /**
@@ -50,8 +62,18 @@ export function classifyProbeRejection(err) {
     // round-trip, so the channel is provably alive.
     return { alive: true, inconclusive: false, reason: "not-found round-trip" };
   }
-  // Anything else (UNAVAILABLE, DEADLINE_EXCEEDED, TLS, auth, ...) does NOT
-  // prove liveness — and doesn't prove a zombie either.
+  if (SERVER_ANSWERED_CODES.has(code) || POLICY_REJECTION_RE.test(message)) {
+    // The server itself rejected the probe (plan allowlist, permissions) —
+    // the wire round-tripped, so the channel is alive all the same.
+    return {
+      alive: true,
+      inconclusive: false,
+      reason: "server-answered policy rejection",
+    };
+  }
+  // Anything else (UNAVAILABLE, DEADLINE_EXCEEDED, TLS, local SDK
+  // validation, ...) does NOT prove liveness — and doesn't prove a zombie
+  // either.
   return { alive: false, inconclusive: true, reason: message };
 }
 

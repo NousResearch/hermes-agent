@@ -118,8 +118,17 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         # Validate the redirect before discovery so a bad redirect_uri surfaces even when the IDP is unreachable.
         validate_redirect_uri(redirect_uri)
         disco = self._get_discovery()
-        return pkce_login_start(
+        login = pkce_login_start(
             disco["authorization_endpoint"], client_id=self._client_id, scope=self._scopes, redirect_uri=redirect_uri)
+        # Google only issues refresh tokens when offline access is requested.
+        # Re-consent upgrades grants previously created without it.
+        issuer = str(disco.get("issuer") or self._issuer).rstrip("/")
+        if issuer == "https://accounts.google.com":
+            params = urllib.parse.urlencode({"access_type": "offline", "prompt": "consent"})
+            return LoginStart(
+                redirect_url=f"{login.redirect_url}&{params}",
+                cookie_payload=login.cookie_payload)
+        return login
 
     def revoke_session(self, *, refresh_token: str) -> None:
         # Best-effort RFC 7009 revocation when the IDP advertises an endpoint.

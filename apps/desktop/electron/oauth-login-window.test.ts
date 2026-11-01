@@ -5,12 +5,13 @@ import { type OauthLoginWindowLike, startOauthLoginWindow } from './oauth-login-
 
 const GATEWAY = 'https://fedora.example.ts.net'
 
-/** A login window double that records visibility and lets a test fire events. */
-function fakeWindow() {
+/** A login window double that records visibility and lets a test fire events.
+ *  Each load rejects with the next queued failure, then succeeds. */
+function fakeWindow(loadFailures: unknown[] = []) {
   const closed: Array<() => void> = []
   const navigations: Array<(event: unknown, url: string) => void> = []
 
-  const state = { destroyed: false, focused: 0, loaded: '', shown: false, visible: false }
+  const state = { destroyed: false, focused: 0, loaded: '', loads: 0, shown: false, visible: false }
 
   const win: OauthLoginWindowLike = {
     destroy: () => {
@@ -23,6 +24,11 @@ function fakeWindow() {
     isVisible: () => state.visible,
     loadURL: async url => {
       state.loaded = url
+      state.loads += 1
+
+      if (loadFailures.length > 0) {
+        throw loadFailures.shift()
+      }
     },
     on: (_event, listener) => closed.push(listener),
     show: () => {
@@ -46,13 +52,13 @@ function fakeWindow() {
   }
 }
 
-function harness(cookie = { present: false }) {
+function harness(cookie = { present: false }, loadFailures: unknown[] = []) {
   const windows: Array<ReturnType<typeof fakeWindow>> = []
   const created: Array<{ show: boolean; title: string }> = []
 
   const deps = {
     createWindow: (options: { session: string; show: boolean; title: string }) => {
-      const handle = fakeWindow()
+      const handle = fakeWindow(loadFailures)
       handle.state.visible = options.show
       windows.push(handle)
       created.push({ show: options.show, title: options.title })
@@ -156,6 +162,54 @@ test('a foreground silent sign-in reveals itself when auto-SSO does not finish',
 
   await vi.advanceTimersByTimeAsync(2_500)
   expect(h.windows[0].state.shown).toBe(true)
+})
+
+const reset = () => new Error("ERR_CONNECTION_RESET (-101) loading 'https://fedora.example.ts.net/'")
+
+test('a sleeping agent that resets the first loads is reloaded, hidden, until it answers', async () => {
+  const h = harness({ present: false }, [reset(), reset(), reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(3_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, loads: 4, shown: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.shown).toBe(true)
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
+})
+
+test('an agent that never wakes fails once the wake budget runs out', async () => {
+  const h = harness({ present: false }, Array.from({ length: 100 }, reset))
+  const attempt = h.start({ silent: true, background: false })
+  const outcome = attempt.result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(h.windows[0].state.destroyed).toBe(false)
+
+  await vi.advanceTimersByTimeAsync(6_000)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.destroyed).toBe(true)
+})
+
+test('a background sign-in does not wait for a waking gateway', async () => {
+  const h = harness({ present: false }, [reset()])
+  const outcome = h.start({ silent: true, background: true }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.loads).toBe(1)
+})
+
+test('an interactive sign-in to a gateway that refuses the connection fails at once', async () => {
+  const h = harness({ present: false }, [new Error('ERR_CONNECTION_REFUSED (-102)')])
+  const outcome = h.start({ silent: false, background: false }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_REFUSED/) })
+  expect(h.windows[0].state.loads).toBe(1)
 })
 
 test('an interactive sign-in opens visible on the provider chooser', () => {

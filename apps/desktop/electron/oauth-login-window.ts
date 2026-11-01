@@ -14,11 +14,13 @@
  *
  * `background` means nobody asked for this sign-in. The window stays hidden
  * and gives up after `deadlineMs`; it never reveals itself. Otherwise a silent
- * window reveals itself after `revealAfterMs` when auto-SSO did not finish.
+ * window reveals itself after `revealAfterMs` when auto-SSO did not finish,
+ * counted from the first load that reaches a waking agent.
  * `reveal()` promotes a hidden attempt when the user's own click joins it.
  */
 
 import type { LoginAttempt } from './oauth-login-flights'
+import { isWakingAgentLoadFailure } from './oauth-navigation'
 
 export interface OauthLoginWindowLike {
   destroy: () => void
@@ -35,6 +37,7 @@ export interface OauthLoginWindowDeps<S> {
   createWindow: (options: { session: S; show: boolean; title: string }) => OauthLoginWindowLike
   hasSessionCookie: () => Promise<boolean>
   isExpectedNavigationAbort: (error: unknown) => boolean
+  isWakingLoadFailure?: (error: unknown) => boolean
   loadOptionsFor: (loginUrl: string) => unknown
   log: (message: string) => void
   onLanded: () => void
@@ -42,6 +45,8 @@ export interface OauthLoginWindowDeps<S> {
   pollMs?: number
   revealAfterMs?: number
   deadlineMs?: number
+  wakeRetryMs?: number
+  wakeBudgetMs?: number
 }
 
 export interface OauthLoginWindowRequest<S> {
@@ -59,7 +64,14 @@ export function startOauthLoginWindow<S>(
   { baseUrl, session, silent, background }: OauthLoginWindowRequest<S>,
   deps: OauthLoginWindowDeps<S>
 ): LoginAttempt<OauthLoginOutcome> {
-  const { pollMs = 750, revealAfterMs = 2_500, deadlineMs = 12_000 } = deps
+  const {
+    pollMs = 750,
+    revealAfterMs = 2_500,
+    deadlineMs = 12_000,
+    wakeRetryMs = 1_000,
+    wakeBudgetMs = 60_000,
+    isWakingLoadFailure = isWakingAgentLoadFailure
+  } = deps
 
   let reveal = (): void => {}
 
@@ -70,6 +82,7 @@ export function startOauthLoginWindow<S>(
     let pollTimer: ReturnType<typeof setInterval> | null = null
     let revealTimer: ReturnType<typeof setTimeout> | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
+    let wakeTimer: ReturnType<typeof setTimeout> | null = null
 
     const finish = (err: Error | null) => {
       if (settled) {
@@ -88,6 +101,10 @@ export function startOauthLoginWindow<S>(
 
       if (deadlineTimer) {
         clearTimeout(deadlineTimer)
+      }
+
+      if (wakeTimer) {
+        clearTimeout(wakeTimer)
       }
 
       try {
@@ -157,17 +174,21 @@ export function startOauthLoginWindow<S>(
 
     // Auto-SSO did not finish (no portal session, several providers, loop
     // guard): the window now shows an interactive page the user asked for.
-    if (silent && !hiddenRecovery) {
-      revealTimer = setTimeout(() => {
-        try {
-          if (!settled && !live.isDestroyed() && !live.isVisible()) {
-            live.show()
+    const armReveal = () => {
+      if (silent && !hiddenRecovery) {
+        revealTimer = setTimeout(() => {
+          try {
+            if (!settled && !live.isDestroyed() && !live.isVisible()) {
+              live.show()
+            }
+          } catch {
+            // window torn down
           }
-        } catch {
-          // window torn down
-        }
-      }, revealAfterMs)
+        }, revealAfterMs)
+      }
     }
+
+    armReveal()
 
     if (hiddenRecovery) {
       deadlineTimer = setTimeout(() => finish(new Error(SIGN_IN_REQUIRED)), deadlineMs)
@@ -201,18 +222,55 @@ export function startOauthLoginWindow<S>(
     // `next` is omitted on purpose: the gateway lands on `/` after login,
     // which sets the cookies; only the jar matters.
     const loginUrl = silent ? `${baseUrl.replace(/\/+$/, '')}/` : chooserUrl
+    const startedAt = Date.now()
+    let waking = false
 
-    live.loadURL(loginUrl, deps.loadOptionsFor(loginUrl)).catch(error => {
-      // Callback navigation can abort the original load after setting cookies.
-      // Keep the bounded hidden recovery alive long enough to observe them.
-      if (hiddenRecovery && deps.isExpectedNavigationAbort(error)) {
-        void checkCookie()
+    const load = () =>
+      live.loadURL(loginUrl, deps.loadOptionsFor(loginUrl)).then(
+        () => {
+          // The agent answered: give auto-SSO its usual time before revealing.
+          if (waking && !settled) {
+            waking = false
+            armReveal()
+          }
+        },
+        error => {
+          // Callback navigation can abort the original load after setting cookies.
+          // Keep the bounded hidden recovery alive long enough to observe them.
+          if (hiddenRecovery && deps.isExpectedNavigationAbort(error)) {
+            void checkCookie()
 
-        return
-      }
+            return
+          }
 
-      finish(error instanceof Error ? error : new Error(String(error)))
-    })
+          // Connecting to a sleeping Cloud agent (the only foreground silent sign-in): its first
+          // connections reset while it resumes. The window stays hidden meanwhile, since it would
+          // only show a failed load.
+          const connecting = silent && !hiddenRecovery
+
+          if (!settled && connecting && isWakingLoadFailure(error) && Date.now() - startedAt < wakeBudgetMs) {
+            deps.log(`OAuth login: ${baseUrl} is not answering yet, retrying while it wakes`)
+            waking = true
+
+            if (revealTimer) {
+              clearTimeout(revealTimer)
+              revealTimer = null
+            }
+
+            wakeTimer = setTimeout(() => {
+              if (!settled && !live.isDestroyed()) {
+                void load()
+              }
+            }, wakeRetryMs)
+
+            return
+          }
+
+          finish(error instanceof Error ? error : new Error(String(error)))
+        }
+      )
+
+    void load()
   })
 
   return { result, reveal: () => reveal() }

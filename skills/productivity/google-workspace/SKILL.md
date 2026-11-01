@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.2.0
+version: 1.3.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -170,6 +170,32 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
 
+### More than one Google account
+
+Each extra account gets its own token, named by its email address. Run the
+same Steps 3-5 with `--account` on every command:
+
+```bash
+$GSETUP --account work@example.com --auth-url
+$GSETUP --account work@example.com --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
+$GSETUP --account work@example.com --check
+$GSETUP --list-accounts
+```
+
+- The auth URL pre-selects that account on Google's screen. If the user still
+  approves with a different account, `--auth-code` refuses to save the token
+  and names the account they used; send them a fresh `--auth-url`.
+- Tokens live at `~/.hermes/google_tokens/<email>.json`. Commands without
+  `--account` keep using `~/.hermes/google_token.json`, so existing setups
+  are unchanged.
+- A named account never falls back to the default token. If its token is
+  missing, the command fails and prints the setup command to run.
+- `--revoke --account EMAIL` removes only that account.
+- Remote terminal backends (Docker, Modal) mount `google_token.json`
+  automatically. To use a named account there, add its token file to
+  `terminal.credential_files` in `config.yaml`
+  (e.g. `google_tokens/work@example.com.json`).
+
 ## Usage
 
 All commands go through the API script. Set `GAPI` as a shorthand:
@@ -177,6 +203,11 @@ All commands go through the API script. Set `GAPI` as a shorthand:
 ```bash
 GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
+
+To act as a named account, put `--account` before the service:
+`$GAPI --account work@example.com gmail search "is:unread"`. When the user
+has more than one account and the request does not make clear which one,
+ask before reading or writing.
 
 ### Gmail
 

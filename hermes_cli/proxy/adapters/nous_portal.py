@@ -12,6 +12,7 @@ from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,
     _load_auth_store,
     _auth_store_lock,
+    get_provider_auth_state,
     _is_terminal_nous_refresh_error,
     _nous_inference_env_override,
     _quarantine_nous_oauth_state,
@@ -101,16 +102,14 @@ class NousPortalAdapter(UpstreamAdapter):
             ).rstrip("/")
             return UpstreamCredential(bearer=runtime_key, base_url=base_url, expires_at=refreshed.get("expires_at"))
 
-    # auth.json access — kept local so hermes_cli.auth's public surface does not grow.
+    # Reuse the canonical profile-first/global-fallback provider-state resolver.
 
     def _read_state(self) -> Optional[dict[str, Any]]:
         try:
-            with _auth_store_lock():
-                store = _load_auth_store()
+            state = get_provider_auth_state("nous")
         except Exception as exc:
             logger.warning("proxy: failed to load auth store: %s", exc)
             return None
-        state = (store.get("providers") or {}).get("nous")
         return dict(state) if isinstance(state, dict) else None
 
     def _save_state(

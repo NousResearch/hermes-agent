@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -769,6 +770,63 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """
 
+# The sessions columns Desktop session projections read; a change in any of them is a sessions.changed.
+# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
+# them mid-turn and on idle ticks, so watching them re-fired sessions.changed every heartbeat window
+# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
+SESSION_SIGNATURE_FIELDS = (
+    "id", "source", "session_key", "display_name", "model", "parent_session_id",
+    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
+    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
+    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
+)
+SESSION_REVISION_KEY = "sessions_revision"
+STORE_INSTANCE_KEY = "store_instance_id"
+
+# Write-side sessions revision: every committed sessions row change in a signature field bumps one
+# state_meta row, whichever build or tool wrote it, so the change watcher compares one row instead of
+# hashing the table. NULL-safe IS NOT keeps no-op and heartbeat-only UPDATEs silent. Stored form
+# (sqlite_master.sql); the watcher trusts the revision only while all three match exactly.
+_SESSION_REVISION_BUMP = (f"BEGIN\n    UPDATE state_meta SET value = CAST(value AS INTEGER) + 1 "
+                          f"WHERE key = '{SESSION_REVISION_KEY}';\nEND")
+SESSION_REVISION_TRIGGER_SQL = {
+    "sessions_revision_insert": f"CREATE TRIGGER sessions_revision_insert\nAFTER INSERT ON sessions\n{_SESSION_REVISION_BUMP}",
+    "sessions_revision_delete": f"CREATE TRIGGER sessions_revision_delete\nAFTER DELETE ON sessions\n{_SESSION_REVISION_BUMP}",
+    "sessions_revision_update": "CREATE TRIGGER sessions_revision_update\nAFTER UPDATE ON sessions\nWHEN "
+    + "\n   OR ".join(f"old.{field} IS NOT new.{field}" for field in SESSION_SIGNATURE_FIELDS)
+    + f"\n{_SESSION_REVISION_BUMP}",
+}
+_SESSION_REVISION_DDL = "".join(
+    f"DROP TRIGGER IF EXISTS {name};\n{sql.replace('CREATE TRIGGER ', 'CREATE TRIGGER IF NOT EXISTS ', 1)};\n"
+    for name, sql in SESSION_REVISION_TRIGGER_SQL.items())
+
+
+def seed_session_revision(cursor) -> None:
+    """Seed the revision counter and the store identity once; never resets an existing value. Reads
+    first: even an ignored INSERT takes the write lock and would block opens behind a sibling's write."""
+    present = {key for (key,) in cursor.execute(
+        "SELECT key FROM state_meta WHERE key IN (?, ?)", (SESSION_REVISION_KEY, STORE_INSTANCE_KEY))}
+    missing = [(key, value) for key, value in ((SESSION_REVISION_KEY, "0"), (STORE_INSTANCE_KEY, str(uuid.uuid4())))
+               if key not in present]
+    if missing:
+        cursor.executemany("INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)", missing)
+
+
+def read_session_revision(conn):
+    """``(store_instance_id, revision)`` when the store maintains the revision with exactly these
+    triggers, else None (legacy store, a dropped trigger, or another build's field list)."""
+    stored = dict(conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'sessions' AND name IN (?, ?, ?)",
+        tuple(SESSION_REVISION_TRIGGER_SQL)))
+    if stored != SESSION_REVISION_TRIGGER_SQL:
+        return None
+    meta = dict(conn.execute("SELECT key, value FROM state_meta WHERE key IN (?, ?)",
+                             (SESSION_REVISION_KEY, STORE_INSTANCE_KEY)))
+    if len(meta) != 2:
+        return None
+    return meta[STORE_INSTANCE_KEY], meta[SESSION_REVISION_KEY]
+
+
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
 # sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
 # (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
@@ -907,7 +965,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
     ON sessions(created_source, started_at DESC)
     WHERE source = 'local';
-"""
+""" + _SESSION_REVISION_DDL
 
 
 # ── Deferred FTS rebuild bookkeeping (schema v23) ──

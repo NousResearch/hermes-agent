@@ -187,38 +187,42 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
-# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
-# them mid-turn and on idle ticks, so hashing them re-fired sessions.changed every heartbeat window
-# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
-_SESSION_SIGNATURE_FIELDS = (
-    "id", "source", "session_key", "display_name", "model", "parent_session_id",
-    "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
-    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
-    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
-)
-# path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
+# path -> ((file identity, database/WAL mtime), signature). The guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
-# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime)
+# or the path now names another file (a restored or swapped-in store can carry the same mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
+def _db_file_identity(path: Path):
+    """``(st_dev, st_ino)`` of ``path``, or None when it cannot be stat'ed."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
+
+
 def _session_db_content_sig(db_path: Path):
-    """Digest list/transcript-relevant session rows, excluding unrelated tables.
+    """Signature of list/transcript-relevant session rows, excluding unrelated tables.
 
     ``gateway_heartbeats`` shares state.db and writes every minute. Using the
     database mtime directly therefore emits sessions.changed while no session
-    changed (#98005). Cache behind the DB/WAL mtime, then inspect only the
-    sessions columns that drive Desktop projections. Legacy stores safely use
-    the subset of columns they have.
+    changed (#98005). Cache behind the DB/WAL mtime, then read the store's
+    trigger-maintained ``sessions_revision`` (one row). A store that cannot vouch
+    for it (legacy, a dropped or foreign trigger) gets the digest of the sessions
+    columns that drive Desktop projections; legacy stores safely use the subset
+    of columns they have.
     """
+    file_id = _db_file_identity(db_path)
     mtime = _newest_mtime_ns((db_path, db_path.with_name(f"{db_path.name}-wal")))
     cache_key = str(db_path)
     cached = _sessions_db_sig_cache.get(cache_key)
 
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == (file_id, mtime):
         return cached[1]
     if not db_path.exists():
-        _sessions_db_sig_cache[cache_key] = (mtime, None)
+        _sessions_db_sig_cache[cache_key] = ((file_id, mtime), None)
 
         return None
 
@@ -226,13 +230,18 @@ def _session_db_content_sig(db_path: Path):
     try:
         import hashlib
         from hermes_state import _connect_tracked_db
+        from hermes_state_common import SESSION_SIGNATURE_FIELDS, read_session_revision
         from hermes_state_holders import read_only_db_uri
 
         conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path,
                                    uri=True, timeout=0.05)
-        available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-        fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
-        if not fields:
+        revision = read_session_revision(conn)
+        available = set() if revision else {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        fields = tuple(field for field in SESSION_SIGNATURE_FIELDS if field in available)
+        if revision:
+            # The file identity rides along: a swapped-in copy can carry the same id and revision.
+            signature = ("revision", file_id, *revision)
+        elif not fields:
             # A state.db without a readable sessions table (foreign schema, legacy
             # or transient file): keep the old mtime contract so any move still
             # wakes the sidebar instead of silently never broadcasting.
@@ -255,7 +264,7 @@ def _session_db_content_sig(db_path: Path):
         if conn is not None:
             conn.close()
 
-    _sessions_db_sig_cache[cache_key] = (_settled_mtime(mtime), signature)
+    _sessions_db_sig_cache[cache_key] = ((file_id, _settled_mtime(mtime)), signature)
 
     return signature
 

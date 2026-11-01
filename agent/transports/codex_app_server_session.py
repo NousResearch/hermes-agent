@@ -262,6 +262,8 @@ class CodexAppServerSession:
         """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
         the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
         starts a fresh thread on the same handshaken client."""
+        if self._client is not None and not self._client.is_alive():
+            self._drop_exited_client()
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
@@ -299,6 +301,22 @@ class CodexAppServerSession:
             logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         self._thread_id = thread_id
         return thread_id
+
+    def _drop_exited_client(self) -> None:
+        """Codex exited between turns (idle exit, OOM, killed): its stdin is a broken pipe, so the next
+        ``turn/start`` would fail the user's turn. Drop it so ``ensure_started`` respawns and resumes the
+        same thread. A broken codex login is left in place: its own turn error carries the re-auth hint,
+        and a respawn would only die the same way."""
+        stderr = self._stderr_blob(40)
+        if _classify_oauth_failure(stderr=stderr) is not None:
+            return
+        logger.warning("codex app-server exited between turns; respawning and resuming thread %s: %s",
+                       (self._thread_id or "")[:8], redact_sensitive_text(stderr[-500:], force=True))
+        with contextlib.suppress(Exception):
+            self._client.close()
+        self._client = None
+        self._resume_thread_id = self._thread_id or self._resume_thread_id
+        self._thread_id = None
 
     def _resume_thread(self, wanted: str, params: dict[str, Any]) -> str:
         """``thread/resume`` for the stored id; the same thread/start params ride along so the resumed thread

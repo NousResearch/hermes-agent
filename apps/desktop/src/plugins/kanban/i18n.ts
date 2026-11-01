@@ -144,6 +144,10 @@ type KanbanMessages = {
   dependencies: string
   blockedBy: string
   blocks: string
+  addBlockedBy: string
+  addBlocks: string
+  noDependencyCandidates: string
+  removeDependency: (title: string) => string
   comments: (n: number) => string
   commentsHelpRunning: string
   commentsHelp: string
@@ -377,6 +381,10 @@ export const en: KanbanMessages = {
   dependencies: 'Dependencies',
   blockedBy: 'Blocked by',
   blocks: 'Blocks',
+  addBlockedBy: 'Add blocking task',
+  addBlocks: 'Add blocked task',
+  noDependencyCandidates: 'No available tasks',
+  removeDependency: title => `Remove dependency ${title}`,
   comments: n => `Comments · ${n}`,
   commentsHelpRunning:
     'This task is running. Your note is folded into the worker’s current turn within a few seconds — no block/unblock dance. “Requeue with note” instead restarts the task from scratch with your note in context.',
@@ -604,6 +612,10 @@ const ja: KanbanMessages = {
   dependencies: '依存関係',
   blockedBy: 'ブロック元',
   blocks: 'ブロック先',
+  addBlockedBy: 'ブロック元を追加',
+  addBlocks: 'ブロック先を追加',
+  noDependencyCandidates: '追加できるタスクはありません',
+  removeDependency: title => `依存関係を削除: ${title}`,
   comments: n => `コメント・${n}`,
   commentsHelpRunning:
     'このタスクは実行中です。あなたのメモは数秒以内にワーカーの現在のターンに取り込まれます — ブロック/解除の操作は不要です。「メモを付けて再キュー」を選ぶと、メモを文脈に含めてタスクを最初からやり直します。',
@@ -830,6 +842,10 @@ const zh: KanbanMessages = {
   dependencies: '依赖关系',
   blockedBy: '受阻于',
   blocks: '阻塞',
+  addBlockedBy: '添加阻塞任务',
+  addBlocks: '添加被阻塞任务',
+  noDependencyCandidates: '没有可用任务',
+  removeDependency: title => `移除依赖：${title}`,
   comments: n => `评论・${n}`,
   commentsHelpRunning:
     '此任务正在运行。你的备注会在几秒内融入工作单元当前的回合 — 无需阻塞/解除操作。选择“附带备注重新入队”则会带着你的备注从头重跑任务。',
@@ -1054,6 +1070,10 @@ const zhHant: KanbanMessages = {
   dependencies: '相依關係',
   blockedBy: '受阻於',
   blocks: '阻擋',
+  addBlockedBy: '新增阻塞任務',
+  addBlocks: '新增被阻塞任務',
+  noDependencyCandidates: '沒有可用任務',
+  removeDependency: title => `移除相依關係：${title}`,
   comments: n => `留言・${n}`,
   commentsHelpRunning:
     '此任務正在執行。你的備註會在幾秒內融入工作單元目前的回合 — 無需阻擋/解除操作。選擇「附上備註重新排入佇列」則會帶著你的備註從頭重跑任務。',

@@ -225,6 +225,13 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# PowerShell accepts any unambiguous parameter prefix (``-r`` is ``-Recurse``, ``-fo`` is
+# ``-Force``), so spelling the switches out in full misses ``ri -r -fo``. ``-f`` alone stays out
+# because it is ambiguous with ``-Filter``.
+_PS_RECURSE = r"-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b"
+_PS_FORCE = r"-fo(?:r(?:c(?:e)?)?)?\b"
+_PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -239,12 +246,18 @@ DANGEROUS_PATTERNS = [
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
      # Port of openai/codex#33464 ("recognize force options when they follow operands").
      "recursive delete (flags after operands)"),
+
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
     (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),
     # PowerShell runs the verb as default positional arg (no -Command needed); anchor the verb to command
     # position (after leading -Flag switches and optional -Command/-c) so `-File c:\del-logs\run.ps1` is not caught.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?(?:remove-item|rmdir|erase|del|rd|ri|rm)\b', "Windows PowerShell destructive delete"),
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete"),
+    # The same delete behind a pipeline in a positional script string: Windows PowerShell runs
+    # `powershell -NoProfile "gci C:\\data | ri -r -fo"` as a command, and the verb no longer sits at
+    # command position, so the rule above walks past it. A destructive switch is still required, so
+    # read-only pipelines (`gci | measure`) stay quiet.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\|\s*' + _PS_DELETE_VERB + r'\b[^\n]*?\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "Windows PowerShell destructive delete (piped, abbreviated switches)"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
@@ -252,7 +265,7 @@ DANGEROUS_PATTERNS = [
     # `reg query`, `icacls file`) does NOT prompt. Bare Remove-Item form (ACP clients, pwsh-default
     # SSH hosts, or compound commands where `powershell` appeared earlier).
     # See #69472.
-    (r'\bremove-item\b[^\n;|&]*\s-(?:recurse|force)\b', "PowerShell destructive delete (Remove-Item)"),
+    (r'\bremove-item\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (Remove-Item)"),
     # Bare cmd builtins with /s (recurse) or /q (quiet); plain `del file.txt` is covered only by the prefixed rule.
     (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
@@ -260,7 +273,7 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
     # Force process kills — Windows analogue of pkill -9.
     (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s-force\b', "force kill processes (Stop-Process -Force)"),
+    (r'\bstop-process\b[^\n]*\s' + _PS_FORCE, "force kill processes (Stop-Process -Force)"),
     # Volume/disk destruction — Windows analogue of mkfs / dd.
     (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
     (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),

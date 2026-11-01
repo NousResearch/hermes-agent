@@ -108,3 +108,34 @@ class TestWindowsPathVariant:
     ])
     def test_benign_paths_and_posix_escapes_unaffected(self, cmd):
         assert not _is_dangerous(cmd), f"should NOT be flagged: {cmd}"
+
+class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
+    r"""Windows PowerShell runs a positional argument as a command, and accepts any unambiguous
+    parameter prefix, so `powershell -NoProfile "gci C:\data | ri -r -fo"` deleted a tree with no
+    approval prompt while the spelled-out form (`... | Remove-Item -Recurse -Force`) was gated
+    (#144024). The prefixed rule anchors the verb to command position, which a pipeline defeats;
+    `ri`/`del` aliases and `-r`/`-fo` prefixes were also unmatched.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        r'powershell -NoProfile "gci C:\data | ri -r -fo"',
+        r'powershell -NoProfile "Get-ChildItem C:\data | ri -r"',
+        r'pwsh -NoProfile "gci C:\data | ri -fo"',
+        r'powershell -NoProfile "Remove-Item C:\data -r -fo"',
+        r'powershell -NoProfile "Remove-Item C:\data -Recurse"',
+        r'powershell -NoProfile "Stop-Process -Fo -Name explorer"',
+        r'powershell -NoProfile "Stop-Process -Force -Name explorer"',
+    ])
+    def test_destructive_powershell_forms_are_gated(self, cmd):
+        assert _is_dangerous(cmd), cmd
+
+    @pytest.mark.parametrize("cmd", [
+        # Reading a directory is not destruction, piped or not.
+        r'powershell -NoProfile "gci C:\data"',
+        r'powershell -NoProfile "gci C:\data | measure"',
+        r'powershell -NoProfile "Get-Content C:\x | Select-String -Pattern foo"',
+        # -f alone is ambiguous with -Filter, so it must not count as -Force.
+        r'powershell -NoProfile "Get-ChildItem C:\data | ri -f"',
+    ])
+    def test_read_only_powershell_pipelines_stay_quiet(self, cmd):
+        assert not _is_dangerous(cmd), cmd

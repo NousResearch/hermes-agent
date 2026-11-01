@@ -40,6 +40,14 @@ class TestSlashCommands:
         send.assert_called_once()
         runner.session_store.reset_session.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_clear_resets_session_on_gateway(self, adapter, runner, platform):
+        """Gateway /clear resets the chat session exactly like /new (#40123)."""
+        send = await send_and_capture(adapter, "/clear", platform)
+
+        send.assert_called_once()
+        runner.session_store.reset_session.assert_called_once()
+
 
     @pytest.mark.asyncio
     async def test_leading_space_stop_is_still_a_command(self, adapter, platform):

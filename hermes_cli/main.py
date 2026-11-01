@@ -1706,6 +1706,18 @@ def cmd_chat(args):
 
     _start_chat_background_prefetch()
 
+    # What's-new brief on interactive launch: covers the "first run" case the
+    # post-update hook can't (a fresh install never runs `hermes update`).
+    # The notice is self-gating via seen-state -- silent once acknowledged,
+    # and it never raises (a broken brief must never break startup).
+    try:
+        if sys.stdin.isatty() and not getattr(args, "resume", None):
+            from hermes_cli.whats_new import _print_whats_new_notice
+
+            _print_whats_new_notice()
+    except Exception:
+        pass
+
     # --yolo: bypass all dangerous command approvals. main() also sets this
     # before _prepare_agent_startup() — the authoritative site, since it runs
     # before tool imports freeze _YOLO_MODE_FROZEN. This is a safety net for

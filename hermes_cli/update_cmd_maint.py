@@ -245,6 +245,26 @@ def _print_curator_recent_run_notice() -> None:
         curator.save_state(state)
 
 
+def _print_whats_new_notice() -> None:
+    """Print the what's-new brief for the freshly installed version.
+
+    Fires only when a brief exists for the current version and the user has
+    not yet acknowledged it. Silent on steady state. Never raises -- a broken
+    brief must never break an update.
+
+    Deliberately decoupled from the update state machine: this is a
+    side-effect of a *successful* update, never a gate. (Prior art #13684
+    coupled display to update confirmation and was flagged for message-
+    delivery risk; we avoid that class entirely.)
+    """
+    try:
+        from hermes_cli.whats_new import _print_whats_new_notice as _impl
+
+        _impl()
+    except Exception as e:
+        logger.debug("whats-new notice failed: %s", e)
+
+
 def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
@@ -944,6 +964,9 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('FTS optimize notice failed: %s', _print_fts_optimize_available_notice),
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
         ('Curator recent-run notice failed: %s', _print_curator_recent_run_notice),
+        # What's-new brief for the freshly installed version. Silent when the
+        # user already acknowledged it or no brief exists. Never raises.
+        ('whats-new notice failed: %s', _print_whats_new_notice),
         ('FHS PATH guard check failed: %s', _ensure_fhs_path_guard),
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),

@@ -108,6 +108,7 @@ from hermes_cli.update_cmd_maint import (
     _checkout_version, _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
+    _print_whats_new_notice,
     _print_fts_optimize_available_notice, _print_update_completion, _print_update_summary,
     _prepare_updated_checkout,
     _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,

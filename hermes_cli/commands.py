@@ -341,6 +341,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
                busy_policy="dispatch", execute="version"),
+    CommandDef("whats-new", "Show what's new in this (or a past) release", "Info",
+               args_hint="[<version>|--seen]", busy_policy="dispatch",
+               execute="whats_new"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info",
                args_hint="[nous|local]"),
 

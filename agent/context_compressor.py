@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.compaction_anchor_source import with_pre_prune_tool_bodies
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
@@ -53,7 +54,6 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
-
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
 # summary sees it while the detached stalled worker does not. A stall raises nothing, so the aux client's
@@ -3591,7 +3591,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if getattr(self, "tail_mode", "lean") != "lean":
             return summary
         for heading, build in (
-            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(turns_to_summarize))),
+            (_LEAN_ANCHOR_HEADING, lambda: _redact_compaction_text(_build_anchor_index(with_pre_prune_tool_bodies(turns_to_summarize, getattr(self, "_anchor_source_messages", None))))),
             (_LEAN_USER_MESSAGES_HEADING, lambda: _redact_compaction_text(_build_verbatim_user_section(turns_to_summarize))),
             (_LEAN_RECOVERY_HEADING, lambda: _build_recovery_footer(getattr(self, "_session_id", "") or "", len(turns_to_summarize))),
         ):

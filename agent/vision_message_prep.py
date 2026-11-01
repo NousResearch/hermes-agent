@@ -295,7 +295,8 @@ class VisionMessagePrepMixin:
 
     def _anthropic_preserve_dots(self) -> bool:
         """True for anthropic-compatible endpoints that keep dots in model names (DashScope, MiniMax, Xiaomi
-        MiMo, OpenCode Go/Zen, ZAI/Zhipu; Bedrock's dotted inference-profile IDs 400 on the hyphenated form).
+        MiMo, OpenCode Go/Zen, ZAI/Zhipu; named/custom non-Anthropic endpoints; Bedrock's dotted inference-profile
+        IDs 400 on the hyphenated form).
 
         Alibaba/DashScope keeps dots (e.g. qwen3.5-plus). OpenCode Go/Zen keeps dots for non-Claude models
         (e.g. minimax-m2.5-free). ``global.anthropic.claude-opus-4-7``,
@@ -309,6 +310,9 @@ class VisionMessagePrepMixin:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
         host = base_url_hostname(base)
+        if provider := (getattr(self, "provider", "") or "").lower():
+            if (provider == "custom" or provider.startswith("custom:")) and host != "api.anthropic.com":
+                return True
         return (
             "dashscope" in host
             or base_url_host_matches(base, "aliyuncs.com")

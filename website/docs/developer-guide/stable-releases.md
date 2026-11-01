@@ -156,10 +156,12 @@ place that says what runs. A recovery rerun cannot change it. To change a lane,
 The gates stay strict. `scripts.releases.stable gate` reads the lanes and
 requires each job they remove to report `skipped`, and every other gated job to
 report `success`. A job that ran although a lane removes it also blocks the
-release. A claim cut before lanes existed (`skipBundles`, `skipTests`,
-`includeMacosIntel`, `includeTermux`) reads as the lane set that gated the same
-jobs. A claim without `lanesRevision` was cut when `windows` also meant the Store
-bundle, so its `windows` reads as `windows` plus `windows-store`.
+release. Admission and the sequencer read a claim only in the current shape:
+`lanes` with `lanesRevision` 2. Older attempts (`skipBundles`/`skipTests` claims,
+or `lanes` without a revision) are finished history: the sequencer checks only
+their identity (version, attempt, commit, `claimEpoch`), and their records carry
+no lanes, so nothing advances a channel or resubmits the Store from them. An
+unfinished attempt in an older shape is refused; `abandon` it and cut again.
 
 What a release publishes follows what it built:
 
@@ -367,9 +369,9 @@ block it.
 A manual dispatch starts one at any time and requires every selected suite to
 pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
-unpublished canary or does nothing. The retired `v<stable>+canary.<stamp>` and
-`-canary.` identities are no longer produced; old ones age out through
-`--prune-canaries`.
+unpublished canary or does nothing. Only the `canary.<stamp>-v<stable>` tag is
+a canary: nothing reads, orders or prunes the retired `v<stable>+canary.<stamp>`
+and `-canary.` shapes.
 If a process stops after pushing the canary tag, rerunning the command verifies
 the exact remote tag object, repairs the missing draft, and redispatches until the
 protected canary head receipts that tag.
@@ -407,8 +409,9 @@ build. Source checkouts are separate: `main` is their only valid channel.
 ### Commit builds
 
 `release.py --build-commit REV --remote REMOTE` claims an exact pushed commit
-with an annotated tag `commit.<YYYYMMDDTHHMMSSZ>-v<version>` (the pyproject
-version at REV) and dispatches `stable-release.yml` on it from the default
+with an annotated tag `commit.<YYYYMMDDTHHMMSSZ>-v<version>` (the newest stable
+`vX.Y.Z` tag that is an ancestor of REV; the command fetches the remote's tags,
+and refuses a REV with no stable release behind it) and dispatches `stable-release.yml` on it from the default
 branch, exactly as a canary or a stable claim runs. Without `--publish` it
 prints the claim, its lanes and the dispatch command and creates nothing. The
 claim message records the lanes, the green policy and the bundle defaults;
@@ -463,8 +466,8 @@ one native application identity across exact-commit builds.
 
 A channel build is a run of the Stable Release pipeline on a channel claim.
 `--channel NAME --build-commit REV` resolves the exact pushed commit and
-creates the annotated `channel.<YYYYMMDDTHHMMSSZ>-v<version>` claim on it (its
-message records the channel, branding, lanes, `requireGreen` and bundle
+creates the annotated `channel.<YYYYMMDDTHHMMSSZ>-v<version>` claim on it (versioned
+like a commit build, after the newest stable `vX.Y.Z` behind REV; its message records the channel, branding, lanes, `requireGreen` and bundle
 defaults). With `--publish` it pushes the claim and dispatches Stable Release
 from the default branch. Like a commit build, it takes `--only`, `--with` and
 `--without` (starting from the stable default minus `windows-store`;

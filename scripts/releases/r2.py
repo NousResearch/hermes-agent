@@ -799,12 +799,8 @@ def get_object(
     return response.text() if response.status < 400 else None
 
 
-# Canary archives named by either tag shape: the current ``canary.<stamp>-vX.Y.Z`` and the retired
-# ``vX.Y.Z+canary.<stamp>``, whose archives age out through the same window.
-_CANARY_KEY_RES = (
-    re.compile(r"canary\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+"),
-    re.compile(r"v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z"),
-)
+# A canary archive, named by its ``canary.<stamp>-vX.Y.Z`` claim tag.
+_CANARY_KEY_RE = re.compile(r"canary\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+")
 
 
 # A commit build's claim archive (releases/tag/commit.<stamp>-vX.Y.Z/...) is kept this long, dated
@@ -844,8 +840,8 @@ def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
     """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
     doomed = []
     for key in keys:
-        dates = [match[1] for pattern in _CANARY_KEY_RES if (match := pattern.search(key))]
-        if dates and dates[0] < cutoff:
+        match = _CANARY_KEY_RE.search(key)
+        if match is not None and match[1] < cutoff:
             doomed.append(key)
     return doomed
 

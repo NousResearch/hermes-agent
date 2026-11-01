@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from . import r2 as r2_module
 from .semver import compare, is_release_version
-from hermes_cli.update_channel import canary_timestamp, is_canary_tag, published_canary_timestamp
+from hermes_cli.update_channel import canary_timestamp, is_canary_tag
 
 ARCHES = ("arm64", "x64")
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")
@@ -157,7 +157,7 @@ def publish_mac_feed(
         next_feed = parse_mac_feed(plan["text"])
         old_url = str(old_feed["files"][0]["url"])
         old_tag = old_url.split("/releases/tag/", 1)[1].split("/", 1)[0]
-        old_canary = published_canary_timestamp(old_tag)
+        old_canary = canary_timestamp(old_tag)
         next_canary = canary_timestamp(plan.get("tag"))
         order = (
             (next_canary > old_canary) - (next_canary < old_canary)

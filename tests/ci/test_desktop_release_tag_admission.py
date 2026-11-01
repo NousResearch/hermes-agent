@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.releases import lanes as lane_set
 from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES, SHA, admitted, credential_gate, evaluate, gate, native_builds, needs_of,
 )
@@ -205,8 +206,8 @@ def _claim_message(clone: Path) -> str:
         "attempt": 1,
         "commit": _git("rev-parse", "HEAD", cwd=clone),
         "autopublish": False,
-        "skipBundles": False,
-        "skipTests": False,
+        "lanes": sorted(lane_set.DEFAULT),
+        "lanesRevision": lane_set.LANES_REVISION,
         "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
 

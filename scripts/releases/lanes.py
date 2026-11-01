@@ -257,48 +257,22 @@ def moves_channels(lanes: Iterable[str]) -> bool:
     return "docker" in on or advances_desktop(on)
 
 
-# Claims record `lanesRevision` next to `lanes`. A claim without it was cut when "windows" also meant
-# the Store bundle, so it reads as windows plus windows-store; the two lanes cannot otherwise be told
-# apart from a revision-2 claim that chose "windows" alone.
+# Claims record `lanesRevision` next to `lanes`: the revision of the lane names they were cut with
+# (revision 2 split windows-store from windows). Only the current revision is read.
 LANES_REVISION = 2
-_LEGACY_OPTIONAL = ("includeMacosIntel", "includeTermux")
-_LEGACY_BUNDLE_LANES = frozenset({*BUNDLES, "pm-bundle", "upgrade", "smoke"})
-_TEST_LANES = frozenset({"ci", "nix", "docker-tests", "pm-bundle", "windows-live", "install-e2e",
-                         "bootstrap-version", "termux-checks", "smoke", "upgrade"})
 
 
 def claim_lanes(metadata: Mapping) -> frozenset[str]:
-    """The lanes a claim message records.
-
-    Claims cut before lanes existed carry ``skipBundles``, ``skipTests`` and
-    (later) ``includeMacosIntel`` / ``includeTermux`` instead of ``lanes``. They
-    stay readable for as long as their tags do: each translates to the lane set
-    that gated the same jobs. A missing include key reads as false.
-    """
-    if "lanes" in metadata:
-        lanes = metadata["lanes"]
-        if (not isinstance(lanes, list) or any(not isinstance(name, str) for name in lanes)
-                or lanes != sorted(set(lanes))):
-            raise ValueError("Stable claim metadata is invalid")
-        if metadata.get("lanesRevision", 1) not in (1, LANES_REVISION):
-            raise ValueError("Stable claim metadata is invalid")
-        try:
-            known = _known(lanes)
-        except ValueError as error:
-            raise ValueError("Stable claim metadata is invalid") from error
-        if "lanesRevision" not in metadata and "windows" in known:
-            known |= {"windows-store"}
-        return known
-    if any(not isinstance(metadata.get(key), bool)
-           for key in ("skipBundles", "skipTests", *(k for k in _LEGACY_OPTIONAL if k in metadata))):
+    """The lanes a claim message records: a sorted, duplicate-free list of known lane names at the
+    current ``lanesRevision``."""
+    lanes = metadata.get("lanes")
+    if (not isinstance(lanes, list) or any(not isinstance(name, str) for name in lanes)
+            or lanes != sorted(set(lanes)) or metadata.get("lanesRevision") != LANES_REVISION):
         raise ValueError("Stable claim metadata is invalid")
-    lanes = set(NAMES) - {"macos-intel", "termux"}
-    lanes |= {lane for key, lane in zip(_LEGACY_OPTIONAL, ("macos-intel", "termux")) if metadata.get(key)}
-    if metadata["skipBundles"]:
-        lanes -= _LEGACY_BUNDLE_LANES
-    if metadata["skipTests"]:
-        lanes -= _TEST_LANES
-    return frozenset(lanes)
+    try:
+        return _known(lanes)
+    except ValueError as error:
+        raise ValueError("Stable claim metadata is invalid") from error
 
 
 def describe(lanes: Iterable[str]) -> str:

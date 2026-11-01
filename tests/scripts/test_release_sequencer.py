@@ -11,6 +11,8 @@ import subprocess
 import pytest
 from datetime import UTC
 
+from scripts.releases import lanes as lane_set
+
 
 def _claims(*rows):
     return [dict(version=version, state=state, autopublish=autopublish)
@@ -216,11 +218,23 @@ def test_an_unpublished_claim_below_the_head_is_refused():
         plan(_claims(("0.21.4", "green", True)), head="0.21.5")
 
 
+# Every lane but the opt-in macOS Intel and Termux builds.
+_FULL_LANES = sorted(set(lane_set.NAMES) - {"macos-intel", "termux"})
+# What a release that builds no bundle runs: no package, so no smoke, upgrade or pm-bundle either.
+_BUNDLELESS_LANES = sorted(set(_FULL_LANES) - {*lane_set.BUNDLES, "pm-bundle", "upgrade", "smoke"})
+
+
 def _claim_message(version, attempt, commit, *, autopublish=False,
                    epoch=1_790_000_000):
     return {"schema": 1, "version": version, "attempt": attempt, "commit": commit,
-            "autopublish": autopublish, "skipBundles": False, "skipTests": False,
-            "claimEpoch": epoch}
+            "autopublish": autopublish, "lanes": _FULL_LANES,
+            "lanesRevision": lane_set.LANES_REVISION, "claimEpoch": epoch}
+
+
+def _legacy_claim_message(version, attempt, commit, *, epoch=1_790_000_000):
+    """The pre-lanes shape rc.4-v0.21.6, rc.15-v0.21.7 and rc.3-v0.22.0 still carry."""
+    return {"schema": 1, "version": version, "attempt": attempt, "commit": commit,
+            "autopublish": False, "skipBundles": False, "skipTests": True, "claimEpoch": epoch}
 
 
 def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000):
@@ -380,6 +394,80 @@ def test_a_final_tag_at_another_commit_than_a_live_attempt_is_still_refused():
         discover("example/project", _discover_run(tags))
 
 
+def test_a_finished_legacy_claim_in_history_does_not_break_discovery():
+    """Burned and finalised attempts get the identity checks only: an abandoned or published
+    pre-lanes claim is history, and its record says it records no lanes."""
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.1-v0.21.6": ("6" * 40, commit, _legacy_claim_message("0.21.6", 1, commit)),
+        "abandoned-rc.1-v0.21.6": ("2" * 40, commit, {}),
+        # _final_message binds the claim object 111...
+        "rc.2-v0.21.6": ("1" * 40, commit, _legacy_claim_message("0.21.6", 2, commit)),
+        "v0.21.6": ("4" * 40, commit, _final_message("0.21.6", 2, commit, release_id=7)),
+        "rc.1-v0.21.7": ("5" * 40, commit, _claim_message("0.21.7", 1, commit)),
+    }
+    releases = [{"id": 7, "tag_name": "v0.21.6", "draft": False, "prerelease": False,
+                 "published_at": "2026-09-01T00:00:00Z"}]
+    records = {r["claim_tag"]: r for r in discover("example/project", _discover_run(tags, releases=releases))}
+    assert {tag: (r["state"], r["lanes"]) for tag, r in records.items() if tag != "rc.1-v0.21.7"} == {
+        "rc.1-v0.21.6": ("burned", None),
+        "rc.2-v0.21.6": ("published", None),
+    }
+    assert records["rc.1-v0.21.7"]["lanes"] == frozenset(_FULL_LANES)
+
+
+_SHAPE_REFUSAL = "rc.1-v0.21.7 metadata is invalid: Stable claim metadata is invalid: it must record lanes at lanesRevision 2"
+
+
+def test_a_legacy_release_above_the_head_is_never_advanced_without_lanes():
+    """lanes: None is history only: if the head somehow sits below a pre-lanes release, the pass
+    refuses to guess which channels it moves rather than advancing them."""
+    from scripts.releases.sequencer import reconcile
+
+    commit = "a" * 40
+    tags = {
+        "rc.2-v0.21.6": ("1" * 40, commit, _legacy_claim_message("0.21.6", 2, commit)),
+        "v0.21.6": ("4" * 40, commit, _final_message("0.21.6", 2, commit, release_id=7)),
+    }
+    releases = [{"id": 7, "tag_name": "v0.21.6", "draft": False, "prerelease": False,
+                 "published_at": "2026-09-01T00:00:00Z"}]
+    with pytest.raises(ValueError) as refused:
+        reconcile({"GITHUB_REPOSITORY": "example/project"}, run=_discover_run(tags, releases=releases),
+                  read_head=lambda: "0.21.5", read_archive=lambda _key: pytest.fail("read an archive"))
+    assert str(refused.value) == ("rc.2-v0.21.6 records no lanes at lanesRevision 2; its release cannot be "
+                                  "published or advance a channel")
+
+
+@pytest.mark.parametrize("message,refusal", [
+    (_legacy_claim_message("0.21.7", 1, "a" * 40), _SHAPE_REFUSAL),
+    # lanes without lanesRevision: cut when "windows" also meant the Store bundle.
+    ({k: v for k, v in _claim_message("0.21.7", 1, "a" * 40).items() if k != "lanesRevision"}, _SHAPE_REFUSAL),
+    ({**_claim_message("0.21.7", 1, "a" * 40), "lanesRevision": 1},
+     "rc.1-v0.21.7 metadata is invalid: Stable claim metadata is invalid"),
+])
+def test_an_unfinished_legacy_claim_is_refused(message, refusal):
+    from scripts.releases.sequencer import discover
+
+    tags = {"rc.1-v0.21.7": ("1" * 40, "a" * 40, message)}
+    with pytest.raises(ValueError) as refused:
+        discover("example/project", _discover_run(tags))
+    assert str(refused.value) == refusal
+
+
+def test_a_finished_claim_still_needs_its_identity():
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.1-v0.21.6": ("1" * 40, commit, {**_legacy_claim_message("0.21.6", 1, commit), "commit": "b" * 40}),
+        "abandoned-rc.1-v0.21.6": ("2" * 40, commit, {}),
+    }
+    with pytest.raises(ValueError, match=r"^rc\.1-v0\.21\.6 metadata is invalid$"):
+        discover("example/project", _discover_run(tags))
+
+
 def test_two_outstanding_attempts_are_refused_across_versions():
     from scripts.releases.sequencer import discover
 
@@ -393,7 +481,7 @@ def test_two_outstanding_attempts_are_refused_across_versions():
 
 
 def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b" * 64,
-                       drafts_on_claim_tag=False, skip_bundles=False, final_tags=True, lanes=None):
+                       drafts_on_claim_tag=False, final_tags=True, lanes=_FULL_LANES):
     """Two green claims with their final tags; releases start as drafts.
 
     final_tags=False is a fresh green claim: no receipt tag yet, the draft on
@@ -408,11 +496,9 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
         claim = {
             "schema": 1, "version": version, "attempt": 1, "commit": commit,
-            "autopublish": False, "skipBundles": skip_bundles, "skipTests": False,
+            "autopublish": False, "lanes": sorted(lanes), "lanesRevision": lane_set.LANES_REVISION,
             "claimEpoch": 1_790_000_000 + index,
         }
-        if lanes is not None:
-            claim = {**{k: v for k, v in claim.items() if not k.startswith("skip")}, "lanes": sorted(lanes)}
         final = {
             "schema": 1, "version": version, "commit": commit,
             "autopublish": False, "claimEpoch": claim["claimEpoch"],
@@ -744,7 +830,7 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
 
     docker_digest = "sha256:" + "b" * 64
     _tags, releases, run = _sequencer_fixture(
-        "0.21.5", manifest_digest=None, docker_digest=docker_digest, skip_bundles=True)
+        "0.21.5", manifest_digest=None, docker_digest=docker_digest, lanes=_BUNDLELESS_LANES)
     alias = [None]
     events = []
 
@@ -775,10 +861,10 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
 
 
 @pytest.mark.parametrize("lanes,docker,store_checked", [
-    # --only windows,docker: a partial desktop set. Only the aliases move; the channel stays.
-    (["windows", "docker"], True, True),
-    # --only windows: no channel moves at all, so the release is finished once public.
-    (["windows"], False, True),
+    # --only windows,windows-store,docker: a partial desktop set. Only the aliases move; the channel stays.
+    (["windows", "windows-store", "docker"], True, True),
+    # --only windows,windows-store: no channel moves at all, so the release is finished once public.
+    (["windows", "windows-store"], False, True),
     # --only macos-arm64,docker: no Store, no channel.
     (["macos-arm64", "docker"], True, False),
 ])

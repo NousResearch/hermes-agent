@@ -533,22 +533,31 @@ def output(argv: list[str]) -> str:
     return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
 
 
-def validate_claim(metadata: object, *, version: str, attempt: int, commit: str) -> dict:
-    """The claim message's exact shape. It is the one record of the attempt's policy.
-    A claim cut before lanes existed (lanes.claim_lanes); the copy returned has its lanes."""
+_CLAIM_IDENTITY = ("schema", "version", "attempt", "commit", "autopublish", "claimEpoch")
+
+
+def claim_identity(metadata: object, *, version: str, attempt: int, commit: str) -> dict:
+    """The identity every stable claim message carries, whatever its age: schema 1, the attempt ref's
+    version and attempt, the tagged commit, a boolean autopublish and a positive claimEpoch. The
+    sequencer checks only this on finished history (validate_claim is the current, full shape)."""
     expected = {"schema": 1, "version": version, "attempt": attempt, "commit": commit}
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
             or not isinstance(metadata.get("autopublish"), bool)
-            or not isinstance(metadata.get("claimEpoch"), int)
+            or type(metadata.get("claimEpoch")) is not int
             or metadata["claimEpoch"] <= 0):
         raise ValueError("Stable claim metadata is invalid")
-    base = {*expected, "autopublish", "claimEpoch"}
-    legacy = {"skipBundles", "skipTests"}
-    shapes = ({*base, "lanes"}, {*base, "lanes", "lanesRevision"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
-              {*base, *legacy, "includeTermux"}, {*base, *legacy, "includeMacosIntel", "includeTermux"})
-    if set(metadata) not in shapes:
-        raise ValueError("Stable claim metadata is invalid")
+    return metadata
+
+
+def validate_claim(metadata: object, *, version: str, attempt: int, commit: str) -> dict:
+    """The claim message's exact shape. It is the one record of the attempt's policy: its identity
+    (claim_identity) plus ``lanes`` at the current ``lanesRevision``; the copy returned has its lanes
+    as a set."""
+    claim_identity(metadata, version=version, attempt=attempt, commit=commit)
+    if set(metadata) != {*_CLAIM_IDENTITY, "lanes", "lanesRevision"}:
+        raise ValueError(f"Stable claim metadata is invalid: it must record lanes at lanesRevision "
+                         f"{lane_set.LANES_REVISION}")
     return {**metadata, "lanes": lane_set.claim_lanes(metadata)}
 
 
@@ -655,9 +664,16 @@ def validate_final(final: object, *, version: str, commit: str, claim_tag: str,
     }
     manifest = final.get("candidateManifestSha256")
     lanes = claim["lanes"]
-    manifest_ok = bool(DIGEST.fullmatch(manifest or "")) if lane_set.has_bundles(lanes) else manifest is None
     docker = final["dockerManifestDigest"]
-    docker_ok = bool(re.fullmatch(r"sha256:[a-f0-9]{64}", docker or "")) if "docker" in lanes else docker is None
+    docker_digest = re.compile(r"sha256:[a-f0-9]{64}")
+    if lanes is None:
+        # A finished claim older than the current lane shape (sequencer._claim_lanes): either pin may
+        # be absent, but a present one is well formed.
+        manifest_ok = manifest is None or bool(DIGEST.fullmatch(manifest))
+        docker_ok = docker is None or bool(docker_digest.fullmatch(docker))
+    else:
+        manifest_ok = bool(DIGEST.fullmatch(manifest or "")) if lane_set.has_bundles(lanes) else manifest is None
+        docker_ok = bool(docker_digest.fullmatch(docker or "")) if "docker" in lanes else docker is None
     if (final != expected
             or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
             or not manifest_ok or not docker_ok):

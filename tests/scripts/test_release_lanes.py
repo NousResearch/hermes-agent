@@ -120,15 +120,16 @@ def test_flags_round_trip_and_refuse_anything_loose():
             lane_set.from_flags(bad)
 
 
-def test_a_claim_without_a_lanes_revision_keeps_the_store_bundle_it_was_cut_with():
-    """rc.2-v0.22.1 recorded ["docker","windows"] when `windows` also built and submitted the Store bundle."""
-    legacy = {"lanes": ["docker", "windows"]}
-    assert lane_set.claim_lanes(legacy) == {"docker", "windows", "windows-store"}
-    current = {**legacy, "lanesRevision": lane_set.LANES_REVISION}
+def test_claim_lanes_reads_only_the_current_lanes_revision():
+    """A claim without lanesRevision (rc.2-v0.22.1, when `windows` also built the Store bundle) or
+    the pre-lanes skipBundles/skipTests shape is refused, never translated."""
+    current = {"lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION}
     assert lane_set.claim_lanes(current) == {"docker", "windows"}
-    assert lane_set.claim_lanes({"lanes": ["docker"]}) == {"docker"}
-    with pytest.raises(ValueError, match="invalid"):
-        lane_set.claim_lanes({**legacy, "lanesRevision": 3})
+    for wrong in ({"lanes": ["docker", "windows"]}, {**current, "lanesRevision": 1},
+                  {**current, "lanesRevision": 3}, {"skipBundles": False, "skipTests": False},
+                  {"skipBundles": False, "skipTests": False, "lanesRevision": lane_set.LANES_REVISION}):
+        with pytest.raises(ValueError, match="^Stable claim metadata is invalid$"):
+            lane_set.claim_lanes(wrong)
 
 
 def test_targets_and_handoffs_follow_the_build_lanes():

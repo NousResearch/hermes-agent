@@ -27,6 +27,8 @@ def _project(tmp_path: Path) -> tuple[Path, str]:
     subprocess.run(["git", "add", "."], cwd=source, check=True)
     subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "fixture"], cwd=source, check=True, capture_output=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    # A tagless commit build is versioned after the newest stable release behind it.
+    subprocess.run(["git", "tag", "v1.2.3"], cwd=source, check=True)
     return source, commit
 
 

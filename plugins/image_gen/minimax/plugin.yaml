@@ -1,0 +1,7 @@
+name: minimax
+version: 1.0.0
+description: "MiniMax image generation backend (image-01, image-01-live). Text-to-image and image-to-image via api.minimax.io / api.minimaxi.com."
+author: Hermes Agent
+kind: backend
+requires_env:
+  - MINIMAX_API_KEY

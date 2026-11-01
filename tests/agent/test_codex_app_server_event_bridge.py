@@ -311,6 +311,14 @@ def test_real_progress_keeps_watchdog_alive_but_silence_still_aborts(monkeypatch
         bridge(note)
         watchdog._tick()
         abort.assert_not_called()
+    # An item/started tool note leaves its tool open, and an open tool is
+    # working, not stalled (#127643) -- close it so the silence phase below
+    # measures a turn with nothing in flight.
+    from agent.codex_runtime import _CODEX_TOOL_ITEM_TYPES
+    params = note.get("params") if isinstance(note.get("params"), dict) else {}
+    item = params.get("item") if isinstance(params.get("item"), dict) else {}
+    if note.get("method") == "item/started" and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
+        bridge({"method": "item/completed", "params": {"item": item}})
     last_activity = agent._last_activity_ts
     # Empty deltas / unrelated transport frames must not manufacture progress.
     clock.now += 601
@@ -324,3 +332,54 @@ def test_real_progress_keeps_watchdog_alive_but_silence_still_aborts(monkeypatch
     assert agent._last_activity_ts == last_activity
     assert watchdog._tick() is False
     abort.assert_called_once()
+
+
+class TestInflightToolLiveness:
+    """The bridge publishes open tool calls so the turn-liveness watchdog
+    can spare a turn while a quiet tool is still running (#127643).
+
+    A long tool run emits ``item/started``, then nothing until
+    ``item/completed`` -- no text deltas, no output deltas. Without an
+    in-flight marker the activity clock goes stale mid-tool and the
+    watchdog aborts a working turn.
+    """
+
+    def test_tool_started_sets_inflight_and_completed_clears(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        assert getattr(agent, "_codex_inflight_tool_calls", 0) == 0
+        bridge(_item_started({
+            "type": "commandExecution",
+            "id": "exec-9",
+            "command": "sleep 600",
+        }))
+        assert agent._codex_inflight_tool_calls == 1
+        bridge(_item_completed({
+            "type": "commandExecution",
+            "id": "exec-9",
+            "exitCode": 0,
+            "aggregatedOutput": "",
+        }))
+        assert agent._codex_inflight_tool_calls == 0
+
+    def test_non_tool_items_leave_inflight_alone(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_started({"type": "reasoning", "id": "r-1"}))
+        bridge(_item_completed({
+            "type": "agentMessage", "id": "am-9", "text": "done",
+        }))
+        assert getattr(agent, "_codex_inflight_tool_calls", 0) == 0
+
+    def test_completed_without_started_floors_at_zero(self):
+        """Some codex versions only emit completed for fast items -- a lone
+        completed must never drive the count negative."""
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "commandExecution",
+            "id": "fast-1",
+            "exitCode": 0,
+            "aggregatedOutput": "hi\n",
+        }))
+        assert agent._codex_inflight_tool_calls == 0

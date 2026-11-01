@@ -222,19 +222,21 @@ hermes model
 
 ## 超时设置
 
-Hermes 会自动检测本地端点（localhost、局域网 IP）并放宽其流式传输超时限制。大多数情况下无需额外配置。
+Hermes 会自动检测本地端点（localhost、局域网 IP）并默认放宽其流式传输超时限制。大多数情况下无需额外配置。
 
-如果仍然遇到超时错误（例如在慢速硬件上使用超大上下文），可以覆盖流式读取超时：
+如果仍然遇到停滞流超时（例如在慢速硬件上使用超大上下文），请在 `config.yaml` 中提高本地停滞流超时：
 
-```bash
-# 在 .env 中——将默认的 120s 提高到 30 分钟
-HERMES_STREAM_READ_TIMEOUT=1800
+```yaml
+agent:
+  local_stream_stale_timeout: 1800  # 单位：秒；默认 900（15 分钟）
 ```
 
-| 超时类型 | 默认值 | 本地自动调整 | 环境变量覆盖 |
+若设置了环境变量 `HERMES_LOCAL_STREAM_STALE_TIMEOUT`，它会覆盖 YAML 中的值；持久配置请优先使用 YAML。
+
+| 超时类型 | 默认值 | 本地自动调整 | 覆盖方式 |
 |---------|---------|----------------------|------------------|
 | 流式读取（socket 级别） | 120s | 提升至 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| 停滞流检测 | 180s | 完全禁用 | `HERMES_STREAM_STALE_TIMEOUT` |
+| 停滞流检测 | 180s | 基础停滞超时为默认 180s 时，提升至 900s（15 分钟） | `agent.local_stream_stale_timeout` 或 `HERMES_LOCAL_STREAM_STALE_TIMEOUT` |
 | API 调用（非流式） | 1800s | 无需调整 | `HERMES_API_TIMEOUT` |
 
-流式读取超时最容易引发问题——它是接收下一个数据块的 socket 级别截止时间。在大上下文的预填充（prefill）阶段，本地模型可能在处理 prompt 时数分钟内没有任何输出。自动检测机制会透明地处理这一情况。
+流式读取超时是接收下一个数据块的 socket 级别截止时间，而停滞流检测是另一个独立的截止时间，它是允许的最长无数据块间隔，无论是在第一个数据块之前还是后续数据块之间（并非整个响应的总截止时间）。在大上下文的预填充（prefill）阶段，本地模型可能在处理 prompt 时数分钟内没有任何输出；本地自动调整可在上述上限内覆盖这种情况。仅提高 `HERMES_STREAM_READ_TIMEOUT` 不会提高停滞流超时。仅当解析后的基础停滞超时仍为 180s 时才会应用本地上限；若基础停滞超时被设为其他值（通过 `HERMES_STREAM_STALE_TIMEOUT` 或提供商的停滞超时），则优先于该上限。

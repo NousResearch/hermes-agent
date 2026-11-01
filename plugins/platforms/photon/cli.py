@@ -247,7 +247,7 @@ def _lookup_imessage_line(token: str, dashboard_id: str) -> Optional[str]:
     """The project's dedicated iMessage line (fallback when the user row names none)."""
     try:
         line = photon_auth.get_imessage_line(token, dashboard_id)
-    except (photon_auth.httpx.HTTPError, RuntimeError, ValueError) as e:  # transport / status / bad JSON
+    except (photon_auth.httpx.HTTPError, RuntimeError, ValueError, AttributeError, TypeError) as e:  # transport / status / bad or misshapen JSON
         print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
         return None
     return line.get("phoneNumber") if line else None

@@ -8,6 +8,7 @@ import {
   captureSessionTombstoneGenerations,
   endSessionMutation,
   isSessionRemovalPending,
+  sessionIsRemoved,
   tombstoneLifecycleChanged,
   tombstoneSessions,
   untombstoneSessions
@@ -124,5 +125,20 @@ describe('requestSessionResume refuses a doomed session', () => {
     requestSessionResume('deleted-1')
 
     expect($sessionResumeRequest.get()).toBe(queued)
+  })
+})
+
+describe('sessionIsRemoved', () => {
+  it('matches a row under any identity it has answered to, not just its live id', () => {
+    // archiveSession/removeSession arm the live tip + the lineage root; a stale
+    // project snapshot can still file the conversation under an OLDER segment.
+    const removed = new Set(['tip', 'root'])
+    const row = { _lineage_ids: ['root', 'segment', 'tip'], _lineage_root_id: 'root', id: 'older-segment' }
+
+    expect(sessionIsRemoved(removed, { id: 'tip' })).toBe(true)
+    expect(sessionIsRemoved(removed, { _lineage_root_id: 'root', id: 'x' })).toBe(true)
+    expect(sessionIsRemoved(removed, row)).toBe(true)
+    expect(sessionIsRemoved(removed, { id: 'unrelated' })).toBe(false)
+    expect(sessionIsRemoved(new Set(), { id: 'tip' })).toBe(false)
   })
 })

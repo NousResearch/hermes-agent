@@ -44,6 +44,19 @@ class TestExactMatch:
         assert count == 1
         assert new == "replaced\nline3"
 
+    def test_redacted_environment_placeholder_is_refused(self):
+        """Regression for #137655: read_file redaction must not become a write value."""
+        content = 'Authorization: Bearer ${MCP_ATLAS_VAULT_API_KEY}; endpoint=https://atlas.example/mcp; enabled=true\n'
+        redacted = 'Authorization: Bearer ${MCP_...KEY}; endpoint=https://atlas.example/mcp; enabled=true\n'
+
+        new, count, strategy, err = fuzzy_find_and_replace(content, redacted, "Authorization: Bearer updated\n")
+
+        assert new == content
+        assert count == 0
+        assert strategy is None
+        assert err is not None
+        assert "redacted" in err.lower()
+
 
 class TestWhitespaceDifference:
     def test_extra_spaces_match(self):

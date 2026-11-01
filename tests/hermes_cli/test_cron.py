@@ -311,6 +311,77 @@ class TestCronListStatusRendering:
         assert "not delivered" not in last_run_line
 
 
+class TestCronListOriginAndToolsets:
+    """`cron list` surfaces the persisted ``origin`` and ``enabled_toolsets`` fields when
+    present, so a job scheduled from a chat (or restricted to specific toolsets) shows where
+    it delivers and what it runs with. Rows are conditional: jobs without the fields show
+    neither."""
+
+    def test_shows_toolsets_when_set(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        create_job(
+            prompt="Job with toolsets",
+            schedule="every day",
+            enabled_toolsets=["terminal", "file"],
+        )
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Toolsets:  terminal, file" in out
+
+    def test_shows_origin_when_deliver_is_origin(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        create_job(
+            prompt="Job with origin",
+            schedule="every day",
+            deliver="origin",
+            origin={"platform": "telegram", "chat_id": "12345"},
+        )
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Origin:    telegram:12345" in out
+
+    def test_shows_origin_when_deliver_is_origin_all(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        create_job(
+            prompt="Job with origin,all",
+            schedule="every day",
+            deliver="origin,all",
+            origin={"platform": "telegram", "chat_id": "12345"},
+        )
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Origin:    telegram:12345" in out
+
+    def test_does_not_crash_on_non_dict_origin(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        create_job(prompt="Job with string origin", schedule="every day", deliver="origin")
+        jobs = load_jobs()
+        jobs[0]["origin"] = "cli-session-provenance"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Origin:" not in out
+        assert "Job with string origin" in out
+
+    def test_hides_origin_and_toolsets_when_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        create_job(prompt="Plain job", schedule="every day")
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Origin:" not in out
+        assert "Toolsets:" not in out
+
+
 class TestGatewayNotRunningWarning:
     """`cron create` / `cron list` must warn when the gateway (and thus the
     cron ticker) isn't running, since jobs only fire inside the gateway.

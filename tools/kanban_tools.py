@@ -315,6 +315,8 @@ def _board(board: Optional[str], *, quiet_close: bool = False):
     overrides it per call. ``quiet_close`` swallows close() errors (best-effort bridges)."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+    if os.environ.get("HERMES_KANBAN_TASK") and _persisted_identity() == "argos":
+        _check(not board, "Argos must use its pinned board without a board override")
     conn = kbc.connect(board=board)
     try:
         yield kb, conn
@@ -1001,41 +1003,46 @@ def _handle_attach(args: dict, **kw) -> str:
 _MAX_ATTACH_URL_REDIRECTS = 5
 
 
-def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[str]]:
+def _download_url_with_cap(url: str, max_bytes: int, *, public_only: bool = False) -> tuple[bytes, Optional[str]]:
     """Fetch ``url`` over http(s) capped at ``max_bytes`` -> ``(data, content_type)``.
-    Every hop is SSRF-checked (redirects followed manually) so a model-controlled URL, or a
-    public host 302ing, cannot reach loopback/private/cloud-metadata ranges. ``ValueError``
-    for bad scheme, blocked target, too many redirects, or a body over the cap (checked
-    while streaming, so nothing oversize is buffered)."""
+    Every hop is SSRF-checked (redirects followed manually). For scoped public
+    downloads also reject credential-bearing URLs and recheck DNS at connect.
+    """
+    from contextlib import nullcontext
     from urllib.parse import urljoin, urlparse
     import httpx
-    from tools.url_safety import is_safe_url
+    from tools.url_safety import create_ssrf_safe_client, is_public_url, is_safe_url
     current_url = url
-    for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
-        scheme = (urlparse(current_url).scheme or "").lower()
-        if scheme not in ("http", "https"):
-            raise ValueError(f"unsupported URL scheme {scheme!r}; only http/https are allowed")
-        if not is_safe_url(current_url):
-            raise ValueError(
-                f"URL blocked by SSRF protection (private/internal address): {current_url}")
-        chunks: list[bytes] = []
-        total = 0
-        with httpx.stream("GET", current_url, headers={"User-Agent": "hermes-kanban/attach"},
-                          timeout=30, follow_redirects=False) as resp:
-            if resp.is_redirect:
-                location = resp.headers.get("location")
-                if not location:
-                    raise ValueError(f"redirect without Location header from {current_url}")
-                current_url = urljoin(current_url, location)
-                continue
-            resp.raise_for_status()
-            content_type = (resp.headers.get("content-type") or "").split(";")[0].strip() or None
-            for chunk in resp.iter_bytes(1024 * 1024):
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
-                chunks.append(chunk)
-        return b"".join(chunks), content_type
+    client_context = create_ssrf_safe_client(public_only=True, trust_env=False) if public_only else nullcontext(None)
+    with client_context as client:
+        for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
+            parsed = urlparse(current_url)
+            scheme = (parsed.scheme or "").lower()
+            if scheme not in ("http", "https"):
+                raise ValueError(f"unsupported URL scheme {scheme!r}; only http/https are allowed")
+            if public_only and (parsed.username is not None or parsed.password is not None or parsed.query):
+                raise ValueError("credential/query URLs are not allowed for public Kanban attachments")
+            if not (is_public_url(current_url) if public_only else is_safe_url(current_url)):
+                raise ValueError(f"URL blocked by SSRF protection (private/internal address): {current_url}")
+            chunks: list[bytes] = []
+            total = 0
+            stream = client.stream if client is not None else httpx.stream
+            with stream("GET", current_url, headers={"User-Agent": "hermes-kanban/attach"},
+                        timeout=30, follow_redirects=False) as resp:
+                if resp.is_redirect:
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise ValueError(f"redirect without Location header from {current_url}")
+                    current_url = urljoin(current_url, location)
+                    continue
+                resp.raise_for_status()
+                content_type = (resp.headers.get("content-type") or "").split(";")[0].strip() or None
+                for chunk in resp.iter_bytes(1024 * 1024):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit")
+                    chunks.append(chunk)
+            return b"".join(chunks), content_type
     raise ValueError(f"too many redirects fetching {url}")
 
 
@@ -1043,6 +1050,8 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
 def _handle_attach_url(args: dict, **kw) -> str:
     """Attach a file fetched server-side from an http(s) URL (shared size cap)."""
     from hermes_cli import kanban_db as kb
+    if os.environ.get("HERMES_KANBAN_TASK") and _persisted_identity() == "argos":
+        _check(not args.get("board"), "Argos must use its pinned board without a board override")
     tid = _worker_guard("kanban_attach_url", args)
     url = str(_require_text(args, "url")).strip()
     filename = args.get("filename") or args.get("title")
@@ -1051,7 +1060,9 @@ def _handle_attach_url(args: dict, **kw) -> str:
         from urllib.parse import unquote, urlparse
         filename = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip() or "download"
     try:
-        data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
+        data, fetched_ct = _download_url_with_cap(
+            url, kb.KANBAN_ATTACHMENT_MAX_BYTES,
+            public_only=bool(os.environ.get("HERMES_KANBAN_TASK") and _persisted_identity() == "argos"))
     except ValueError as e:
         return tool_error(f"kanban_attach_url: {e}")
     except Exception as e:
@@ -1071,6 +1082,36 @@ def _handle_attachments(args: dict, **kw) -> str:
             "ok": True, "task_id": tid,
             "attachments": [
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
+
+
+def _argos_create_scope(args: dict, *, self_task: Any) -> bool:
+    """Constrain only dispatcher-owned Argos workers, not human/CLI or other profiles.
+
+    The parent row, profile identity and pinned board must agree before a child is
+    inserted. Passing ``scratch`` and an empty project id to create_task prevents
+    project inheritance from either the parent or a project-scoped board.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK") or _persisted_identity() != "argos":
+        return False
+    _check(_is_dispatcher_owned_worker() and self_task is not None
+           and self_task.assignee == "argos", "Argos create requires its own dispatched task")
+    _check(args.get("assignee") in {"hefesto", "atena"},
+           "Argos may delegate only to hefesto or atena")
+    _check(args.get("workspace_kind") in (None, "scratch") and not args.get("workspace_path"),
+           "Argos children require an isolated scratch workspace")
+    _check("project" not in args and "project_id" not in args,
+           "Argos may not select or inherit a project")
+    _check(not any(args.get(key) is not None for key in
+                   ("model", "provider", "skills", "goal_max_turns", "completion_contract",
+                    "session_id", "max_runtime_seconds")),
+           "Argos may not override model, provider, skills, session, runtime or contract")
+    _check(not args.get("triage") and not args.get("goal_mode")
+           and args.get("initial_status") in (None, "running"),
+           "Argos children must be ordinary directly assigned tasks")
+    _check(not args.get("board"), "Argos must use its pinned board without a board override")
+    _check(args.get("tenant") in (None, self_task.tenant if self_task else None),
+           "Argos may not change its tenant")
+    return True
 
 
 def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
@@ -1113,12 +1154,17 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    # The explicit board selector bypasses the dispatcher's pinned DB path.
+    # Reject it before opening a different board or causing any write.
+    if os.environ.get("HERMES_KANBAN_TASK") and _persisted_identity() == "argos":
+        _check(not args.get("board"), "Argos must use its pinned board without a board override")
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
+        argos_scoped = _argos_create_scope(args, self_task=self_task)
         # The worker/API runtime may be transient; the owning task's origin is durable.
         # The ambient id is the request-scoped ContextVar binding, not the process-global
         # os.environ: in a multi-session gateway the env holds the LAST agent built, and an
@@ -1132,15 +1178,19 @@ def _handle_create(args: dict, **kw) -> str:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+            parents=tuple(parents),
+            tenant=self_task.tenant if argos_scoped else (args.get("tenant") or os.environ.get("HERMES_TENANT")),
             priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
+            workspace_kind="scratch" if argos_scoped else workspace_kind,
+            workspace_path=None if argos_scoped else workspace_path,
+            project_id="" if argos_scoped else project_id,
             # Board-project inheritance must read the board this call opened, not the
             # session's current board.
             board=args.get("board"),
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
-            idempotency_key=args.get("idempotency_key"),
+            idempotency_key=(f"argos:{self_tid}:{args['idempotency_key']}"
+                             if argos_scoped and args.get("idempotency_key") else args.get("idempotency_key")),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),

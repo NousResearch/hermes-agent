@@ -178,17 +178,39 @@ def select_password_fill(
     ]
 
 
+# Plain "Security code" is also a checkout label; stronger authentication
+# metadata vetoes a masked CVV heuristic.
+_RE_MASKED_CVV_AUTH = re.compile(
+    r"\b(?:password|login|log\s*in|sign\s*in|username|user\s*name|"
+    r"2fa|mfa|totp|otp|passcode|one\s*time|auth(?:entication|enticator)?|"
+    r"two\s*factor|sms)\b|\bsecurity\s+(?:pin|token)\b|"
+    r"(?=.*\bverification\b)(?=.*\b(?:code|pin|token)\b)"
+)
+
+_RE_CARD_VERIFICATION = re.compile(r"\bcard\s+verification(?:\s+(?:code|value))?\b")
+
+
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control as a payment/address fill target (autocomplete token exact match 100,
-    label/name heuristic 70), or None. Password/email inputs are never checkout targets."""
+    label/name heuristic 70), or None. Password heuristics only target masked card security codes."""
     tokens = [t for t in control.autocomplete.lower().split() if t]
     for token in PAYMENT_AUTOFILL_TOKENS + ADDRESS_AUTOFILL_TOKENS:
         if token in tokens:
             return ClassifiedLoginControl(control, 100, "country-name" if token == "country" else token)
-    if control.type in ("password", "email"):
+    if control.type == "email":
         return None
     searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    if control.type == "password" and (
+        any(t in LOGIN_AUTOFILL_TOKENS or t in _EXCLUDED_AUTOCOMPLETE for t in tokens)
+        or _RE_MASKED_CVV_AUTH.search(" ".join(
+            _RE_CARD_VERIFICATION.sub(" ", _normalize_text(part))
+            for part in (control.name, control.label) if part
+        ))
+    ):
+        return None
     for pattern, token in _CHECKOUT_HEURISTICS:
+        if control.type == "password" and token != "cc-csc":
+            continue
         if pattern.search(searchable):
             return ClassifiedLoginControl(control, 70, token)
     return None

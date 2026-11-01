@@ -11,6 +11,7 @@ from hermes_cli.logs import (
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
+    _read_last_record_lines,
     _read_tail,
 )
 
@@ -50,6 +51,24 @@ class TestParseLineTimestamp:
 class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
+
+
+def test_embedded_timestamp_does_not_replace_record_verdict():
+    from hermes_cli.logs import _LineFilter
+    old = datetime.now() - timedelta(hours=3)
+    recent = datetime.now()
+    keep = _LineFilter(since=datetime.now() - timedelta(hours=1))
+    assert keep(f"{recent:%Y-%m-%d %H:%M:%S} ERROR gateway.run: failed\n")
+    assert keep(f"  fetched_at={old:%Y-%m-%dT%H:%M:%S}\n")
+
+
+def test_follow_filter_can_seed_continuation_state():
+    from hermes_cli.logs import _LineFilter
+    recent = datetime.now()
+    keep = _LineFilter(since=datetime.now() - timedelta(hours=1))
+    keep(f"{recent:%Y-%m-%d %H:%M:%S} INFO update: progress\n")
+    assert keep("  output appended after follow started\n")
+
 
 # ---------------------------------------------------------------------------
 # Logger name extraction (new for component filtering)
@@ -131,6 +150,16 @@ class TestReadTail:
         result = _read_last_n_lines(log_file, 5)
         assert len(result) == 5
         assert "line 9" in result[-1]
+
+    def test_follow_seed_reads_bounded_suffix(self, tmp_path):
+        log_file = tmp_path / "large.log"
+        record = "2026-01-01 00:00:00 INFO x: line\n"
+        log_file.write_text(record * 40000)
+
+        result = _read_last_record_lines(log_file)
+
+        assert len(result) == 256
+        assert result[-1] == record
 
     def test_unstamped_lines_share_the_verdict_of_the_record_above(self, tmp_path):
         old = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S,000")

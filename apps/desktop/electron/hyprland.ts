@@ -122,7 +122,7 @@ export function parseHyprlandClients(payload: string, selfPid: number): Enumerat
 }
 
 /** One request on the command socket, always closed, never left hanging. */
-function request(socketPath: string, command: string): Promise<null | string> {
+export function hyprlandRequest(socketPath: string, command: string): Promise<null | string> {
   return new Promise(resolve => {
     let body = ''
     let settled = false
@@ -165,7 +165,7 @@ export async function readHyprlandWindows(
     return null
   }
 
-  const payload = await request(socketPath, 'j/clients')
+  const payload = await hyprlandRequest(socketPath, 'j/clients')
 
   if (!payload) {
     return null

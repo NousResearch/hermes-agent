@@ -118,7 +118,7 @@ class TestKimiFamilyGetsAdaptiveThinking:
         blocks must survive the third-party signature-stripping pass so
         the upstream's message-history validation passes.
         """
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         messages = [
             {"role": "user", "content": "hi"},

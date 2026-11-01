@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { evaluateRuntimeReadiness, fetchRuntimeReadinessSignals, interpretRuntimeReadiness } from './runtime-readiness'
+import { fetchRuntimeReadinessSignals, interpretRuntimeReadiness, runtimeReadinessDisplay } from './runtime-readiness'
 
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {
@@ -50,6 +50,34 @@ describe('interpretRuntimeReadiness', () => {
     })
   })
 
+  const NOT_CONNECTED = 'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one.'
+
+  it.each([
+    ['runtime_check', { runtime: { error: NOT_CONNECTED, ok: false }, runtimeError: null }],
+    ['setup_status', { runtime: null, runtimeError: NOT_CONNECTED }]
+  ] as const)('gives the default reason, not the CLI sentence, when nothing is set up (%s)', (source, runtime) => {
+    const result = interpretRuntimeReadiness(
+      { setup: { provider_configured: false }, setupError: null, ...runtime },
+      { defaultReason: 'Pick a provider.' }
+    )
+
+    expect(result).toMatchObject({ ready: false, reason: 'Pick a provider.', source })
+  })
+
+  it('keeps the cause for an explicitly requested provider even when nothing is set up', () => {
+    const result = interpretRuntimeReadiness(
+      {
+        setup: { provider_configured: false },
+        setupError: null,
+        runtime: { error: 'No usable credentials found for nous.', ok: false },
+        runtimeError: null
+      },
+      { requestedProvider: 'nous' }
+    )
+
+    expect(result.reason).toBe('No usable credentials found for nous.')
+  })
+
   it('uses explicit fallback when both checks are missing', () => {
     const result = interpretRuntimeReadiness({
       setup: null,
@@ -88,24 +116,26 @@ describe('fetchRuntimeReadinessSignals', () => {
   })
 })
 
-describe('evaluateRuntimeReadiness', () => {
-  it('forwards requestedProvider to setup.runtime_check', async () => {
-    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
-      if (method === 'setup.status') {
-        return { provider_configured: true } as T
-      }
+describe('runtimeReadinessDisplay', () => {
+  it('does not call configured credentials setup when runtime resolution fails', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: true,
+        ready: false,
+        reason: 'Anthropic cannot serve the selected model.',
+        source: 'runtime_check'
+      })
+    ).toBe('unavailable')
+  })
 
-      if (method === 'setup.runtime_check') {
-        expect(params).toEqual({ provider: 'nous' })
-
-        return { ok: true } as T
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    }
-
-    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
-
-    expect(result.ready).toBe(true)
+  it('keeps needs-setup for an authoritative unconfigured result', () => {
+    expect(
+      runtimeReadinessDisplay({
+        checksDisagree: false,
+        ready: false,
+        reason: 'No provider configured.',
+        source: 'setup_status'
+      })
+    ).toBe('needs_setup')
   })
 })

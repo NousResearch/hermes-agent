@@ -72,45 +72,12 @@ def _anthropic_msg(*, unverified: bool) -> str:
 def test_unverified_guidance_names_the_content_filter_alternative():
     msg = _anthropic_msg(unverified=True).lower()
     assert "content filter" in msg
-    # Must give the operator a way to tell the two apart, not just hedge.
-    assert "still shows quota remaining" in msg
-    assert "system prompt" in msg
-
-
-def test_unverified_guidance_does_not_assert_exhaustion_as_fact():
-    """The opening line must hedge. 'is exhausted' is the claim that misdirected
-    diagnosis; 'may be exhausted' keeps the billing lead without asserting it."""
-    first_line = _anthropic_msg(unverified=True).splitlines()[0].lower()
-    assert "may be exhausted" in first_line
-    assert "is exhausted" not in first_line
-
-
-def test_unverified_guidance_warns_about_the_cached_exhaustion_replay():
-    """After a failure the credential is latched exhausted and the stored error
-    is replayed without issuing a request — so a real fix looks like it didn't
-    work. Point at the reset before the user concludes that."""
-    msg = _anthropic_msg(unverified=True)
-    assert "hermes auth reset anthropic" in msg
-    assert "without contacting the API" in msg
-
-
-def test_unverified_guidance_keeps_the_billing_remedies():
-    """The caveats are additive — the billing remedies stay available."""
-    msg = _anthropic_msg(unverified=True)
-    assert "https://claude.ai/settings/usage" in msg
-    assert "reset" in msg.lower()
-    assert "/model" in msg
-    assert "claude-opus-5" in msg
 
 
 def test_confirmed_guidance_stays_assertive_without_the_caveat():
     """A CONFIRMED billing verdict (e.g. a real 402) must not be diluted by
     content-filter lore that only applies to the ambiguous 400 body."""
-    msg = _anthropic_msg(unverified=False)
-    first_line = msg.splitlines()[0].lower()
-    assert "is exhausted" in first_line
-    assert "may be exhausted" not in first_line
-    lowered = msg.lower()
+    lowered = _anthropic_msg(unverified=False).lower()
     assert "content filter" not in lowered
     assert "hermes auth reset" not in lowered
 

@@ -90,6 +90,31 @@ class TestChangedValuesAlwaysPersist:
         assert rebound.last_prompt_tokens == 777
         restarted._db.close()
 
+    def test_set_session_metadata_takes_single_row_upsert(
+        self, tmp_path, monkeypatch
+    ):
+        """Slack persists a thread watermark on every reply: a full index rewrite
+        there costs O(entries) under ``_lock`` on the event loop."""
+        store = _make_store(tmp_path, monkeypatch)
+        entry = store.get_or_create_session(_source())
+        full_rewrites = []
+        real_replace = store._db.replace_gateway_routing_entries
+        monkeypatch.setattr(
+            store._db,
+            "replace_gateway_routing_entries",
+            lambda *a, **k: (full_rewrites.append(a), real_replace(*a, **k))[1],
+        )
+
+        assert store.set_session_metadata(entry.session_key, "watermark", "1700.0001")
+
+        assert full_rewrites == []
+        assert _routing_row(store, entry.session_key)["metadata"]["watermark"] == "1700.0001"
+        store._db.close()
+
+        restarted = _make_store(tmp_path, monkeypatch)
+        assert restarted.get_session_metadata(entry.session_key, "watermark") == "1700.0001"
+        restarted._db.close()
+
 
 class TestRestartRebindWithoutMirror:
     def test_rebind_works_when_mirror_lagged_fast_path_writes(

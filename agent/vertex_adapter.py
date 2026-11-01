@@ -6,6 +6,7 @@ VERTEX_REGION. project_id/region may also live in config.yaml ``vertex:``;
 env wins over config.
 """
 
+from datetime import UTC, datetime
 import hashlib
 import json
 import logging
@@ -137,12 +138,28 @@ def _load_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes]) -> 
     return google.auth.default(scopes=_CLOUD_PLATFORM_SCOPES)
 
 
+def _expiry_epoch(expiry: Any) -> Optional[float]:
+    """UTC epoch seconds for ``creds.expiry``.
+
+    ``google-auth`` stores ``creds.expiry`` as a naive UTC ``datetime`` (``tzinfo=None``); calling
+    ``.timestamp()`` directly on a naive ``datetime`` interprets it in the host's local timezone
+    (e.g. CET ``UTC+01:00`` shifts a freshly minted 3600 s token back by 3600 s to ``now - 1 s``,
+    making ``_needs_refresh`` True on every call).
+    """
+    if not isinstance(expiry, datetime):
+        return None
+    if expiry.tzinfo is None:
+        return expiry.replace(tzinfo=UTC).timestamp()
+    return expiry.timestamp()
+
+
 def _needs_refresh(creds) -> bool:
     """No token, expired, or within 5 minutes of expiry."""
+    expiry_ts = _expiry_epoch(getattr(creds, "expiry", None))
     return (
         not getattr(creds, "token", None)
         or getattr(creds, "expired", False)
-        or (getattr(creds, "expiry", None) is not None and (creds.expiry.timestamp() - time.time()) < 300)
+        or (expiry_ts is not None and (expiry_ts - time.time()) < 300)
     )
 
 
@@ -161,7 +178,9 @@ def _cached_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes], c
     return cached
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+def get_vertex_credentials(
+    credentials_path: Optional[str] = None, *, force_refresh: bool = False
+) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if not _ensure_google_auth():
         return None, None
@@ -175,7 +194,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
         if cached is None:
             return None, None
         creds, project_id = cached
-        if _needs_refresh(creds):
+        if force_refresh or _needs_refresh(creds):
             creds.refresh(google.auth.transport.requests.Request())
         return creds.token, _resolve_project_override() or project_id
     except Exception as e:
@@ -186,7 +205,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
         sa_path = None if resolved_path else _resolve_credentials_path(credentials_path)
         if sa_path:
             logger.info("ADC failed, retrying with service account: %s", sa_path)
-            return get_vertex_credentials(sa_path)
+            return get_vertex_credentials(sa_path, force_refresh=force_refresh)
         return None, None
 
 
@@ -197,10 +216,10 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 
 def get_vertex_config(
-    credentials_path: Optional[str] = None, region: Optional[str] = None
+    credentials_path: Optional[str] = None, region: Optional[str] = None, *, force_refresh: bool = False
 ) -> tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
-    token, project_id = get_vertex_credentials(credentials_path)
+    token, project_id = get_vertex_credentials(credentials_path, force_refresh=force_refresh)
     if not token or not project_id:
         return None, None
     return token, build_vertex_base_url(project_id, _resolve_region(region))

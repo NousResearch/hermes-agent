@@ -567,9 +567,26 @@ class ClientLifecycleMixin:
 
     def _adopt_openai_credentials(self, api_key: str, base_url: str, *, reason: str) -> bool:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
+        old_token = str(getattr(self, "api_key", "") or "")
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
-        return self._replace_primary_openai_client(reason=reason)
+        if not self._replace_primary_openai_client(reason=reason):
+            return False
+        if old_token and self.api_key and self.api_key != old_token:
+            cc = getattr(self, "context_compressor", None)
+            if cc is not None and getattr(cc, "api_key", None) == old_token:
+                cc.api_key = self.api_key
+            rt = getattr(self, "_primary_runtime", None)
+            if isinstance(rt, dict):
+                for k in ("api_key", "compressor_api_key"):
+                    if rt.get(k) == old_token:
+                        rt[k] = self.api_key
+                rt_ck = rt.get("client_kwargs")
+                if isinstance(rt_ck, dict) and rt_ck.get("api_key") == old_token:
+                    rt_ck["api_key"] = self.api_key
+            from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+            rotate_runtime_main_api_key(old_token, self.api_key)
+        return True
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -793,13 +810,40 @@ class ClientLifecycleMixin:
         logger.info("Applied updated .env credentials for %s: endpoint %s", self.provider, self.base_url)
         return True
 
-    def _try_refresh_vertex_client_credentials(self) -> bool:
-        """Re-mint the Vertex OAuth2 token (~1h TTL; long sessions 401 on the expired bearer) and rebuild the client."""
-        if self.api_mode != "chat_completions" or self.provider != "vertex":
+    def _adopt_vertex_token_before_expiry(self) -> bool:
+        """Swap in a fresh Vertex AI OAuth2 token before the 1-hour bearer in hand expires, so
+        long-running turns/sessions never hit a mid-turn 401 ``ACCESS_TOKEN_EXPIRED`` storm."""
+        if getattr(self, "provider", "") != "vertex" or getattr(self, "api_mode", "") != "chat_completions":
+            return False
+        cur_key = getattr(self, "api_key", None)
+        if not cur_key or callable(cur_key):
             return False
         try:
             from agent.vertex_adapter import get_vertex_config
             token, base_url = get_vertex_config()
+        except Exception:
+            logger.debug("Vertex pre-expiry token adoption failed", exc_info=True)
+            return False
+        if not _valid_credential_pair(token, base_url) or str(token).strip() == str(cur_key).strip():
+            return False
+        ok = self._adopt_openai_credentials(token, base_url, reason="vertex_pre_expiry_refresh")
+        if ok:
+            logger.info("Vertex AI OAuth token refreshed before expiry")
+        return ok
+
+    def _try_refresh_vertex_client_credentials(self) -> bool:
+        """Re-mint the Vertex OAuth2 token (~1h TTL; long sessions 401 on the expired bearer) and rebuild the client."""
+        if self.api_mode != "chat_completions" or self.provider != "vertex":
+            return False
+        cur_key = str(getattr(self, "api_key", "") or "").strip()
+        try:
+            from agent.vertex_adapter import get_vertex_config
+            token, base_url = get_vertex_config()
+            if cur_key and isinstance(token, str) and token.strip() == cur_key:
+                try:
+                    token, base_url = get_vertex_config(force_refresh=True)
+                except TypeError:
+                    pass
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
             return False

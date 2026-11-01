@@ -1419,6 +1419,7 @@ def interruptible_backoff_sleep(
     # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
     # the per-iteration pre-expiry adoption does not run between retries.
     agent._adopt_nous_key_before_expiry()
+    agent._adopt_vertex_token_before_expiry()
     return None
 
 

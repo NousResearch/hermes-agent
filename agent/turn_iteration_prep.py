@@ -171,6 +171,7 @@ def prepare_iteration(
     # instead of letting this iteration's request 401. With many agents sharing the hour that
     # 401 was a storm, and the pool benched the sole credential for all of them.
     agent._adopt_nous_key_before_expiry()
+    agent._adopt_vertex_token_before_expiry()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that

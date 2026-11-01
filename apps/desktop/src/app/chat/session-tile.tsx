@@ -19,6 +19,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { atom, computed } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 
+import { SessionTabTint } from '@/app/chat/session-tab-tint'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { blobToDataUrl } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -1009,7 +1010,11 @@ export const watchSessionTiles = paneMirror<SessionTile>({
       <SessionDraftTitle scope={storedSessionId} />
     ),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
-  tabWrap: (storedSessionId, tab) => <SessionTabMenu {...tileTabTarget(storedSessionId)}>{tab}</SessionTabMenu>,
+  tabWrap: (storedSessionId, tab) => (
+    <SessionTabTint session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId}>
+      <SessionTabMenu {...tileTabTarget(storedSessionId)}>{tab}</SessionTabMenu>
+    </SessionTabTint>
+  ),
   tabActions: storedSessionId => props => <SessionTabActionsMenu {...props} {...tileTabTarget(storedSessionId)} />,
   // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
   // its tap (activate) preserved. Always takes the drag.

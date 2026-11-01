@@ -17,16 +17,39 @@ export const $sessionColorOverrides = persistentAtom<Record<string, string>>(
   Codecs.stringRecord
 )
 
+// TILE colours — the tab's own tier, written by whoever owns the grouping the
+// user thinks in (the Personae pane colours a group; core has no group model).
+// Deliberately SEPARATE from `$sessionColorOverrides`: a group tint must be able
+// to paint a tab without rewriting — and so destroying — a colour the user
+// picked by hand for that one session, which is a value the writer cannot read
+// back and therefore cannot restore. Same durable keying, same store shape.
+export const $sessionTileColors = persistentAtom<Record<string, string>>(
+  'hermes.desktop.tileColors',
+  {},
+  Codecs.stringRecord
+)
+
 // Set a session's override (null clears it → falls back to the project color).
 export function setSessionColorOverride(durableId: string, color: null | string): void {
-  const prev = $sessionColorOverrides.get()
+  writeColor($sessionColorOverrides, durableId, color)
+}
+
+// Set (or clear) a session TAB's colour, below the explicit override and above
+// the inherited project colour. `null` clears — writing '' would leave a key
+// behind that paints nothing.
+export function setSessionTileColor(durableId: string, color: null | string): void {
+  writeColor($sessionTileColors, durableId, color)
+}
+
+function writeColor(atom: typeof $sessionColorOverrides, durableId: string, color: null | string): void {
+  const prev = atom.get()
 
   if (color) {
-    $sessionColorOverrides.set({ ...prev, [durableId]: color })
+    atom.set({ ...prev, [durableId]: color })
   } else if (durableId in prev) {
     const next = { ...prev }
     delete next[durableId]
-    $sessionColorOverrides.set(next)
+    atom.set(next)
   }
 }
 
@@ -64,6 +87,64 @@ export const $sessionColorById = computed(
     return map
   }
 )
+
+function resolveTabTint(
+  session: SessionInfo,
+  projects: ProjectInfo[],
+  overrides: Record<string, string>,
+  tileColors: Record<string, string>,
+  owners: ReadonlyMap<string, string>
+): string | undefined {
+  const key = sessionPinId(session)
+
+  // Most specific intent wins: the session's own pick, then the tab/group tier,
+  // then the colour inherited from the project. The tile tier deliberately sits
+  // BELOW the override so a group recolour can never repaint a session the user
+  // coloured by hand.
+  return overrides[key] ?? tileColors[key] ?? sessionProjectColor(session, projects, owners) ?? undefined
+}
+
+// The tab's colour for every session, keyed by live session id — same shape and
+// same cold-atom discipline as `$sessionColorById`, so a tab can subscribe to one
+// map and repaint when any tier changes. Separate from `$sessionColorById`
+// because the tile tier must NOT move the sidebar row's dot: that dot says what
+// the session IS, and a group tint is a statement about where it is filed.
+export const $sessionTabTintById = computed(
+  [$sessions, $projects, $sessionColorOverrides, $sessionTileColors, $projectOwnerBySessionId],
+  (sessions, projects, overrides, tileColors, owners) => {
+    const map: Record<string, string> = {}
+
+    for (const session of sessions) {
+      const color = resolveTabTint(session, projects, overrides, tileColors, owners)
+
+      if (color) {
+        map[session.id] = color
+      }
+    }
+
+    return map
+  }
+)
+
+// The tab colour for a single session object, through the same map the map is
+// built from — a tile whose session is older than the paginated recents page
+// misses the map, exactly like `sessionColorFor`.
+export function sessionTabTintFor(session: null | SessionInfo | undefined): string | undefined {
+  if (!session) {
+    return undefined
+  }
+
+  return (
+    $sessionTabTintById.get()[session.id] ??
+    resolveTabTint(
+      session,
+      $projects.get(),
+      $sessionColorOverrides.get(),
+      $sessionTileColors.get(),
+      $projectOwnerBySessionId.get()
+    )
+  )
+}
 
 // The color for a single session object (the tabs already hold the SessionInfo
 // they render, so they resolve through the same map the sidebar reads). A row

@@ -1406,6 +1406,11 @@ def _notify_context_engine_turn_complete(
     engine = getattr(agent, "context_compressor", None)
     if not _engine_overrides_hook(engine, "on_turn_complete"):
         return
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        from agent.conversation_compression_checkpoint import _checkpoint_gate_withholds_turn_hook
+
+        if _checkpoint_gate_withholds_turn_hook(agent, engine):
+            return
     try:
         # Structural clones: dict(m) would let a hook write into nested containers of the
         # persisted transcript (#80498).

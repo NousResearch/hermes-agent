@@ -463,7 +463,7 @@ def test_agent_init_refuses_checkpoint_required_on_codex_app_server():
     compaction, so the compress_context() guard alone cannot cover native
     turns — init_agent has to refuse before a turn exists.
     """
-    from agent.agent_init import (
+    from agent.conversation_compression_checkpoint import (
         _refuse_checkpoint_required_on_codex_app_server,
     )
 

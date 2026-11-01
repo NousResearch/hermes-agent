@@ -257,14 +257,29 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
 
+    @pytest.mark.asyncio
+    async def test_video_note_failure_reply_is_localized(self, adapter, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "de")
+        msg = _make_message()
+        msg.video_note = _make_video()
+        msg.video_note.file_size = 100
+        msg.video_note.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        reply = str(msg.reply_text.await_args)
+        assert "Videodatei" in reply and "video note" not in reply
+        assert "send a video note" in adapter.handle_message.call_args[0][0].text
+
 
 class TestVideoDownloadBlock:
     @pytest.mark.asyncio
-    async def test_native_video_is_cached(self, adapter):
+    @pytest.mark.parametrize("attr", ["video", "video_note"])
+    async def test_native_video_is_cached(self, adapter, attr):
         file_obj = _make_file_obj(b"fake-mp4")
-        file_obj.file_path = "videos/clip.mp4"
+        file_obj.file_path = f"{attr}s/clip.mp4"
         msg = _make_message()
-        msg.video = _make_video(file_obj)
+        setattr(msg, attr, _make_video(file_obj))
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
@@ -273,6 +288,46 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    def test_media_handler_accepts_video_notes(self, adapter):
+        class _Names:  # filter stand-in: | collects names; & and ~ only need to compose
+            def __init__(self, *names):
+                self.names = set(names)
+
+            def __or__(self, other):
+                return _Names(*self.names, *other.names)
+
+            __and__ = __or__
+
+            def __invert__(self):
+                return self
+
+        fake_filters = SimpleNamespace(
+            **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "PHOTO", "VIDEO",
+                                                "VIDEO_NOTE", "AUDIO", "VOICE")},
+            Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
+            StatusUpdate=None)
+        registered = {}
+        with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
+                            TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):
+            adapter._register_handlers(MagicMock())
+        assert {"VIDEO", "VIDEO_NOTE"} <= registered[adapter._handle_media_message].names
+
+    @pytest.mark.asyncio
+    async def test_reply_to_a_video_note_caches_it(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        file_obj.file_path = "video_notes/file_1.mp4"
+        replied = _make_message()
+        replied.video_note = _make_video(file_obj)
+        replied.video_note.file_size = 1024
+        msg = _make_message()
+        msg.reply_to_message = replied
+        event = MessageEvent(text="what is in this?", message_type=MessageType.TEXT)
+
+        await adapter._cache_replied_media(msg, event)
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_types == ["video/mp4"]
+        assert os.path.exists(event.media_urls[0])
 
 
 # ---------------------------------------------------------------------------

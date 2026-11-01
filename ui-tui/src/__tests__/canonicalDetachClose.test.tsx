@@ -85,7 +85,7 @@ function fixture() {
 const detaches = (request: ReturnType<typeof vi.fn>) =>
   request.mock.calls.filter(([method]) => method === 'session.detach').map(([, params]) => params)
 
-it('a resume switch closes the previous view with tui_close; a live switch only detaches', async () => {
+it('resume and live switches only detach the previous view', async () => {
   const f = fixture()
 
   try {
@@ -95,7 +95,7 @@ it('a resume switch closes the previous view with tui_close; a live switch only 
     f.pending.shift()!.resolve()
     await vi.waitFor(() => expect(getUiState().sid).toBe('a'))
     await vi.waitFor(() => expect(detaches(f.request)).toHaveLength(1))
-    expect(detaches(f.request)[0]).toEqual({ session_id: 'x', subscription_id: 'sub-1', end_reason: 'tui_close' })
+    expect(detaches(f.request)[0]).toEqual({ session_id: 'x', subscription_id: 'sub-1' })
 
     f.attach('activateLiveSession', 'b')
     await vi.waitFor(() => expect(f.pending).toHaveLength(1))

@@ -798,6 +798,13 @@ _TERMINAL_SUMMARY_FAILURES = (
 # capped request after its per-turn attempt budget was refilled (#69637).
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 
+# A compression fallback transition ARMS this cooldown: the fallback's single retry is exempt
+# (bypass_cooldown) and its success clears the arm, so it only bites when the fallback ALSO
+# fails — then it holds the next events off for 5 quiet minutes instead of re-entering the
+# same dead route every event. Deliberately flat rather than escalating: the sun-setting
+# arm doubles as the recovery probe — the next event after it expires retries the primary aux.
+_SUMMARY_FALLBACK_ARM_SECONDS = 300.0
+
 # Sustained-overload escalation (#123167): ONE overload aborts so a later retry can still win (#115906),
 # but if every summary attempt keeps aborting the transcript only grows until the session exits
 # compression_exhausted and the gateway auto-resets — bounded middle-window loss becomes a total
@@ -819,6 +826,48 @@ def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout
     n = getattr(compressor, counter, 0) + 1
     setattr(compressor, counter, n)
     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
+
+
+# Compression degradation mode: a pinned compression fallback model plus a bar-list.
+def _compression_degraded_models() -> list[str]:
+    """Models barred from the compression fallback.
+
+    ``agent.compression_degraded_models`` in config.yaml names models whose compression
+    characteristics are known-bad — e.g. a reasoning-on model whose ~1:1-length summaries run
+    into every size/timeout cap the summary call has. Compression must never fall back to such
+    a model: skip the main-model retry and degrade on the cooldown ladder instead.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+    except Exception:  # health: allow BLE001 -- fail-closed config read: an unreadable config means no bars, never a broken compression lane
+        return []
+    section = cfg.get("agent") if isinstance(cfg, dict) else None
+    raw = section.get("compression_degraded_models") if isinstance(section, dict) else None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(model).strip() for model in raw if str(model).strip()]
+
+
+def _compression_fallback_model() -> str:
+    """Pinned ``auxiliary.compression.fallback_model`` — an aux-to-aux fallback for compression.
+
+    A bare model name (no provider/base_url): it rides the compression task's own route, so the
+    task's policy — notably ``reasoning_effort: none`` — still applies. A ``fallback_chain``
+    entry is NOT used here on purpose: chain entries are route-authoritative and would strip
+    ``reasoning_effort`` from the call (#113322 class), handing a reasoning-on model the
+    summary prompt again.
+    """
+    try:
+        from agent.auxiliary_task_config import _get_auxiliary_task_config
+
+        raw = _get_auxiliary_task_config("compression").get("fallback_model")
+    except Exception:  # health: allow BLE001 -- fail-closed config read: an unreadable config means no pin, never a broken compression lane
+        return ""
+    return str(raw or "").strip()
 
 
 _MIN_SUMMARY_TOKENS = 2000
@@ -3772,28 +3821,77 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None
-    ) -> None:
-        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown.
+    ) -> Optional[str]:
+        """Fall back from a failed ``summary_model``: pinned fallback model, else main — record the aux failure, arm the cooldown.
 
+        Returns the model the caller's ONE bounded retry should use: a configured
+        ``auxiliary.compression.fallback_model`` when usable, else ``""`` (= main model).
+        ``None`` means do NOT retry: the main model is barred by
+        ``agent.compression_degraded_models``, so the caller must degrade on the cooldown
+        ladder armed here instead.
         ``failed_model`` names the model that actually failed — an ``auto`` route resolves one per call
         without setting ``summary_model``, so without it the user warning would have no model to name
-        (#116472)."""
+        (#116472).
+
+        Every fallback ARMS the fallback cooldown (``_SUMMARY_FALLBACK_ARM_SECONDS``, cleared again
+        by the first successful summary). Clearing the cooldown and retrying immediately on every
+        event re-issues a doomed long generation once per event while the failing route is down;
+        a degraded-listed main model is never handed the summary prompt at all."""
         failed = str(
             failed_model or self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
         ).strip()
+        degraded = _compression_degraded_models()
+        fallback_model = _compression_fallback_model()
+        # The pin must name a different, non-blacklisted model: one that just failed would loop,
+        # and the main model needs no pin (it is the default target).
+        if fallback_model and (
+            fallback_model == failed or fallback_model == self.model or fallback_model in degraded
+        ):
+            fallback_model = ""
         self._summary_model_fallen_back = True
-        logger.warning(
-            "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
-            failed or "(auto)", reason, e, self.model,
-        )
         self._last_aux_model_failure_error = _short_error_text(e)
         self._last_aux_model_failure_model = failed or None
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if isinstance(telemetry, dict):
             telemetry["fallback_used"] = True
             telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
-        self.summary_model = ""  # empty = use main model
-        self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
+            telemetry["compression_fallback_target"] = fallback_model or "(main)"
+        if not fallback_model and self.model in degraded:
+            # Degraded-model guard: falling back to a barred main model would only repeat the
+            # doomed route. Skip the retry entirely — the cooldown ladder below holds the next
+            # events off and compress() commits the degraded static summary for this one.
+            logger.warning(
+                "Summary model '%s' %s (%s). Main model '%s' is on agent.compression_degraded_models — "
+                "skipping the main-model fallback and degrading compression on the cooldown ladder.",
+                failed or "(auto)", reason, e, self.model,
+            )
+            self.summary_model = ""  # empty = use main model
+            self._record_compression_failure_cooldown(
+                _SUMMARY_FALLBACK_ARM_SECONDS,
+                f"degraded guard: main '{self.model}' barred for compression: {_short_error_text(e)}",
+            )
+            return None
+        if fallback_model:
+            logger.warning(
+                "Summary model '%s' %s (%s). Falling back to pinned auxiliary.compression.fallback_model "
+                "'%s' for compression.",
+                failed or "(auto)", reason, e, fallback_model,
+            )
+            self.summary_model = fallback_model
+        else:
+            logger.warning(
+                "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
+                failed or "(auto)", reason, e, self.model,
+            )
+            self.summary_model = ""  # empty = use main model
+        # Arm (never clear) the fallback cooldown. The caller's single retry is exempt via
+        # ``bypass_cooldown`` and a success clears this arm; a failure leaves it holding the next
+        # events off instead of re-entering the same dead route every event.
+        self._record_compression_failure_cooldown(
+            _SUMMARY_FALLBACK_ARM_SECONDS,
+            f"compression fallback ({failed or 'aux'} → {fallback_model or 'main'}): {_short_error_text(e)}",
+        )
+        return fallback_model
 
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
@@ -4137,9 +4235,19 @@ Write only the summary body. Do not include any preamble or prefix."""
             self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
         ).strip()
         if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
-            self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
-            # Retry immediately on the main model.
-            return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
+            _fallback_target = self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
+            if _fallback_target is None:
+                # Degraded-model guard fired — the main model is on the
+                # compression bar-list. No retry on any model; the armed cooldown ladder holds the
+                # next events off and compress() degrades this one to the static summary.
+                return None
+            # One bounded retry on the pinned fallback model (or the main model). bypass_cooldown:
+            # the fallback just ARMED the failure ladder — this single attempt is exempt; a success
+            # clears the arm and a failure leaves the ladder holding the next events off (a
+            # no-cooldown immediate retry on every event is the failure shape this avoids).
+            return self._generate_summary(
+                turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context, bypass_cooldown=True,
+            )
 
         # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
         # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation

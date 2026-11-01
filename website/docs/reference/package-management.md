@@ -124,6 +124,14 @@ environment before third-party imports. Processes retain their existing imports
 until they restart. Garbage collection preserves selected generations and
 lease-managed generations with live readers.
 
+Only Hermes' own processes carry that export. A child environment (a terminal
+session, a lane shell) never inherits it: the launcher's checkout path and every
+generation under this install's `installs/INSTALL_KEY/environments/` are stripped
+from a child's `PYTHONPATH`, not only the selected one. A long-lived process still
+exports the generation it booted with long after a newer one is committed, and a
+child can be running an interpreter of its own — the last thing it should be
+handed is a dependency tree built for another version.
+
 Downloads share a lock per partial URL. A failed or paused transfer cannot
 publish a partial destination, and garbage collection cannot delete a live
 transfer's files. Resume reuses ranges only when their recorded length,

@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -169,5 +169,81 @@ describe('useTranscriptPeerSync (#65047)', () => {
     })
 
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('keeps the newer peer refresh when an earlier fetch finishes last', async () => {
+    const local = createClientSessionState(STORED, [{ id: 'u1', role: 'user', parts: [textPart('a')] }])
+    publishSessionState(RUNTIME, local)
+
+    let resolveFirst: (value: { messages: Array<{ content: string; role: string; timestamp: number }>; session_id: string }) => void
+    let resolveSecond: (value: { messages: Array<{ content: string; role: string; timestamp: number }>; session_id: string }) => void
+    const first = new Promise<{ messages: Array<{ content: string; role: string; timestamp: number }>; session_id: string }>(
+      resolve => (resolveFirst = resolve)
+    )
+    const second = new Promise<{ messages: Array<{ content: string; role: string; timestamp: number }>; session_id: string }>(
+      resolve => (resolveSecond = resolve)
+    )
+    const { getLatestSessionMessages } = await import('@/hermes')
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never)
+    const { useTranscriptPeerSync } = await import('./use-transcript-peer-sync')
+    const seeds: unknown[] = []
+
+    function Harness() {
+      const activeSessionIdRef = useRef<string | null>(RUNTIME)
+      const busyRef = useRef(false)
+      const selectedStoredSessionIdRef = useRef<string | null>(STORED)
+
+      useTranscriptPeerSync({
+        activeSessionIdRef,
+        busyRef,
+        selectedStoredSessionIdRef,
+        updateSessionState: (sessionId, updater, storedSessionId) => {
+          const next = updater(local)
+          seeds.push({ sessionId, storedSessionId, messages: next.messages })
+
+          return next
+        }
+      })
+
+      return null
+    }
+
+    await act(async () => {
+      render(<Harness />)
+    })
+
+    const peer = new FakeBroadcastChannel('hermes:transcript')
+
+    await act(async () => {
+      peer.postMessage({ messageCount: 2, sessionId: STORED })
+      peer.postMessage({ messageCount: 4, sessionId: STORED })
+    })
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      resolveSecond!({
+        session_id: STORED,
+        messages: [
+          { content: 'a', role: 'user', timestamp: 1 },
+          { content: 'b', role: 'assistant', timestamp: 2 },
+          { content: 'c', role: 'user', timestamp: 3 },
+          { content: 'd', role: 'assistant', timestamp: 4 }
+        ]
+      })
+    })
+    await waitFor(() => expect(seeds).toHaveLength(1))
+
+    await act(async () => {
+      resolveFirst!({
+        session_id: STORED,
+        messages: [
+          { content: 'a', role: 'user', timestamp: 1 },
+          { content: 'b', role: 'assistant', timestamp: 2 }
+        ]
+      })
+    })
+
+    expect(seeds).toHaveLength(1)
+    expect((seeds[0] as { messages: unknown[] }).messages).toHaveLength(4)
   })
 })

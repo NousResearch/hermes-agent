@@ -117,6 +117,51 @@ def query_session_listing(
     return result
 
 
+def query_numbered_session_listing(
+    session_db: Any,
+    *,
+    source: str | None,
+    session_key: str | None = None,
+    current_session_id: str | None = None,
+    include_all_sources: bool = False,
+    include_unnamed: bool = False,
+    limit: int = 10,
+    exclude_sources: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Ordered CANDIDATES for one numbered gateway listing, shared by ``/sessions``
+    (default view) and ``/resume`` (#146798).
+
+    One query, one sort, one filter shape for both commands, so a number shown
+    by one resolves to the same session in the other. Rank is lineage-tip
+    activity (``order_by_last_active=True``): a lineage compressed for days is
+    projected onto its live tip and must sit where the user last touched it
+    (#114271); ranking the default view by root ``started_at`` instead is what
+    made the two numberings disagree. Membership is titled sessions plus the
+    current session (marked ``is_current_session``), unless ``include_unnamed``
+    widens it; the search view is a different listing and keeps its own path.
+    The page is over-fetched (``limit * 4``) and NOT truncated here: the
+    caller applies its visibility filter first, then truncates, so
+    origin-invisible rows cannot eat page slots. Callers that widen scope
+    (admin ``--all``/``all``) pass their own scope parameters; the contract
+    guarantees identical numbering for identical scope, not identical scope
+    across the two admin flags.
+    """
+    rows = session_db.list_sessions_rich(
+        source=None if include_all_sources else source,
+        session_key=session_key,
+        exclude_sources=exclude_sources,
+        limit=max(limit * 4, limit),
+        order_by_last_active=True,
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        is_current = bool(current_session_id and row.get("id") == current_session_id)
+        if not row.get("title") and not is_current and not include_unnamed:
+            continue
+        result.append({**row, "is_current_session": True} if is_current else row)
+    return result
+
+
 def format_gateway_session_listing(
     rows: list[dict[str, Any]],
     *,

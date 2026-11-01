@@ -36,6 +36,42 @@ const shallowEqual = (a: object, b: object): boolean => {
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
 /**
+ * `@assistant-ui/core` 0.2.23 reads the thread-list state from a
+ * LazyMemoizeSubject but subscribes straight to the core, so the subject never
+ * connects and `getState()` allocates a NEW wrapper object with unchanged fields
+ * on every read. React's external-store contract needs a stable snapshot for
+ * unchanged state; tap compares with `Object.is`, treats each read as a change,
+ * force-updates and throws after 50 commits:
+ * `Maximum update depth exceeded. The result of getSnapshot should be cached to
+ * avoid an infinite loop.` — the packaged chat died on mount this way (the
+ * shipped build carries 0.9.17-era tap semantics; the 0.9.8 in the lockfile has
+ * no check at all, which is why CI never saw it).
+ *
+ * Equal list state keeps its previous reference; a real change (title, archive,
+ * loading, thread switch) still publishes a new snapshot because the external
+ * store replaces arrays and item maps. Remove once upstream caches these reads.
+ */
+export function stabilizeThreadListSnapshot(runtime: AssistantRuntime): AssistantRuntime {
+  const threads = runtime.threads
+  const getState = threads.getState.bind(threads)
+  let previous = getState()
+
+  threads.getState = () => {
+    const next = getState()
+
+    if (shallowEqual(previous, next)) {
+      return previous
+    }
+
+    previous = next
+
+    return next
+  }
+
+  return runtime
+}
+
+/**
  * Write only the items whose (message, parentId) pair actually moved.
  *
  * `useRuntimeMessageRepository` caches normalized ThreadMessages by source
@@ -280,5 +316,5 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
     return runtime.registerModelContextProvider(modelContext)
   }, [modelContext, runtime])
 
-  return useMemo(() => new AssistantRuntimeImpl(runtime), [runtime])
+  return useMemo(() => stabilizeThreadListSnapshot(new AssistantRuntimeImpl(runtime)), [runtime])
 }

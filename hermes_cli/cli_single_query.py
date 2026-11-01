@@ -81,7 +81,9 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
         return
 
     def _quiet_turn(prompt: str) -> dict:
-        result = cli.agent.run_conversation(user_message=prompt, conversation_history=cli.conversation_history)
+        result = cli.agent.run_conversation(
+            user_message=prompt, conversation_history=cli.conversation_history, task_id=cli.session_id,
+        )
         _sync_cli_session_id_from_agent(cli)
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
         if resp:
@@ -202,7 +204,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
         try:
             result = cli.agent.run_conversation(
-                user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
+                user_message=effective_query, conversation_history=cli.conversation_history,
+                task_id=cli.session_id, **author_kwargs,
             )
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
@@ -227,6 +230,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             result = cli.agent.run_conversation(
                 user_message=nudge,
                 conversation_history=_history or cli.conversation_history,
+                task_id=cli.session_id,
                 **author_kwargs,
             )
             _sync_cli_session_id_from_agent(cli)
@@ -254,7 +258,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             def _follow_up(text):
                 nonlocal history
                 follow = cli.agent.run_conversation(
-                    user_message=text, conversation_history=history, **author_kwargs,
+                    user_message=text, conversation_history=history, task_id=cli.session_id, **author_kwargs,
                 )
                 if isinstance(follow, dict) and follow.get("messages"):
                     history = follow["messages"]

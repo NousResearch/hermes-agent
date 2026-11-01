@@ -1364,11 +1364,52 @@ function Stage-Products {
     if ($desktop) { Confirm-DesktopArtifact }
 }
 
+$script:UserPathRegistrySubKey = "Environment"
+
+# A raw registry write skips the WM_SETTINGCHANGE broadcast that
+# [Environment]::SetEnvironmentVariable sends, so Explorer (and every shell it
+# starts) would keep the old PATH until logoff. Best-effort: Constrained
+# Language Mode refuses Add-Type, and a missed broadcast only delays the PATH.
+function Send-EnvironmentChanged {
+    try {
+        if (-not ("Hermes.EnvBroadcast" -as [type])) {
+            Add-Type -Namespace Hermes -Name EnvBroadcast -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, string lParam,
+    uint flags, uint timeout, out UIntPtr result);
+'@
+        }
+        $result = [UIntPtr]::Zero
+        [void][Hermes.EnvBroadcast]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref]$result)
+    } catch { }
+}
+
 function Set-LauncherUserPath([string]$binDir) {
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$binDir*") {
-        [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-        Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+    # Read and write the persisted value raw. The .NET getter expands %VARS%
+    # and its setter always writes REG_SZ, which froze every %VAR% entry in
+    # the user's PATH (hermes_cli/_launchers.py keeps the same contract).
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($script:UserPathRegistrySubKey)
+    try {
+        $raw = $key.GetValue("Path", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -ne $raw -and $raw -isnot [string]) {
+            Write-Warn "your user PATH is not a text value, so it was left alone; add $binDir to it by hand"
+        } else {
+            # Whole entries, compared expanded: a substring test counted
+            # ...\hermes\bin2 as already present.
+            $want = $binDir.TrimEnd('\')
+            $present = @("$raw" -split ';' | Where-Object {
+                $_ -and [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -eq $want
+            }).Count -gt 0
+            if (-not $present) {
+                $kind = if ($null -eq $raw) { [Microsoft.Win32.RegistryValueKind]::ExpandString } else { $key.GetValueKind("Path") }
+                # No trailing ";" on an empty PATH: an empty element means the cwd to Git Bash/MSYS.
+                $key.SetValue("Path", $(if ($raw) { "$binDir;$raw" } else { $binDir }), $kind)
+                Send-EnvironmentChanged
+                Write-Ok "added $binDir to your user PATH (new shells pick it up)"
+            }
+        }
+    } finally {
+        $key.Close()
     }
     # The registry write only reaches shells started later. $env:Path is
     # process-wide, so prepending it here makes `hermes` resolve in the

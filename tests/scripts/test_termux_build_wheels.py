@@ -69,7 +69,9 @@ def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     build_env = tmp_path / "build-env"
-    venv.EnvBuilder(with_pip=True).create(build_env)
+    # A copied interpreter cannot start on macOS (dyld wants lib/libpython3.*.dylib
+    # beside it); a symlinked stub starts through the real distribution.
+    venv.EnvBuilder(with_pip=True, symlinks=True).create(build_env)
     python = build_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run([str(python), "-m", "pip", "install", "pip==26.2.1"],
                    check=True, capture_output=True)

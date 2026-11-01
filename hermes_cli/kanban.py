@@ -1206,9 +1206,33 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
 
 
 def _cmd_log(args: argparse.Namespace) -> int:
-    content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
+    board = getattr(args, "log_board", None) or kb.get_current_board()
+    if getattr(args, "log_board", None):
+        try:
+            board = kb._normalize_board_slug(board)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        if not board:
+            return _err("kanban: --board requires a slug", 2)
+        if board != kb.DEFAULT_BOARD and not kb.board_exists(board):
+            return _err(f"kanban: board {board!r} does not exist. "
+                        f"Create it with `hermes kanban boards create {board}`.")
+    content = kb.read_worker_log(args.task_id, tail_bytes=args.tail, board=board)
     if content is None:
-        return _err(f"(no log for {args.task_id} — task may not have spawned yet)")
+        # Worker logs are board-anchored: a task that ran on another board has a
+        # log the active board can never see. Name the board actually searched
+        # and point at the real one instead of asserting a spawn failure.
+        with_board = [
+            b["slug"] for b in kb.list_boards()
+            if b["slug"] != board and kb.worker_log_path(args.task_id, board=b["slug"]).exists()
+        ]
+        if with_board:
+            where = (f"board {with_board[0]!r}" if len(with_board) == 1
+                     else "boards " + ", ".join(repr(s) for s in with_board))
+            hint = f"--board {with_board[0]}"
+            return _err(f"(no log for {args.task_id} on board {board!r} — its log lives on {where}: "
+                        f"rerun as `hermes kanban log {args.task_id} {hint}`)")
+        return _err(f"(no log for {args.task_id} on board {board!r} — task may not have spawned yet)")
     sys.stdout.write(content)
     if not content.endswith("\n"):
         sys.stdout.write("\n")

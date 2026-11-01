@@ -191,24 +191,95 @@ def hash_url(url: str) -> str:
     return retry_network(request)
 
 
+def _tar_filter_error(name: str, member, path: str | None = None):
+    """Build a tarfile filter error across Python versions.
+
+    Python 3.11.0-3.11.3 do not have the PEP 706 filter-specific exception
+    classes, or even FilterError. Fall back to TarError there while preserving
+    the newer error types when the bootstrap interpreter provides them.
+    """
+    import tarfile
+
+    base_error = getattr(tarfile, "FilterError", tarfile.TarError)
+    exc_cls = getattr(tarfile, name, base_error)
+    args = (member,) if path is None else (member, path)
+    try:
+        return exc_cls(*args)
+    except TypeError:
+        return base_error(f"{member.name!r} is not safe to extract")
+
+
+def _tar_replace(member, **kwargs):
+    replace = getattr(member, "replace", None)
+    if replace is not None:
+        return replace(deep=False, **kwargs)
+
+    import copy
+
+    clone = copy.copy(member)
+    for key, value in kwargs.items():
+        setattr(clone, key, value)
+    return clone
+
+
+def _tar_data_filter(member, dest: str):
+    """Return the stdlib data filter result, or a compatible safe subset.
+
+    PEP 706's tarfile.data_filter was backported partway through Python 3.11.
+    The package-manager bootstrap path must still run on 3.11.0-3.11.3, so this
+    keeps the containment checks that matter for PM archives instead of passing
+    the unsupported filter= argument to tarfile extraction.
+    """
+    import tarfile
+
+    data_filter = getattr(tarfile, "data_filter", None)
+    if data_filter is not None:
+        return data_filter(member, dest)
+
+    name = member.name.rstrip("/")
+    if member.isdev():
+        raise _tar_filter_error("SpecialFileError", member)
+    if os.path.isabs(name):
+        raise _tar_filter_error("AbsolutePathError", member)
+    target = os.path.realpath(os.path.join(dest, name))
+    if os.path.commonpath([target, dest]) != dest:
+        raise _tar_filter_error("OutsideDestinationError", member, target)
+    if member.islnk():
+        if os.path.isabs(member.linkname):
+            raise _tar_filter_error("AbsoluteLinkError", member)
+        link_target = os.path.realpath(os.path.join(dest, member.linkname))
+        if os.path.commonpath([link_target, dest]) != dest:
+            raise _tar_filter_error("LinkOutsideDestinationError", member, link_target)
+    mode = None if member.isdir() or member.mode is None else (member.mode & 0o755)
+    return _tar_replace(member, uid=None, gid=None, uname=None, gname=None, mode=mode)
+
+
 def _tar_filter(member, dest: str):
     """The stdlib 'data' filter, with symlink targets resolved from the link's own
     directory. Bootstrap interpreters (Ubuntu 22.04 ships 3.10) resolve them from
     the archive root and reject python-build-standalone's terminfo links."""
-    import tarfile
-
     if member.issym():
         if os.path.isabs(member.linkname):
-            raise tarfile.AbsoluteLinkError(member)
+            raise _tar_filter_error("AbsoluteLinkError", member)
         name = member.name.rstrip("/")
         placed = os.path.realpath(os.path.join(dest, name))
         link_dir = os.path.dirname(name)
         target = os.path.realpath(os.path.join(dest, link_dir, member.linkname))
         for path in (placed, target):
             if os.path.commonpath([path, dest]) != dest:
-                raise tarfile.LinkOutsideDestinationError(member, path)
-        return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
-    return tarfile.data_filter(member, dest)
+                raise _tar_filter_error("LinkOutsideDestinationError", member, path)
+        return _tar_replace(member, uid=None, gid=None, uname=None, gname=None, mode=None)
+    return _tar_data_filter(member, dest)
+
+
+def _extract_tar_member(tf, member, dest: Path, real_dest: str) -> None:
+    filtered = _tar_filter(member, real_dest)
+    set_attrs = not filtered.isdir()
+    try:
+        tf.extract(filtered, dest, set_attrs=set_attrs, filter="fully_trusted")
+    except TypeError:
+        tf.extract(filtered, dest, set_attrs=set_attrs)
+
 
 def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
@@ -221,7 +292,8 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        for member in tf:
+            _extract_tar_member(tf, member, dest, real_dest)
 
 
 def extract(archive: Path, dest: Path) -> None:

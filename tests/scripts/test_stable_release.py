@@ -1053,7 +1053,8 @@ def _calls(lanes=lane_set.NAMES):
 def _fake_stable_context(*, lanes=lane_set.NAMES):
     def context(env):
         return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
-                                          "claim_epoch": RELEASE_EPOCH, "lanes": frozenset(lanes)}
+                                          "claim_epoch": RELEASE_EPOCH, "lanes": frozenset(lanes),
+                                          "policy": "stable"}
     return context
 
 

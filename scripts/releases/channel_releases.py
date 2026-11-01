@@ -193,7 +193,11 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
         raise ChannelError("Invalid protected release policy")
     if env.get("GITHUB_WORKFLOW_REF") != expected:
         raise ChannelError("Protected publication requires its existing release workflow")
-    stable.require_success(json.loads(env.get("RELEASE_NEEDS", "{}")), list(required))
+    needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
+    stable.require_success(needs, list(required))
+    # Whatever its green policy, every upgrade arm that ran passed; one the claim's lanes or a
+    # missing baseline left out was skipped (stable-release.yml publish-canary gates the same).
+    stable.require_success(needs, list(lane_set.UPGRADE_ARMS), allowed=("success", "skipped"))
     commit = require_commit(env.get("RELEASE_COMMIT"))
     expected_object = require_commit(env.get("RELEASE_TAG_OBJECT"))
     try:

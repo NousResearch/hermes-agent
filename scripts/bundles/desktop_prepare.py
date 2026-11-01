@@ -137,7 +137,7 @@ class BuildRequest:
         if channel_request is not None:
             channel_request, commit, bundle_env = _channel_selection(channel_request, variant, tag, commit,
                                                                      bundle_env)
-        # A canary builds the Store package as stable does (it runs every lane); it never submits it.
+        # A canary builds the Store package as stable does (same default lanes); it never submits it.
         if variant == "store" and (commit or not tag or channel_for_tag(tag) not in ("stable", "canary")):
             raise ValueError("Store packaging requires a stable release tag")
         if variant not in {"bundled", "store", "light"}:

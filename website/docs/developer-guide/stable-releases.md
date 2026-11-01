@@ -346,12 +346,15 @@ asking SemVer to order build metadata.
 
 A canary runs the Stable Release pipeline itself. Its tag message is its claim:
 the lanes it runs (`release.py --canary` takes `--only`, `--with` and
-`--without`, starting from every lane except the signed-package upgrade arms,
-which a canary can never run) and whether a red suite holds its publication
-(`--require-green`, the default, or `--no-require-green`). `Canary Release`
+`--without`, starting from the stable default lanes) and whether a red suite
+holds its publication (`--require-green`, the default, or `--no-require-green`).
+Its signed-package upgrade arms upgrade the last published canary (the
+`releases/canary/release-candidates.json` pointer, a published prerelease) to
+this one; with no published canary they are skipped. `Canary Release`
 runs once a day at 06:41 UTC from the default branch with `--no-require-green`.
 Publication still waits for the selected suites to finish. The candidate must
-build and pass its smoke tests, but unrelated suite failures do not block it.
+build and pass its smoke tests, and every upgrade arm that ran must pass, but
+unrelated suite failures do not block it.
 A manual dispatch starts one at any time and requires every selected suite to
 pass unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
@@ -539,8 +542,10 @@ local helper suite. Never store the bootstrap output as a repo channel list.
 ## Signed-package baseline
 
 The last successful stable release that shipped bundles records
-`releases/stable/release-candidates.json` on the configured R2 public origin.
-A release that skipped bundles does not replace it.
+`releases/stable/release-candidates.json` on the configured R2 public origin;
+the last published canary records `releases/canary/release-candidates.json`,
+the baseline of the next canary. A release that skipped bundles does not
+replace it.
 When no baseline exists, the release still runs every native smoke but skips
 the signed-package upgrade arms. A `baseline-manifest` input that does not
 exist is a blocker.
@@ -553,8 +558,9 @@ For an existing stable release that predates this metadata, supply
 current schema-2 manifest of its actual published packages and successful native
 smoke results. Schema-1 candidates are rejected; there is no legacy admission
 path. Manifest redirects must stay on the same origin. The baseline tag must be
-a published stable release, package identities must agree, and versions must
-increase. Stable Windows
+a published stable release (for a canary, a published canary prerelease),
+package identities must agree, and versions must increase (canary macOS
+packages share `X.Y.Z`, so they are ordered by their claim stamp). Stable Windows
 packages use electron-builder's `storePackageVersionAt` policy over the admitted
 claim tag object's immutable tagger timestamp (`year.hourOfYear.secondOfHour.0`),
 independently of the SemVer payload tag.

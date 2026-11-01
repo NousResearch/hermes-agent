@@ -136,18 +136,18 @@ class TestZaiGLM52ReasoningEffort:
 
 
 class TestZaiGLM53ReasoningEffort:
-    """GLM-5.3's graded low/medium/high/max effort scale (issue #91789).
+    """GLM-5.3's three-level low/high/max effort knob (#91789, #140239).
 
-    Verified live on api.z.ai/api/coding/paas/v4: all four levels accepted
-    with monotonic reasoning-token scaling. Unlike 5.2, low and medium must
-    reach the wire instead of clamping up to high.
+    The wire accepts exactly low/high/max and thinking cannot be disabled;
+    ``medium`` 400s with code 1210. Unlike 5.2, low must reach the wire
+    instead of clamping up to high, and medium steps down to low.
     """
 
     @pytest.mark.parametrize(
         ("effort", "expected"),
         [
             ("low", "low"),
-            ("medium", "medium"),
+            ("medium", "low"),
             ("high", "high"),
             ("max", "max"),
             ("xhigh", "max"),
@@ -161,6 +161,15 @@ class TestZaiGLM53ReasoningEffort:
         )
         assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": expected}
+
+    @pytest.mark.parametrize("model", ["glm-5.3-flash", "z-ai/glm-5.3-flash"])
+    def test_default_medium_never_reaches_the_wire(self, zai_profile, model):
+        """#140239 — Hermes' default ``medium`` is a 400/1210 on glm-5.3; it must land on low."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "low"}
 
     @pytest.mark.parametrize(
         "model",

@@ -24,6 +24,8 @@ GATEWAY_DOWN_HINT = (
 )
 # A crontab tick has a minute; a gateway still starting answers within a few seconds or not at all.
 _HEADLESS_PROBE_TIMEOUT_S = 5.0
+# Three missed 60s gateway ticker iterations and the headless tick stops deferring to it.
+_DEFER_TICKER_FRESH_S = 180.0
 
 
 def _gateway_unavailable(home) -> str | None:
@@ -45,9 +47,10 @@ def _gateway_unavailable(home) -> str | None:
             "is ready. Check it with `hermes gateway status`.")
 
 
-def _note_fire_refused(job_ids, detail: str) -> None:
-    """Stamp ``last_fire_error`` (shown by ``hermes cron list``) and drop the dispatch marks the
-    due scan just wrote: the slot was never handed over, so nothing must "restore" or "reclaim" it."""
+def _note_fire_refused(job_ids, detail: str | None) -> None:
+    """Stamp ``last_fire_error`` (shown by ``hermes cron list``; skipped when ``detail`` is None)
+    and drop the dispatch marks the due scan just wrote: the slot was never handed over, so nothing
+    must "restore" or "reclaim" it."""
     from cron.jobs import _hermes_now, _jobs_lock, load_jobs, save_jobs
 
     ids = set(job_ids)
@@ -56,22 +59,60 @@ def _note_fire_refused(job_ids, detail: str) -> None:
         for job in jobs:
             if job["id"] not in ids:
                 continue
-            job["last_fire_error"] = {"at": _hermes_now().isoformat(), "detail": detail[:500]}
+            if detail is not None:
+                job["last_fire_error"] = {"at": _hermes_now().isoformat(), "detail": detail[:500]}
             job.pop("pending_slot", None)
             if job.get("run_claim") is not None:
                 job["run_claim"] = None
         save_jobs(jobs)
 
 
+def _defer_agent_jobs_to_gateway(home) -> bool:
+    """True when ``cron.headless_defer_agent_jobs`` (env HERMES_CRON_HEADLESS_DEFER_AGENT_JOBS) is
+    on and another live gateway's in-process ticker serves *home*. That ticker then owns every
+    agent job, so its ``max_parallel_jobs`` pool is the one host-wide agent limit: a crontab tick
+    that also fired agent jobs would run them beside the gateway's, past that limit."""
+    from cron.env_settings import cron_env_setting
+
+    raw = cron_env_setting("HERMES_CRON_HEADLESS_DEFER_AGENT_JOBS").strip().lower()
+    if not raw:
+        from hermes_cli.config import load_config_readonly
+        raw = str((load_config_readonly().get("cron") or {}).get(
+            "headless_defer_agent_jobs", "")).strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return False
+    from cron.scheduler_ownership import live_gateway_ticking
+    record = live_gateway_ticking(home)
+    if record is None:
+        return False
+    # A healthy gateway is not proof its ticker fires: the loop may be dead, backing off or
+    # yielding. Defer only while that process's own heartbeat and success markers are fresh.
+    # (``ticker_last_success`` names no writer; the heartbeat's pid is the ownership proof.)
+    from cron.jobs import _read_marker_fields, get_ticker_heartbeat_age, get_ticker_success_age
+    fields = _read_marker_fields("ticker_heartbeat")
+    if len(fields) < 2 or fields[1] != str(record.get("pid")):
+        return False
+    beat, success = get_ticker_heartbeat_age(), get_ticker_success_age()
+    return (beat is not None and beat < _DEFER_TICKER_FRESH_S
+            and success is not None and success < _DEFER_TICKER_FRESH_S)
+
+
 def refuse_agent_jobs_without_gateway(due_jobs: list) -> list:
     """Return the due jobs a headless tick may dispatch; agent jobs are held back (skipped, not
-    failed) when no ready gateway serves this home. Logs once per tick, not once per job."""
+    failed) when no ready gateway serves this home, or left silently to that gateway's ticker
+    when ``_defer_agent_jobs_to_gateway``. Logs once per tick, not once per job."""
     from hermes_constants import get_hermes_home
 
     agent_jobs = [job for job in due_jobs if not job.get("no_agent")]
     if not agent_jobs:
         return due_jobs
     home = get_hermes_home().resolve()
+    if _defer_agent_jobs_to_gateway(home):
+        ids = [str(job["id"]) for job in agent_jobs]
+        _note_fire_refused(ids, None)  # not a failure: the gateway fires them on its next tick
+        logger.info("Cron tick for %s left %d agent job(s) to the gateway ticker (%s)",
+                    home, len(ids), ", ".join(ids))
+        return [job for job in due_jobs if job.get("no_agent")]
     hint = _gateway_unavailable(home)
     if hint is None:
         return due_jobs

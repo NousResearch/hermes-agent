@@ -325,6 +325,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
+                prepared.persist_user_display_kind,
             )
 
         except Exception as e:

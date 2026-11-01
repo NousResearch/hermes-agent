@@ -1,5 +1,6 @@
 """Tests for gateway runtime status tracking."""
 
+import itertools
 import json
 import os
 import sys
@@ -1512,6 +1513,185 @@ class TestRespawnStormBreaker:
                 max_starts=5, window_s=120.0
             )
             assert result is None
+
+    def test_storm_breaker_trips_and_backs_off(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base_time = 1000.0
+        # 5 starts in window
+        for i in range(5):
+            res = status.record_start_and_check_storm(
+                max_starts=5, window_s=120.0, now=base_time + i
+            )
+            assert res is None
+
+        # 6th start trips breaker
+        storm = status.record_start_and_check_storm(
+            max_starts=5, window_s=120.0, now=base_time + 5
+        )
+        assert storm is not None
+        assert storm.count == 6
+        assert storm.backoff_s == 10.0  # 5.0 * 2^1
+
+        # 7th start increases backoff
+        storm2 = status.record_start_and_check_storm(
+            max_starts=5, window_s=120.0, now=base_time + 6
+        )
+        assert storm2 is not None
+        assert storm2.count == 7
+        assert storm2.backoff_s == 20.0  # 5.0 * 2^2
+
+    def test_storm_breaker_does_not_touch_restart_loop_json(self, tmp_path, monkeypatch):
+        """The storm breaker owns its own store.
+
+        ``gateway/restart_loop.json`` belongs to the AUTO-RESUME breaker, which
+        counts only boots that had a resume-pending session. Writing every boot
+        into it pre-loaded the auto-resume chain, so a legitimate restart
+        sequence tripped auto-resume suppression and the pending session was
+        silently never resumed.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base_time = 2000.0
+        status.record_start_and_check_storm(max_starts=5, window_s=120.0, now=base_time)
+        loop_path = tmp_path / "gateway" / "restart_loop.json"
+        assert not loop_path.exists()
+        # The storm chain IS recorded -- in the storm breaker's own ledger.
+        assert (tmp_path / "gateway-starts.log").exists()
+
+    def test_legitimate_restarts_do_not_trip_the_auto_resume_breaker(self, tmp_path, monkeypatch):
+        """3 legitimate restarts + 1 crash must NOT suppress auto-resume.
+
+        The auto-resume breaker counts only restart-interrupted boots. If the
+        storm breaker also wrote into its store, those 3 healthy restarts would
+        count toward the threshold and the crash's own boot would trip it --
+        silently skipping the pending session's auto-resume.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway import restart_loop_guard
+
+        # 3 legitimate manual restarts: healthy boots, no resume-pending session.
+        for i in range(3):
+            status.record_start_and_check_storm(max_starts=5, window_s=120.0, now=1000.0 + i)
+
+        # The crash boot IS a restart-interrupted boot, so it reaches the
+        # auto-resume breaker and is counted there -- and only there.
+        tripped = restart_loop_guard.check_and_record(
+            max_restarts=3, window_seconds=60, now=1003.0)
+        assert tripped is False, "auto-resume was suppressed by unrelated healthy restarts"
+        loop = json.loads((tmp_path / "gateway" / "restart_loop.json").read_text(encoding="utf-8"))
+        assert loop["boots"] == [1003.0], "only the restart-interrupted boot belongs in the auto-resume chain"
+
+    def test_respawn_storm_backoff_sleeps_and_kicks_watchdog(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        slept = []
+        kicked = []
+
+        monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+        import hermes_startup_watchdog
+        monkeypatch.setattr(hermes_startup_watchdog, "kick_startup_watchdog", lambda extra_s=0.0: kicked.append(extra_s))
+
+        # Under threshold -> no sleep, no kick
+        res = status.respawn_storm_backoff(force=True, max_starts=2, window_s=120.0, now=100.0)
+        assert res is None
+        assert len(slept) == 0
+
+        res = status.respawn_storm_backoff(force=True, max_starts=2, window_s=120.0, now=101.0)
+        assert res is None
+        assert len(slept) == 0
+
+        # Exceed threshold (3rd start) -> trips, kicks watchdog, sleeps
+        res = status.respawn_storm_backoff(force=True, max_starts=2, window_s=120.0, now=102.0)
+        assert res is not None
+        assert res.count == 3
+        assert res.backoff_s == 10.0
+        assert slept == [10.0]
+        assert kicked == [10.0]
+
+        # Idempotence: without force, same PID returns None immediately
+        slept.clear()
+        res_cached = status.respawn_storm_backoff(force=False, max_starts=2, window_s=120.0, now=103.0)
+        assert res_cached is None
+        assert len(slept) == 0
+
+    def test_single_75_exit_normal_retry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Single 75 exit: first start records cleanly, returns None (no backoff delay)
+        storm = status.record_start_and_check_storm(max_starts=3, window_s=120.0, now=500.0)
+        assert storm is None
+
+    def test_consecutive_75_exits_backed_off_and_capped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Simulate consecutive starts from repeated exit-75 respawns
+        # 1st start
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1000.0) is None
+        # 2nd start
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1003.0) is None
+        # 3rd start: trips storm breaker
+        storm1 = status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1006.0)
+        assert storm1 is not None
+        assert storm1.count == 3
+        assert storm1.backoff_s == 10.0
+        # 4th start: delay escalates
+        storm2 = status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1020.0)
+        assert storm2 is not None
+        assert storm2.count == 4
+        assert storm2.backoff_s == 20.0
+
+    def test_slower_respawn_loop_still_trips_the_breaker(self, tmp_path, monkeypatch):
+        """A respawn loop SLOWER than the fixed window must still be caught.
+
+        A fixed-window prune only sees cycles faster than the window: the
+        history is dropped every boot, so a 200-second respawn loop never
+        trips. Chaining on the inter-boot gap (not the window) is what makes
+        the breaker period-agnostic -- the same reasoning as
+        ``gateway.restart_loop_guard``.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # 3 starts, each 200s apart -- each one is OUTSIDE the 120s window.
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1000.0) is None
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1200.0) is None
+        storm = status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1400.0)
+        assert storm is not None, "a slow respawn loop was not detected"
+        assert storm.count == 3
+
+    def test_a_resolved_episode_does_not_trip_the_breaker(self, tmp_path, monkeypatch):
+        """Starts separated by more than the gap are separate episodes.
+
+        Two healthy restarts an hour apart are not a storm; the chain must
+        end at the wide gap so only the current episode counts.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1000.0) is None
+        # 2 hours later: a new episode, so the chain restarts here.
+        assert status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=8200.0) is None
+        storm = status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=8400.0)
+        assert storm is None, "a stale start from a resolved episode was counted"
+
+    def test_healthy_boot_incurs_no_storm_delay(self, tmp_path, monkeypatch):
+        """A normal, healthy boot must not sleep (AC5)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        slept = []
+        monkeypatch.setattr(time, "sleep", lambda s: slept.append(s))
+        res = status.respawn_storm_backoff(force=True, max_starts=5, window_s=120.0, now=100.0)
+        assert res is None
+        assert slept == [], "a healthy boot slept on the storm breaker"
+
+    def test_storm_start_spacing_grows_in_the_ledger(self, tmp_path, monkeypatch):
+        """The ledger must show the backoff taking effect (AC2).
+
+        Start spacing grows because the breaker sleeps between boots; the
+        flat ledger is what the incident forensics read.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for i in range(4):
+            status.record_start_and_check_storm(max_starts=2, window_s=120.0, now=1000.0 + i * 10.0)
+        lines = [
+            float(line)
+            for line in (tmp_path / "gateway-starts.log").read_text(encoding="utf-8").split()
+            if line.strip()
+        ]
+        assert lines == [1000.0, 1010.0, 1020.0, 1030.0]
+        gaps = [b - a for a, b in itertools.pairwise(lines)]
+        assert gaps == [10.0, 10.0, 10.0], "the ledger must record every start in order"
 
 
 class TestLaunchdPlistRespawnGovernance:

@@ -1698,9 +1698,8 @@ _background_discovery_lock = threading.Lock()
 
 
 def start_background_plugin_discovery() -> None:
-    """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
-    synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
-    registry. No-op when already done or in flight."""
+    """Discover in a background thread; synchronous consumers join before reading the registry."""
+    from agent.memory_provider import spawn_context_thread
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
@@ -1720,7 +1719,7 @@ def start_background_plugin_discovery() -> None:
             except Exception:
                 logger.warning("background plugin discovery failed", exc_info=True)
 
-        _background_discovery_thread = threading.Thread(target=_run, name="plugin-discovery", daemon=True)
+        _background_discovery_thread = spawn_context_thread(_run, name="plugin-discovery")
         _background_discovery_thread.start()
 
 

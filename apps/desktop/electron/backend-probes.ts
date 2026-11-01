@@ -36,22 +36,7 @@ function isTimeoutError(err: unknown): boolean {
     return false
   }
 
-  const e = err as { code?: string; killed?: boolean; signal?: string }
-
-  if (e.killed === true) {
-    return true
-  }
-
-  if (e.code === 'ETIMEDOUT') {
-    return true
-  }
-
-  // Node marks timed-out execFileSync with SIGTERM on some platforms.
-  if (e.signal === 'SIGTERM') {
-    return true
-  }
-
-  return false
+  return (err as { code?: unknown }).code === 'ETIMEDOUT'
 }
 
 /**
@@ -65,23 +50,49 @@ async function execProbe(
     cwd?: string
     env?: NodeJS.ProcessEnv
     stdio: 'ignore'
-    timeout: number
+    timeout?: number
     shell?: boolean
     windowsHide?: boolean
   }
 ): Promise<void> {
+  const { timeout, ...spawnOptions } = options
+
   const run = () =>
     new Promise<void>((resolve, reject) => {
-      const child = spawn(command, args, options)
-      child.once('error', reject)
+      const child = spawn(command, args, spawnOptions)
+
+      let timedOut = false
+
+      const timer = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0
+        ? setTimeout(() => {
+            timedOut = true
+
+            child.kill()
+          }, timeout)
+        : undefined
+
+      timer?.unref()
+
+      child.once('error', error => {
+        if (timer) {
+          clearTimeout(timer)
+        }
+
+        reject(error)
+      })
       child.once('close', (code, signal) => {
+        if (timer) {
+          clearTimeout(timer)
+        }
         // A timed-out probe may handle SIGTERM and exit zero; it is still a timeout.
-        if (code === 0 && !child.killed) {
+
+        if (code === 0 && !timedOut) {
           resolve()
         } else {
           reject(
             Object.assign(new Error(`Runtime probe failed: ${command} (${signal || code})`), {
-              code,
+              // Other termination paths can kill a child; only our deadline is a timeout.
+              code: timedOut ? 'ETIMEDOUT' : code,
               signal,
               killed: child.killed
             })

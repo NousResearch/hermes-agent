@@ -1734,6 +1734,31 @@ def test_save_discovered_models_preserves_dict_form(monkeypatch):
     )
 
 
+def test_save_discovered_models_persists_keyed_entry_by_identity(monkeypatch):
+    """Catalog refresh updates only the selected keyed provider, even for shared URLs."""
+    saved = []
+    config = {
+        "providers": {
+            "endpoint-prod-7f3a": {"name": "Friendly Alpha", "api": "https://proxy.example/v1",
+                                    "transport": "openai_chat", "key_env": "ALPHA_KEY",
+                                    "models": {"old": {}}, "models_discovered": True},
+            "beta": {"api": "https://proxy.example/v1", "transport": "openai_chat",
+                     "key_env": "BETA_KEY", "models": {"old": {}}},
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.append(cfg))
+
+    _save_discovered_models_to_config(
+        "https://proxy.example/v1", ["fresh"], api_mode="openai_chat",
+        provider_key="endpoint-prod-7f3a", credential_identity="env:ALPHA_KEY")
+
+    assert len(saved) == 1
+    assert config["providers"]["endpoint-prod-7f3a"]["models"] == {"fresh": {}}
+    assert config["providers"]["endpoint-prod-7f3a"]["models_discovered"] is True
+    assert config["providers"]["beta"]["models"] == {"old": {}}
+
+
 def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     """The ``hermes model`` named-custom-provider flow persists the discovered
     catalog back to the entry's ``models:`` list.
@@ -1788,7 +1813,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
             "api_key": "sk-test",
             "key_env": "",
             "model": "MiniMax-M3",
-            "provider_key": "",
+            "provider_key": "named-provider-7f3a",
             "discover_models": True,
             "models": {},
         },
@@ -1802,6 +1827,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
                 "api_mode": "anthropic_messages",
                 "headers": {"X-Tenant": "dragomes"},
                 "credential_identity": "sk-test",
+                "provider_key": "named-provider-7f3a",
             },
         )
     ], (

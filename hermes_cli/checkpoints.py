@@ -26,6 +26,23 @@ def _fmt_age(ts: Any) -> str:
     return f"{int(age / 86400)}d ago"
 
 
+def _orphan_label(p: dict, *, pre_v2: bool = False) -> str:
+    """Name a checkpoint record in status / prune output.
+
+    Prefers the recorded workdir, then falls back to the identity a human can
+    use to locate the record — the shadow repo path for pre-v2 records, or
+    ``checkpoint <hash>`` for v2 records. The store always writes a hash (the
+    meta file name stem), so the final placeholder is defensive only and, unlike
+    the old ``(unknown)``, never mislabels a record the store itself wrote.
+    """
+    wd = p.get("workdir")
+    if wd:
+        return wd
+    if pre_v2:
+        return p.get("path") or "(no recorded identity)"
+    return f"checkpoint {p['hash']}" if p.get("hash") else "(no recorded identity)"
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from tools.checkpoint_maintenance import store_status
 
@@ -42,7 +59,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print()
         print(f"  {'WORKDIR':<60}  {'COMMITS':>7}  {'LAST TOUCH':>12}  STATE")
         for p in projects[: getattr(args, "limit", None) or 20]:
-            wd = p.get("workdir") or "(unknown)"
+            wd = _orphan_label(p)
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
             if p.get("exists"):
@@ -71,7 +88,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             # Fall back to the shadow repo's own path so a blank/missing
             # workdir row still names the directory the human may need to
             # inspect or clean up by hand.
-            wd = p.get("workdir") or p.get("path") or "(unknown)"
+            wd = _orphan_label(p, pre_v2=True)
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
             if p.get("exists"):
@@ -121,14 +138,14 @@ def cmd_prune(args: argparse.Namespace) -> int:
             for p in orphans:
                 # A v2 record with a blank/missing workdir still gets deleted by
                 # this confirmation, so name it by project hash rather than
-                # printing "(unknown)" for something the user is about to lose.
-                print(f"  {p.get('workdir') or 'checkpoint ' + str(p.get('hash') or '(unknown)')}  ({p.get('commits', 0)} commit(s))")
+                # printing a placeholder for something the user is about to lose.
+                print(f"  {_orphan_label(p)}  ({p.get('commits', 0)} commit(s))")
             for p in pre_v2_orphans:
                 # Pre-v2 records are identified by their shadow repo path (that
                 # is also what the allowlist binds), so fall back to it when the
                 # recorded workdir is blank/missing — the path is the only hint
                 # a human has to locate the directory before confirming.
-                print(f"  {p.get('workdir') or p.get('path') or '(unknown)'}  (pre-v2 shadow repo)")
+                print(f"  {_orphan_label(p, pre_v2=True)}  (pre-v2 shadow repo)")
             print()
             print("A workdir can be unreachable because the project was deleted,")
             print("or because an external volume / network share / VPN is down.")

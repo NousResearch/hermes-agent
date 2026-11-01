@@ -217,6 +217,53 @@ def test_v2_orphan_preview_falls_back_to_project_hash(monkeypatch, capsys):
     assert prune_calls == []
 
 
+def test_cmd_status_names_v2_row_by_hash_when_workdir_missing(monkeypatch, capsys):
+    """Independent-review observation ②: `cmd_status` still printed
+    "(unknown)" for a v2 row whose workdir is missing, while the pre-v2 section
+    falls back to the shadow repo path — asymmetric. A v2 record's identity is
+    its project hash, so the row names it `checkpoint <hash>` instead."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    status = {
+        "base": "/home/user/.hermes/checkpoints",
+        "total_size_bytes": 0, "store_size_bytes": 0, "legacy_size_bytes": 0,
+        "project_count": 1,
+        "projects": [
+            {"hash": "deadbeefcafebabe", "workdir": None, "exists": False,
+             "commits": 3, "orphan_confirmable": True, "unconfirmable_reason": None,
+             "last_touch": 0},
+        ],
+        "pre_v2_projects": [], "legacy_archives": [],
+    }
+    monkeypatch.setattr(
+        "tools.checkpoint_maintenance.store_status", lambda *a, **k: status,
+    )
+
+    rc = checkpoints_cli.cmd_status(_ns())
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "checkpoint deadbeefcafebabe" in out
+    assert "(unknown)" not in out
+
+
+def test_orphan_label_defensive_fallback():
+    """Independent-review observation ①: a record with neither a workdir nor a
+    recorded id gets a neutral "(no recorded identity)" placeholder — never the
+    old misleading "(unknown)" that named nothing."""
+    import hermes_cli.checkpoints as checkpoints_cli
+
+    label = checkpoints_cli._orphan_label
+    # Defensive: nothing to name.
+    assert label({}) == "(no recorded identity)"
+    assert label({"workdir": None}, pre_v2=True) == "(no recorded identity)"
+    # Recorded workdir always wins.
+    assert label({"workdir": "/w", "hash": "abc"}, pre_v2=False) == "/w"
+    # v2 identity is the project hash; pre-v2 identity is the shadow repo path.
+    assert label({"hash": "abc"}, pre_v2=False) == "checkpoint abc"
+    assert label({"path": "/p", "hash": "abc"}, pre_v2=True) == "/p"
+
+
 # ─── cmd_status surfaces pre-v2 shadow repos with their reason ─────────────
 
 

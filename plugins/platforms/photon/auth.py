@@ -550,18 +550,20 @@ def _normalize_phone(phone: str) -> str:
     return re.sub(r"[^\d+]", "", phone or "")
 
 
-def list_users(project_id: str, project_secret: str) -> list[dict[str, Any]]:
+def list_users(project_id: str, project_secret: str, *, timeout: float = 30.0) -> list[dict[str, Any]]:
     """GET Spectrum Cloud ``/projects/{id}/users/`` → ``SpectrumUser[]``."""
     _require_httpx()
     url = f"{_spectrum_host()}/projects/{project_id}/users/"
-    resp = httpx.get(url, headers=_basic(project_id, project_secret), timeout=30.0)
+    resp = httpx.get(url, headers=_basic(project_id, project_secret), timeout=timeout)
     _raise_for_status(resp, "list-users")
     return _unwrap_list(resp.json())
 
 
-def find_user_by_phone(project_id: str, project_secret: str, phone_number: str) -> Optional[dict[str, Any]]:
+def find_user_by_phone(
+    project_id: str, project_secret: str, phone_number: str, *, timeout: float = 30.0,
+) -> Optional[dict[str, Any]]:
     """Existing Spectrum user with the given phone number (the routable one), or None."""
-    return find_routable_user(list_users(project_id, project_secret), phone_number)
+    return find_routable_user(list_users(project_id, project_secret, timeout=timeout), phone_number)
 
 
 def create_user(
@@ -752,6 +754,9 @@ def print_credential_summary(emit: Any = print) -> None:
     emit("\n".join(rows))
 
 
+_STATUS_TIMEOUT_S = 5.0  # `photon status` stays quick when the API is unreachable
+
+
 def print_routing_status(emit: Any = print) -> None:
     """Live opt-in row for ``status``: a registered number that never texted its assigned line
     looks configured everywhere but never routes. Verified against the API, not local markers;
@@ -761,9 +766,9 @@ def print_routing_status(emit: Any = print) -> None:
     if not (phone and sid and sec):
         return
     try:
-        user = find_user_by_phone(sid, sec, phone)
+        user = find_user_by_phone(sid, sec, phone, timeout=_STATUS_TIMEOUT_S)
     except (httpx.HTTPError, RuntimeError, ValueError) as e:
-        emit(f"  routing             : ? could not verify ({e})")
+        emit(f"  routing             : ? could not verify ({str(e) or type(e).__name__})")
         return
     if user_opted_in(user):
         emit("  routing             : ✓ opted in (verified live)")

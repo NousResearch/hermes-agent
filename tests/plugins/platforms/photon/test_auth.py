@@ -380,6 +380,24 @@ def test_register_user_if_absent_reuses_opted_in_duplicate(
     assert created is False and user["id"] == "live"
 
 
+def test_print_routing_status_uses_short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`photon status` must not stall ~30 s on a black-holed API: the live row uses a short
+    timeout and reports "could not verify" instead of hanging or raising."""
+    seen: list = []
+
+    def timing_out_get(url: str, **kwargs: Any) -> _FakeResponse:
+        seen.append(kwargs.get("timeout"))
+        raise photon_auth.httpx.ReadTimeout("")
+
+    monkeypatch.setattr(photon_auth, "load_user_numbers", lambda: ("+15551234567", "+16282679185"))
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: ("proj", "secret"))
+    monkeypatch.setattr(photon_auth.httpx, "get", timing_out_get)
+    lines: list = []
+    photon_auth.print_routing_status(lines.append)
+    assert seen and seen[0] <= 5.0
+    assert lines == ["  routing             : ? could not verify (ReadTimeout)"]
+
+
 # ---------------------------------------------------------------------------
 # Lines (assigned number)
 

@@ -20,6 +20,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
@@ -33,6 +34,7 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_concurrency import _get_task_max_concurrency
 from agent.auxiliary_error_shapes import (
     _botocore_error, _exc_http_status, _is_invalid_aux_response_error, _is_statusless_structured_provider_error,
 )
@@ -6384,20 +6386,9 @@ def _get_task_extra_body(task: str) -> dict[str, Any]:
 # Keyed by profile home as well: the limit is the profile's ``auxiliary.<task>.max_concurrency``, and two
 # multiplexed profiles with different limits would otherwise rebuild (and reset) one shared semaphore.
 _aux_sync_semaphores: dict[tuple[str, str], tuple[int, threading.BoundedSemaphore]] = {}
-_aux_async_semaphores: dict[tuple[str, str, int], tuple[int, Any]] = {}
+# Event loop -> {(home, task): (limit, semaphore)}; see _acquire_async_aux_semaphore.
+_aux_async_semaphores: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _aux_sem_lock = threading.Lock()
-
-
-def _get_task_max_concurrency(task: Optional[str]) -> Optional[int]:
-    """``auxiliary.<task>.max_concurrency`` as a positive int, or None. Vision uses this key for
-    its encode/resize CPU pool; its LLM calls stay concurrent."""
-    if not task or task == "vision":
-        return None
-    try:
-        value = int(_get_auxiliary_task_config(task).get("max_concurrency"))
-    except (TypeError, ValueError):  # missing (None) or malformed
-        return None
-    return value if value > 0 else None
 
 
 def _cached_semaphore(store: dict, key: Any, limit: int, factory: Callable[[int], Any]) -> Any:
@@ -6429,7 +6420,15 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
     except RuntimeError:
         return None
     from hermes_constants import hermes_home_key
-    return _cached_semaphore(_aux_async_semaphores, (hermes_home_key(), task, id(loop)), limit, asyncio.Semaphore)
+    with _aux_sem_lock:
+        # Keyed by the loop object, not id(loop): CPython recycles a collected loop's address, which
+        # would hand a dead loop's semaphore (exhausted permits, or bound to that loop) to a new one.
+        # Weak keys keep the cache from retaining every loop; closed loops are pruned eagerly because
+        # a semaphore that was waited on references its loop, which keeps the weak key alive.
+        for closed_loop in [cached for cached in _aux_async_semaphores if cached.is_closed()]:
+            del _aux_async_semaphores[closed_loop]
+        loop_cache = _aux_async_semaphores.setdefault(loop, {})
+    return _cached_semaphore(loop_cache, (hermes_home_key(), task), limit, asyncio.Semaphore)
 
 
 def _reset_aux_semaphores() -> None:

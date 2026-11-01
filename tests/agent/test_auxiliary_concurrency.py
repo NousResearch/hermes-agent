@@ -71,6 +71,33 @@ class TestSemaphoreCache:
 
 
 
+    def test_async_cache_does_not_alias_distinct_loops_with_same_address(self):
+        """A recycled loop address must not reuse a semaphore from a dead loop."""
+        import agent.auxiliary_client as auxiliary_client
+
+        async def acquire_for_current_loop():
+            return _acquire_async_aux_semaphore("compression")
+
+        def run_once(loop):
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(acquire_for_current_loop())
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+
+        with (
+            patch(
+                "agent.auxiliary_client._get_auxiliary_task_config",
+                return_value={"max_concurrency": 2},
+            ),
+            patch.object(auxiliary_client, "id", return_value=123, create=True),
+        ):
+            sem1 = run_once(asyncio.new_event_loop())
+            sem2 = run_once(asyncio.new_event_loop())
+
+        assert sem1 is not sem2
+
     def test_async_returns_none_with_no_running_loop(self):
         with patch(
             "agent.auxiliary_client._get_auxiliary_task_config",

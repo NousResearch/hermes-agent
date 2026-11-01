@@ -3211,34 +3211,6 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
         return False
 
 
-def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
-    """Migrate /goal, /heartbeat, /loop state, rejected-thinking fingerprints and the title from the parent to the child.
-    Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
-    is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
-    transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
-    """
-    # /goal, /heartbeat, /loop: carried locally, or atomically by the owner on a RuntimeSessionStore.
-    from agent.compression_automation import carry_compression_automation
-    carry_compression_automation(agent, old_session_id)
-    with _swallow('Could not carry rejected thinking on compression: %s'):
-        from agent.anthropic_thinking_replay import carry_rejected_thinking_to_session
-        carry_rejected_thinking_to_session(agent, old_session_id)
-    if not old_title:
-        return
-    _src = None
-    with _swallow('Could not read title provenance: %s'):
-        _src = agent._session_db.get_session_title_source(old_session_id)
-    try:
-        agent._session_db.set_session_title(agent.session_id, old_title)
-    except Exception as e:
-        logger.debug("Could not propagate title on compression: %s", e)
-        return
-    # set_session_title() records "user"; restore the original authority.
-    if _src is not None:
-        with _swallow('Could not propagate title provenance: %s'):
-            agent._session_db.set_session_title_source(agent.session_id, _src)
-
-
 def _compression_child_source(agent: Any, parent_session_id: str) -> str:
     """The parent row's persisted source: a compression child is the same conversation, so a ``--source tool``,
     ``oneshot`` or inherited ``kanban`` label must not degrade to the bare ``agent.platform`` (#112550)."""
@@ -3319,6 +3291,7 @@ def _publish_rotated_compaction(
     agent._db_flush_scan_prefix = None
     _rebind_session_context(agent.session_id)
     agent._session_db_created = True
+    from agent.conversation_compression_session_state import _carry_session_state_to_child
     _carry_session_state_to_child(agent, old_session_id, old_title)
 
 
@@ -3449,6 +3422,9 @@ def _finish_compaction_boundary(
     # Arm the effectiveness verdict only after a completed rewrite crosses the
     # boundary so later usage isn't charged to an attempt that changed nothing.
     if compression_made_progress:
+        # Every signed block the tail kept was bound to the prefix compaction just replaced.
+        from agent.anthropic_thinking_replay import retire_thinking_at_compaction
+        retire_thinking_at_compaction(agent, compressed)
         record_boundary = getattr(type(compressor), "record_completed_compaction", None)
         if callable(record_boundary):
             record_boundary(

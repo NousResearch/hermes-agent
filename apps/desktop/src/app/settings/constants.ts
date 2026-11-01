@@ -297,7 +297,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'en-US-AndrewNeural',
     'en-US-BrianNeural',
     'en-US-GuyNeural',
-    'en-GB-SoniaNeural'
+    'en-GB-SoniaNeural',
+    'zh-CN-XiaoxiaoNeural',
+    'zh-CN-YunxiNeural'
   ],
   'tts.gemini.model': ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts'],
   // Gemini TTS prebuilt voice set.

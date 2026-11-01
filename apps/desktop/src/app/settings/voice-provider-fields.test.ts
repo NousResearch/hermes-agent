@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { FREE_INPUT_KEYS, SECTIONS } from './constants'
+import { ENUM_OPTIONS, FREE_INPUT_KEYS, SECTIONS } from './constants'
 import { voiceProviderKeys } from './voice-provider-fields'
 
 const voiceKeys = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
@@ -24,6 +24,13 @@ describe('voiceProviderKeys', () => {
     ]) {
       expect(voiceProviderKeys('tts', provider).length, provider).toBeGreaterThan(0)
     }
+  })
+
+  it('offers Mandarin Edge voices in the desktop Voice settings', () => {
+    const options = ENUM_OPTIONS['tts.edge.voice']
+
+    expect(options).toContain('zh-CN-XiaoxiaoNeural')
+    expect(options).toContain('zh-CN-YunxiNeural')
   })
 
   it('scopes to the exact provider segment (no prefix bleed)', () => {

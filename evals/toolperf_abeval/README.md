@@ -28,7 +28,8 @@ in real production traffic.
 - **Verified evidence.** Relay captures exporter configuration when the gateway
   starts. Changing the chat client's environment does not change an existing
   gateway's trace destination. Each batch keeps one configuration and shared
-  trace stream. After outstanding calls finish and the gateway shuts down,
+  trace stream. The batch shares one 60-second budget for outstanding trace
+  completion before graceful shutdown. After the gateway shuts down,
   the runner matches each trial's working directory to exactly one session,
   selects its events by Relay root UUID, and validates the complete session.
   These events are saved in the existing per-trial files. The Relay

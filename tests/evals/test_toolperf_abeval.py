@@ -7,7 +7,9 @@ import subprocess
 import sys
 import tomllib
 import venv
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -320,7 +322,7 @@ def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
     monkeypatch.setattr(
         ab_eval,
         "wait_for_trace",
-        lambda path, work, owner: real_wait(path, work, owner, timeout=0),
+        lambda path, work, owner, timeout=60: real_wait(path, work, owner, timeout=0),
     )
     real_run = subprocess.run
 
@@ -403,7 +405,7 @@ def test_trace_failure_keeps_other_trials_and_final_flush_decides_validity(
     monkeypatch.setattr(
         ab_eval,
         "wait_for_trace",
-        lambda path, work, owner: real_wait(path, work, owner, timeout=0),
+        lambda path, work, owner, timeout=60: real_wait(path, work, owner, timeout=0),
     )
     if trace_state == "incomplete":
         with pytest.raises(ab_eval.IncompleteBatchError, match="incomplete"):
@@ -549,6 +551,53 @@ def test_generated_config_is_accepted_by_relay(tmp_path):
     assert not [
         item for item in report["config"]["diagnostics"] if item["level"] == "error"
     ]
+
+
+@pytest.mark.parametrize("flush_last_trial", [False, True])
+def test_missing_traces_share_one_batch_wait_budget(
+    tmp_path, monkeypatch, flush_last_trial
+):
+    clock = SimpleNamespace(elapsed=0.0, stopped=False)
+    last_work = tmp_path / "runs/model/baseline/err_case_search-r2"
+
+    class Gateway:
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            clock.elapsed += timeout
+            raise subprocess.TimeoutExpired("fixture-gateway", timeout)
+
+    @contextmanager
+    def gateway(env, work):
+        yield Gateway()
+        clock.stopped = True
+        if flush_last_trial:
+            write_trace(work / "trace.atof.jsonl", trace_events(last_work))
+
+    monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
+    monkeypatch.setattr(ab_eval, "HOME", tmp_path / "home")
+    monkeypatch.setattr(ab_eval, "batch_gateway", gateway)
+    monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    monkeypatch.setattr(ab_eval, "run_trial", lambda *args: ("answer", 0, 0))
+    monkeypatch.setattr(
+        ab_eval, "time", SimpleNamespace(monotonic=lambda: clock.elapsed)
+    )
+    with pytest.raises(ab_eval.IncompleteBatchError):
+        ab_eval.run("baseline", "model", 3, str(tmp_path), ["err_case_search"])
+
+    assert clock.stopped
+    meta = tmp_path / "results/model/baseline/meta.jsonl"
+    if flush_last_trial:
+        records = [json.loads(line) for line in meta.read_text().splitlines()]
+        assert [record["run_id"] for record in records] == [last_work.name]
+        assert (
+            ab_eval.score_run(meta.parent / f"{last_work.name}.atof.jsonl")["llm"] == 1
+        )
+    else:
+        assert not meta.exists()
+    # Allow one polling interval of overshoot, independent of the trial count.
+    assert 60 <= clock.elapsed <= 60.2
 
 
 def test_waits_for_pending_trace_writes_and_bounds_missing_evidence(tmp_path):

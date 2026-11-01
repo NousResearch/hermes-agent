@@ -434,9 +434,16 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             print(f"[{arm}/{model}] {run_id} {elapsed:.0f}s exit={rc}", flush=True)
         # Auxiliary model calls may outlive a chat reply. Let them finish before stopping
         # the owner; then re-read the flushed stream before publishing any scores.
+        # Missing evidence must not add a fresh waiting period for every trial.
+        trace_deadline = time.monotonic() + 60
         for work, _ in completed:
             try:
-                wait_for_trace(atof, work, gateway)
+                wait_for_trace(
+                    atof,
+                    work,
+                    gateway,
+                    timeout=max(0, trace_deadline - time.monotonic()),
+                )
             except ValueError:
                 # Shutdown may flush the missing events. Judge each trial afterward,
                 # so one incomplete session cannot discard independent valid results.

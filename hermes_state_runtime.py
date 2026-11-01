@@ -76,6 +76,12 @@ def _session(conn, session_id):
     return row
 
 
+def _require_handoff_idle(session):
+    if session['handoff_state'] in ('pending', 'running'):
+        raise RuntimeStoreError('handoff_in_flight', field='session_id',
+                                detail='session is being handed off; wait for it to finish')
+
+
 def _admission(conn, admission_id):
     row = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?', (admission_id,)).fetchone()
     if row is None:
@@ -151,7 +157,7 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
     digest = admission_fingerprint(canonical_target=session_id, payload={'input': json.loads(encoded), 'intent': intent})
     def write(conn):
         _epoch(conn, epoch)
-        _session(conn, session_id)
+        session = _session(conn, session_id)
         old = conn.execute('''SELECT * FROM session_admissions
             WHERE principal_id=? AND target_session_id=? AND request_id=?''', (principal_id, session_id, request_id)).fetchone()
         if old is not None:
@@ -160,6 +166,7 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if _replay_guard is not None:
                 _replay_guard(conn)
             return _row(old)
+        _require_handoff_idle(session)
         queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
             AND status='queued' ''', (session_id,)).fetchone()[0]
         # Main's cap holds in both states: a FIFO paused behind an unknown turn runs every accepted
@@ -214,6 +221,7 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         if _guard is not None:
             _guard(conn)
         session = _session(conn, session_id)
+        _require_handoff_idle(session)
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):
             raise RuntimeStoreError('unknown_execution')

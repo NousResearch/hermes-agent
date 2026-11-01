@@ -421,6 +421,15 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+    # OpenAI-compatible gateways that proxy a multimodal request through a Python
+    # service can reject the list-typed ``content`` array with a bare TypeError
+    # instead of a provider-shaped message, e.g. MiniMax's ``/v1`` route returns
+    # ``expected string or bytes-like object, got 'list'``. The 4xx body carries no
+    # "vision"/"image" wording, so the phrase list misses it: the agent re-sends the
+    # same rejected payload until retries are exhausted and the turn never recovers.
+    # Matched narrowly on the trailing quoted type so unrelated TypeErrors about
+    # other types ('int', 'dict', 'bytes') do not false-trip.
+    "expected string or bytes-like object, got 'list'",
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it

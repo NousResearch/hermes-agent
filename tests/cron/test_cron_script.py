@@ -24,6 +24,31 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+def _make_fake_proc(captured: dict):
+    """Recording stand-in for ``subprocess.Popen``: captures argv/kwargs, exits 0.
+
+    Shared by the Windows spawn-contract tests so a new assertion (``startupinfo``,
+    ``creationflags``, ...) only has to be added in one place.
+    """
+
+    class _FakeProc:
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout=None):
+            return ("ok\n", "")
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    return _FakeProc
+
+
 @pytest.fixture
 def cron_env(tmp_path, monkeypatch):
     """Isolated cron environment with temp HERMES_HOME."""
@@ -217,23 +242,7 @@ class TestRunJobScript:
         (venv / "pyvenv.cfg").write_text(f"home = {base}\nuv = true\n", encoding="utf-8")
 
         captured = {}
-
-        class FakeProc:
-            def __init__(self, argv, **kwargs):
-                captured["argv"] = argv
-                captured["kwargs"] = kwargs
-                self.returncode = 0
-
-            def poll(self):
-                return self.returncode
-
-            def communicate(self, timeout=None):
-                return ("ok\n", "")
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        fake_run = FakeProc
+        fake_run = _make_fake_proc(captured)
 
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
         monkeypatch.setattr(sched_script, "windows_hide_flags", lambda: 0x08000000)
@@ -262,6 +271,33 @@ class TestRunJobScript:
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
+
+    @pytest.mark.platforms("windows")
+    def test_windows_shell_script_runs_without_a_console(self, cron_env, monkeypatch):
+        # Shell-backed jobs go through a different argv branch than Python ones; the
+        # hidden-window flags must still be applied or a cron tick flashes a console.
+        from cron import scheduler_script as sched_script
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text("printf 'ok\\n'\n", encoding="utf-8")
+        captured = {}
+        fake_run = _make_fake_proc(captured)
+
+        monkeypatch.setattr(sched_script.shutil, "which", lambda name: "bash.exe")
+        monkeypatch.setattr(sched_script, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_script.subprocess, "Popen", fake_run)
+
+        success, output = _run_job_script("probe.sh")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == ["bash.exe", str(script.resolve())]
+        # Assert the literal flags, not the patched helper's return value: the contract
+        # is CREATE_NO_WINDOW always OR-ed with CREATE_NEW_PROCESS_GROUP.
+        assert captured["kwargs"]["creationflags"] == (
+            0x08000000 | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
 
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
         """The bootstrap must process .pth files — the whole reason the

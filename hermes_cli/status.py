@@ -216,6 +216,7 @@ def _render_gateway(ctx):
         from hermes_cli.gateway import (
             get_gateway_runtime_snapshot, _format_gateway_pids, named_profile_served_by_running_multiplexer)
         from hermes_cli.gateway_multiplex_served import multiplexer_served_secondaries
+        from hermes_cli.gateway_status_notes import gateway_manager_label
         snapshot = get_gateway_runtime_snapshot()
         # A satellite profile has no gateway.pid of its own; the default multiplexer is its live process.
         if not snapshot.running and named_profile_served_by_running_multiplexer():
@@ -223,7 +224,7 @@ def _render_gateway(ctx):
             _kv("Manage with:", "hermes gateway status   # from the default profile")
             return
         _kv_flag("Status:", snapshot.running, "running", "stopped")
-        _kv("Manager:", snapshot.manager)
+        _kv("Manager:", gateway_manager_label(snapshot))
         if snapshot.gateway_pids:
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.running and (served := multiplexer_served_secondaries()):

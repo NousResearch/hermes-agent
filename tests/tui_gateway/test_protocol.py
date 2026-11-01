@@ -727,6 +727,130 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     assert response["error"]["code"] == 4001
 
 
+@pytest.fixture()
+def _stub_profile_home(server, monkeypatch):
+    """Point named profiles at synthetic homes ("launch" resolves to None = launch profile)."""
+    homes = {"alpha": Path("/synthetic/alpha"), "launch": None}
+
+    def _resolve(name):
+        if name not in homes:
+            raise server.ProfileUnavailableError(f"Profile '{name}' does not exist.")
+        return homes[name]
+
+    monkeypatch.setattr(server, "_profile_home", _resolve)
+    return homes
+
+
+def test_approval_respond_fallback_scopes_request_id_to_profile(server, monkeypatch, _stub_profile_home):
+    """An explicit profile must not route the answer through another profile's runtime (#133972)."""
+    from tools import approval
+
+    other = {"session_key": "agent-alpha", "history": [], "profile_home": str(Path("/synthetic/alpha"))}
+    server._sessions["ui-alpha"] = other
+    monkeypatch.setattr(
+        approval, "list_gateway_approvals",
+        lambda key: [{"request_id": "req-C"}] if key == "agent-alpha" else [])
+    monkeypatch.setattr(
+        approval, "resolve_gateway_approval",
+        lambda key, choice, **kwargs: 1)
+    # The pending request lives under profile "alpha"; a caller scoped to the launch
+    # profile must not resolve it through the fallback.
+    response = server.handle_request(
+        {
+            "id": "r-scope",
+            "method": "approval.respond",
+            "params": {
+                "session_id": "gone-sid", "request_id": "req-C", "choice": "once", "profile": "launch",
+            },
+        }
+    )
+    assert response["error"]["code"] == 4001
+    # The same caller scoped to "alpha" resolves it.
+    response = server.handle_request(
+        {
+            "id": "r-scope-ok",
+            "method": "approval.respond",
+            "params": {
+                "session_id": "gone-sid", "request_id": "req-C", "choice": "once", "profile": "alpha",
+            },
+        }
+    )
+    assert response["result"] == {"resolved": 1}
+
+
+def test_approval_respond_fallback_scopes_stored_id_to_profile(server, monkeypatch, _stub_profile_home):
+    """The stored-id branch honors an explicit profile: another profile's live runtime
+    with the same stored key must not receive the decision (#133972)."""
+    from tools import approval
+
+    alpha = {"session_key": "shared-key", "history": [], "profile_home": str(Path("/synthetic/alpha"))}
+    server._sessions["ui-alpha"] = alpha
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    calls = []
+    monkeypatch.setattr(
+        approval, "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice)) or 1)
+
+    response = server.handle_request(
+        {
+            "id": "r-stored-scope",
+            "method": "approval.respond",
+            "params": {"session_id": "shared-key", "choice": "deny", "profile": "launch"},
+        }
+    )
+    assert response["error"]["code"] == 4001
+    assert calls == []  # the launch profile owns no live record for that stored id
+
+    response = server.handle_request(
+        {
+            "id": "r-stored-scope-ok",
+            "method": "approval.respond",
+            "params": {"session_id": "shared-key", "choice": "deny", "profile": "alpha"},
+        }
+    )
+    assert response["result"] == {"resolved": 1}
+    assert calls == [("shared-key", "deny")]
+
+
+def test_approval_respond_fallback_refuses_ambiguous_stored_id(server, monkeypatch):
+    """No profile given and the same stored id live under two profiles: refuse instead of
+    guessing a winner (fail closed, #133972)."""
+    from tools import approval
+
+    server._sessions["ui-launch"] = {"session_key": "shared-key", "history": []}
+    server._sessions["ui-alpha"] = {
+        "session_key": "shared-key", "history": [], "profile_home": str(Path("/synthetic/alpha"))}
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    calls = []
+    monkeypatch.setattr(
+        approval, "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice)) or 1)
+
+    response = server.handle_request(
+        {
+            "id": "r-ambig",
+            "method": "approval.respond",
+            "params": {"session_id": "shared-key", "choice": "deny"},
+        }
+    )
+    assert response["error"]["code"] == 4001
+    assert calls == []  # neither profile's queue was touched
+
+
+def test_approval_respond_fallback_fails_closed_on_unknown_profile(server, monkeypatch, _stub_profile_home):
+    from tools import approval
+
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
+    response = server.handle_request(
+        {
+            "id": "r-unknown",
+            "method": "approval.respond",
+            "params": {"session_id": "whatever", "choice": "deny", "profile": "ghost"},
+        }
+    )
+    assert response["error"]["code"] == 4001
+
+
 # ── Session lookup ───────────────────────────────────────────────────
 
 

@@ -56,6 +56,16 @@ function FieldInput({
       />
     );
   }
+  if (field.type === "url") {
+    return (
+      <Input
+        type="url"
+        value={value}
+        placeholder={field.help || "https://"}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
   // text
   return (
     <Input

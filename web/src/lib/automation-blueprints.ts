@@ -2,7 +2,7 @@
 
 export interface AutomationBlueprintField {
   name: string
-  type: 'time' | 'enum' | 'text' | 'weekdays'
+  type: 'time' | 'enum' | 'text' | 'url' | 'weekdays'
   label: string
   default: string | null
   options: string[]

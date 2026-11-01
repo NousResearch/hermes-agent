@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -35,3 +37,22 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_mcp_configure_accepts_noninteractive_tool_selection_flags():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+
+    selected = parser.parse_args(["mcp", "configure", "docs", "--tools", "search,read"])
+    assert selected.tools == "search,read"
+    assert selected.all is False
+
+    all_tools = parser.parse_args(["mcp", "configure", "docs", "--all"])
+    assert all_tools.tools is None
+    assert all_tools.all is True
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "mcp", "configure", "docs", "--tools", "search", "--all"
+        ])

@@ -1204,7 +1204,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // prefer the live WCO measurement, fall back to the static reservation).
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
   const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
-
   const titlebarChrome = {
     darwinMajor: connection?.darwinMajor ?? 0,
     isFullscreen: Boolean(connection?.isFullscreen),
@@ -1217,15 +1216,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
+  const rightSlotCount = useContributions('titleBar.right').length
   const shownTool = shownInMode(interfaceMode)
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
+  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length + rightSlotCount
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, paneToolCount, interfaceMode)
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
-
-  const titlebarToolsWidth =
-    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
-
+  const titlebarToolsWidth = systemToolsWidth
   const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
 
   // Native caption reservations can translate chrome without resizing it.

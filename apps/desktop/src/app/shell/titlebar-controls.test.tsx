@@ -317,4 +317,35 @@ describe('titlebar app-action cluster', () => {
     expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
   })
+
+  it('renders right pane tools and titleBar.right slot items inside the single right flex cluster so they cannot overlap', () => {
+    const disposeRightSlot = registry.register({
+      area: 'titleBar.right',
+      id: 'test-vault-slot',
+      render: () => (
+        <button aria-label="Open Vault View" style={{ order: -1000 }} type="button">
+          vault
+        </button>
+      )
+    })
+
+    try {
+      renderControls('/', {
+        tools: [{ icon: <span />, id: 'workspace-browser', label: 'Open Browser (⌘⇧L)' }]
+      })
+
+      const rightClusters = screen.getAllByLabelText('App controls')
+      expect(rightClusters).toHaveLength(1)
+
+      const rightCluster = rightClusters[0]
+      expect(rightCluster.getAttribute('data-titlebar-cluster')).toBe('right')
+
+      const browserBtn = within(rightCluster).getByLabelText('Open Browser (⌘⇧L)')
+      const vaultBtn = within(rightCluster).getByLabelText('Open Vault View')
+      expect(browserBtn.style.order).toBe('-2000')
+      expect(vaultBtn.style.order).toBe('-1000')
+    } finally {
+      act(disposeRightSlot)
+    }
+  })
 })

@@ -1224,3 +1224,14 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_user_stop_reaches_only_callbacks_that_declare_it():
+    """A /stop tells a ``user_stop``-aware interrupt_fn it was the user; zero-argument callbacks
+    (an Event.set, older registrants) are still called plainly."""
+    seen = []
+    plain = threading.Event()
+    assert ad._call_interrupt(lambda user_stop=False: seen.append(user_stop), "%s", user_stop=True)
+    assert ad._call_interrupt(lambda user_stop=False: seen.append(user_stop), "%s")
+    assert ad._call_interrupt(plain.set, "%s", user_stop=True)
+    assert seen == [True, False] and plain.is_set()

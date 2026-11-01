@@ -6,6 +6,7 @@ from math import isfinite
 from typing import Any
 
 from agent.error_classifier import FailoverReason
+from agent.interrupt_control import is_system_interrupt_exit
 from agent.relay_runtime import (
     LOGICAL_LLM_SCOPE,
     RUNTIME_INSTANCE_KEY,
@@ -1679,6 +1680,10 @@ def task_terminal_state(kwargs: dict[str, Any]) -> tuple[str, str, str]:
     """Map Hermes terminal state to bounded (outcome, end_reason, termination)."""
     reason = _norm(kwargs.get("turn_exit_reason"))
     if kwargs.get("interrupted") or "interrupt" in reason or "cancel" in reason:
+        # A stop a system producer named (a parent ending its delegation, a watchdog, a gateway
+        # shutdown) is not the user's.
+        if is_system_interrupt_exit(reason):
+            return "cancelled", "system_aborted", "system_aborted"
         return "cancelled", "user_cancelled", "user_cancelled"
     if "timeout" in reason or "timed_out" in reason:
         return "timed_out", "timed_out", "timed_out"

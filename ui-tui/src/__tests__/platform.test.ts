@@ -5,6 +5,7 @@ import {
   formatVoiceRecordKey,
   isActionMod,
   isCopyShortcut,
+  isLiteralCtrl,
   isMac,
   isMacActionFallback,
   isVoiceToggleKey,
@@ -37,6 +38,23 @@ describeHost('isCopyShortcut', () => {
 
   it('does not treat local Linux Alt+C as copy', () => {
     expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', {})).toBe(false)
+  })
+})
+
+describe('isLiteralCtrl', () => {
+  it('matches a bare Ctrl chord', () => {
+    expect(isLiteralCtrl({ ctrl: true, meta: false, super: false }, 'x', 'x')).toBe(true)
+    expect(isLiteralCtrl({ ctrl: true, meta: false }, 'X', 'x')).toBe(true)
+  })
+
+  it('rejects Cmd/Alt-forwarded Ctrl+X from non-QWERTY paste', () => {
+    expect(isLiteralCtrl({ ctrl: true, meta: true, super: false }, 'x', 'x')).toBe(false)
+    expect(isLiteralCtrl({ ctrl: true, meta: false, super: true }, 'x', 'x')).toBe(false)
+  })
+
+  it('still requires the ctrl bit and the right character', () => {
+    expect(isLiteralCtrl({ ctrl: false, meta: false }, 'x', 'x')).toBe(false)
+    expect(isLiteralCtrl({ ctrl: true, meta: false }, 'v', 'x')).toBe(false)
   })
 })
 

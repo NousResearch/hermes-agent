@@ -128,6 +128,36 @@ def active_profile_may_override_home(hermes_root: str) -> bool:
     return bool(active and active != "default")
 
 
+def stdin_is_interactive() -> bool:
+    """``sys.stdin.isatty()``; False when stdin is closed or invalid (service context).
+
+    Startup probe for "was HERMES_HOME exported by a human's shell": machine parents (systemd
+    units, cron, containers, spawned children) carry no controlling stdin (#137656).
+    """
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def s6_supervised_gateway_run(argv: list[str]) -> bool:
+    """A bare ``gateway run`` inside the s6 image names the ``gateway-default`` slot too.
+
+    ``_maybe_redirect_run_to_s6_supervision`` turns it into a start of the supervised slot for the
+    current profile, and it is the image's own CMD. Following the sticky ``active_profile`` there
+    started that profile's named slot on every container boot: the one the boot reconciler just
+    registered down, because a started named slot is a second gateway beside the multiplexer.
+    ``--no-supervise`` keeps the foreground run, which follows ``active_profile`` as before (#22502).
+    """
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:2] != ["gateway", "run"] or "--no-supervise" in argv:
+        return False
+    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+        return False
+    from hermes_cli.service_manager import _s6_running
+    return _s6_running()
+
+
 def _default_home() -> str:
     return os.path.join(os.path.expanduser("~"), ".hermes")
 

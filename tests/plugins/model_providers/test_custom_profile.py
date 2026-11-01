@@ -85,6 +85,46 @@ class TestCustomReasoningWireShape:
         assert "think" not in eb
         assert tl == {"reasoning_effort": "none"}
 
+    @pytest.mark.parametrize("model", ["ministral-14b-2512", "ministral-3b-2512"])
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [
+            None,
+            {"enabled": True, "effort": "medium"},
+            {"enabled": True, "effort": "none"},
+            {"enabled": False},
+        ],
+    )
+    def test_ministral_omits_reasoning_effort(self, custom_profile, model, reasoning_config):
+        """api.mistral.ai's ministral models reject ``reasoning_effort`` with HTTP 400
+        for every value — even ``"none"`` (#119249). Hermes routes Mistral API through
+        the ``custom`` profile, so the field must never go on the wire for them."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model=model,
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert tl == {}
+        assert "reasoning_effort" not in eb
+        assert "think" not in eb
+
+    def test_ministral_default_reasoning_config_is_none(self, custom_profile):
+        """Main-loop unset effort must not default to medium for ministral models."""
+        assert custom_profile.default_reasoning_config("ministral-14b-2512") is None
+
+    def test_ministral_declares_no_supported_efforts(self, custom_profile):
+        """Responses/codex path: an empty declaration disables reasoning outright."""
+        assert custom_profile.supported_reasoning_efforts("ministral-14b-2512") == ()
+
+    def test_non_ministral_mistral_keeps_reasoning_effort(self, custom_profile):
+        """mistral-small-latest still sends the disable form (regression guard)."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="mistral-small-latest",
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert tl == {"reasoning_effort": "none"}
+
     def test_disabled_omits_think_without_base_url(self, custom_profile):
         """Unknown custom endpoint — do not send the Ollama-only flag."""
         eb, tl = custom_profile.build_api_kwargs_extras(

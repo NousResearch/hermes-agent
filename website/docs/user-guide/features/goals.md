@@ -67,7 +67,7 @@ What you'll see:
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
-| `/goal gate add <command>` | Add a **quality gate**: a shell command that must pass before the goal can be judged done. See [Quality gates](#quality-gates). |
+| `/goal gate add [--retries N] <command>` | Add a **quality gate**: a shell command that must pass before the goal can be judged done. `--retries N` sets how many failed runs it gets before the goal pauses (default 3). See [Quality gates](#quality-gates). |
 | `/goal gate` or `/goal gate list` | List the goal's gates and their pass/fail state. |
 | `/goal gate remove <N>` | Remove the Nth gate (1-based). |
 | `/goal gate clear` | Remove all gates. |
@@ -147,7 +147,7 @@ How it works, each turn:
 1. **Gates run before the judge.** If any gate fails, the judge is *not called* — a red gate is deterministic evidence the goal isn't done. The gate's exit code and output tail (last ~3 KB) become the continuation prompt, so the agent iterates against the actual failure instead of a vibe.
 2. **All gates pass → normal judging.** The LLM judge then decides done/blocked/continue/wait exactly as before.
 3. **Every boundary re-runs a failed gate.** The command executes against the current inputs each time; a stale result is never replayed, so a gate whose input you just repaired passes on the next boundary. The retry cap bounds a genuinely stuck red suite.
-4. **Retries are bounded.** Each gate defaults to 3 retries and a 5-minute timeout. When a gate exhausts its retries the goal auto-pauses (like the turn budget) with a message telling you to fix it manually, remove the gate, or `/goal resume`.
+4. **Retries are bounded.** Each gate defaults to 3 retries (`/goal gate add --retries N <command>` sets another cap) and a 5-minute timeout. When a gate exhausts its retries the goal auto-pauses (like the turn budget) with a message telling you to fix it manually, remove the gate, or `/goal resume`.
 
 Gates persist with the goal in `SessionDB.state_meta` (they survive `/resume` and context compression), and gate management (`/goal gate …`) is safe mid-run on the gateway — gates only run at turn boundary.
 

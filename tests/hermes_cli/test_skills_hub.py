@@ -1,11 +1,24 @@
+import json
+import argparse
 from io import StringIO
 from unittest.mock import patch
 
+import httpx
 import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    _clawhub_publish,
+    do_check,
+    do_install,
+    do_list,
+    do_publish,
+    do_update,
+    handle_skills_slash,
+    skills_command,
+)
+from hermes_cli.subcommands.skills import build_skills_parser
 
 
 class _DummyLockFile:
@@ -97,6 +110,150 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def _skill_dir(tmp_path):
+    skill = tmp_path / "sample-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: sample-skill\ndescription: Sample skill\nversion: 1.2.3\n---\n# Sample\n",
+        encoding="utf-8",
+    )
+    (skill / "include.txt").write_text("include me", encoding="utf-8")
+    (skill / "secret.txt").write_text("exclude me", encoding="utf-8")
+    (skill / ".clawhubignore").write_text("secret.txt\n", encoding="utf-8")
+    return skill
+
+
+def test_clawhub_publish_posts_explicitly_accepted_payload_and_honors_ignore(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    captured = {}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return httpx.Response(201, json={"skill": {"slug": "sample-skill"}})
+
+    monkeypatch.setenv("CLAWHUB_TOKEN", "test-token")
+    monkeypatch.setattr(httpx, "post", post)
+
+    success, message = _clawhub_publish(
+        skill, "sample-skill", {"version": "1.2.3"}, accept_license_terms=True
+    )
+
+    assert success
+    assert "sample-skill" in message
+    assert captured["url"] == "https://clawhub.ai/api/v1/skills"
+    assert captured["headers"] == {"Authorization": "Bearer test-token"}
+    payload = json.loads(captured["files"][0][1][1])
+    assert payload == {
+        "slug": "sample-skill", "displayName": "sample-skill", "version": "1.2.3",
+        "changelog": "", "tags": ["latest"], "acceptLicenseTerms": True,
+    }
+    uploaded = {entry[1][0] for entry in captured["files"][1:]}
+    assert uploaded == {"SKILL.md", "include.txt"}
+
+
+def test_clawhub_publish_requires_explicit_license_acceptance_before_request(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    requests = []
+
+    monkeypatch.setenv("CLAWHUB_TOKEN", "test-token")
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: requests.append((args, kwargs)))
+
+    success, message = _clawhub_publish(skill, "sample-skill", {})
+
+    assert not success
+    assert "--accept-license-terms" in message
+    assert requests == []
+
+
+@pytest.mark.parametrize("accept_license_terms", [False, True])
+def test_skills_cli_publish_forwards_license_acceptance(monkeypatch, accept_license_terms):
+    parser = argparse.ArgumentParser()
+    build_skills_parser(parser.add_subparsers(dest="command"), cmd_skills=lambda args: None)
+    command = ["skills", "publish", "sample-skill", "--to", "clawhub"]
+    if accept_license_terms:
+        command.append("--accept-license-terms")
+    args = parser.parse_args(command)
+    published = {}
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub.do_publish", lambda *args, **kwargs: published.update(kwargs)
+    )
+
+    skills_command(args)
+
+    assert published["accept_license_terms"] is accept_license_terms
+
+
+@pytest.mark.parametrize("accept_license_terms", [False, True])
+def test_skills_slash_publish_forwards_license_acceptance(monkeypatch, accept_license_terms):
+    published = {}
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub.do_publish", lambda *args, **kwargs: published.update(kwargs)
+    )
+
+    flag = " --accept-license-terms" if accept_license_terms else ""
+    handle_skills_slash(f"/skills publish sample-skill --to clawhub{flag}")
+
+    assert published["accept_license_terms"] is accept_license_terms
+
+
+def test_clawhub_publish_requires_dedicated_token(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    monkeypatch.delenv("CLAWHUB_TOKEN", raising=False)
+
+    success, message = _clawhub_publish(skill, "sample-skill", {}, accept_license_terms=True)
+
+    assert not success
+    assert "CLAWHUB_TOKEN" in message
+
+
+def test_clawhub_publish_reports_http_auth_failure_without_token(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    monkeypatch.setenv("CLAWHUB_TOKEN", "do-not-print-me")
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: httpx.Response(401, text="invalid token"))
+
+    success, message = _clawhub_publish(skill, "sample-skill", {}, accept_license_terms=True)
+
+    assert not success
+    assert message == "ClawHub authentication failed; check CLAWHUB_TOKEN."
+    assert "do-not-print-me" not in message
+
+
+def test_clawhub_publish_sanitizes_bounded_api_error_details(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    token = "do-not-print-me"
+    monkeypatch.setenv("CLAWHUB_TOKEN", token)
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda *args, **kwargs: httpx.Response(
+            422, text=f"invalid [field]\x00 Bearer {token} " + "x" * 1000
+        ),
+    )
+
+    success, message = _clawhub_publish(skill, "sample-skill", {}, accept_license_terms=True)
+
+    assert not success
+    assert message.startswith("ClawHub API error (422): invalid \\[field\\]")
+    assert token not in message
+    assert "\x00" not in message
+    assert len(message) <= 300
+
+
+def test_do_publish_reports_clawhub_api_failure(tmp_path, monkeypatch):
+    skill = _skill_dir(tmp_path)
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    monkeypatch.setattr(
+        "hermes_cli.skills_hub._clawhub_publish",
+        lambda *args, **kwargs: (False, "ClawHub API error: 422"),
+    )
+
+    do_publish(str(skill), target="clawhub", accept_license_terms=True, console=console)
+
+    assert "ClawHub API error: 422" in sink.getvalue()
 
 
 # ---------------------------------------------------------------------------

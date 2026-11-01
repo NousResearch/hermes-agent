@@ -87,6 +87,13 @@ def _rmtree_force(path: str) -> None:
             pass
     shutil.rmtree(path, onerror=_chmod_retry)
 
+def _reject_external_basetemp(parser, pytest_args):
+    if any(token == "--basetemp" or token.startswith("--basetemp=")
+           for token in pytest_args):
+        parser.error("--basetemp escapes runner-owned cleanup; retain named failure "
+                     "diagnostics separately and use the runner's temporary root")
+
+
 def _runner_scratch_root() -> str:
     """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
     gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
@@ -1479,7 +1486,7 @@ def main() -> int:
     # Bare flags run before any explicit ``--`` passthrough so ordering is
     # intuitive (``run_tests.sh tests/foo.py -q -- --tb=long`` → ``-q --tb=long``).
     pytest_passthrough = bare_passthrough + explicit_passthrough
-
+    _reject_external_basetemp(parser, pytest_passthrough)
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
     slice_raw = args.slice or os.environ.get("HERMES_TEST_SLICE")

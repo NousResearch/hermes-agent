@@ -1036,6 +1036,55 @@ _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
 
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _refuse_basetemp_inside_the_checkout(config) -> None:
+    """Refuse a pytest basetemp that lives inside this checkout.
+
+    `_relocate_basetemp_outside_operator_home` only fires when the candidate sits under
+    the operator's Hermes home, so an explicit `--basetemp tmp/<task>/<attempt>` was
+    accepted: inside the repo, inside `.gitignore` (`tmp/`), and outside every retention
+    policy. Measured 2026-10-28: `tmp/update-reliability-20261028` held 579 such
+    directories, 1,016,073 files, 76.2 GB in one day, because each attempt allocated a
+    fresh one and pytest never prunes a basetemp it was handed.
+
+    The rule is the same one that governs the Hermes home: the sandbox root must not live
+    inside a source tree that a run can dirty, and it must be a root this suite manages
+    rather than one an invoking command names. Use the default, or `--basetemp` outside
+    the checkout.
+    """
+    factory = getattr(config, "_tmp_path_factory", None)
+    given = getattr(factory, "_given_basetemp", None)
+    if given is None:
+        return
+    resolved = Path(given).resolve()
+    if resolved == _CHECKOUT_ROOT or resolved.is_relative_to(_CHECKOUT_ROOT):
+        raise pytest.UsageError(
+            f"refusing an in-checkout pytest basetemp {resolved}: it lands in the ignored "
+            "tmp/ tree, pytest never prunes a basetemp it was given, and repeated attempts "
+            "accumulate a full workspace copy each (76.2 GB measured in one day). Pass no "
+            f"--basetemp, or one outside {_CHECKOUT_ROOT}.")
+
+
+def _require_disk_reserve(config) -> None:
+    """Refuse to start a suite run that cannot finish without filling the volume.
+
+    Measured on this host on 2026-10-28: the volume reached 10.1 GB free twice while a
+    suite run was in progress. A run that fills the disk corrupts retained evidence
+    instead of merely failing, so admission is cheaper than recovery. The reserve is
+    declarable (HERMES_TEST_DISK_RESERVE_MB) and defaults to 20 GB.
+    """
+    reserve_mb = int(os.environ.get("HERMES_TEST_DISK_RESERVE_MB", "20000"))
+    probe = _CHECKOUT_ROOT if _CHECKOUT_ROOT.exists() else Path(tempfile.gettempdir())
+    free = shutil.disk_usage(str(probe)).free
+    if free < reserve_mb * 1000 * 1000:
+        raise pytest.UsageError(
+            f"refusing to run the suite: {free / 1e9:.1f} GB free on {probe}, below the "
+            f"{reserve_mb} MB reserve (HERMES_TEST_DISK_RESERVE_MB). Free space first; a run "
+            "that exhausts the volume damages retained evidence rather than failing cleanly.")
+
+
 def _relocate_basetemp_outside_operator_home(config) -> None:
     """Move pytest's basetemp out of the operator's platform-native Hermes home.
 
@@ -1089,6 +1138,17 @@ def _pytest_disk_temp_root(native: Path) -> Path:
 
 
 def _remove_relocated_basetemp(config) -> None:
+    """Remove the private basetemp created when a run is relocated out of the Hermes home.
+
+    Unconditional, by contract, and *outside* the retention policy on purpose. A relocated
+    basetemp is a runner-owned scratch root (`mkdtemp` under `/var/tmp/hermes-pytest[-uid]`),
+    not a numbered `pytest-N` history entry: pytest's retention only prunes the numbered
+    directories it creates itself, and `pytest_sessionfinish` skips its own removal entirely
+    once a basetemp has been given (`_given_basetemp is not None`). So retention cannot manage
+    this path and this is its only cleanup — plus the 24h idle sweep for runs killed before
+    reaching `pytest_unconfigure`. Deleting it on success is the contract: it is scratch, and
+    a failed sandbox from a relocated run is not a retained artifact.
+    """
     safe = getattr(config, "_hermes_relocated_basetemp", None)
     if safe is not None:
         shutil.rmtree(safe, ignore_errors=True)
@@ -1189,6 +1249,33 @@ def pytest_unconfigure(config):
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):
     """Register markers used by hermetic conftest."""
+    _refuse_basetemp_inside_the_checkout(config)
+    _require_disk_reserve(config)
+    # Retention, and the exact scope of it. These two are INI values that pytest reads when it
+    # builds TempPathFactory in _pytest.tmpdir.pytest_configure; nothing ever reads
+    # ``config.option.tmp_path_retention_*``, so assigning options here would set attributes
+    # nobody consumes and the suite would silently keep pytest's defaults (count 3, policy
+    # "all"). The factory already exists by the time this trylast hook runs, but it reads both
+    # fields lazily inside getbasetemp(), so setting them on the instance is effective and is
+    # the only lever left at this point. Scopes, all three pinned by
+    # tests/test_basetemp_retention_integration.py against real subprocess runs:
+    #
+    #   1. default numbered basetemp -> this policy: keep 3 sessions, drop passing ones.
+    #   2. a --basetemp named by the caller -> pytest gives NO bounded history for it
+    #      (getbasetemp() rm_rf's and reuses that one path; sessionfinish skips removal because
+    #      _given_basetemp is not None). Distinct names therefore accumulate forever, which is
+    #      how 579 basetemps and 76.2 GB appeared in one day. That path is bounded elsewhere:
+    #      scripts/run_tests_parallel.py rejects --basetemp outright, and
+    #      _refuse_basetemp_inside_the_checkout refuses one that lands in this tree.
+    #   3. a basetemp relocated out of the Hermes home -> runner-owned scratch, removed
+    #      unconditionally in pytest_unconfigure; retention deliberately does not apply.
+    try:
+        factory = config._tmp_path_factory
+    except AttributeError:  # older pytest: keep the default rather than fail the run
+        pass
+    else:
+        factory._retention_count = 3
+        factory._retention_policy = "failed"
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",

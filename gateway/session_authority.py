@@ -834,13 +834,14 @@ class SessionAuthority:
         self.cancel_obligations.discard(admission_id)
         self.native_waiters.discard(admission_id)
         drop_producer_turn(self, admission_id)
-        busy_row_settled(admission_id, outcome)
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():
             waiter.set_result(None)
         # A paused drain (preclaim refusal on this head) ended its task; the successors
         # need a fresh drain that revalidates them on their own merits.
         self._schedule(ref)
+        # Last: telemetry must never stand between a cancelled row and its waiter/successor drain.
+        busy_row_settled(admission_id, outcome)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
         """Operator acknowledgement that an ``unknown`` turn will not finish; the paused FIFO behind

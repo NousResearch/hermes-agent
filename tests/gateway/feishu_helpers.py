@@ -34,6 +34,7 @@ def make_adapter_skeleton(
     bot_user_id: str = "",
     allow_bots: str = "none",
     require_mention: bool = True,
+    ignore_other_user_mentions: bool = False,
     group_policy: str = "allowlist",
     allow_all_dm: bool = False,
 ) -> Any:
@@ -52,6 +53,7 @@ def make_adapter_skeleton(
     adapter._allow_bots = allow_bots
     adapter._allow_all_dm = allow_all_dm
     adapter._require_mention = require_mention
+    adapter._ignore_other_user_mentions = ignore_other_user_mentions
     return adapter
 
 

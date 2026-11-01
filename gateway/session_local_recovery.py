@@ -196,8 +196,16 @@ def restore_local_session(authority, sid):
         adapter.policies[chat_id] = policy
         authority.sessions[sid] = LiveSession(source, route)
         adapter.register_source(source)
+    # Compare the stable source identity, not the full wire dict. ``to_dict()`` carries per-message
+    # volatile fields (``message_id`` pin/reply/react, display names) that a restored live source
+    # keeps from the turn that created it while every delivery rebuilds the canonical
+    # ``local_source`` without them — so a message_id-only difference false-diverged this guard and
+    # permanently refused the profile's bot-chat delivery (only a gateway restart healed it).
+    # ``_identity`` (platform, chat_id, user_id, profile, chat_type) is the adapter's own
+    # session-identity definition (the same tuple ``authorize_source`` gates on), so a genuine
+    # session change still refuses.
     elif (not adapter.authorize_source(live.source)
-          or live.source.to_dict() != source.to_dict()
+          or adapter._identity(live.source) != adapter._identity(source)
           or adapter.policies.get(chat_id) != policy):
         raise RuntimeStoreError('storage_unavailable')
     elif _route_already_restored(store, route, target, receipt.get('lineage', [sid])):

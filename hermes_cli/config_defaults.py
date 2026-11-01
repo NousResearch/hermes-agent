@@ -1994,8 +1994,7 @@ DEFAULT_CONFIG = {
             # then bare tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the
             # bare bridge.
             "listing": "auto",
-            # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
-            # Range 200..60000.
+            # Absolute cap on the embedded listing in tokens (chars/4), any context size. 200..60000.
             "listing_max_tokens": 4000,
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
@@ -2009,11 +2008,12 @@ DEFAULT_CONFIG = {
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
-        # Remote connector discovery/lifecycle through the Nous tool gateway.
-        # The flag is the user's off switch; availability additionally requires
-        # the portal sign-in every managed tool gates on.
+        # Remote connector discovery/lifecycle through the Nous tool gateway. The flag is the user's
+        # off switch; availability additionally requires the portal sign-in managed tools gate on.
         "connectors": {"enabled": True},
     },
+    # Hosted document OCR (Firecrawl Parse). null: on only with FIRECRAWL_API_KEY; false: always off.
+    "file_tools": {"hosted_ocr": None},
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

@@ -79,6 +79,50 @@ def test_success_collects_then_trims(monkeypatch):
     assert mem_trim._last_trim_monotonic == 100.0
 
 
+def test_collect_false_skips_gc_but_still_trims(monkeypatch):
+    """Regression for issue #146375: collect=False must drop the full gc.collect() (the
+    multi-second, GIL-holding call that stalls an in-process dashboard's event loop) while
+    still asking the allocator to release free pages."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(
+        mem_trim, "_malloc_trim", lambda pad: calls.append(("trim", pad)) or 1
+    )
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(reason="post-compression", cooldown_seconds=60, collect=False) is True
+    assert calls == [("trim", 0)]  # no "gc" entry
+
+
+def test_collect_defaults_to_true_for_every_existing_caller(monkeypatch):
+    """Callers that predate #146375 and never pass collect= must keep running the full
+    collection -- this parameter is additive, not a behavior change for them."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(
+        mem_trim, "_malloc_trim", lambda pad: calls.append(("trim", pad)) or 1
+    )
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(reason="turn", cooldown_seconds=60) is True
+    assert calls == ["gc", ("trim", 0)]
+
+
+def test_collect_false_logs_collected_false(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: None)
+    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda pad: 1)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(mem_trim, "_should_log_trim", lambda **kw: True)
+
+    with caplog.at_level(logging.INFO, logger="hermes_cli.mem_trim"):
+        mem_trim.trim_memory(reason="post-compression", cooldown_seconds=0, collect=False)
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "collected=False" in logged
+
+
 
 
 

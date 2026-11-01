@@ -516,6 +516,21 @@ describe('resolveDurableRowId', () => {
     expect(await resolveDurableRowId(request, 'sid', 'continue', 4)).toBe(14)
   })
 
+  it('refuses ordinal guesses when the archive budget truncated the history', async () => {
+    const request = gatewayWith([
+      { role: 'user', text: 'archived', row_id: 7, archived: true, archived_truncated: true },
+      { role: 'user', text: 'continue', row_id: 10 },
+      { role: 'user', text: 'x', row_id: 12 },
+      { role: 'user', text: 'continue', row_id: 14 }
+    ])
+
+    // Two earlier archived turns are absent. Rendered ordinal 3 is the older
+    // duplicate, even though it looks like the newest in this shorter reply.
+    expect(await resolveDurableRowId(request, 'sid', 'continue', 3)).toBeUndefined()
+    // A unique live match needs no ordinal guess and remains usable.
+    expect(await resolveDurableRowId(request, 'sid', 'x', 4)).toBe(12)
+  })
+
   it('refuses ambiguous matches unless the target is provably the newest turn', async () => {
     const request = gatewayWith([
       { role: 'user', text: 'same text', row_id: 11 },

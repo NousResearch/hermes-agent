@@ -199,6 +199,7 @@ export function truncateSubmitParams(
 
 interface DurableHistoryMessage {
   archived?: boolean
+  archived_truncated?: boolean
   display_kind?: string
   role?: string
   row_id?: unknown
@@ -256,6 +257,12 @@ export async function resolveDurableRowId(
 
   if (matches.length === 1) {
     return matches[0].row_id as number
+  }
+
+  // A budgeted history omits older turns; its ordinal space cannot prove
+  // which duplicate the complete rendered transcript addressed.
+  if (messages.some(message => message.archived_truncated === true)) {
+    return undefined
   }
 
   if (matches.length > 1 && typeof expectedOrdinal === 'number' && expectedOrdinal >= users.length - 1) {

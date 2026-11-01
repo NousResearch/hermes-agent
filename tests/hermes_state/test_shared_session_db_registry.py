@@ -59,6 +59,39 @@ def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
 
 @pytest.mark.platforms("posix")
 class TestInodeReplacement:
+    def test_read_only_dashboard_open_bootstraps_deleted_live_store(self, tmp_path, monkeypatch):
+        """Regression for #137304: a recreated profile must not borrow an unlinked handle.
+
+        The dashboard's read-only opener first borrows a writable registry
+        generation to create a missing store.  If a holder still points at the
+        old, unlinked inode, that borrow must retire it and create the new
+        ``state.db`` before the subsequent read-only connection opens.
+        """
+        from hermes_cli.web_server_sessions import _open_session_db_at_path
+        import hermes_state_wal
+
+        # The affected deployment uses the supported DELETE fallback, so no
+        # deleted WAL generation exists for the safety guard to contain.
+        monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "delete")
+        monkeypatch.setattr(
+            hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        )
+
+        db_path = tmp_path / "profiles" / "recreated" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        held = registry.acquire(db_path)
+        shutil.rmtree(db_path.parent)
+        db_path.parent.mkdir()
+
+        listing = _open_session_db_at_path(db_path, read_only=True)
+        try:
+            assert db_path.exists()
+            assert listing.list_sessions_rich(limit=10) == []
+            assert listing is not held
+        finally:
+            listing.close()
+            assert registry.release(held) is True
+
     def test_live_holders_keep_working_handle_across_replacement(self, tmp_path):
         """Two active refs → inode replacement → third caller gets NEW
         generation; the first two keep a working handle and their

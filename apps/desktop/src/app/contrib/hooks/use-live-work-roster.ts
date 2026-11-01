@@ -2,10 +2,12 @@ import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import { $gateway, activeGatewayProfileKey, gatewayRouteState, isActivePrimary } from '@/store/gateway'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $liveWorkRoster, rosterSourceHasWork, setLiveWorkRosterSource } from '@/store/live-work-roster'
 import { $gatewayState, ownerLookupSessionRows } from '@/store/session'
+import { $delegatingSessionIds } from '@/store/session-dot-state'
 import { ambientRequestFor } from '@/store/session-gone-latch'
 import { isSessionOwnerRoute, requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { knownOwnerForSession } from '@/store/session-states'
@@ -22,6 +24,8 @@ interface RosterResult {
 }
 
 interface RosterSource {
+  /** Stored ids of the rows this source answers for. */
+  covers: string[]
   open: boolean
   owner: SessionOwnerScope
 }
@@ -41,7 +45,7 @@ function rosterSources(): Map<string, RosterSource> {
   // The ambient read carries no profile, so it shares a key only when it IS the
   // window primary answering for its own profile.
   const ambientKey = isActivePrimary() ? gatewayRouteState(null, activeGatewayProfileKey()).key : 'ambient'
-  const sources = new Map<string, RosterSource>([[ambientKey, { open: true, owner: undefined }]])
+  const sources = new Map<string, RosterSource>([[ambientKey, { covers: [], open: true, owner: undefined }]])
 
   // One row list per tick, each owner resolved against its own row: resolving
   // through the whole list per row made a tick O(rows²).
@@ -53,9 +57,12 @@ function rosterSources(): Map<string, RosterSource> {
     }
 
     const route = routeOf(owner)
+    const source = sources.get(route.key)
 
-    if (!sources.has(route.key)) {
-      sources.set(route.key, { open: route.open, owner })
+    if (source) {
+      source.covers.push(row.id)
+    } else {
+      sources.set(route.key, { covers: [row.id], open: route.open, owner })
     }
   }
 
@@ -98,7 +105,11 @@ export function useLiveWorkRoster() {
     const sentAt = new Map<string, number>()
     const backoff = new Map<string, { failures: number; until: number }>()
 
-    const readSource = async (key: string, owner: SessionOwnerScope, ambient: ReturnType<typeof ambientRequestFor>) => {
+    const readSource = async (
+      key: string,
+      { covers, owner }: RosterSource,
+      ambient: ReturnType<typeof ambientRequestFor>
+    ) => {
       const at = Date.now()
       sentAt.set(key, at)
       inFlight.add(key)
@@ -109,7 +120,7 @@ export function useLiveWorkRoster() {
 
         // A source whose rows left the sidebar mid-read stays pruned.
         if (!cancelled && current.has(key)) {
-          setLiveWorkRosterSource(key, Array.isArray(result?.sessions) ? result.sessions : [], at)
+          setLiveWorkRosterSource(key, Array.isArray(result?.sessions) ? result.sessions : [], at, covers)
         }
       } catch (error) {
         if (isMissingRpcMethod(error)) {
@@ -138,6 +149,10 @@ export function useLiveWorkRoster() {
       const sources = rosterSources()
       const roster = $liveWorkRoster.get()
       const now = Date.now()
+      // Rows lit right now: a closed source covering one is re-read on the busy
+      // cadence even when its last read was empty, so work an event feed saw
+      // start after that read still gets its end confirmed.
+      const lit = new Set([...$backgroundRunningSessionIds.get(), ...$delegatingSessionIds.get()])
       current = new Set(sources.keys())
 
       // Owners whose rows left the sidebar stop contributing.
@@ -147,15 +162,18 @@ export function useLiveWorkRoster() {
         }
       }
 
-      for (const [key, { open, owner }] of sources) {
+      for (const [key, source] of sources) {
         const last = sentAt.get(key)
         const due = !inFlight.has(key) && !unsupported.has(key) && now >= (backoff.get(key)?.until ?? 0)
 
         const warm =
-          hydrate || open || last === undefined || (rosterSourceHasWork(roster, key) && now - last >= COLD_BUSY_MS)
+          hydrate ||
+          source.open ||
+          last === undefined ||
+          ((rosterSourceHasWork(roster, key) || source.covers.some(id => lit.has(id))) && now - last >= COLD_BUSY_MS)
 
         if (due && warm) {
-          void readSource(key, owner, ambient)
+          void readSource(key, source, ambient)
         }
       }
     }

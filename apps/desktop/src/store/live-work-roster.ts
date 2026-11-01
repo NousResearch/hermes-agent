@@ -20,6 +20,9 @@ export interface LiveWorkCounts {
 
 export interface LiveWorkBucket {
   at: number
+  /** Stored ids of the sidebar rows this source answers for: a row it covers
+   *  and does not list has no live work as of `at`. */
+  covers: ReadonlySet<string>
   sessions: Record<string, LiveWorkCounts>
 }
 
@@ -27,7 +30,12 @@ export type LiveWorkRoster = Record<string, LiveWorkBucket>
 
 export const $liveWorkRoster = atom<LiveWorkRoster>({})
 
-export function setLiveWorkRosterSource(source: string, entries: readonly unknown[] | null, at = Date.now()) {
+export function setLiveWorkRosterSource(
+  source: string,
+  entries: readonly unknown[] | null,
+  at = Date.now(),
+  covers: readonly string[] = []
+) {
   const current = $liveWorkRoster.get()
 
   if (!entries) {
@@ -58,7 +66,7 @@ export function setLiveWorkRosterSource(source: string, entries: readonly unknow
     bucket[sid] = { background: Number(row.background) || 0, subagents: Number(row.subagents) || 0 }
   }
 
-  $liveWorkRoster.set({ ...current, [source]: { at, sessions: bucket } })
+  $liveWorkRoster.set({ ...current, [source]: { at, covers: new Set(covers), sessions: bucket } })
 }
 
 /** Stored ids (all lineage aliases) the roster says have `kind` running.
@@ -94,6 +102,26 @@ export function rosterLiveIds(
   }
 
   return [...ids]
+}
+
+/** True when a source that answers for this conversation read it AFTER `eventAt`
+ *  and found no `kind` work: an event-fed "running" entry that old is a
+ *  leftover from a pane that stopped listening (its poll pauses while hidden,
+ *  and a silent process exit sends no event), so the row must not stay lit
+ *  until the user clicks back into it. A conversation no source covers keeps
+ *  its event-fed state. */
+export function rosterSaysIdle(
+  roster: LiveWorkRoster,
+  kind: keyof LiveWorkCounts,
+  aliases: readonly string[],
+  eventAt: number
+): boolean {
+  return Object.values(roster).some(
+    ({ at, covers, sessions }) =>
+      at > eventAt &&
+      aliases.some(alias => covers.has(alias)) &&
+      aliases.every(alias => (sessions[alias]?.[kind] ?? 0) <= 0)
+  )
 }
 
 /** Record `at` for every alias, keeping the freshest stamp per alias. */

@@ -6,7 +6,7 @@ import { type TodoItem, type TodoStatus, todoTree } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { $goalsBySession, type GoalStatus } from './goals'
-import { $liveWorkRoster, noteEventFed, rosterLiveIds } from './live-work-roster'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { dispatchNativeNotification } from './native-notifications'
 import { notifyError } from './notifications'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone, noteRuntimeAlive } from './runtime-gone'
@@ -84,9 +84,10 @@ export const $backgroundRunningSessionIds = computed(
       // Same fresh-chat fallback as the working/attention projections: before a
       // conversation is persisted its runtime id is the id surfaces key on.
       const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
-      noteEventFed(eventFedAt, aliases, backgroundWrittenAt.get(items) ?? -Infinity)
+      const writtenAt = backgroundWrittenAt.get(items) ?? -Infinity
+      noteEventFed(eventFedAt, aliases, writtenAt)
 
-      if (items.some(i => i.state === 'running')) {
+      if (items.some(i => i.state === 'running') && !rosterSaysIdle(roster, 'background', aliases, writtenAt)) {
         for (const alias of aliases) {
           ids.add(alias)
         }

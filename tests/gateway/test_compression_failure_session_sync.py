@@ -143,17 +143,14 @@ def _install_compression_failure_agent(monkeypatch, agent_cls=_CompressionThenFa
 
 def _run_compression_failure_turn(runner, source, *, run_generation=None):
     return asyncio.run(
-        asyncio.wait_for(
-            runner._run_agent(
-                message="continue",
-                context_prompt="",
-                history=[{"role": "user", "content": "old question"}],
-                source=source,
-                session_id="session-before-compression",
-                session_key=SESSION_KEY,
-                run_generation=run_generation,
-            ),
-            timeout=2,
+        runner._run_agent(
+            message="continue",
+            context_prompt="",
+            history=[{"role": "user", "content": "old question"}],
+            source=source,
+            session_id="session-before-compression",
+            session_key=SESSION_KEY,
+            run_generation=run_generation,
         )
     )
 

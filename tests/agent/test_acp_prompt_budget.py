@@ -78,3 +78,28 @@ def test_answer_quoting_budget_error_is_still_a_normal_completion(tmp_path):
     response = client.chat.completions.create(messages=[{"role": "user", "content": "explain"}], timeout=15)
     assert response.choices[0].finish_reason == "stop"
     assert response.choices[0].message.content == text
+
+
+NOTICES = (
+    "Info: Disabled tools: github.clone, mcp__news.fetch:latest, web-search, rg"
+    'Info: Unknown tool name in the tool allowlist: "hermes_text_tool_bridge_only"'
+)
+
+
+def test_cli_notices_prefixing_the_refusal_still_raise(tmp_path):
+    """The real CLI concatenates its startup notices onto the error text with no newline;
+    stripping only their exact grammar must let the refusal still enter recovery."""
+    text = NOTICES + (
+        "Error: Execution failed: Request exceeds the model's prompt budget after reserving output "
+        "(803060 tokens; limit 272000). Reduce context or compact before continuing."
+    )
+    client = _client(tmp_path, text)
+    with pytest.raises(RuntimeError, match="limit 272000"):
+        client.chat.completions.create(messages=[{"role": "user", "content": "hi"}], timeout=15)
+
+
+def test_notices_then_a_normal_answer_stay_a_normal_completion(tmp_path):
+    text = NOTICES + "Here is your answer, unaffected."
+    client = _client(tmp_path, text)
+    response = client.chat.completions.create(messages=[{"role": "user", "content": "hi"}], timeout=15)
+    assert response.choices[0].finish_reason == "stop"

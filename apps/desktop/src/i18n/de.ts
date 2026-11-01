@@ -3109,13 +3109,13 @@ export const deOverrides = {
         help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, eine pro Feld.'
       },
       SIGNAL_HTTP_URL: {
-        label: 'Signal-Bridge-URL',
+        label: 'signal-cli-HTTP-URL',
         placeholder: 'http://127.0.0.1:8080',
-        help: 'URL einer laufenden signal-cli-REST-Bridge.'
+        help: 'URL des laufenden nativen signal-cli-HTTP-Daemons.'
       },
       SIGNAL_ACCOUNT: {
         label: 'Telefonnummer',
-        help: 'Die Nummer, die bei Ihrer signal-cli-Bridge registriert ist.'
+        help: 'Die Nummer, die mit Ihrem signal-cli verknüpft ist.'
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Erlaubte Signal-Benutzer',

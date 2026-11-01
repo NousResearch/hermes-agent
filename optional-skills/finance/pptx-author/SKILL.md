@@ -1,6 +1,6 @@
 ---
 name: pptx-author
-description: Build PowerPoint decks headless with python-pptx.
+description: Build PowerPoint (.pptx) pitch decks, IC memos, and earnings notes headless with python-pptx, where every number traces to a source workbook. Use when the deck is financial or model-driven. For general slideware, decks with speaker notes, animations, or heavy embeds, use the broader 'powerpoint' skill instead.
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0

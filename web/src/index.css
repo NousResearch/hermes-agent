@@ -253,3 +253,19 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+
+/* Dashboard chat on touch devices: the transcript is scrolled by the touch
+   handler (terminal-touch-scroll.ts). xterm's own scrollbar is a hit target
+   that jumps the viewport when a drag starts on it, so hide it and keep its
+   gutter from claiming the gesture. */
+@media (pointer: coarse) {
+  .hermes-chat-xterm-host .xterm .xterm-scrollable-element > .scrollbar {
+    display: none !important;
+  }
+  .hermes-chat-xterm-host,
+  .hermes-chat-xterm-host .xterm,
+  .hermes-chat-xterm-host .xterm-screen,
+  .hermes-chat-xterm-host .xterm-scrollable-element {
+    touch-action: none;
+  }
+}

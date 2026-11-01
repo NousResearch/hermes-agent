@@ -424,6 +424,13 @@ def _structured_spec(
                 json_mode=json_mode, json_schema=json_schema, schema_name=schema_name)
 
 
+def _check_allow_fallback(value: Any) -> bool:
+    """Reject ambiguous policy values before trust checks or transport."""
+    if type(value) is not bool:
+        raise TypeError("allow_fallback must be a bool")
+    return value
+
+
 class PluginLlm:
     """Host-owned LLM access for one trusted plugin.
 
@@ -448,13 +455,15 @@ class PluginLlm:
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
+        allow_fallback: bool = True,
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
         ``provider``/``model``/``agent_id``/``profile`` are each gated by
         ``plugins.entries.<id>.llm.allow_*_override``. ``task`` routes through a
         plugin-registered auxiliary slot (see :func:`_check_task`)."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout,
+                               allow_fallback=allow_fallback)
         return self._finish("complete", agent, kw, self._invoke_sync(kw), purpose)
 
     def complete_structured(
@@ -463,6 +472,7 @@ class PluginLlm:
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
         profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        allow_fallback: bool = True,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
@@ -470,7 +480,8 @@ class PluginLlm:
         ``json_schema`` the response is parsed (and validated when the optional
         ``jsonschema`` package is installed) into ``result.parsed``."""
         spec = _structured_spec("complete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec,
+                               allow_fallback=allow_fallback)
         return self._finish("complete_structured", agent, kw, self._invoke_sync(kw), purpose, spec)
 
     async def acomplete(
@@ -478,9 +489,11 @@ class PluginLlm:
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
         purpose: Optional[str] = None, task: Optional[str] = None,
+        allow_fallback: bool = True,
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
-        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout,
+                               allow_fallback=allow_fallback)
         return self._finish("acomplete", agent, kw, await self._invoke_async(kw), purpose)
 
     async def acomplete_structured(
@@ -489,22 +502,26 @@ class PluginLlm:
         provider: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None,
         max_tokens: Optional[int] = None, timeout: Optional[float] = None, agent_id: Optional[str] = None,
         profile: Optional[str] = None, purpose: Optional[str] = None, task: Optional[str] = None,
+        allow_fallback: bool = True,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         spec = _structured_spec("acomplete_structured", instructions, input, system_prompt, json_mode, json_schema, schema_name)
-        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
+        agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec,
+                               allow_fallback=allow_fallback)
         return self._finish("acomplete_structured", agent, kw, await self._invoke_async(kw), purpose, spec)
 
     def _gate(
         self, provider: Optional[str], model: Optional[str], agent_id: Optional[str], profile: Optional[str],
         task: Optional[str], messages: Optional[list[dict[str, Any]]], temperature: Optional[float],
         max_tokens: Optional[int], timeout: Optional[float], spec: Optional[dict[str, Any]] = None,
+        *, allow_fallback: bool = True,
     ) -> tuple[Optional[str], dict[str, Any]]:
         """Trust gate (task first, then overrides), then — for a structured ``spec`` —
         build messages/response_format (input-shape errors surface only after trust
         passes). Returns the effective agent id and the call kwargs, in the documented
         order: messages, provider_override, model_override, profile_override,
-        temperature, max_tokens, timeout, extra_body, task."""
+        temperature, max_tokens, timeout, extra_body, task, allow_fallback."""
+        allow_fallback = _check_allow_fallback(allow_fallback)
         policy = self._policy_loader(self._plugin_id)
         eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
@@ -516,7 +533,7 @@ class PluginLlm:
             extra_body = _json_response_format(json_mode=spec["json_mode"], json_schema=spec["json_schema"])
         return eff_agent, dict(messages=messages, provider_override=eff_provider, model_override=eff_model,
                                profile_override=eff_profile, temperature=temperature, max_tokens=max_tokens,
-                               timeout=timeout, extra_body=extra_body, task=eff_task)
+                               timeout=timeout, extra_body=extra_body, task=eff_task, allow_fallback=allow_fallback)
 
     def _finish(
         self, name: str, agent_id: Optional[str], kw: dict[str, Any], invoked: tuple[str, str, Any],
@@ -554,7 +571,8 @@ class PluginLlm:
         route_info: Optional[dict[str, str]] = {} if kw["task"] else None
         return dict(task=kw["task"], provider=kw["provider_override"], model=kw["model_override"],
                     messages=kw["messages"], temperature=kw["temperature"], max_tokens=kw["max_tokens"],
-                    timeout=kw["timeout"], extra_body=merged_extra or None, route_info=route_info), route_info
+                    timeout=kw["timeout"], extra_body=merged_extra or None, route_info=route_info,
+                    **({"allow_fallback": False} if kw["allow_fallback"] is False else {})), route_info
 
     @staticmethod
     def _attributed(kw: dict[str, Any], response: Any, route_info: Optional[dict[str, str]]) -> tuple[str, str, Any]:

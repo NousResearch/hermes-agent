@@ -52,3 +52,51 @@ def test_cold_runtime_refusal_names_the_extra(monkeypatch, tmp_path):
                         project_root=tmp_path)
     assert install_hint("bedrock") in info.value.remedy
     assert "bedrock" in info.value.cause
+
+
+def test_recorded_extra_declared_by_an_enabled_plugin_survives(tmp_path, monkeypatch):
+    """A plugin's own extra (mem0's postgres driver, #135347) must survive a
+    rebuild: uv applies --extra across every workspace member."""
+    from pm.install import _still_declared
+    from pm.packages import Venv
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        "[project]\nname = \"core\"\nversion = \"0\"\nrequires-python = \">=3.11\"\n"
+        "dependencies = []\n"
+        "[project.optional-dependencies]\nmcp = []\n",
+        encoding="utf-8",
+    )
+    plugin = tmp_path / "home" / "plugins" / "mem0"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        "[project]\nname = \"hermes-plugin-mem0\"\nversion = \"0\"\nrequires-python = \">=3.11\"\n"
+        "dependencies = []\n"
+        "[project.optional-dependencies]\npostgres = []\n",
+        encoding="utf-8",
+    )
+    package = Venv(root)
+
+    assert _still_declared(package, ["mcp", "postgres"], plugin_dirs=[plugin]) == [
+        "mcp",
+        "postgres",
+    ]
+    # No member declares it → pruned, exactly like a dropped core extra (uv
+    # would fail the sync with "Extra is not defined").
+    assert _still_declared(package, ["mcp", "postgres"], plugin_dirs=[]) == ["mcp"]
+    # Config discovery sees the same member set the venv stamp is built from.
+    monkeypatch.setattr("pm.workspace.enabled_member_dirs", lambda **kwargs: [plugin])
+    assert _still_declared(package, ["postgres"]) == ["postgres"]
+    assert _still_declared(package, ["hindsight"], plugin_dirs=[plugin]) == []
+
+
+def test_recorded_extra_survives_without_a_core_pyproject(tmp_path):
+    """A tree with no pyproject has nothing to prune against (#135347 keeps
+    the recorded spelling when the root manifest is absent)."""
+    from pm.install import _still_declared
+    from pm.packages import Venv
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert _still_declared(Venv(root), ["postgres"], plugin_dirs=[]) == ["postgres"]

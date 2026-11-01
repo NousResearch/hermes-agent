@@ -23,7 +23,7 @@ _SKILL_FILE_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh"}
 
 
 def _json(payload: dict) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _fail(error: str, **extra) -> str:

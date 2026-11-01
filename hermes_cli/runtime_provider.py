@@ -41,6 +41,12 @@ from utils import base_url_host_matches, base_url_hostname, base_url_path, env_i
 # A frozen session route's config (``frozen_runtime_config``); None = the live profile config.
 _FROZEN_RUNTIME_CONFIG: ContextVar[Optional[dict[str, Any]]] = ContextVar("_FROZEN_RUNTIME_CONFIG", default=None)
 
+# A caller-supplied ``model:`` block standing in for the ACTIVE home's config.yaml for one call
+# (``model_config_override``). Used by cron: a job that legitimately inherited its route from the
+# HOST root config must resolve against THAT block — endpoint and credential included — not against
+# the profile's empty one.
+_MODEL_CFG_OVERRIDE: ContextVar[Optional[dict[str, Any]]] = ContextVar("_MODEL_CFG_OVERRIDE", default=None)
+
 
 @contextmanager
 def frozen_runtime_config(config: dict[str, Any]):
@@ -56,6 +62,23 @@ def frozen_runtime_config(config: dict[str, Any]):
         yield
     finally:
         _FROZEN_RUNTIME_CONFIG.reset(token)
+
+
+@contextmanager
+def model_config_override(model_cfg: Optional[dict[str, Any]]):
+    """Resolve against *model_cfg* instead of the active home's ``model:`` block.
+
+    A cron job that legitimately inherited its route from the HOST root config carries that block
+    (``cron.scheduler.host_default_model``); without this the resolver reads the profile's own —
+    empty — block, so a bare ``custom`` host default dies credentialless even though the host names
+    an endpoint, and ``model.api_mode`` / ``model.api_key`` are dropped the same way. Scoped to the
+    call (a ContextVar token), so a concurrent resolver keeps its own home's block.
+    """
+    token = _MODEL_CFG_OVERRIDE.set(copy.deepcopy(model_cfg) if isinstance(model_cfg, dict) else None)
+    try:
+        yield
+    finally:
+        _MODEL_CFG_OVERRIDE.reset(token)
 
 
 _DEFER_TOKEN_MINT: ContextVar[bool] = ContextVar("_DEFER_TOKEN_MINT", default=False)
@@ -510,9 +533,19 @@ def _auto_detect_local_model(base_url: str) -> str:
 
 def _get_model_config() -> dict[str, Any]:
     """``model`` config section with ``model`` accepted as an alias for ``default``, a dict
-    ``default`` split into model/provider, and a local single-model server auto-detected."""
-    config = load_config()
-    model_cfg = config.get("model")
+    ``default`` split into model/provider, and a local single-model server auto-detected.
+
+    A ``model_config_override`` in force wins over the active home's config.yaml: the whole ladder
+    below reads the model block through here, so an inherited route's ``base_url`` / ``api_mode`` /
+    ``api_key`` reach the rung that needs them instead of the profile's empty block."""
+    override = _MODEL_CFG_OVERRIDE.get()
+    if override is not None:
+        return _normalize_model_cfg(override)
+    return _normalize_model_cfg(load_config().get("model"))
+
+
+def _normalize_model_cfg(model_cfg: Any) -> dict[str, Any]:
+    """Normalize one ``model:`` block (string shorthand or mapping) into the resolver's shape."""
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
     if not isinstance(model_cfg, dict):
@@ -1040,7 +1073,8 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
 
 
 def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
-                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> dict[str, Any]:
+                             explicit_base_url: Optional[str] = None, target_model: Optional[str] = None,
+                             model_cfg_override: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):
       1. disabled-provider guard (``providers.<name>.enabled: false``)
@@ -1056,7 +1090,26 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
       9. ``model.openai_runtime`` overlay (openai/openai-codex, named custom providers): rewrites the picked rung's
          api_mode to ``codex_app_server``; the rung's credential/endpoint is then not used
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
-    OpenCode Zen/Go where different models route through different API surfaces)."""
+    OpenCode Zen/Go where different models route through different API surfaces).
+
+    *model_cfg_override* replaces the ACTIVE home's ``model:`` block for the duration of the call:
+    the caller (cron) already knows the route this run inherited from the HOST root config, and
+    re-deriving it here from the profile's own config is exactly what dropped the endpoint.
+    """
+    if model_cfg_override is None:
+        return _resolve_runtime_provider_ladder(
+            requested=requested, explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url, target_model=target_model)
+    with model_config_override(model_cfg_override):
+        return _resolve_runtime_provider_ladder(
+            requested=requested, explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url, target_model=target_model)
+
+
+def _resolve_runtime_provider_ladder(*, requested: Optional[str], explicit_api_key: Optional[str],
+                                     explicit_base_url: Optional[str],
+                                     target_model: Optional[str]) -> dict[str, Any]:
+    """The ladder itself; see :func:`resolve_runtime_provider` for the rung order."""
     requested_provider = resolve_requested_provider(requested)
     from hermes_cli.left_core_migration import recover_for_provider
     recover_for_provider(requested_provider)  # a provider whose plugin left core: install it before resolving

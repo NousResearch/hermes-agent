@@ -9,7 +9,7 @@ import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
-import { cancelQueuedPrompt, discardLostPrompt, steerQueuedPrompt } from './discard-lost-prompt'
+import { cancelQueuedPrompt, discardLostPrompt, reorderQueuedPrompt, steerQueuedPrompt } from './discard-lost-prompt'
 import { QueuePanel } from './queue-panel'
 
 export interface ComposerQueueSlotInputs {
@@ -122,6 +122,23 @@ export function renderComposerQueueSlot({
           : undefined
       }
       onEdit={beginQueuedEdit}
+      onMove={
+        gateway
+          ? (id, delta) => {
+              // The owner's place for a server row is its rank among the rows it lets move.
+              const movable = queuedPrompts.filter(entry => entry.serverControls?.includes('reorder'))
+              const position = movable.findIndex(entry => entry.id === id) + delta
+
+              if (position < 0 || position >= movable.length) {
+                return
+              }
+
+              reorderQueuedPrompt(sessionId, activeQueueSessionKey, id, position, gateway.request.bind(gateway)).catch(
+                (error: unknown) => notifyError(error, t.composer.queueStuckTitle)
+              )
+            }
+          : undefined
+      }
       onResume={() => {
         unparkQueuedPrompts(activeQueueSessionKey)
 

@@ -129,14 +129,16 @@ ADMISSION_QUEUE_MAX = 32
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
                         request_id: str, payload: dict, intent: str = 'queue',
-                        _authorize_write=None, _replay_guard=None) -> dict:
+                        _authorize_write=None, _replay_guard=None, _after_insert=None) -> dict:
     """Admit input; the trusted private guard raises to refuse a NEW write.
 
     The guard receives the owning transaction connection, must not commit it or
     perform external effects, and may run again on SQLite retry. Exact existing
     and terminal replays bypass it: they cannot create or change accepted work.
     ``_replay_guard(conn)`` runs on the exact live replay instead, inside the same
-    transaction (a replacement's binding to the admission it retired).
+    transaction (a replacement's binding to the admission it retired). ``_after_insert(conn, row)``
+    runs after a NEW row's INSERT in that transaction and returns the row to answer (an edit taking
+    the FIFO place of the row it replaced, ``hermes_state_runtime_queue.take_queue_place``).
     """
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -173,7 +175,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
             (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
-        return _row(_admission(conn, admission_id))
+        admitted = _row(_admission(conn, admission_id))
+        return admitted if _after_insert is None else _after_insert(conn, admitted)
     return db._execute_write(write)
 
 

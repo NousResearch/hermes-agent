@@ -23,6 +23,7 @@ import { jaPluginPreviewAccess } from './ja_plugin_preview_access'
 import { jaPluginSettings, jaPluginsTab } from './ja_plugins'
 import { jaPreviewWeb } from './ja_preview_web'
 import { jaProjects } from './ja_projects'
+import { jaQueueFair } from './ja_queue_fair'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
@@ -2256,6 +2257,7 @@ export const jaOverrides = {
   },
 
   composer: {
+    queueFair: jaQueueFair,
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
     placeholderStarting: 'Hermes を起動中...',

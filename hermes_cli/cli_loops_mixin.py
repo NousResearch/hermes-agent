@@ -392,8 +392,17 @@ class CLILoopsMixin:
             _cprint(f"  {t('cli.queue.empty')}" + ("" if rest else "  " + _queue_usage()))
             return
         _cprint(f"  {t('cli.queue.pending_header', count=len(items))}")
-        for idx, (_, item) in enumerate(items, 1):
+        store = self._gateway_queue_store()
+        reasons = {}
+        if store is not None:
+            from hermes_cli import gateway_queue
+            reasons = gateway_queue.hold_reasons(self, store)
+        for idx, (admission, item) in enumerate(items, 1):
             tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
+            reason = reasons.get(admission) if admission else None
+            if reason:  # why the owner has not started it yet (an unknown future reason prints as sent)
+                label = t(f"cli.queue.hold.{reason}")
+                tag += f"  ({label if label != f'cli.queue.hold.{reason}' else reason})"
             _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
 
     def _queue_gateway_call(self, verb, index, *args):
@@ -407,7 +416,8 @@ class CLILoopsMixin:
             if str(exc) in gateway_queue.STARTED_REFUSALS:  # the drain claimed it first: it runs as sent
                 _cprint(f"  {t('cli.queue.already_started', index=index)}")
             else:
-                key = "cli.queue.edit_refused" if verb == "replace" else "cli.queue.remove_refused"
+                key = {"replace": "cli.queue.edit_refused", "move": "cli.queue.move_refused"}.get(
+                    verb, "cli.queue.remove_refused")
                 _cprint(f"  {t(key, index=index, error=exc)}")
         except GatewayClientError as exc:  # no answer: the owner may have applied it
             _cprint(f"  {t('cli.queue.change_unknown', index=index, error=exc)}")
@@ -465,7 +475,7 @@ class CLILoopsMixin:
         items = self._queue_items()
         owned = sum(1 for admission, _ in items if admission)
         if 1 <= idx <= owned:
-            # The owner admits the edit as a new admission at the back of its FIFO.
+            # The owner admits the edit as a new admission in the edited row's FIFO place.
             if self._queue_gateway_call("replace", idx, items[idx - 1][0], new_text):
                 _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
             return
@@ -485,6 +495,18 @@ class CLILoopsMixin:
         else:
             _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
 
+    def _gateway_move_position(self, items, src, dst):
+        """``prompt.reorder_queued``'s place for a move between listed rows ``src`` and ``dst``: the
+        destination row's rank among the rows the owner lets move. None (printed) when either row
+        stays put (a notification, an automation row)."""
+        from cli import _cprint
+        from hermes_cli import gateway_queue
+        movable = gateway_queue.reorderable(self, self._gateway_queue_store())
+        if items[src - 1][0] not in movable or items[dst - 1][0] not in movable:
+            _cprint(f"  {t('cli.queue.move_refused', index=src, error='unsupported_control')}")
+            return None
+        return movable.index(items[dst - 1][0])
+
     def _queue_move(self, rest: str) -> None:
         from cli import _cprint
         bits = rest.split()
@@ -492,10 +514,18 @@ class CLILoopsMixin:
         if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
-        owned = sum(1 for admission, _ in self._queue_items() if admission)
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
         if owned and min(src, dst) <= owned and src != dst:
-            # The owner's FIFO runs admissions in the order they were sent; it has no reorder verb.
-            _cprint(f"  {t('cli.queue.move_gateway_fifo')}")
+            # The owner's FIFO is reordered by the owner (``prompt.reorder_queued``); the local turns
+            # always run after it, so a move cannot cross between the two.
+            if min(src, dst) < 1:
+                _cprint(f"  {t('cli.queue.move_out_of_range', size=len(items))}")
+            elif max(src, dst) > owned:
+                _cprint(f"  {t('cli.queue.move_across_gateway', size=owned)}")
+            elif (position := self._gateway_move_position(items, src, dst)) is not None and self._queue_gateway_call(
+                    "move", src, items[src - 1][0], position) is not None:
+                _cprint(f"  {t('cli.queue.moved', source=src, destination=dst)}")
             return
         src, dst = src - owned, dst - owned
 

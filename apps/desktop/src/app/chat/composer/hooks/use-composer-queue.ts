@@ -37,6 +37,8 @@ import { replaceQueuedPrompt } from '../discard-lost-prompt'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
+import { useServerEditHold } from './use-server-edit-hold'
+
 /** Freeze terminal chips for queue persistence. Persists the chip/display
  *  form; fenced selection CONTENTS stay in the runtime map. Returns null when
  *  a chip has no selection payload (caller should abort without mutating the queue). */
@@ -165,6 +167,12 @@ export function useComposerQueue({
   )
 
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
+  // The owner holds a server row while it is open here, so it cannot start mid-edit.
+  useServerEditHold(
+    sessionId,
+    activeQueueSessionKey,
+    queueEdit && editingQueuedPrompt?.serverStatus === 'queued' ? queueEdit.entryId : null
+  )
   // A server row's edit: its id while editing, and while the owner answers its save. Presentation
   // only: the owner's FIFO keeps running (it may claim the row mid-edit), so the composer keeps
   // the edited text until the owner accepts the replacement.

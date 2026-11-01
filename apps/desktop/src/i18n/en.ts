@@ -27,6 +27,7 @@ import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enQueueFair } from './en_queue_fair'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -3453,6 +3454,7 @@ export const en: Translations = {
     queueCollapse: 'Collapse',
     queueSendNext: 'Next',
     queueSteer: 'Steer — redirect the live turn now',
+    queueFair: enQueueFair,
     queueSend: 'Send',
     queueDelete: 'Delete',
     queueLostNote: 'Turn lost during restart',

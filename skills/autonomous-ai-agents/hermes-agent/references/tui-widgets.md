@@ -58,6 +58,44 @@ export default function register(sdk) {
 `ShimmerRows`, `useShimmerPhase` — use `ShimmerRows` for loading phases
 instead of a bare "loading…" line.
 
+Host-managed refresh (polling widgets): declare `refresh` instead of a
+hand-rolled `useEffect` + `setInterval` —
+
+```js
+defineWidgetApp({
+  id: 'grok-usage',
+  mode: 'ambient',
+  refresh: {
+    intervalMs: 120_000,        // fetch on mount + every interval
+    staleMs: 180_000,            // optional; default intervalMs * 1.5
+    maxRetries: 3,               // optional; consecutive failures → dead
+    fetch: async signal => await readQuota(signal)  // null keeps prior state
+  },
+  init: () => ({ loading: true }),   // initial state until the first fetch lands
+  reduce: state => state,
+  render: ({ state, t, stale, dead }) =>
+    dead  ? h(Text, { dim: true, color: t.color.muted }, 'offline')
+          : stale ? h(Text, { color: t.color.warn }, '⋯ ' + state.label)
+          : h(Text, { color: t.color.ok }, state.label)
+})
+```
+
+The host fetches, keeps the LAST GOOD state through failures, and passes
+`stale`/`dead` in the render ctx — render the data dimmed/badged, never
+blank. A widget without `refresh` keeps whatever manual pattern it had.
+
+Dock order: `display.tui_widgets.order` in config.yaml lists widget ids in
+dock/rail render order — no numeric filename prefixes:
+
+```yaml
+display:
+  tui_widgets:
+    order: [grok-usage, codex-usage, tavily-usage]
+```
+
+Listed ids render in list position; unlisted ones keep launch order after
+them. Applies to docks and rails, and to user widgets and built-ins alike.
+
 Expand/collapse: `sdk.Accordion` — the same primitive the session panel's
 tool/skill sections use. `h(Accordion, { t, title: 'details', count: 3,
 defaultOpen: false }, body)` toggles on CLICK (works in ambient widgets,
@@ -104,7 +142,9 @@ Contract essentials:
   wraps content in `Overlay` for placement.
 - Async data: fire the fetch from `init`, land results with
   `sdk.updateWidget(app, fn)` — it no-ops if the widget was closed, so a
-  late reply can never resurrect it.
+  late reply can never resurrect it. For polling widgets prefer the
+  host-managed `refresh` key above — the host owns the interval, keeps the
+  last good state on failure, and passes `stale`/`dead` to render.
 - Animation: own a timer inside a component via `React.useState` +
   `React.useEffect` (see the template); keep intervals ≥ 250ms.
 - Colors: ALWAYS theme tones (`t.color.primary/label/muted/ok/error/…`),

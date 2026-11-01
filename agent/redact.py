@@ -699,34 +699,43 @@ _APPROVAL_PAD_RE = re.compile(rf"(?<=\S){_APPROVAL_SPACE}{{21,}}|(?m:^){_APPROVA
 # 3+ consecutive blank or whitespace-only lines; the match ends at a newline so the next line keeps its indent.
 _APPROVAL_BLANK_RE = re.compile(rf"\n(?:{_APPROVAL_SPACE}*\n){{3,}}")
 _APPROVAL_SAME_CHAR_RUN_RE = re.compile(r"(.)\1*", re.DOTALL)
+# Prose mode (questions shown to a human, never executed) surfaces only what can hide or reorder
+# text: controls, bidi embeddings/overrides/isolates, line/paragraph separators and padding. ZWJ,
+# ZWNJ and variation selectors stay, because emoji and scripts such as Persian need them.
+_PROSE_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
-def _escape_approval_run(run: str) -> str:
+def _escape_approval_run(run: str, prose: bool = False) -> str:
     """Escape the invisible code points of a non-ASCII run; 4+ repeats of one show once with their count."""
     def one(m: re.Match) -> str:
         ch, n = m.group(1), len(m.group())
         cat = unicodedata.category(ch)
-        if ch not in _APPROVAL_BLANK_GLYPHS and cat[0] != "C" and cat not in ("Zl", "Zp"):
+        if prose:
+            hidden = cat == "Cc" or cat in ("Zl", "Zp") or ch in _PROSE_BIDI_CONTROLS
+        else:
+            hidden = ch in _APPROVAL_BLANK_GLYPHS or cat[0] == "C" or cat in ("Zl", "Zp")
+        if not hidden:
             return m.group()
         esc = ch.encode("unicode_escape").decode("ascii")
         return f"⟨{esc} ×{n}⟩" if n >= 4 else esc * n
     return _APPROVAL_SAME_CHAR_RUN_RE.sub(one, run)
 
 
-def sanitize_command_for_display(text: str | None) -> str:
+def sanitize_command_for_display(text: str | None, *, prose: bool = False) -> str:
     """Make hidden content in an approval-prompt string visible; clean text comes back unchanged.
 
-    Display-only: the executed command, smart assessment and allowlist keys never see this copy."""
+    Display-only: the executed command, smart assessment and allowlist keys never see this copy.
+    ``prose=True`` is the lighter pass for question text (see ``_PROSE_BIDI_CONTROLS``)."""
     if not text:
         return ""
-    out = _APPROVAL_NON_ASCII_RE.sub(lambda m: _escape_approval_run(m.group()), text)
+    out = _APPROVAL_NON_ASCII_RE.sub(lambda m: _escape_approval_run(m.group(), prose), text)
     out = _APPROVAL_BLANK_RE.sub(lambda m: f"\n⟨+{m.group().count(chr(10)) - 1} blank lines⟩\n", out)
     return _APPROVAL_PAD_RE.sub(lambda m: f" ⟨+{len(m.group())} whitespace chars⟩ ", out)
 
 
-def redact_approval_display(text: str | None, *, force: bool = False) -> str:
+def redact_approval_display(text: str | None, *, force: bool = False, prose: bool = False) -> str:
     """Secret redaction plus :func:`sanitize_command_for_display`, for every approval surface."""
-    return sanitize_command_for_display(redact_sensitive_text(str(text or ""), force=force))
+    return sanitize_command_for_display(redact_sensitive_text(str(text or ""), force=force), prose=prose)
 
 
 def _mask_token(token: str) -> str:

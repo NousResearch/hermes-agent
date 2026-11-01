@@ -91,9 +91,13 @@ def test_first_render_surfaces_get_the_display_copy_while_values_stay_raw(monkey
     # Tool-progress line under the prompt shows the hidden characters instead of collapsing them.
     preview = build_tool_preview("terminal", {"command": raw}, max_len=0)
     assert "\\u200b" in preview and "\\u2028 \u00d760" in preview
-    # Clarify: the surface renders the display copy; the tool result echoes the raw question and choice.
+    # Clarify: prose display copy of question and choices (emoji/ZWJ/ZWNJ/VS16 intact, bidi and padding
+    # surfaced); the tool result echoes the raw question and maps the picked choice back to its raw text.
+    prose = "\u26a0\ufe0f Which branch? \U0001f468\u200d\U0001f4bb \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
     asked = []
-    result = json.loads(clarify_tool([{"question": raw, "choices": ["go\u200b"]}], callback=lambda qs: asked.extend(qs)
-                                      or {"answers": {qs[0]["qid"]: qs[0]["choices_offered"][0]}, "outcome": "submitted"}))
-    assert asked[0]["question"] == sanitize_command_for_display(raw)
-    assert result["responses"][0]["question"] == raw and result["responses"][0]["user_response"] == "go\u200b"
+    result = json.loads(clarify_tool([{"question": prose + raw, "choices": ["go\u202edab", "ok"]}],
+                                     callback=lambda qs: asked.extend(qs) or {
+                                         "answers": {qs[0]["qid"]: qs[0]["choices"][0]}, "outcome": "submitted"}))
+    assert asked[0]["question"] == prose + "rm -rf ./build\u200b-cache\u27e8\\u2028 \u00d760\u27e9; " + _TAIL
+    assert asked[0]["choices"][0] == "go\\u202edab (Recommended)" and asked[0]["choices_offered"][1] == "ok"
+    assert result["responses"][0]["question"] == prose + raw and result["responses"][0]["user_response"] == "go\u202edab"

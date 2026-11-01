@@ -208,7 +208,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "promote", "archive", "unarchive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -471,6 +471,22 @@ def _print_section(title: str, lines) -> None:
         print(line)
 
 
+def _show_archived_fields(field, task: kb.Task) -> None:
+    """Render the ``archived``/``reason`` lines for ``kanban show`` — split out
+    of ``_cmd_show`` to keep that function's branch count from growing with
+    this feature (root AGENTS.md CC ratchet)."""
+    if task.status != "archived" or not task.archived_from_status:
+        return
+    archived_desc = f"from {task.archived_from_status}"
+    if task.archived_at:
+        archived_desc += f" at {_fmt_ts(task.archived_at)}"
+    if task.archived_by:
+        archived_desc += f" by {task.archived_by}"
+    field("archived", archived_desc)
+    if task.archive_reason:
+        field("reason", task.archive_reason)
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     rsk, rc = _run_state_kwargs(args, "show")
     if rc:
@@ -508,6 +524,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("assignee", task.assignee or "-")
     if task.tenant:
         field("tenant", task.tenant)
+    _show_archived_fields(field, task)
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         field("branch", task.branch_name)
@@ -1119,6 +1136,43 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _archive_result_dict(result: kb.ArchiveResult) -> dict[str, object]:
+    d: dict[str, object] = {
+        "task_id": result.task_id, "ok": result.ok, "status": result.status,
+    }
+    if result.error_code:
+        d["error_code"] = result.error_code
+    if result.active_descendants:
+        d["active_descendants"] = [{"id": i, "status": s} for i, s in result.active_descendants]
+    if result.archived_from_status:
+        d["archived_from_status"] = result.archived_from_status
+    if result.archived_at:
+        d["archived_at"] = result.archived_at
+    return d
+
+
+def _archive_error_message(result: kb.ArchiveResult) -> str:
+    if result.error_code == "not_found":
+        return f"no such task: {result.task_id}"
+    if result.error_code == "invalid_source_status":
+        return (
+            f"task {result.task_id} is {result.status!r}; archive only applies to "
+            f"'done' or 'blocked'"
+        )
+    if result.error_code == "active_claim":
+        return f"task {result.task_id} has an active claim/run; cannot archive"
+    if result.error_code == "active_descendants":
+        detail = ", ".join(f"{i} ({s})" for i, s in result.active_descendants)
+        return f"task {result.task_id} has active (non-done/archived) descendants: {detail}"
+    if result.error_code == "status_changed":
+        return f"task {result.task_id} status changed during archive; retry"
+    if result.error_code == "not_archived":
+        return f"task {result.task_id} is not archived (status={result.status})"
+    if result.error_code == "legacy_archive_metadata_missing":
+        return f"task {result.task_id} is archived with no restore metadata (legacy row); cannot unarchive"
+    return f"cannot process {result.task_id}: {result.error_code or 'unknown error'}"
+
+
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
@@ -1126,12 +1180,52 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         return _err("choose either task_ids to archive or --rm archived task_ids")
     if not ids and not purge_ids:
         return _err("at least one task_id is required")
-    with kbc.connect_closing() as conn:
-        if purge_ids:
+    if purge_ids:
+        with kbc.connect_closing() as conn:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
-                           lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
+    reason = _joined_words(getattr(args, "reason", None))
+    if not reason:
+        return _err("kanban archive: --reason is required", 2)
+    actor = _profile_author()
+    with kbc.connect_closing() as conn:
+        results = [kb.archive_task(conn, tid, reason=reason, actor=actor) for tid in ids]
+    if getattr(args, "json", False):
+        dicts = [_archive_result_dict(r) for r in results]
+        _print_json(dicts[0] if len(dicts) == 1 else dicts)
+        return 0 if all(r.ok for r in results) else 1
+    failed = False
+    for result in results:
+        if result.ok:
+            print(f"Archived {result.task_id} (from {result.archived_from_status})")
+        else:
+            failed = True
+            print(_archive_error_message(result), file=sys.stderr)
+    return 1 if failed else 0
+
+
+def _cmd_unarchive(args: argparse.Namespace) -> int:
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = _joined_words(getattr(args, "reason", None))
+    if not reason:
+        return _err("kanban unarchive: --reason is required", 2)
+    actor = _profile_author()
+    with kbc.connect_closing() as conn:
+        results = [kb.unarchive_task(conn, tid, reason=reason, actor=actor) for tid in ids]
+    if getattr(args, "json", False):
+        dicts = [_archive_result_dict(r) for r in results]
+        _print_json(dicts[0] if len(dicts) == 1 else dicts)
+        return 0 if all(r.ok for r in results) else 1
+    failed = False
+    for result in results:
+        if result.ok:
+            print(f"Unarchived {result.task_id} -> {result.status}")
+        else:
+            failed = True
+            print(_archive_error_message(result), file=sys.stderr)
+    return 1 if failed else 0
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
@@ -1330,7 +1424,7 @@ _HANDLERS = {
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
-    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "archive": _cmd_archive, "unarchive": _cmd_unarchive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

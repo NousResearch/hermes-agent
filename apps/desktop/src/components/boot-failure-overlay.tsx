@@ -235,7 +235,9 @@ export function BootFailureOverlay() {
       let shape = deriveProviderShape(null)
 
       try {
-        const probe = await desktop.probeConnectionConfig(config.remoteUrl)
+        const probe = config.sshTunnel
+          ? await desktop.probeConnectionConfig(config.remoteUrl, { sshTunnel: config.sshTunnel })
+          : await desktop.probeConnectionConfig(config.remoteUrl)
         shape = deriveProviderShape(probe?.providers)
       } catch {
         // Generic copy is fine.
@@ -337,7 +339,11 @@ export function BootFailureOverlay() {
       } else {
         await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-        const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+        const loginOptions = connectionConfig?.sshTunnel ? { sshTunnel: connectionConfig.sshTunnel } : undefined
+
+        const result: DesktopOauthLoginResult | undefined = loginOptions
+          ? await desktop?.oauthLoginConnectionConfig(remoteReauth.url, loginOptions)
+          : await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
         connected = result?.connected === true
         error = result?.error
       }

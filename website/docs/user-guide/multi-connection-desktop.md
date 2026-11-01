@@ -71,7 +71,8 @@ Rules worth knowing:
   URL (trimmed, trailing slashes stripped, lowercased — and across both
   kinds, so a cloud entry and a remote entry can't point at the same URL);
   **SSH** entries are deduplicated on the normalized `user@host:port` plus
-  remote profile.
+  remote profile. A remote entry with an SSH tunnel adds its SSH host to the
+  key, so the same loopback URL on two hosts is two gateways.
 - Cloud entries normally come from the Hermes Cloud sign-in/discovery flow at
   the top of the Gateways page — the **Hermes Cloud** kind in the add-connection
   editor points you there.
@@ -127,6 +128,15 @@ authentication; manage sign-in from the registered connection controls.
          token."*
        - **OAuth** — sign in through the Nous Portal browser flow; no token
          to paste.
+     - **Use SSH tunnel** (optional) — reach a gateway that only listens on
+       the remote host's loopback, such as a Docker/Compose install publishing
+       `127.0.0.1:9119`. Enter the **SSH host** (`user@host:22` or a
+       `~/.ssh/config` alias) and keep the URL as the host sees it, e.g.
+       `http://127.0.0.1:9119`. The app forwards a free local port to the
+       URL's port on that host and dials through it; sign-in also runs through
+       the tunnel, and each tunnelled connection keeps its own cookies. It only
+       transports — unlike the **SSH** kind it never starts, stops, or updates
+       the backend, so the container keeps owning it.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard
@@ -151,7 +161,8 @@ instance itself is not touched — you can add it again any time."*
 Nothing here works unless the backend is actually up and reachable on the
 other machine. The desktop app attaches to it; it does not start it for you
 (except for SSH connections, where the app starts the dashboard over the
-tunnel on demand). See
+tunnel on demand; a Remote gateway with **Use SSH tunnel** only forwards to a
+backend that is already running). See
 [Connecting to a remote backend](./desktop.md#connecting-to-a-remote-backend)
 for backend-side setup — auth providers, binding to a non-loopback address,
 and Tailscale guidance.

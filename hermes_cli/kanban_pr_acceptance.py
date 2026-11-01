@@ -28,8 +28,35 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
+def _protection_forbidden_payload(stdout: object) -> dict | None:
+    """Return the parsed payload when the only GraphQL errors are FORBIDDEN on
+    ``branchProtectionRule``.
+
+    An installation token for a GitHub App without Administration:read gets
+    ``data`` plus an ``errors`` array on exactly that path: the rule is the
+    branch-protection read, while required checks on ruleset-protected repos
+    still resolve through the REST rulesets path below. Any other error shape
+    returns None so the caller keeps raising/infra-classifying.
+    """
+    try:
+        value = json.loads(stdout or b"{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict) or not value.get("errors"):
+        return None
+    if not all(isinstance(error, dict) and error.get("type") == "FORBIDDEN"
+               and isinstance(error.get("path"), list) and error["path"]
+               and error["path"][-1] == "branchProtectionRule"
+               for error in value["errors"]):
+        return None
+    if not ((value.get("data") or {}).get("repository") or {}).get("pullRequest"):
+        return None
+    return value
+
+
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         profile_home: str | None = None,
+         tolerate_protection_forbidden: bool = False):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -40,6 +67,13 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
                                 text=True, encoding="utf-8", errors="replace", timeout=30,
                                 check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as exc:
+        # gh exits non-zero when a GraphQL response carries an errors array even
+        # if the rest of the data resolved; an App token without
+        # Administration:read gets exactly that shape for branchProtectionRule.
+        if tolerate_protection_forbidden:
+            partial = _protection_forbidden_payload(exc.stdout)
+            if partial is not None:
+                return partial
         # 401/403/404 = the login cannot see this repository (wrong profile identity
         # or missing grant), not a transient API failure. Persist only the status
         # code + endpoint, never gh's stderr (credentials/host details).
@@ -51,7 +85,10 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         raise
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
-        raise ValueError("GitHub returned incomplete GraphQL evidence")
+        partial = _protection_forbidden_payload(result.stdout) if tolerate_protection_forbidden else None
+        if partial is None:
+            raise ValueError("GitHub returned incomplete GraphQL evidence")
+        return partial
     return value
 
 
@@ -122,7 +159,8 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["pr_url"] = url
         owner, name = repo.split("/")
         query = f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)}){{pullRequest(number:{number:d}){{headRefOid baseRefName state\n            baseRef{{branchProtectionRule{{requiredStatusChecks{{context app{{databaseId}}}}}}}}}}}}}}'
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        repository = _api("graphql", query=query, profile_home=profile_home,
+                      tolerate_protection_forbidden=True)["data"]["repository"]
         if repository is None:
             # A private repo the login cannot read resolves to null, not an error.
             raise _GateAuthError(f"HTTP 404 on graphql {repo}")

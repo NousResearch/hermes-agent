@@ -6,6 +6,7 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -16,6 +17,8 @@ from gateway.platforms.base import (
     Platform,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
+from gateway.session_identity import RoutingIdentity
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +192,7 @@ class TestBusyInputModeQueueFifo:
         return runner, adapter
 
     def _text_event(self, text: str) -> MessageEvent:
-        # profile=None: a MagicMock auto-attribute reads as a truthy stamped
-        # profile and trips fail-closed adapter resolution (AGENTS.md #17).
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", user_id="user1")
         return MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -220,8 +221,9 @@ class TestBusyInputModeQueueFifo:
 
 
 
-    def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "") -> MessageEvent:
-        source = MagicMock(chat_id="c1", platform=Platform.TELEGRAM, profile=None)
+    def _media_event(self, path: str, mime: str, message_type: MessageType, text: str = "",
+                     user_id: str = "user1") -> MessageEvent:
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c1", user_id=user_id)
         return MessageEvent(
             text=text, message_type=message_type, source=source,
             media_urls=[path], media_types=[mime], message_id=f"m-{path}",
@@ -265,6 +267,48 @@ class TestBusyInputModeQueueFifo:
         assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
         assert "first" in head.text and "second" in head.text
         assert runner._queue_depth(session_key, adapter=adapter) == 1
+
+    def test_photo_burst_from_another_user_keeps_separate_origin(self):
+        """Shared-room queue may not run the second user's content under the first sender."""
+        runner, adapter = self._make_runner_and_adapter()
+        session_key = "telegram:group:shared-room"
+        first = self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO,
+                                  text="first", user_id="lead")
+        second = self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO,
+                                   text="second", user_id="guest")
+        for turn in (first, second):
+            turn.source.chat_type = "group"
+            turn.source.chat_id = "shared-room"
+
+        runner._queue_or_replace_pending_event(session_key, first)
+        runner._queue_or_replace_pending_event(session_key, second)
+
+        assert adapter._pending_messages[session_key] is first
+        assert first.text == "first" and first.media_urls == ["/tmp/a.jpg"]
+        assert runner._queued_events[session_key] == [second]
+        assert second.source.user_id == "guest"
+
+    def test_photo_burst_from_another_receiving_bot_keeps_separate_origin(self, tmp_path):
+        runner, adapter = self._make_runner_and_adapter()
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        runner._delivery_adapter_for = lambda source: adapter
+        session_key = "agent:routed:telegram:group:shared-room"
+        first = self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="first")
+        second = self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO, text="second")
+        for turn, bot in ((first, "relay-bot"), (second, "other-bot")):
+            turn.source.chat_type = "group"
+            turn.source.chat_id = "shared-room"
+            turn.source.profile = "routed"
+            turn.source._identity = RoutingIdentity(
+                transport_profile=bot, runtime_profile="routed", authorization_home=tmp_path,
+                runtime_home=tmp_path, multiplexed=True)
+
+        runner._queue_or_replace_pending_event(session_key, first)
+        runner._queue_or_replace_pending_event(session_key, second)
+
+        assert adapter._pending_messages[session_key] is first
+        assert first.text == "first" and first.media_urls == ["/tmp/a.jpg"]
+        assert runner._queued_events[session_key] == [second]
 
     def test_photo_never_merges_into_a_queued_goal_continuation(self):
         """A human photo arriving behind a synthetic continuation keeps its own turn: merged, it

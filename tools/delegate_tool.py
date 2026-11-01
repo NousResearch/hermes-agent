@@ -30,10 +30,11 @@ from tools.delegate_tool_child_run import (
 )
 from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
-    _subagent_auto_approve, _subagent_auto_deny,
+    _get_max_children_per_session, _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled,
+    _get_subagent_approval_callback, _get_worktree_isolation, _inherit_parent_capabilities, _load_config,
+    _merge_request_overrides, _release_session_children_budget, _reserve_session_children_budget,
+    _resolve_child_credential_pool, _resolve_child_runtime, _resolve_delegation_credentials, _session_children_counts,
+    _session_children_lock, _subagent_auto_approve, _subagent_auto_deny, cleanup_session_budget,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (
@@ -621,8 +622,16 @@ def delegate_task(
     # Batch-level model/provider labels (transcript headers, completion block): blank when tasks took different
     # routes, so each child reports what it actually runs on.
     creds = runnable[0].creds if all(r.creds == runnable[0].creds for r in runnable) else dict.fromkeys(runnable[0].creds)
-    err = _oneshot_spawn_budget(parent_agent, len(runnable))
+    reserved, budget_error = _reserve_session_children_budget(parent_agent, len(runnable))
+    if budget_error:
+        return tool_error(budget_error)
+    try:
+        err = _oneshot_spawn_budget(parent_agent, len(runnable))
+    except Exception:
+        _release_session_children_budget(parent_agent, reserved)
+        raise
     if err:
+        _release_session_children_budget(parent_agent, reserved)
         return tool_error(err)
 
     overall_start = time.monotonic()
@@ -638,23 +647,28 @@ def delegate_task(
     # wrong profile (#91996). state.db sits directly under the home, so
     # its parent IS the home; None falls back to today's ambient resolve
     # (with a warning — that fallback is exactly the #91996 failure mode).
-    _live_home = _parent_live_home(parent_agent)
-
-    from tools.delegation_live_log import create_live_transcripts
-    live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home,
-    )
-    if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
-        _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
-    _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
-
-    children, err = _build_children(
-        task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
+    try:
+        _live_home = _parent_live_home(parent_agent)
+        from tools.delegation_live_log import create_live_transcripts
+        live_deleg_id, live_writers, live_paths = create_live_transcripts(
+            task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+            home=_live_home,
+        )
+        if refused:  # settled before anything runs: transcripts and manifest show the refusal
+            _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)
+        _announce_batch(parent_agent, len(task_list), live_deleg_id)
+        origin = _capture_origin()
+        children, err = _build_children(
+            task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        )
+    except Exception:
+        # No child is dispatched until the complete construction loop succeeds.
+        # Roll back the whole reservation even when earlier children built.
+        _release_session_children_budget(parent_agent, reserved)
+        raise
     if err:
+        _release_session_children_budget(parent_agent, reserved)
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
@@ -688,7 +702,18 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     if independent_completions is None:
         independent_completions = _get_independent_completions()
     delivery = _DELIVERY_INDEPENDENT if independent_completions else _DELIVERY_JOINED
-    return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
+    # Per-session total budget clause (#52484). Stated here because it applies to
+    # both single-task and batch calls and is not a per-task parameter.
+    max_per_session = _get_max_children_per_session()
+    if max_per_session == 0:
+        session_budget_clause = (
+            "SESSION BUDGET: unlimited; positive config enables the cap.\n\n"
+        )
+    else:
+        session_budget_clause = (
+            f"SESSION BUDGET: {max_per_session}/parent session; 0=unlimited.\n\n"
+        )
+    return _DESCRIPTION_HEAD.format(delivery=delivery) + session_budget_clause + restrictions_rule + _DESCRIPTION_TAIL
 
 _DELIVERY_INDEPENDENT, _DELIVERY_JOINED = "each ungrouped task / `group` returns on its own", "one message per call"
 

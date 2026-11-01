@@ -1631,7 +1631,9 @@ class SessionSessionsMixin:
         """Remove ``<id>.json``/``.jsonl``, the legacy ``session_<id>.json`` snapshot, and gateway
         ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a
         DB operation. Every historical writer name is swept because a "deleted" session's snapshot
-        can carry plaintext secrets (#20334, #60207)."""
+        can carry plaintext secrets (#20334, #60207). Also retire the deleted session's delegation budget."""
+        from tools.delegate_tool_config import cleanup_session_budget
+        cleanup_session_budget(session_id)
         if sessions_dir is None:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]

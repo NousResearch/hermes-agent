@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+from itertools import count
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,7 +22,10 @@ from tools.delegate_tool import _summarize_tool_arguments, delegate_task
 from hermes_cli import plugins
 
 
-def _make_parent(depth: int = 0, session_id: str = "parent-1"):
+_PARENT_SESSION_IDS = count()
+
+
+def _make_parent(depth: int = 0, session_id: str | None = None):
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "***"
@@ -41,7 +45,7 @@ def _make_parent(depth: int = 0, session_id: str = "parent-1"):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     parent._memory_manager = None
-    parent.session_id = session_id
+    parent.session_id = session_id or f"parent-{next(_PARENT_SESSION_IDS)}"
     return parent
 
 

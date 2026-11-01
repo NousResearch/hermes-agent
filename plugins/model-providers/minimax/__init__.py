@@ -37,15 +37,44 @@ class MiniMaxProfile(ProviderProfile):
         return extra_body, {}
 
 
+# The MiniMax catalog, in the order MiniMax serves it.
+#
+# MiniMax publishes its model catalog at ``<base>/v1/models`` — the Anthropic-compatible route
+# answers there with an ``x-api-key`` header — while the generic ``<base>/models`` probe the
+# framework issues does not answer, and the failure is swallowed, so every picker surface
+# silently degraded to the curated floor and a newly released model never appeared (#142648).
+#
+# Declaring the catalog as the profile's ``fallback_models`` fixes both halves of that:
+#   * the picker lists the current models when the live probe does not answer, and
+#   * ``merge_profile_catalog`` wraps the fallback in ``CuratedFallbackModels``, which the disk
+#     cache treats as a PLACEHOLDER — it expires on the short fallback TTL and is never
+#     stale-served. Without it the degraded list was cached as the account's own catalog for a
+#     full hour and stale-served for the whole SWR window, so a stale floor outlived the outage
+#     that produced it.
+#
+# The list mirrors the curated policy: the flagship plus the models the curated catalog lists.
+# The ``-highspeed`` variants are deliberately NOT here — the curated catalog leaves them out
+# (they are the 2x-priced tier) and the live catalog contributes them when it is reachable.
+#
+# Verified 2026-10-26 against the live endpoint: ``GET https://api.minimax.io/anthropic/v1/models``
+# with the ``x-api-key`` header returns HTTP 200 and nine ids, ``MiniMax-M3.1-Flash`` first.
+# The China route serves the same catalog (https://api.minimaxi.com/anthropic/v1/models), and
+# models.dev lists ``MiniMax-M3.1-Flash`` for both ``minimax`` and ``minimax-cn``.
+_MINIMAX_CATALOG = (
+    "MiniMax-M3.1-Flash", "MiniMax-M3",
+    "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2",
+)
+
 minimax = MiniMaxProfile(
     name="minimax", aliases=("mini-max",), api_mode="anthropic_messages", env_vars=("MINIMAX_API_KEY",),
     base_url="https://api.minimax.io/anthropic", auth_type="api_key", default_aux_model="MiniMax-M3",
+    fallback_models=_MINIMAX_CATALOG,
 )
 
 minimax_cn = MiniMaxProfile(
     name="minimax-cn", aliases=("minimax-china", "minimax_cn"), api_mode="anthropic_messages",
     env_vars=("MINIMAX_CN_API_KEY",), base_url="https://api.minimaxi.com/anthropic", auth_type="api_key",
-    default_aux_model="MiniMax-M3",
+    default_aux_model="MiniMax-M3", fallback_models=_MINIMAX_CATALOG,
 )
 
 minimax_oauth = MiniMaxProfile(

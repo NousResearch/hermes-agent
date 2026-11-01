@@ -141,3 +141,26 @@ def test_malformed_user_yaml_drops_the_yaml_layer_for_both_readers(profile, monk
     assert relay.relay_explicitly_disabled() is False
     assert config.platforms[Platform.RELAY].enabled is True
     assert relay.relay_url() == URL
+
+
+def test_the_predicate_reads_only_the_relay_blocks(profile, monkeypatch):
+    """Other platforms' blocks never reach the predicate: a malformed one cannot break it, and a
+    registered plugin's ``gateway.<id>`` block does not become a process-wide ``Platform`` member."""
+    from gateway.platform_registry import PlatformEntry
+
+    other = "relay_predicate_other_plugin"
+    platform_registry.register(PlatformEntry(
+        name=other, label=other, adapter_factory=lambda cfg: None, check_fn=lambda: True, source="plugin"),
+        scope=None)
+    monkeypatch.delitem(Platform._value2member_map_, other, raising=False)
+    (profile / "config.yaml").write_text(yaml.safe_dump({
+        "platforms": {**DISABLE, "telegram": {"extra": None}},
+        "gateway": {other: {"enabled": True}},
+    }), encoding="utf-8")
+    try:
+        assert relay.relay_explicitly_disabled() is True
+        assert other not in Platform._value2member_map_
+    finally:
+        platform_registry.unregister(other)
+        Platform._value2member_map_.pop(other, None)
+        Platform._member_map_.pop(other.upper(), None)

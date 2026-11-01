@@ -7,7 +7,6 @@ copy the values into ``extra``" — declared by each platform plugin as ``Platfo
 msgraph_webhook, relay) keep their small functions here.
 """
 
-import copy
 import logging
 import os
 from contextvars import ContextVar
@@ -395,25 +394,18 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
     page): ``load_gateway_config()`` there enumerates that profile's platform plugins and constructs
     ``Platform(<plugin id>)`` for them, process-wide pseudo-members every other profile then sees.
     So only this platform's and the relay's blocks (the relay can disable it) go through the
-    loader's own steps (section merge, administrator-pinned keys, top-level bridge; see
-    ``load_yaml_layer``), which also record an explicit ``enabled`` for the env pass. The env pass's
+    loader's own platform steps (``build_platform_sections`` and ``PlatformSections.finish``), which
+    also record an explicit ``enabled`` for the env pass. The env pass's
     logs and one-time warnings are held back.
     """
     if platform_id not in _BUILTIN_PLATFORM_VALUES:
         return None
-    from gateway.config_loader import (
-        _apply_managed_extra, bridge_platform_shared_keys, merge_platform_sections, snapshot_authored_extra,
-    )
-    from hermes_cli.managed_scope import apply_managed_overlay
+    from gateway.config_loader import build_platform_sections
 
     platform = Platform(platform_id)
-    names = {platform_id, Platform.RELAY.value}
-    top, nested = _platform_layers(yaml_cfg, names)
-    platforms = merge_platform_sections(top, nested, gw_data={})
-    authored = snapshot_authored_extra(platforms)  # no gateway.json layer here: the merge is config.yaml only
-    managed_top, managed_nested = _platform_layers(apply_managed_overlay({}), names)
-    _apply_managed_extra(authored, {**managed_top, "gateway": managed_nested}, platforms)
-    bridge_platform_shared_keys(top, nested["platforms"], {}, platforms, [platform, Platform.RELAY], authored=authored)
+    sections = build_platform_sections(yaml_cfg, {}, names={platform_id, Platform.RELAY.value})
+    sections.finish([platform, Platform.RELAY])
+    platforms = sections.platforms
     for block in platforms.values():
         block.pop("home_channel", None)  # status needs none; HomeChannel.from_dict can raise or name another platform
     config = GatewayConfig.from_dict({"platforms": platforms})
@@ -426,20 +418,3 @@ def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[
         return bool(platform_config.enabled), config._is_platform_connected(platform, platform_config)
     finally:
         _STATUS_READ.reset(token)
-
-
-def _platform_layers(yaml_cfg: dict, names: set) -> tuple[dict, dict]:
-    """*yaml_cfg*'s platform blocks for *names* only, as the loader's two inputs: the root layer
-    (``platforms.<id>`` and top-level ``<id>:``) and the ``gateway:`` layer."""
-    gateway_section = yaml_cfg.get("gateway") if isinstance(yaml_cfg.get("gateway"), dict) else {}
-    top = {"platforms": _only_keys(yaml_cfg.get("platforms"), names), **_only_keys(yaml_cfg, names)}
-    nested = {"platforms": _only_keys(gateway_section.get("platforms"), names), **_only_keys(gateway_section, names)}
-    return top, nested
-
-
-def _only_keys(section, names: set) -> dict:
-    """Copies of *section*'s entries named in *names* (no others reach the loader's ``Platform(key)``
-    probes, and the merge and bridge, which write into blocks they reuse, never touch the caller's)."""
-    if not isinstance(section, dict):
-        return {}
-    return {key: copy.deepcopy(value) for key, value in section.items() if key in names}

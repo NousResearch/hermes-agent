@@ -1,0 +1,32 @@
+name: ethics-filter
+repo: https://github.com/RegeneratusLabs/ethics-filter
+sha: be65c29dbff92e3680a7013964ec092da1c489f4
+subdir: plugin
+version: "1.1.0"
+title: Ethics Filter
+description: >-
+  Universal ethics evaluation engine. Six modules — environmental, fairness,
+  transparency, conscious leadership, ethical framework, compliance — scored
+  against strictness thresholds with tension detection, so any decision comes
+  back GREEN, AMBER or RED with the reasoning attached. Ships the ethics-filter
+  skill (which backs /ethics) and the ethics_evaluate tool; the engine is
+  vendored and needs no pip install.
+  Disclosure — reads the rubrics and constitution templates bundled in the
+  plugin and appends one JSONL record per scored evaluation to
+  $ETHICS_FILTER_AUDIT (default ~/.ethics-filter/audit.jsonl), which is never
+  rewritten or deleted. With auto_score=true it asks the host agent's own model
+  to score through Hermes, holding no separate key; there are no other network
+  calls.
+maintainer: RegeneratusLabs
+tier: community
+category: tools
+docs_url: https://github.com/RegeneratusLabs/ethics-filter#readme
+readme: true
+platforms: [linux, macos, windows]
+requires_hermes: ">=0.21.5"
+capabilities:
+  provides_tools:
+    - ethics_evaluate
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

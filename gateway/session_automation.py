@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+import re
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -94,9 +95,74 @@ async def admit_process_notice(runner, authority, adapter, event, evt):
     if evt.get('type') != 'completion':
         return await authority.admit_automation(adapter, event, identity)
     async with _heartbeat_lock(runner):
-        receipt = await authority.admit_automation(adapter, event, identity)
+        receipt = await _admit_folded_completion(authority, adapter, event, evt, identity)
         await withdraw_process_ticks(runner, evt)
         return receipt
+
+
+async def _admit_folded_completion(authority, adapter, event, evt, identity):
+    """A completion landing behind another completion still waiting at the FIFO tail joins it, so a
+    busy session runs ONE turn for every result that piled up instead of one turn each. The waiting
+    row is cancelled in this admission's own transaction (``replaces``); when it was claimed first,
+    this completion queues alone."""
+    import asyncio
+    waiting = await asyncio.to_thread(_waiting_completion, authority, evt, event)
+    if waiting is not None:
+        unfolded = event.text, dict(event.metadata)
+        _fold_completion(event, waiting, identity)
+        try:
+            return await authority.admit_automation(adapter, event, identity, replaces=waiting['admission_id'])
+        except RuntimeStoreError as exc:
+            if exc.reason != 'stale_generation':
+                raise
+            event.text, event.metadata = unfolded
+    return await authority.admit_automation(adapter, event, identity)
+
+
+def _waiting_completion(authority, evt, event):
+    """The route's own completion row that is the LAST queued input of the session, or None. Only the
+    tail folds: a completion never jumps ahead of, or behind, a prompt queued after it."""
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, str(evt.get('session_key') or ''))
+    if entry is None:
+        return None
+    queued = [row for row in list_session_admissions(authority.db, session_id=_route_owner(authority, entry))
+              if row['status'] == 'queued']
+    tail = queued[-1] if queued else None
+    if tail is None or tail['principal_id'] != 'automation:' + entry.session_key:
+        return None
+    if [identity[0] for identity in _identities([tail['request_id']])] != ['completion']:
+        return None
+    descriptor = _descriptor(tail['payload'])
+    if (descriptor.get('notification_category', 'result') != event.metadata.get('notification_category', 'result')
+            or descriptor.get('display_kind') != event.metadata.get('display_kind')):
+        return None
+    return tail
+
+
+_FOLD_HEADER = ('[IMPORTANT: {count} background process results arrived while this session was busy. '
+                'Treat them as one batch and give one consolidated response; preserve failures and '
+                'actionable results.]')
+_FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arrived while this session was busy\.'
+                             r'[^\]]*\]\n\n')
+
+
+def _fold_completion(event, waiting, identity):
+    from gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
+    from tools.process_registry_notifications import process_completion_display_text
+    descriptor = _descriptor(waiting['payload'])
+    identities = sorted({*(descriptor.get('identities') or [waiting['request_id']]),
+                         *(event.metadata.get('automation_identities') or [identity])})
+
+    def body(text):
+        text = text.rstrip().removesuffix(INTERNAL_NOTIFICATION_FOOTER).rstrip()
+        folded = _FOLD_HEADER_RE.match(text)
+        return text[folded.end():] if folded else text
+    event.text = _mark_internal_notification('\n\n'.join((
+        _FOLD_HEADER.format(count=len(identities)), body(waiting['payload']['text']), body(event.text))))
+    event.metadata['automation_identities'] = identities
+    if 'display_text' in event.metadata:
+        event.metadata['display_text'] = process_completion_display_text([{}] * len(identities))
 
 
 async def prepare_heartbeat(runner, event):

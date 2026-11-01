@@ -62,9 +62,17 @@ for the separate MSIX/App Installer package and its update ownership.
 
 After installation:
 
+**Linux, macOS, WSL2:** reload your shell, then run hermes:
+
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+source ~/.bashrc    # reload shell (or: source ~/.zshrc on zsh)
 hermes              # start chatting!
+```
+
+**Windows (native PowerShell):** open a new terminal window, then run:
+
+```powershell
+hermes
 ```
 
 ### Troubleshooting
@@ -241,3 +249,5 @@ for activation, daily use, dependency changes, and leaving the environment.
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+

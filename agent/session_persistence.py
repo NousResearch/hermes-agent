@@ -1,6 +1,7 @@
 """Durable transcript persistence for ``AIAgent`` (mixin; MRO-resolved from ``run_agent``): SQLite flush
 with intrinsic ``_DB_PERSISTED_MARKER`` dedup, ephemeral-scaffolding filtering, explicit
 trajectory export."""
+import contextlib
 import hashlib
 
 import logging
@@ -102,6 +103,41 @@ def durable_user_row_content(agent, msg: dict, content: Any, api_content: Any) -
             api_content = content
         content = _content_with_turn_override(msg, content, override)
     return content, api_content
+
+
+@contextlib.contextmanager
+def durable_turn_user_row(agent, messages: list, rows: list):
+    """Store the current turn's user row in ``rows`` in its persisted form for one write.
+
+    The flush writes the persist override (clean transcript) and keeps the wire bytes in the
+    ``api_content`` sidecar. An in-place compaction re-inserts the turn's user row from the live dict,
+    which still holds the wire form until the finalizer runs, so apply the same split while the rows
+    are written and put the live dict back afterwards."""
+    idx = getattr(agent, "_persist_user_message_idx", None)
+    live = messages[idx] if isinstance(idx, int) and 0 <= idx < len(messages) else None
+    target = None
+    if isinstance(live, dict) and live.get("role") == "user":
+        last_user = next((r for r in reversed(rows) if isinstance(r, dict) and r.get("role") == "user"), None)
+        if last_user is not None and last_user.get("content") == live.get("content"):
+            target = last_user
+    if target is None:
+        yield
+        return
+    sidecar = target.get("api_content") if isinstance(target.get("api_content"), str) else None
+    content, api_content = durable_user_row_content(agent, target, target.get("content"), sidecar)
+    if content == target.get("content"):
+        yield
+        return
+    saved = {k: target[k] for k in ("content", "api_content") if k in target}
+    target["content"] = content
+    if api_content is not None:
+        target["api_content"] = api_content
+    try:
+        yield
+    finally:
+        target.pop("content", None)
+        target.pop("api_content", None)
+        target.update(saved)
 
 
 def _summary_display_kind(msg: dict) -> Any:

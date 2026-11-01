@@ -862,7 +862,7 @@ def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: st
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False,
-                    session_id: str | None = None) -> str:
+                    session_id: str | None = None, create_only: bool = False) -> str:
     """Write content to a file.
 
     ``cross_profile`` bypasses the sandbox-mirror lost-write guards only
@@ -884,7 +884,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     try:
         # Resolution failure falls back to the legacy unlocked path (the write
         # still proceeds; the per-task staleness check still runs).
-        _resolved = _resolve_or_none(path, task_id)
+        _resolved = _resolve_or_none(path, task_id, entry=create_only)
         path_to_resolved = {path: _resolved}
         with ExitStack() as _lock:
             if _resolved:
@@ -894,12 +894,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # A whole-file overwrite of content this task never saw, or that
             # changed since, is refused HERE — before the write — instead of
             # warning after the clobber (#65604). Nothing below runs.
-            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            blocker = None if create_only else _stale_overwrite_blocker(path, _resolved, task_id)
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
-            rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
+            rewrite_hint = None if create_only else _whole_file_rewrite_hint(task_id, _resolved, content)
+            ops = _get_file_ops(task_id)
+            result = (ops.write_file(_resolved or path, content, create_only=True) if create_only
+                      else ops.write_file(_resolved or path, content))
             result_dict = result.to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
@@ -1173,12 +1175,13 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. Use create_only=true when creating a file that must not overwrite an existing entry. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
             "content": {"type": "string", "description": "Complete content to write to the file"},
+            "create_only": {"type": "boolean", "default": False, "description": "Use true when creating a file that must not overwrite an existing entry. Atomically creates a new file; refuses any existing directory entry, including symlinks, with status=already_exists; never overwrites."},
             # NOTE: the handler still accepts `cross_profile` (bool) — it now
             # bypasses only the #32049 sandbox-mirror lost-write guards, whose
             # rejection error teaches it. Unadvertised: the cross-PROFILE
@@ -1342,6 +1345,7 @@ def _handle_write_file(args, **kw):
 
     return record_file_edit("write_file", "whole_file", lambda: _owned(kw.get("session_id") or tid, write_file_tool,
         path=args["path"], content=args["content"], task_id=tid,
+        create_only=args.get("create_only", False),
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
     ))

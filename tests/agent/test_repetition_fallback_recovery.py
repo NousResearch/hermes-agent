@@ -42,6 +42,10 @@ def test_repetition_recovery_fails_closed_for_unresolved_tool_calls():
     assert repetition_tool_recovery_mode(messages, 0) == "unsafe"
 
 
+def test_repetition_recovery_rejects_boolean_user_indexes():
+    assert repetition_tool_recovery_mode([{"role": "user", "content": "run it"}], True) == "unsafe"
+
+
 def test_repetition_recovery_fails_closed_for_unknown_tool_effects():
     messages = [
         {"role": "user", "content": "run it"},

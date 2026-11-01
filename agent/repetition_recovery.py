@@ -13,7 +13,7 @@ def repetition_tool_recovery_mode(messages: list[dict[str, Any]], user_idx: Any)
     tool schemas, so it can report the completed work without dispatching it again. An
     unmatched call or uncertain effect is not a safe checkpoint and fails closed.
     """
-    if not isinstance(user_idx, int) or user_idx < 0 or user_idx >= len(messages):
+    if isinstance(user_idx, bool) or not isinstance(user_idx, int) or user_idx < 0 or user_idx >= len(messages):
         return "unsafe"
 
     expected: list[str] = []

@@ -8,6 +8,7 @@ instead of exiting.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -48,16 +49,66 @@ def _tool_call_name(tc: Any) -> str:
     return str((getattr(fn, "name", "") if fn is not None else getattr(tc, "name", "")) or "")
 
 
+def _terminal_result_error(msg: dict) -> bool:
+    """Outcome of one terminal tool result row: True only on a recognized failure.
+
+    ``tools/kanban_tools.py`` handlers reject through ``tool_error()``, whose body is
+    ``{"error": ...}`` JSON. The transcript may carry that JSON with a harness notice
+    appended after it (``[Tool loop warning: ...]``), so a failed whole-string
+    ``json.loads`` falls back to decoding the leading JSON object. The executor can
+    also fail the call with its plain ``Error executing tool '...'`` string (e.g. the
+    tool timeout). Anything else — a successful ``{"ok": ...}`` payload, a duplicate
+    -result placeholder, unparseable or empty content — counts as landed, because the
+    board transition either happened or cannot be ruled out (fail-open).
+    """
+    text = msg.get("content") if isinstance(msg.get("content"), str) else ""
+    data: Any = None
+    try:
+        data = json.loads(text.strip())
+    except ValueError:
+        decoded = json.JSONDecoder()
+        try:
+            data, _ = decoded.raw_decode(text.strip())
+        except ValueError:
+            data = None
+    if isinstance(data, dict) and data.get("error"):
+        return True
+    return text.startswith("Error executing tool ")
+
+
 def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
-    """True if this conversation already invoked a terminal kanban tool."""
-    for msg in filter(lambda m: isinstance(m, dict), messages or ()):
+    """True if this conversation handed the card off with a SUCCEEDED terminal call.
+
+    A terminal tool call whose result reports a failure (structured ``{"error": ...}``
+    or the executor's ``Error executing tool '...'`` string) did not end the worker's
+    ownership: the handlers run their gates before the board write, so a rejected
+    call leaves the card untouched, and ``#136843`` records how the name-only scan
+    then disabled the nudge for the rest of the session. Suppression is per call id:
+    a rejected attempt is concluded by its own result row, and a later attempt with a
+    new id is read on its own outcome.
+    """
+    transcript = [msg for msg in (messages or ()) if isinstance(msg, dict)]
+    rejected_call_ids = {
+        str(msg.get("tool_call_id"))
+        for msg in transcript
+        if msg.get("role") == "tool"
+        and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS
+        and _terminal_result_error(msg)
+        and msg.get("tool_call_id")
+    }
+    for msg in transcript:
         role = msg.get("role")
         if role == "assistant" and any(
-            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS for tc in msg.get("tool_calls") or []
+            _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS
+            and str(getattr(tc, "id", "") if not isinstance(tc, dict) else tc.get("id") or "")
+            not in rejected_call_ids
+            for tc in msg.get("tool_calls") or []
         ):
             return True
         if role == "tool" and str(msg.get("name") or "") in _TERMINAL_KANBAN_TOOLS:
-            return True
+            result = msg.get("tool_call_id") and str(msg.get("tool_call_id")) in rejected_call_ids
+            if not result and not _terminal_result_error(msg):
+                return True
     return False
 
 

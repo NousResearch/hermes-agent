@@ -467,11 +467,11 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
     return False
 
 
-def load_catalog_live() -> list[PluginCatalogEntry]:
+def load_catalog_live(*, force: bool = False) -> list[PluginCatalogEntry]:
     """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
     different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
     a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
-    data = fetch_live_catalog()
+    data = fetch_live_catalog(force=True) if force else fetch_live_catalog()
     if data is None:
         return load_catalog()
     entries = [e for i, raw in enumerate(data["entries"])
@@ -506,8 +506,9 @@ def live_removed_list() -> list[RemovedEntry]:
     return _removed_from_list(data.get("removed")) if data else []
 
 
-def get_live_catalog_entry(name: str) -> Optional[PluginCatalogEntry]:
-    return next((e for e in load_catalog_live() if e.name == name), None)
+def get_live_catalog_entry(name: str, *, force: bool = False) -> Optional[PluginCatalogEntry]:
+    entries = load_catalog_live(force=True) if force else load_catalog_live()
+    return next((e for e in entries if e.name == name), None)
 
 
 # ── Human summaries ──────────────────────────────────────────────────────────

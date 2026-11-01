@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar, Dict, List, Optional
 
@@ -73,8 +74,8 @@ class Target:
         if self.attempt:
             out["attempt"] = self.attempt
         if self.required_env:
-            out["required_env"] = self.required_env
-        out.update(self.extra)
+            out["required_env"] = deepcopy(self.required_env)
+        out.update(deepcopy(self.extra))
         return out
 
 
@@ -226,11 +227,11 @@ class ConnectionOperation:
 
     def _result_locked(self, *, with_urls: bool = True) -> dict[str, Any]:
         if self._settled_snapshot is not None:
-            targets = [dict(t) for t in self._settled_snapshot["targets"]]
+            snapshot = deepcopy(self._settled_snapshot)
             if not with_urls:
-                for t in targets:
+                for t in snapshot["targets"]:
                     t.pop("connect_url", None)
-            return dict(self._settled_snapshot, targets=targets)
+            return snapshot
         return self._snapshot_locked(with_urls=with_urls)
 
     def snapshot(self, *, with_urls: bool = True) -> dict[str, Any]:

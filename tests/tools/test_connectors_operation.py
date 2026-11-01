@@ -54,6 +54,25 @@ def test_settle_is_exactly_once_and_stamps_not_connected():
     assert by["notion"]["state"] == "not_connected" and "detail" not in by["notion"]
 
 
+def test_settled_result_is_isolated_from_nested_mutations():
+    tools = ["search"]
+    operation = op.ConnectionOperation([op.Target("linear", "mcp", "install")])
+    operation.target("linear").required_env = [{"name": "TEST_KEY", "required": True}]
+    operation.transition("linear", c.TargetState.initiated, c.Actor.backend_watcher)
+    operation.transition("linear", c.TargetState.connected, c.Actor.backend_watcher, tools=tools)
+    operation.settle(c.SettleReason.all_resolved)
+
+    first = operation.result()
+    first["targets"][0]["tools"].append("changed-result")
+    first["targets"][0]["required_env"][0]["required"] = False
+    tools.append("changed-input")
+    operation.target("linear").required_env[0]["name"] = "changed-input"
+
+    second = operation.result()
+    assert second["targets"][0]["tools"] == ["search"]
+    assert second["targets"][0]["required_env"] == [{"name": "TEST_KEY", "required": True}]
+
+
 def test_all_resolved_settles_on_connected_or_skipped_only():
     operation = op.ConnectionOperation(_two())
     operation.transition("gmail", c.TargetState.initiated, c.Actor.backend_watcher)

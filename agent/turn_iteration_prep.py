@@ -447,7 +447,8 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
+    ``max_retries`` (plus the fallback chain length for rebuilt restarts, one per failover)
+    via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
@@ -524,7 +525,11 @@ def apply_retry_restarts(
 
     if _retry.restart_with_rebuilt_messages:
         restart_count += 1
-        if restart_count > max_retries:
+        # Every successful failover arms this restart, so the bound must leave room for one
+        # full pass over the configured chain: capping at max_retries alone ended the turn
+        # before later fallback entries were ever tried.
+        rebuilt_limit = max_retries + len(getattr(agent, "_fallback_chain", None) or ())
+        if restart_count > rebuilt_limit:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).
@@ -532,7 +537,7 @@ def apply_retry_restarts(
             logger.warning(
                 "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
                 "refunding the iteration budget indefinitely.",
-                max_retries,
+                rebuilt_limit,
             )
             return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the

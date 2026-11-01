@@ -37,6 +37,7 @@ reconstructing FSDP incantations from memory.
 This skill includes comprehensive documentation in `references/`:
 
 - **other.md** - Other documentation
+- **common-patterns.md** - Runnable FSDP wrapping, sharding, checkpoint, and mixed-precision patterns
 
 Use `view` to read specific reference files when detailed information is needed.
 
@@ -78,5 +79,4 @@ Add templates, boilerplate, or example projects here.
 To refresh this skill with updated documentation:
 1. Re-run the scraper with the same configuration
 2. The skill will be rebuilt with the latest information
-
 

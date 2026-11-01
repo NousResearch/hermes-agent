@@ -725,13 +725,19 @@ class TestInPlaceCompactionDiscovery:
         assert hit["session_id"] == "s_compact"
 
     def test_live_content_still_filtered_on_current_session(self, db):
-        """Non-compacted (active) content on the current session stays filtered."""
+        """Non-compacted (active) content on the current session stays filtered.
+
+        Filtered, but never reported as a clean miss: an empty success reads as "no such session",
+        so automatic live-context filtering has to say so explicitly.
+        """
         db.create_session("s_live", source="cli")
         db.append_message("s_live", role="user", content="crystal golem farming route")
         result = json.loads(session_search(
             query="crystal golem", db=db, current_session_id="s_live",
         ))
-        assert result["count"] == 0
+        assert result["success"] is False
+        assert "live current-session content" in (result.get("error") or "")
+        assert "count" not in result
 
 
 class TestLegacyRotationDiscovery:
@@ -780,7 +786,11 @@ class TestDelegationExclusion:
         result = json.loads(session_search(
             query="nebula deployment", db=db, current_session_id="s_child",
         ))
-        assert result["count"] == 0
+        # Delegated-away content is excluded for the same reason as live current-session content,
+        # and must not be reported as a clean empty success either.
+        assert result["success"] is False
+        assert "live current-session content" in (result.get("error") or "")
+        assert "count" not in result
 
 
 # =========================================================================

@@ -189,7 +189,7 @@ def _classify_mcp_failure(exc: BaseException) -> str:
 
 def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     """The stripped URL if valid http(s); else InvalidMcpUrlError naming the server (non-string, other scheme —
-    stdio servers use ``command`` — or empty host)."""
+    stdio servers use ``command`` — empty host, or invalid port)."""
     def _bad(detail: str) -> InvalidMcpUrlError:
         return InvalidMcpUrlError(f"Invalid MCP URL for '{server_name}': {detail}")
     if not isinstance(url, str):
@@ -199,6 +199,8 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
         raise _bad("empty url")
     try:
         parsed = urlparse(stripped)
+        # urlparse defers numeric/range checks until the port property is read.
+        _ = parsed.port
     except Exception as exc:  # urlparse is very permissive — belt and braces
         raise _bad(f"{stripped!r} ({exc})") from exc
     if parsed.scheme.lower() not in {"http", "https"}:

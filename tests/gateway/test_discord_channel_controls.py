@@ -139,6 +139,52 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bot_handoff_preserves_authenticated_recipient_mention(adapter, monkeypatch):
+    """Admission-authenticated bot addressing must survive into the agent-visible packet."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter._discord_history_backfill = lambda: False
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"HANDOFF_REQUEST\nTo: <@{bot_user.id}>\nIntent: Create the project",
+        mentions=[bot_user],
+    )
+    message.author.bot = True
+
+    assert await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert f"To: <@{bot_user.id}>" in event.text
+    assert event.source.is_bot is True
+
+
+@pytest.mark.asyncio
+async def test_human_summons_still_strip_recipient_mention(adapter, monkeypatch):
+    """Keep existing low-noise transcript behavior for ordinary human mentions."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "700")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter._discord_history_backfill = lambda: False
+
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{bot_user.id}> check this",
+        mentions=[bot_user],
+    )
+
+    assert await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "check this"
+
+
+@pytest.mark.asyncio
 async def test_ignored_channels_empty_string_ignores_nothing(adapter, monkeypatch):
     """Empty DISCORD_IGNORED_CHANNELS means nothing is ignored."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")

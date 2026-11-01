@@ -325,6 +325,10 @@ def wait_for_trace(atof: Path, work: Path, gateway, timeout=60):
         raise RuntimeError("Evaluation gateway exited before the trace completed")
 
 
+class IncompleteBatchError(RuntimeError):
+    """Some measurements are missing, but the owned gateway shut down cleanly."""
+
+
 def run_trial(work: Path, env, query: str, model: str):
     started = time.monotonic()
     result = subprocess.run(
@@ -354,11 +358,12 @@ def run_trial(work: Path, env, query: str, model: str):
     elapsed = time.monotonic() - started
     (work / "chat.stdout").write_text(result.stdout or "", encoding="utf-8")
     (work / "chat.stderr").write_text(result.stderr or "", encoding="utf-8")
-    if result.returncode:
+    # Interrupts stop the battery; ordinary task failures are still measurements.
+    if result.returncode < 0 or result.returncode in (130, 143, 0xC000013A):
         raise subprocess.CalledProcessError(
             result.returncode, result.args, output=result.stdout, stderr=result.stderr
         )
-    return result.stdout.strip(), elapsed
+    return (result.stdout or "").strip(), elapsed, result.returncode
 
 
 def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
@@ -388,6 +393,7 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     }
     completed = []
     failure = None
+    missing = []
     with batch_gateway(env, batch) as gateway:
         for run_id, name, rep, task in trials:
             work = ROOT / "runs" / model.replace("/", "_") / arm / run_id
@@ -398,23 +404,21 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
                     f"Evaluation gateway exited; see {batch / 'gateway.log'}"
                 )
             try:
-                out, elapsed = run_trial(
+                out, elapsed, rc = run_trial(
                     work, env, task.replace("{WORK}", str(work)), model
                 )
-            except subprocess.CalledProcessError as exc:
-                failure = failure or exc
-                print(
-                    f"[{arm}/{model}] {run_id} CHAT-FAILED exit={exc.returncode}; "
-                    f"not recorded, see {work / 'chat.stderr'}",
-                    flush=True,
-                )
-                # Windows reports Ctrl+C as the unsigned STATUS_CONTROL_C_EXIT value.
-                if exc.returncode < 0 or exc.returncode in (130, 143, 0xC000013A):
-                    break
-                continue
-            except (OSError, subprocess.TimeoutExpired) as exc:
+            except (
+                OSError,
+                subprocess.TimeoutExpired,
+                subprocess.CalledProcessError,
+            ) as exc:
                 failure = exc
                 break
+            if rc != 0 and not out:
+                message = f"{run_id} INFRA-CRASH exit={rc}; see {work / 'chat.stderr'}"
+                missing.append(message)
+                print(f"[{arm}/{model}] {message}", flush=True)
+                continue
             rec = {
                 "run_id": run_id,
                 "task": name,
@@ -422,18 +426,27 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
                 "arm": arm,
                 "model": model,
                 "wall_s": round(elapsed, 1),
-                "exit": 0,
+                "exit": rc,
                 "batch_id": batch.name,
                 "tail": "\n".join(out.splitlines()[-12:]),
             }
             completed.append((work, rec))
-            print(f"[{arm}/{model}] {run_id} {elapsed:.0f}s exit=0", flush=True)
+            print(f"[{arm}/{model}] {run_id} {elapsed:.0f}s exit={rc}", flush=True)
         # Auxiliary model calls may outlive a chat reply. Let them finish before stopping
         # the owner; then re-read the flushed stream before publishing any scores.
         for work, _ in completed:
-            wait_for_trace(atof, work, gateway)
+            try:
+                wait_for_trace(atof, work, gateway)
+            except ValueError:
+                # Shutdown may flush the missing events. Judge each trial afterward,
+                # so one incomplete session cannot discard independent valid results.
+                pass
     for work, record in completed:
-        events, root = read_trace(atof, work, None, shared=True)
+        try:
+            events, root = read_trace(atof, work, None, shared=True)
+        except ValueError as exc:
+            missing.append(f"{record['run_id']}: {exc}")
+            continue
         trial_trace = resdir / f"{record['run_id']}.atof.jsonl"
         staged = trial_trace.with_suffix(".tmp")
         staged.write_text(
@@ -445,6 +458,8 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             output.write(json.dumps(record) + "\n")
     if failure is not None:
         raise failure
+    if missing:
+        raise IncompleteBatchError("Batch incomplete:\n" + "\n".join(missing))
 
 
 def select_trial_events(events, atof: Path, work: Path):
@@ -633,7 +648,11 @@ if __name__ == "__main__":
         pythonpath = sys.argv[sys.argv.index("--pythonpath") + 1]
         only = (sys.argv[sys.argv.index("--only") + 1].split(",")
                 if "--only" in sys.argv else None)
-        run(arm, model, reps, pythonpath, only)
+        try:
+            run(arm, model, reps, pythonpath, only)
+        except IncompleteBatchError as exc:
+            print(exc, file=sys.stderr)
+            sys.exit(3)  # run_all.sh may continue only after a clean gateway shutdown.
     elif cmd == "report":
         models = sys.argv[sys.argv.index("--models") + 1].split(",")
         report(models)

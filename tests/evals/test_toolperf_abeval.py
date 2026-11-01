@@ -156,7 +156,7 @@ if "gateway" in sys.argv:
                 output.write(pending.read_text())
             pending.unlink()
         lock.unlink()
-        sys.exit(0)
+        sys.exit(1 if (home / "fail-stop").exists() else 0)
     state.write_text(json.dumps({"pid": os.getpid(), "gateway_state": "running", "trace": str(trace), "tree": str(Path(__file__).parent.parent)}))
     stop_file = home / "stub-stop.json"
     while True:
@@ -170,6 +170,12 @@ if "gateway" in sys.argv:
                 stop()
         Event().wait(0.05)
 else:
+    behavior_file = home / "chat-behavior.json"
+    behaviors = json.loads(behavior_file.read_text()) if behavior_file.exists() else {}
+    behavior = behaviors.get("/".join(Path.cwd().parts[-3:]), behaviors.get(Path.cwd().name, {}))
+    if behavior.get("startup_failure"):
+        print("fixture startup failure", file=sys.stderr)
+        sys.exit(1)
     info = json.loads(state.read_text())
     root = str(uuid.uuid4())
     def event(name, category, uid, phase, data=None):
@@ -179,14 +185,19 @@ else:
     events = event("hermes.session", "agent", root, "start", {"cwd": os.getcwd(), "gateway_pid": info["pid"], "tree": info["tree"]})
     for phase in ("start", "end"):
         events += event("completion", "llm", "llm", phase)
-    events += event("hermes.session", "agent", root, "end")
+    end = event("hermes.session", "agent", root, "end")
+    if behavior.get("trace") not in ("incomplete", "flush_only"):
+        events += end
     with Path(info["trace"]).open("a") as output:
         output.write(events)
     # Buffered exporter events become visible only after graceful shutdown.
     with (home / "pending.json").open("a") as output:
+        if behavior.get("trace") == "flush_only":
+            output.write(end)
         for phase in ("start", "end"):
             output.write(event("auxiliary", "llm", "aux", phase))
-    print("client.go settings.ini")
+    print(behavior.get("stdout", "client.go settings.ini"))
+    sys.exit(behavior.get("exit", 0))
 """,
         encoding="utf-8",
     )
@@ -305,6 +316,12 @@ def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
     monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
     monkeypatch.setattr(ab_eval, "HOME", home)
     monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    real_wait = ab_eval.wait_for_trace
+    monkeypatch.setattr(
+        ab_eval,
+        "wait_for_trace",
+        lambda path, work, owner: real_wait(path, work, owner, timeout=0),
+    )
     real_run = subprocess.run
 
     def fail_second_chat(command, **kwargs):
@@ -315,7 +332,12 @@ def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
         return real_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fail_second_chat)
-    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
+    error_type = (
+        ab_eval.IncompleteBatchError
+        if exit_code == 1
+        else subprocess.CalledProcessError
+    )
+    with pytest.raises(error_type):
         ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
     result = tmp_path / "results/model/baseline"
     records = [
@@ -330,6 +352,147 @@ def test_failed_chat_keeps_only_completed_trials_after_batch_flush(
     assert len((home / "starts.jsonl").read_text().splitlines()) == 1
     assert not (home / "stub-owner").exists()
     assert ab_eval.score_run(result / "err_case_search-r0.atof.jsonl")["llm"] == 2
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos", "windows")
+def test_failed_task_with_valid_trace_is_measured_and_not_retried(
+    tmp_path, monkeypatch, fake_cli, capsys
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "chat-behavior.json").write_text(
+        json.dumps(
+            {"err_case_search-r1": {"exit": 1, "stdout": "Reached the turn limit"}}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
+    monkeypatch.setattr(ab_eval, "HOME", home)
+    monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
+    resdir = tmp_path / "results/model/baseline"
+    records = [
+        json.loads(line) for line in (resdir / "meta.jsonl").read_text().splitlines()
+    ]
+    assert [record["exit"] for record in records] == [0, 1]
+    assert ab_eval.score_run(resdir / "err_case_search-r1.atof.jsonl")["llm"] == 2
+    capsys.readouterr()
+    ab_eval.report(["model"])
+    rows = capsys.readouterr().out
+    assert "| baseline |  2  50%" in rows
+    ab_eval.run("baseline", "model", 2, str(fake_cli), ["err_case_search"])
+    assert len((home / "starts.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("trace_state", ["incomplete", "flush_only"])
+def test_trace_failure_keeps_other_trials_and_final_flush_decides_validity(
+    tmp_path, monkeypatch, fake_cli, trace_state
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "chat-behavior.json").write_text(
+        json.dumps({"err_case_search-r1": {"trace": trace_state}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(ab_eval, "ROOT", tmp_path)
+    monkeypatch.setattr(ab_eval, "HOME", home)
+    monkeypatch.setattr(ab_eval, "make_sandbox", lambda work: None)
+    real_wait = ab_eval.wait_for_trace
+    monkeypatch.setattr(
+        ab_eval,
+        "wait_for_trace",
+        lambda path, work, owner: real_wait(path, work, owner, timeout=0),
+    )
+    if trace_state == "incomplete":
+        with pytest.raises(ab_eval.IncompleteBatchError, match="incomplete"):
+            ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
+    else:
+        ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
+    resdir = tmp_path / "results/model/baseline"
+    records = [
+        json.loads(line) for line in (resdir / "meta.jsonl").read_text().splitlines()
+    ]
+    expected = [0, 2] if trace_state == "incomplete" else [0, 1, 2]
+    assert [record["rep"] for record in records] == expected
+    assert not (home / "stub-owner").exists()
+    for record in records:
+        assert ab_eval.score_run(resdir / f"{record['run_id']}.atof.jsonl")["llm"] == 2
+    if trace_state == "incomplete":
+        (home / "chat-behavior.json").unlink()
+        ab_eval.run("baseline", "model", 3, str(fake_cli), ["err_case_search"])
+        resumed = [
+            json.loads(line)
+            for line in (resdir / "meta.jsonl").read_text().splitlines()
+        ]
+        assert [record["rep"] for record in resumed] == [0, 2, 1]
+        assert resumed[:2] == records
+        assert len((home / "starts.jsonl").read_text().splitlines()) == 2
+
+
+@pytest.mark.spawns_gateway_lookalike
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("failure", ["startup", "shutdown", None])
+def test_run_all_continues_only_after_clean_recoverable_batch_failure(
+    tmp_path, fake_cli, failure
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    if failure == "startup":
+        (home / "chat-behavior.json").write_text(
+            json.dumps(
+                {"model-a/baseline/err_case_search-r0": {"startup_failure": True}}
+            ),
+            encoding="utf-8",
+        )
+    elif failure == "shutdown":
+        (home / "fail-stop").touch()
+    # Run the real driver/CLI entry point, limiting the battery to one existing task.
+    python = tmp_path / "eval-python"
+    python.write_text(
+        f"#!{sys.executable}\nimport os, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[1] == 'run': args += ['--only', 'err_case_search']\n"
+        "os.execv(sys.executable, [sys.executable, *args])\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o700)
+    result = subprocess.run(
+        [
+            "bash",
+            str(Path(ab_eval.__file__).with_name("run_all.sh")),
+            str(fake_cli),
+            str(fake_cli),
+            "1",
+            "model-a",
+            "model-b",
+        ],
+        env={
+            **os.environ,
+            "PYTHON": str(python),
+            "ABEVAL_ROOT": str(tmp_path),
+            "ABEVAL_HOME": str(home),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    starts = (home / "starts.jsonl").read_text().splitlines()
+    if failure == "shutdown":
+        assert result.returncode not in (0, 3)
+        assert len(starts) == 1
+        assert "MODEL:" not in result.stdout
+        assert not list((tmp_path / "results").glob("*/*/meta.jsonl"))
+    else:
+        assert result.returncode == (3 if failure else 0), result.stderr
+        assert len(starts) == 4
+        assert "MODEL: model-a" in result.stdout and "MODEL: model-b" in result.stdout
+        assert len(list((tmp_path / "results").glob("*/*/meta.jsonl"))) == (
+            3 if failure else 4
+        )
+    assert not (home / "stub-owner").exists()
 
 
 @pytest.mark.spawns_gateway_lookalike

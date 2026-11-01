@@ -34,17 +34,17 @@ in real production traffic.
   These events are saved in the existing per-trial files. The Relay
   `session_uuid` (distinct from the CLI session ID) is saved in `meta.jsonl`
   and checked again when reporting.
-- **Resume-safe.** Only trials with a successful CLI exit and verified trace
-  enter `meta.jsonl`. A completed chat with a nonzero exit is excluded and the
-  runner continues with later trials while its gateway remains alive. Timeouts,
-  interrupted chats, gateway startup/shutdown failures, and invalid traces stop
-  the batch. Valid trials are recorded after a clean shutdown, then any chat
-  failure is reported with a nonzero batch exit. Failed trials remain eligible
-  for resume. Results
-  are committed after batch shutdown; a hard interruption can require rerunning
-  unrecorded trials. Recorded entries are revalidated before being skipped.
+- **Resume-safe.** Trials enter `meta.jsonl` only with verified traces. A model
+  task that fails with output, such as exhausting its turn budget, remains a
+  measurement with its original exit code and the existing task-success checks.
+  Resume skips that measured attempt instead of retrying until success. As
+  before, nonzero exits with no output are treated as startup failures and left
+  unrecorded. After clean gateway shutdown, each candidate is validated
+  independently: an incomplete trial does not discard other valid sessions.
   Missing, malformed, ambiguous, and incomplete traces are errors, never
-  zero-cost results.
+  zero-cost results. Results are committed after batch shutdown; a hard
+  interruption can require rerunning unrecorded trials. Recorded entries are
+  revalidated before being skipped.
 
 ## Setup
 
@@ -109,6 +109,14 @@ battery. Re-print tables any time:
 ```bash
 python3 ab_eval.py report --models "anthropic/claude-sonnet-4.5,qwen/qwen3-coder-30b-a3b-instruct"
 ```
+
+An `ab_eval.py run` exit of **0** means its measurements are complete, even if
+some model tasks failed. Exit **3** means measurements are missing but the
+gateway shut down cleanly; `run_all.sh` continues the other arms/models, prints
+the available results, and exits 3 overall. Missing trials can be retried on
+resume. Timeouts, interruptions, and gateway lifecycle failures stop the
+battery instead. Valid prior trials are retained after clean shutdown when
+possible; a failed shutdown does not publish the batch.
 
 ## Reading the results
 

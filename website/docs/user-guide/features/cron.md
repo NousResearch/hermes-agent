@@ -908,6 +908,12 @@ Otherwise, report the issue.
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
 
+When a monitor reports no change or a script returns `wakeAgent=false`, no agent runs.
+The admitted session is closed with `end_reason=cron_skipped`; a pre-agent failure,
+such as a failed monitor source or refused preflight, uses `cron_preflight_failed`.
+These rows remain available for execution recovery and exact retries. This does not
+prune historical empty sessions or hide skipped fires from session history.
+
 ### Declaring a failed run
 
 Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself

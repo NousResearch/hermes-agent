@@ -634,9 +634,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
 def reapply_tool_filters(servers: dict[str, dict]) -> int:
     """Reconcile live MCP *native* tools against this profile's current filters.
 
-    Do not restart a shared connection, alter generated resource/prompt/event utilities,
-    or modify an editor's frozen MCP manifest. The registry is authoritative: session
-    discovery and call dispatch both use its current per-profile overlay.
+    Preserve generated resource/prompt/event utilities according to their own
+    enablement and native-tool collision rules. Never restart a connection or
+    modify an editor's frozen MCP manifest. Both discovery and dispatch use
+    the registry's current per-profile overlay.
     """
     from tools.registry import registry
 
@@ -669,32 +670,38 @@ def reapply_tool_filters(servers: dict[str, dict]) -> int:
                                       resolved_identity=resolved):
                 continue
 
-            # Only the native tools are governed by include/exclude. Generated
-            # utilities have their own resources/prompts/events selection policy.
+            # Reuse the SAME native-vs-utility collision policy as initial discovery.
+            # A filtered native "read_resource", for example, must yield to the
+            # generated utility, and it must win again when re-enabled (#87112).
+            # Simply subtracting utility names from native names silently leaves
+            # a disallowed native callable.
             utility = _utility_candidates(
                 name, _select_utility_schemas(name, server, config), server.tool_timeout)
-            utility_names = {item.registry_name for item in utility}
             should_register = _make_tool_filter(name, config)
-            all_native = {_schema._convert_mcp_schema(name, tool)["name"] for tool in server._tools}
-            selectable = all_native - utility_names
-            desired = {
-                _schema._convert_mcp_schema(name, tool)["name"]
-                for tool in server._tools if should_register(tool.name)
-            } - utility_names
-
-            current = set(registry.get_tool_names_for_toolset(f"mcp-{name}"))
-            remove = sorted((current & selectable) - desired)
-            missing = desired - current
-            if not remove and not missing:
-                continue
-
-            # The existing collision guard handles two different MCP-native names
-            # normalizing to one registry name. Never silently choose a handler.
             candidates = _resolve_name_collisions(
                 name, _tool_candidates(name, server._tools, should_register, server.tool_timeout)
                 + utility)
+            desired = {candidate.registry_name: candidate for candidate in candidates}
+            native_names = {_schema._convert_mcp_schema(name, tool)["name"]
+                            for tool in server._tools}
+            managed = native_names | {item.registry_name for item in utility}
+            # Only mutate registrations owned by THIS profile, never a global
+            # fallback or another profile's same-named server.
+            current = {
+                tool_name for tool_name in registry.get_tool_names_for_toolset(f"mcp-{name}")
+                if registry.snapshot_registration(tool_name, scope=scope) is not None
+            }
+            remove = sorted(
+                tool_name for tool_name in current & managed
+                if (tool_name not in desired
+                    or registry.snapshot_registration(tool_name, scope=scope).schema
+                    != desired[tool_name].schema)
+            )
+            missing = desired.keys() - current
+            if not remove and not missing:
+                continue
             additions = [item for item in candidates
-                         if not item.is_utility and item.registry_name in missing]
+                         if item.registry_name in missing or item.registry_name in remove]
             with _core._lock:
                 if _core._servers.get(key) is not server:
                     continue  # connection replaced during the reconciliation
@@ -721,7 +728,7 @@ def reapply_tool_filters(servers: dict[str, dict]) -> int:
                     _forget_mcp_tool_server(tool_name)
             _restore_server_toolset_alias(key)
             _write_schema_cache(name, server, config, should_register)
-            logger.info("MCP server '%s': reconciled live native tools for this profile "
+            logger.info("MCP server '%s': reconciled live tool registrations for this profile "
                         "(+%d, -%d); existing sessions keep their pinned prompt tool list",
                         name, len(added), len(remove))
             changed += 1

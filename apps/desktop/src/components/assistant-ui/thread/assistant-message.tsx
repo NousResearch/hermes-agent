@@ -33,6 +33,7 @@ import {
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { MessageQuoteButton } from '@/components/assistant-ui/thread/message-selection-quote'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
 import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
@@ -332,6 +333,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             <MessagePrimitive.Error>
               <ErrorCard onDismiss={onDismissError ? () => onDismissError(messageId) : undefined} />
             </MessagePrimitive.Error>
+            <MessageQuoteButton messageId={messageId} />
           </div>
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
           {/* Sealed interims skip the footer so a tool-heavy turn doesn't grow a

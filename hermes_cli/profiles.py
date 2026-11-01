@@ -2145,7 +2145,7 @@ def _scrub_export_secrets(staged: Path) -> None:
             text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
-        redacted = redact_sensitive_text(text, force=True)
+        redacted = redact_sensitive_text(text, force=True, redact_url_credentials=True)
         if redacted == text:
             continue
         if is_link:

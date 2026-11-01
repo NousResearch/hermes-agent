@@ -1158,3 +1158,176 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     assert not (root / "skills" / ".curator_state").exists(), "thread wrote the ROOT home's state"
     state = json.loads((profile / "skills" / ".curator_state").read_text(encoding="utf-8-sig"))
     assert state["last_run_summary"].endswith("llm: stub")
+
+
+# ---------------------------------------------------------------------------
+# Automatic pass archive ceiling
+# ---------------------------------------------------------------------------
+
+def _write_expired_skills(curator_env, count: int, *, days: int = 200, prefix: str = "expired"):
+    skills_dir = curator_env["home"] / "skills"
+    u = curator_env["usage"]
+    names = []
+    for i in range(count):
+        name = f"{prefix}-{i:02d}"
+        _write_skill(skills_dir, name)
+        _backdate(u, name, days)
+        names.append(name)
+    return names
+
+
+def test_archive_cap_stops_a_mass_archive_in_one_pass(curator_env, monkeypatch):
+    """A forward clock jump (or a corrupted ledger) puts *every* inactivity anchor past
+    archive_cutoff at the same instant, so one idle tick would archive the whole library
+    before the user sees a single prompt. The ceiling stops the pass and counts the
+    skipped skills as capped so the run summary shows what was withheld.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 15)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 10})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 10
+    assert counts["capped"] == 5
+    archived = [n for n, rec in u.load_usage().items() if rec["state"] == u.STATE_ARCHIVED]
+    assert len(archived) == 10, "the ceiling bounds real transitions, not just the counter"
+
+
+def test_archive_cap_default_applies_without_config(curator_env):
+    """No ``curator.max_archives_per_run`` key → the shipped default bounds the pass."""
+    c = curator_env["curator"]
+    assert c.get_max_archives_per_run() == c.DEFAULT_MAX_ARCHIVES_PER_RUN
+    assert c.DEFAULT_MAX_ARCHIVES_PER_RUN >= 1
+
+
+def test_archive_cap_zero_disables_the_ceiling(curator_env, monkeypatch):
+    """0 means "ceiling off", which is why the reader is not ``_bounded_count``: flooring a
+    disabled ceiling to 1 would archive exactly one skill per pass, forever."""
+    c = curator_env["curator"]
+    _write_expired_skills(curator_env, 12)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 0})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 12
+    assert counts["capped"] == 0
+
+
+def test_negative_archive_cap_is_treated_as_disabled(curator_env, monkeypatch):
+    """A negative ceiling is as meaningless as a negative day count, but it must not be
+    floored to 1 — that would silently pin the curator to one archive per pass instead of
+    either honouring the user's intent or falling back to the safe default."""
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": -5})
+    assert c.get_max_archives_per_run() == 0
+
+
+def test_archive_cap_does_not_throttle_stale_transitions(curator_env, monkeypatch):
+    """The ceiling guards archives only: skills that merely cross stale_cutoff must keep
+    transitioning, or a capped pass would leave half the library neither stale nor
+    archived and the next pass would re-scan it forever.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 3)
+    # 20 days: past stale_after_days (14), well short of archive_after_days (30).
+    _write_expired_skills(curator_env, 4, days=20, prefix="recent")
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 1})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 1
+    assert counts["capped"] == 2
+    states = u.load_usage()
+    assert sum(1 for rec in states.values() if rec["state"] == u.STATE_STALE) == 4
+
+
+
+def _active_names(u):
+    return [n for n, rec in u.load_usage().items() if rec["state"] == u.STATE_ACTIVE]
+
+
+def test_second_automatic_pass_cannot_finish_a_capped_mass_archive(curator_env, monkeypatch):
+    """The ceiling bounds one pass, not the incident. The skills it withheld stay equally
+    expired, so without a persisted hold the next unattended pass (default: 7 days later)
+    archives the remainder and the library still ends up empty — just slower. This is the
+    reviewer's scenario: two passes, no new genuine use, no clock correction.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 15)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 10})
+
+    first = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+    assert first["auto_transitions"]["archived"] == 10
+    assert first["auto_transitions"]["capped"] == 5
+    assert c.get_archive_hold() is not None, "hitting the ceiling must persist a hold"
+
+    second = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+    assert second["auto_transitions"]["archived"] == 0
+    assert second["auto_transitions"]["held"] == 5
+    assert len(_active_names(u)) == 5, "a second unattended pass finished the mass archive"
+
+
+def test_hold_keeps_automatic_archiving_frozen_across_many_passes(curator_env, monkeypatch):
+    """Three consecutive unattended passes must leave the library untouched, not drain it 5 at a time."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 15)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 10})
+    c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+
+    for _ in range(3):
+        counts = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")["auto_transitions"]
+        assert counts["archived"] == 0
+    assert len(_active_names(u)) == 5
+    assert c.get_archive_hold()["passes"] >= 2, "repeated held passes are counted, not silently absorbed"
+
+
+def test_manual_run_respects_the_hold_until_force_archive(curator_env, monkeypatch):
+    """Typing ``hermes curator run`` is routine; it must not be the way a mass archive silently completes.
+    Only --force-archive states the intent, and it lifts the hold for that pass."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 15)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 10})
+    c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+
+    manual = c.run_curator_review(synchronous=True, consolidate=False, trigger="manual")
+    assert manual["auto_transitions"]["archived"] == 0
+    assert manual["auto_transitions"]["held"] == 5
+    assert c.get_archive_hold() is not None
+
+    forced = c.run_curator_review(
+        synchronous=True, consolidate=False, trigger="manual", force_archive=True)
+    assert forced["auto_transitions"]["archived"] == 5
+    assert forced["auto_transitions"]["capped"] == 0
+    assert c.get_archive_hold() is None, "explicit intent must clear the hold"
+    assert _active_names(u) == []
+
+
+def test_hold_lifts_itself_once_the_anomaly_clears(curator_env, monkeypatch):
+    """If the user corrects the clock or re-anchors the ledger, the next pass finds nothing to archive.
+    That is the hold's exit condition without a human command — otherwise a corrected install would sit
+    frozen forever."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_expired_skills(curator_env, 12)
+    monkeypatch.setattr(c, "_load_config", lambda: {"max_archives_per_run": 10})
+    c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")
+    assert c.get_archive_hold() is not None
+
+    # Simulate the repair: every remaining skill gets a fresh genuine activity stamp.
+    data = u.load_usage()
+    fresh = datetime.now(UTC).isoformat()
+    for name, rec in data.items():
+        if rec["state"] != u.STATE_ARCHIVED:
+            rec["last_activity_at"] = fresh
+            rec["last_used_at"] = fresh
+    u.save_usage(data)
+
+    counts = c.run_curator_review(synchronous=True, consolidate=False, trigger="scheduled")["auto_transitions"]
+    assert counts["held"] == 0
+    assert c.get_archive_hold() is None, "a hold with nothing left to withhold is stale state"

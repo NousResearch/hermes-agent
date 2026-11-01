@@ -854,7 +854,7 @@ Board resolution order (highest precedence first): `--board <slug>` flag → `HE
 
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
-For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see the [Kanban user guide](../user-guide/features/kanban.md).
+For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, the collaboration-pattern catalogue (five composition patterns plus built-in lifecycle behaviours), four user stories, concurrency correctness proof — see the [Kanban user guide](../user-guide/features/kanban.md).
 
 ## `hermes egress`
 

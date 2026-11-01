@@ -1359,13 +1359,22 @@ def _live_send_text(
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
-    if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
-        requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
-        _note_target_error(
-            job,
-            f"configured thread_id {requested_thread_id} for "
-            f"{t.where} was not found; delivered without thread_id",
-            delivery_errors)
+    if send_raw_response and t.thread_id:
+        # The adapter's raw_response is an SDK object for some platforms (Feishu returns
+        # ReplyMessageResponse), so a bare .get() raised AttributeError, failed the live lane and
+        # made the scheduler resend through standalone — a duplicate message in the topic.
+        _raw_get = (
+            send_raw_response.get
+            if isinstance(send_raw_response, dict)
+            else (lambda key, default=None: getattr(send_raw_response, key, default))
+        )
+        if _raw_get("thread_fallback"):
+            requested_thread_id = _raw_get("requested_thread_id") or t.thread_id
+            _note_target_error(
+                job,
+                f"configured thread_id {requested_thread_id} for "
+                f"{t.where} was not found; delivered without thread_id",
+                delivery_errors)
     return True, False, delivered_message_id
 
 

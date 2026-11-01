@@ -858,6 +858,7 @@ DEFAULT_CONFIG = {
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,
+        "json_output": False,  # --json default for CLI verbs that declare the flag
         "persistent_output_max_lines": 200,
         # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
         # terminal/tmux stack stamps stale prompt chrome into scrollback.
@@ -2710,7 +2711,6 @@ DEFAULT_CONFIG = {
     },
     "_config_version": 52,  # Config schema version - bump this when adding new required fields
 }
-
 
 from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _msg, _prov, _setting, _skill, _tool
 

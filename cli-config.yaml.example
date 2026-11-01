@@ -1945,6 +1945,14 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
+  # Machine-readable default for CLI subcommands that declare --json
+  # (peer dm/run/status, plugins list, usage, ...). Lets scripts and bots parse
+  # output without repeating the flag on every invocation.
+  #   true:  emit JSON whenever the verb supports --json
+  #   false: emit human-readable text unless --json is passed (default)
+  # An explicit --json always wins; verbs without the flag are unaffected.
+  json_output: false
+
   # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)

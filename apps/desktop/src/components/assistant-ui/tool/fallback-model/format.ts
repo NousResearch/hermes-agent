@@ -1,3 +1,4 @@
+import { inlineTextPrefix } from '@/lib/text'
 import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,7 +47,7 @@ export function compactPreview(value: unknown, max = 72): string {
     }
   }
 
-  const line = (raw as string).replace(/\s+/g, ' ').trim()
+  const line = inlineTextPrefix(raw as string, max + 1)
 
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }

@@ -292,6 +292,36 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
+def _android_quarantined(specs: tuple[str, ...]) -> tuple[str, ...]:
+    """Mark extras dependencies off Android, the way core's own extras already are.
+
+    uv resolves every fork in ``tool.uv.environments``, and the Android fork
+    exists for core's psutil source pin. An extra's transitive chain commonly
+    bottoms out in wheels Android never ships (onnxruntime has none at all),
+    which makes the whole workspace lock unsolvable — during ``hermes update``
+    that failure disables the plugin and blanks its settings instead of
+    refusing it (#143305). Plain dependencies stay exactly as the plugin
+    declared them: they are the author's surface to mark, and blanket-marking
+    them would drop legitimately installable ones on Termux.
+    """
+    from packaging.markers import Marker
+    from packaging.requirements import Requirement
+
+    quarantined = []
+    for spec in specs:
+        requirement = Requirement(spec)
+        if not requirement.extras or (requirement.marker is not None
+                                      and "sys_platform" in str(requirement.marker)):
+            quarantined.append(spec)
+            continue
+        if requirement.marker is None:
+            quarantined.append(f"{spec}; sys_platform != 'android'")
+            continue
+        requirement.marker = Marker(f"{requirement.marker} and sys_platform != 'android'")
+        quarantined.append(str(requirement))
+    return tuple(quarantined)
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
@@ -313,9 +343,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = declaration.install_requirements != declaration.requirements
+        specs = _android_quarantined(declaration.install_requirements)
+        declared = document.get("project", {}).get("dependencies")
+        # A declared dependency list is rewritten only when something actually
+        # changed, so a member with none stays byte-identical to its source.
+        changed = (declaration.install_requirements != declaration.requirements
+                   or (declared is not None and specs != tuple(declared)))
         if changed:
-            document["project"]["dependencies"] = list(declaration.install_requirements)
+            document["project"]["dependencies"] = list(specs)
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:
@@ -344,7 +379,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
 
             (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
         return member
-    specs = declaration.install_requirements
+    specs = _android_quarantined(declaration.install_requirements)
     member = root / "plugin-deps" / key
     member.mkdir(parents=True)
     (member / "pyproject.toml").write_text(

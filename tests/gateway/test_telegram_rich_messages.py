@@ -832,3 +832,86 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        r"Display math: \[x^2 + y^2 = z^2\]",
+        r"Inline math: \(x^2\) in a sentence.",
+    ],
+)
+async def test_backslash_delimited_math_uses_rich_send(content):
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_backslash_delimited_math_is_sent_with_dollar_delimiters():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345", "Given \\(a^2\\), we get:\n\n\\[a^2 + b^2 = c^2\\]",
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    markdown = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "$a^2$" in markdown
+    assert "$$a^2 + b^2 = c^2$$" in markdown
+    assert "\\(" not in markdown and "\\[" not in markdown
+
+
+@pytest.mark.asyncio
+async def test_currency_amounts_stay_on_legacy_path():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "It costs $12 today and $15 tomorrow.")
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_awaited()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_math_rewrite_leaves_code_blocks_alone():
+    adapter = _make_adapter()
+    content = (
+        "\\[x^2\\]\n\n"
+        '```python\nprint("\\\\(x^2\\\\)")\n```\n\n'
+        "and inline `\\(y\\)` stays too."
+    )
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    markdown = bot.do_api_request.await_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "$$x^2$$" in markdown
+    assert 'print("\\\\(x^2\\\\)")' in markdown
+    assert "`\\(y\\)`" in markdown
+
+
+@pytest.mark.asyncio
+async def test_math_only_inside_code_stays_on_legacy_path():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", 'Escape it as:\n\n```tex\n\\(x^2\\)\n```')
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.send_message.assert_awaited_once()
+    bot.do_api_request.assert_not_called()

@@ -23,7 +23,7 @@ import { useState } from 'react'
 
 import {
   autoDescribeProfile,
-  BOARDS_KEY,
+  boardsKey,
   fetchOrchestration,
   fetchProfiles,
   orchestrationKey,
@@ -150,7 +150,7 @@ export function OrchestrationPanel({ board }: { board?: BoardMeta | null } = {})
   const saveProject = useMutation({
     mutationFn: (projectId: string) => updateBoard(board?.slug ?? '', { project_id: projectId }),
     onError: err => host.notify({ kind: 'error', message: errText(err) }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+    onSuccess: () => void qc.invalidateQueries({ queryKey: boardsKey(scope) })
   })
 
   if (!settings || !roster) {
@@ -160,12 +160,7 @@ export function OrchestrationPanel({ board }: { board?: BoardMeta | null } = {})
   return (
     <div className="flex flex-col gap-4 border-t border-(--ui-stroke-tertiary) px-4 py-3">
       <div className="flex flex-wrap items-end gap-4">
-        {board && (
-          <ProjectPicker
-            onChange={id => saveProject.mutate(id)}
-            value={board.project_id || ''}
-          />
-        )}
+        {board && <ProjectPicker onChange={id => saveProject.mutate(id)} value={board.project_id || ''} />}
         <ProfilePicker
           label={k.orchestratorProfile}
           onSave={name => save.mutate({ orchestrator_profile: name })}

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // eslint-disable-next-line no-restricted-imports
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
-import { $boardSlug, bindApi } from './api'
+import { $boardSlug, bindApi, emergencyStopAllBoards } from './api'
 import { KanbanBoardPage } from './board'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { BoardMeta } from './types'
@@ -25,10 +25,6 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
     return { boards: boards.map(b => ({ ...b })), current: 'proj' }
   }
 
-  if (path.startsWith('/board')) {
-    return { assignees: [], columns: [], latest_event_id: 0, now: Date.now(), tenants: [] }
-  }
-
   const patchMatch = /^\/boards\/([^/]+)$/.exec(path)
 
   if (patchMatch && options?.method === 'PATCH') {
@@ -43,6 +39,10 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
     }
 
     return { board: boards[idx] }
+  }
+
+  if (path.startsWith('/board')) {
+    return { assignees: [], columns: [], latest_event_id: 0, now: Date.now(), tenants: [] }
   }
 
   if (path === '/projects') {
@@ -70,6 +70,7 @@ afterEach(() => {
   client.clear()
   disposeApi()
   disposeLocales()
+  vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
 
@@ -102,7 +103,7 @@ describe('per-board dispatch toggles', () => {
     await openBoardSettings()
 
     const dispatchSwitch = await screen.findByRole('switch', { name: en.boardDispatchEnabled })
-    dispatchSwitch.click()
+    fireEvent.click(dispatchSwitch)
 
     await waitFor(() => expect(patched).toContainEqual({ slug: 'proj', patch: { dispatch_enabled: false } }))
     // The other two flags are untouched by this write.
@@ -122,5 +123,23 @@ describe('per-board dispatch toggles', () => {
       const refreshed = await screen.findByRole('switch', { name: en.boardDispatchEnabled })
       expect(refreshed.getAttribute('aria-checked')).toBe('true')
     })
+  })
+
+  it('stops dispatch, decomposition, and review on every board', async () => {
+    boards.push({ slug: 'other', name: 'Other', total: 1, is_current: false })
+
+    const result = await emergencyStopAllBoards(boards)
+
+    expect(result.count).toBe(2)
+    expect(patched).toEqual([
+      {
+        slug: 'proj',
+        patch: { dispatch_enabled: false, auto_decompose_enabled: false, review_dispatch_enabled: false }
+      },
+      {
+        slug: 'other',
+        patch: { dispatch_enabled: false, auto_decompose_enabled: false, review_dispatch_enabled: false }
+      }
+    ])
   })
 })

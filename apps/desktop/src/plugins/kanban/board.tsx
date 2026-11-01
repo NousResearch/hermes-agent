@@ -73,6 +73,7 @@ import {
   bulkTasks,
   createTask,
   deleteTask,
+  emergencyStopAllBoards,
   estimateNew,
   fetchBoard,
   fetchBoards,
@@ -87,7 +88,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
-import { columnMeta, type BoardsResponse, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
+import { type BoardsResponse, columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
   ago,
@@ -1116,7 +1117,8 @@ export function KanbanBoardPage() {
   })
 
   // Fetch board metadata for the toggle switches
-  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const boardsQueryKey = boardsKey(scope)
+  const { data: boards } = useQuery({ queryKey: boardsQueryKey, queryFn: fetchBoards, staleTime: 30_000 })
   const currentBoard = boards?.boards?.find(b => b.slug === slug)
 
   // Toggle mutation for per-board settings
@@ -1127,12 +1129,28 @@ export function KanbanBoardPage() {
       // Optimistically update via an immutable cache write (never mutate the
       // cached board object in place) so react-query's reference-identity
       // and reconciliation stay correct.
-      qc.setQueryData<BoardsResponse>(BOARDS_KEY, prev =>
-        prev
-          ? { ...prev, boards: prev.boards.map(b => (b.slug === slug ? { ...b, ...patch } : b)) }
-          : prev
+      qc.setQueryData<BoardsResponse>(boardsQueryKey, prev =>
+        prev ? { ...prev, boards: prev.boards.map(b => (b.slug === slug ? { ...b, ...patch } : b)) } : prev
       )
-      void qc.invalidateQueries({ queryKey: BOARDS_KEY })
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+    }
+  })
+
+  // Emergency stop is deliberately global: a selected-board toggle is not
+  // enough when several boards can dispatch concurrently. Write all three
+  // narrowing flags to every known board, then invalidate the shared roster.
+  const emergencyStop = useMutation({
+    mutationFn: () => emergencyStopAllBoards(boards?.boards ?? []),
+    onSuccess: ({ count, patch }) => {
+      qc.setQueryData<BoardsResponse>(boardsQueryKey, prev =>
+        prev ? { ...prev, boards: prev.boards.map(board => ({ ...board, ...patch })) } : prev
+      )
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+      host.notify({ kind: 'success', message: k.emergencyStopSuccess(count) })
+    },
+    onError: err => {
+      void qc.invalidateQueries({ queryKey: boardsQueryKey })
+      host.notify({ kind: 'error', message: errText(err) })
     }
   })
 
@@ -1419,6 +1437,23 @@ export function KanbanBoardPage() {
                   />
                   <span>Review</span>
                 </label>
+              </Tip>
+              <Tip label={k.emergencyStop}>
+                <Button
+                  aria-label={k.emergencyStop}
+                  className="text-destructive"
+                  disabled={emergencyStop.isPending}
+                  onClick={() => {
+                    if (window.confirm(k.emergencyStopConfirm)) {
+                      emergencyStop.mutate()
+                    }
+                  }}
+                  size="xs"
+                  variant="outline"
+                >
+                  <Codicon name="debug-stop" size="0.75rem" />
+                  {k.emergencyStop}
+                </Button>
               </Tip>
               <div className="h-4 w-px bg-(--ui-border)" />
             </>

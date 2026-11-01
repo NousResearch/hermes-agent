@@ -41,6 +41,35 @@ def test_streamed_mid_string_cut_stays_unrepairable():
     assert calls[0].function.arguments == '{"q": "unterminated string'
 
 
+def _accumulated_for(name: str, arguments: str) -> dict:
+    return {0: {"id": "call_1", "type": "function", "function": {"name": name, "arguments": arguments}}}
+
+
+def test_cut_argument_bag_never_executes_an_effect_capable_tool():
+    # Cut right after content's closing quote: closing the brace yields a complete-looking
+    # write_file that silently lacks everything after the cut (qwen-code#12970 class). Only
+    # a no-effect tool may run the closed repair; an effect-capable tool keeps the raw bag
+    # and takes the truncation path (provider finish_reason trusted, usage not disproving).
+    cut = '{"path": "a.py", "content": "line one\\n"'
+    calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated_for("write_file", cut), "stop")
+    assert truncated is True
+    assert calls[0].function.arguments == cut
+    calls, truncated = _StreamingCall._assemble_tool_calls(_accumulated_for("read_file", cut), "stop")
+    assert truncated is False
+    assert json.loads(calls[0].function.arguments) == {"path": "a.py", "content": "line one\n"}
+
+
+def test_disproved_truncation_keeps_raw_args_and_provider_finish_reason():
+    # Usage well under budget on a normal stop: not a cut, so the bag is neither repaired nor
+    # stamped "length" (which would spend four boosted max_tokens retries and blame the
+    # output cap); raw args + provider finish_reason route it to the malformed-JSON recovery.
+    fused = '{"path": "a.py"}{"path": "b.py", "content": "x"'
+    calls, truncated = _StreamingCall._assemble_tool_calls(
+        _accumulated_for("write_file", fused), "stop", truncation_disproved=True)
+    assert truncated is False
+    assert calls[0].function.arguments == fused
+
+
 class TestStreamingAssemblyRepair:
     """Verify that _repair_tool_call_arguments is applied to streaming tool
     call arguments before they're assembled into mock_tool_calls.

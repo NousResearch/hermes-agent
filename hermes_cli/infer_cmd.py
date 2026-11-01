@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _prompt_text(value: str | None) -> str:
@@ -68,7 +70,27 @@ def _model_route(model: str | None, provider: str | None):
     return choice
 
 
+def _response_json(response):
+    """JSON-safe snapshot of the completion object Hermes received."""
+    def default(value):
+        if callable(getattr(value, "model_dump", None)):
+            return value.model_dump(mode="json")
+        if is_dataclass(value):
+            return asdict(value)
+        if isinstance(value, SimpleNamespace):
+            return vars(value)
+        if isinstance(value, (bytes, bytearray)):
+            return {"base64": base64.b64encode(value).decode("ascii")}
+        if hasattr(value, "__dict__"):
+            return {key: item for key, item in vars(value).items() if not key.startswith("_")}
+        return str(value)
+
+    return json.loads(json.dumps(response, default=default, ensure_ascii=False))
+
+
 def _infer(args) -> dict:
+    if args.include_response and not args.json:
+        raise ValueError("--include-response requires --json")
     prompt = _prompt_text(args.prompt)
     schema = _schema_file(args.schema)
     if args.max_tokens is not None and args.max_tokens <= 0:
@@ -104,6 +126,8 @@ def _infer(args) -> dict:
     result = {"ok": True, "text": text, "parsed": None,
               "provider": actual_provider, "model": actual_model,
               "usage": asdict(_extract_usage(response)), "error": None}
+    if args.include_response:
+        result["response"] = _response_json(response)
     if schema is not None:
         try:
             parsed, content_type = _parse_structured_text(
@@ -129,10 +153,12 @@ def cmd_infer(args) -> int:
         # for debugging while returning a stable error to a JSON caller.
         logging.getLogger(__name__).debug("infer request failed", exc_info=True)
         if args.json:
-            print(json.dumps({"ok": False, "text": None, "parsed": None,
-                              "provider": None, "model": None, "usage": None,
-                              "error": {"code": "request_failed", "message": str(exc)}},
-                             ensure_ascii=False))
+            failure = {"ok": False, "text": None, "parsed": None,
+                       "provider": None, "model": None, "usage": None,
+                       "error": {"code": "request_failed", "message": str(exc)}}
+            if args.include_response:
+                failure["response"] = None
+            print(json.dumps(failure, ensure_ascii=False))
         else:
             print(f"hermes infer: {exc}", file=sys.stderr)
         return 1

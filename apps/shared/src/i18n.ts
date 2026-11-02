@@ -170,6 +170,7 @@ export function flattenMessageKeys(tree: unknown, prefix = ''): string[] {
 export const LOCALE_ENDONYMS = {
   af: 'Afrikaans',
   ar: 'العربية',
+  cs: 'Čeština',
   de: 'Deutsch',
   en: 'English',
   es: 'Español',

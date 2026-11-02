@@ -27,6 +27,9 @@ _FILE = "dispatch_held.json"
 TICK_SLACK_SECONDS = 60.0
 # The longest a restart drain waits on in-flight turns by default (agent.restart_after_turn_timeout).
 MAX_EXTENSION_SECONDS = 1800.0
+# This process's ongoing holds: cron dir -> first held tick. Kept in memory so a failed write
+# mid-drain cannot reset ``since``; cleared when the ticker dispatches again (note_dispatching).
+_hold_since: dict[str, float] = {}
 
 
 def note_held(now: Optional[float] = None) -> None:
@@ -36,11 +39,22 @@ def note_held(now: Optional[float] = None) -> None:
 
     cron_dir = _current_cron_store().cron_dir
     now = time.time() if now is None else now
-    held = read(cron_dir)
-    # A record from an earlier hold (no held tick for two intervals) starts a new hold.
-    since = held["since"] if held and now - held["last"] <= 2 * TICK_SLACK_SECONDS else now
+    if str(cron_dir) not in _hold_since:
+        held = read(cron_dir)
+        # Another process's hold still being stamped continues; anything older starts a new hold.
+        since = now
+        if held and now - held["last"] <= 2 * TICK_SLACK_SECONDS:
+            since = held["since"]
+        _hold_since[str(cron_dir)] = since
     with contextlib.suppress(OSError):  # an unwritable store is reported by the tick itself
-        atomic_json_write(Path(cron_dir) / _FILE, {"since": since, "last": now})
+        atomic_json_write(Path(cron_dir) / _FILE, {"since": _hold_since[str(cron_dir)], "last": now})
+
+
+def note_dispatching() -> None:
+    """The ticker dispatches the active cron store again: this process's hold on it has ended."""
+    from cron.jobs import _current_cron_store
+
+    _hold_since.pop(str(_current_cron_store().cron_dir), None)
 
 
 def note_held_profiles(profiles) -> None:

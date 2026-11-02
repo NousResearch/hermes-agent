@@ -445,7 +445,7 @@ class InProcessCronScheduler(CronScheduler):
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
         from hermes_constants import get_process_hermes_home
-        from cron.dispatch_hold import note_held
+        from cron.dispatch_hold import note_dispatching, note_held
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
@@ -494,6 +494,7 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                     note_held()
                 else:
+                    note_dispatching()
                     cron_tick(
                         verbose=False, adapters=adapters, loop=loop, sync=False,
                         can_dispatch=can_dispatch,
@@ -550,7 +551,7 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
-        from cron.dispatch_hold import note_held_profiles
+        from cron.dispatch_hold import note_dispatching, note_held_profiles
 
         initial_homes = _existing_profile_homes(profile_homes)
         register_ticked_homes([_profile_entry(entry)[1] for entry in initial_homes])
@@ -627,6 +628,7 @@ class InProcessCronScheduler(CronScheduler):
                     for _pname, home in cycle_homes:
                         try:
                             with _profile_cron_scope(home):
+                                note_dispatching()
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,

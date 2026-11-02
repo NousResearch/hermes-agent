@@ -581,49 +581,13 @@ def _browse_reconcile_reserve_wait_s() -> float:
     return BROWSE_RECONCILE_BUDGET_S + 2.0
 
 
-def _conflicting_homes(homes):
-    """The homes whose gateway.lock another holder has right now: each probed alone with its own open
-    file description and released at once (the all-or-nothing reserve does not say which failed).
-    A home freed meanwhile is simply not listed; the next reserve attempt takes it."""
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
-    conflicting = []
-    for home in homes:
-        probe = ProfileOwnership()
-        try:
-            probe.reserve([home])
-        except OwnershipConflict:
-            conflicting.append(home)
-        finally:
-            probe.close()
-    return conflicting
-
-
 def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
-    """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
-    published its lock record (flock taken, record unwritten). Only a positively identified holder
-    that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
-    from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    """Boot's all-or-nothing reserve of every served home, waiting out transient holders (a browse
+    reconcile, an unpublished record, a client's lock probe) for up to the browse window."""
+    from gateway.runtime_ownership import reserve_waiting_out_transient_holders
     if wait_s is None:
         wait_s = _browse_reconcile_reserve_wait_s()
-    deadline = time.monotonic() + wait_s
-    logged = False
-    while True:
-        try:
-            return ownership.reserve(homes)
-        except OwnershipConflict:
-            # Only the homes that actually conflict decide: a real owner on any of them refuses at
-            # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
-            conflicting = _conflicting_homes(homes)
-            holders = [h for h in conflicting
-                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
-            if not holders or len(holders) < len(conflicting) or time.monotonic() >= deadline:
-                raise
-            if not logged:
-                logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
-                            holders[0], wait_s)
-                logged = True
-            time.sleep(0.1)
+    return reserve_waiting_out_transient_holders(ownership, homes, wait_s=wait_s)
 
 
 def _start_gateway_reserve_profiles(profile_homes) -> bool:

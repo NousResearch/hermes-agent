@@ -510,19 +510,39 @@ def _register_session_cwd(session: dict | None) -> None:
     if hints is not None and hasattr(hints, "rebind_working_dir"):
         hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.terminal_tool import _ensure_terminal_env_bridged, register_task_env_overrides
+        from tools.terminal_tool_config import _tenv, _tenv_bool
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
         # The cwd/override record is keyed by the ROUTED home (#123989). session.create is a plain
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
         import hermes_constants as hc
+        from tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
             if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
                 stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
-            register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
+                stack.enter_context(install_and_reset_profile_terminal_scope(profile_home))
+            overrides = {"cwd": cwd, "cwd_source": cwd_source}
+            _ensure_terminal_env_bridged()
+            try:
+                unmounted_docker = _tenv("TERMINAL_ENV", "local") == "docker" and not _tenv_bool(
+                    "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+            except TerminalPolicyUnavailable:
+                # An unreadable profile's terminal refuses every call anyway: register the cwd as usual
+                # so project tools still find the folder. (register_task_env_overrides writes the record
+                # before its live-env update, which raises under this refusal scope.)
+                unmounted_docker = False
+            if unmounted_docker:
+                # A host cwd is not a directory in this sandbox. An empty cwd leaves its configured cwd
+                # and a later in-container cd intact; host-side readers (project tools) still find the
+                # session's own folder under ``host_workspace``.
+                overrides = {"cwd": "", "cwd_source": "process"}
+                if cwd_source == "session":
+                    overrides["host_workspace"] = cwd
+            register_task_env_overrides(session["session_key"], overrides)
 
 
 def _workdir_row_model_config(session: dict) -> tuple[str, dict]:

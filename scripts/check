@@ -105,6 +105,7 @@ _GUARDS = {
     "footguns": ["scripts/check-windows-footguns.py", "--all"],
     "shebangs": ["scripts/check_bash_shebangs.py"],
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
+    "detached-spawns": ["scripts/check_detached_spawns.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],

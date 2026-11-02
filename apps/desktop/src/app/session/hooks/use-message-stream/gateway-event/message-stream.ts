@@ -35,11 +35,13 @@ function firstBillingLine(text: string): string {
 /**
  * A turn failed on a billing wall (out of credits / payment required). The
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
- * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * we cache it per-session, which drives the out-of-credits banner above the
+ * composer. A wall in a session that is NOT on screen also raises one sticky,
  * billing-specific toast — never the generic "Hermes error" — with a smart CTA
- * (Nous → in-app Settings → Billing, other providers → their billing page).
+ * (Nous → in-app Settings → Billing, other providers → their billing page); on
+ * screen the banner and the turn's card carry it, so no toast repeats them.
  */
-function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+function surfaceBillingBlock(sessionId: string, raw: unknown, toast: boolean): void {
   if (!raw || typeof raw !== 'object') {
     return
   }
@@ -51,6 +53,10 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
   }
 
   setBillingBlock(sessionId, block)
+
+  if (!toast) {
+    return
+  }
 
   const ctaCopy = {
     addCredits: translateNow('billingBlock.addCredits'),
@@ -409,7 +415,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
-    noteTurnSettled(sessionId)
+    // The view mirrors this runtime only while bound to it (settled-turns.ts).
+    noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,
@@ -427,13 +434,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     // Structured billing wall forwarded by the gateway (out of credits /
-    // payment required) — cache it + raise a billing-specific toast. A window
+    // payment required) — cache it for the banner (toast only off screen). A window
     // plan's limit is said once, by the turn's error card (its buttons are the
     // ways on); a toast and banner would only repeat it.
     const usageWindowWall = parseErrorSurface(payload?.error_surface)?.code === 'usage_window'
 
     if (payload?.billing && !usageWindowWall) {
-      surfaceBillingBlock(sessionId, payload.billing)
+      surfaceBillingBlock(sessionId, payload.billing, !isActiveEvent)
     }
 
     // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.

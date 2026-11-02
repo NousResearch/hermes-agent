@@ -52,6 +52,16 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def register_source(self, source):
         self.sources[self._source_key(source)] = source, self._identity(source)
 
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
+
     async def connect(self, *, is_reconnect=False):
         return True
 
@@ -122,6 +132,17 @@ class LocalSessionAdapter(BasePlatformAdapter):
         if started is not None and 'local_automation_v1' in started['payload']:
             return 'Clarification is unavailable: no viewer can answer this chat'
         return None
+
+
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.forget(live.source, live.route)
 
 
 def authorize_local_source(runner, source):

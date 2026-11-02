@@ -1,13 +1,19 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
 import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import {
+  $browserNotificationPermission,
+  askBrowserNotificationPermission,
+  refreshBrowserNotificationPermission
+} from '@/store/browser-notification-permission'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
 import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 import {
@@ -30,6 +36,37 @@ function Caption({ children, className }: { children: ReactNode; className?: str
   return <p className={cn(CAPTION, className)}>{children}</p>
 }
 
+/** Webapp only: the browser's notification permission, asked from a click here
+ *  or on Send test notification, never on page load. The tab title flashes
+ *  whatever the answer. */
+function BrowserPermissionRow() {
+  const { t } = useI18n()
+  const copy = t.settings.notifications.browserPermission
+  const permission = useStore($browserNotificationPermission)
+
+  useEffect(refreshBrowserNotificationPermission, [])
+
+  return (
+    <ListRow
+      action={
+        permission === 'default' ? (
+          <Button
+            onClick={() => void askBrowserNotificationPermission()}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {copy.allow}
+          </Button>
+        ) : undefined
+      }
+      description={copy.states[permission]}
+      id={settingElementId(SETTING_IDS.notifications.browserPermission)}
+      title={copy.title}
+    />
+  )
+}
+
 interface NotificationsSettingsProps {
   subpage?: string
 }
@@ -47,6 +84,11 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
 
   const runTest = async () => {
     triggerHaptic('open')
+
+    if (hostHas('browserNotifications')) {
+      await askBrowserNotificationPermission()
+    }
+
     const ok = await sendTestNativeNotification(copy.testTitle, copy.testBody)
     notify({ kind: ok ? 'info' : 'error', message: ok ? copy.testSent : copy.testUnsupported })
   }
@@ -65,6 +107,8 @@ export function NotificationsSettings({ subpage }: NotificationsSettingsProps = 
             label={copy.enableAll}
             onChange={setNativeNotifyEnabled}
           />
+
+          {hostHas('browserNotifications') && <BrowserPermissionRow />}
 
           {NATIVE_NOTIFICATION_KINDS.map(kind => (
             <ToggleRow

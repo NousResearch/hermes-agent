@@ -1,16 +1,16 @@
 name: hermes-lcm-x
 title: LCM-X
 repo: https://github.com/electricsheephq/lcm-x
-sha: 39daadd1c90f4dc60061089878bbd40dc5e4eaeb
+sha: 1a13744482a2448c38d6f9f0b98803f07aac6e81
 subdir: plugin
-description: "Lossless memory for long sessions: LCM-X keeps every turn in a local store instead of compacting it away, and the agent can search and expand it. The store is local SQLite (lcm.db) with a recoverable DAG of summaries over it and 15 lcm_* tools for search, recall and expansion. Select it with context.engine: lcm-x. Upgrading from hermes-lcm (breaking in v0.24.0): stop Hermes, then in plugins.enabled replace hermes-lcm with hermes-lcm-x and run exactly one LCM copy (the install script prints the steps; the old engine name lcm still resolves with a deprecation warning); lcm.db and the lcm: config block are unchanged. Summaries use the model Hermes is configured with. Disclosure — optional semantic recall (embeddings_enabled, off by default) sends message text to the embedding provider you configure (Voyage via VOYAGE_API_KEY, an OpenAI-compatible endpoint, or a local Ollama), and once enabled new summaries are embedded automatically in the background; in-process FastEmbed keeps it on the machine after a one-time model download. For known cloud providers the provider-bound copy is privacy-transformed by default (LCM_EMBEDDING_PRIVACY_ENABLED=false opts out), while lcm.db keeps the raw text. Every turn (user, assistant and tool output) is stored in plaintext in lcm.db (secret redaction at rest is opt-in), and oversized tool outputs are by default written as plaintext files under HERMES_HOME/lcm-large-outputs and replaced in the model's context by recoverable references. The engine also reads Hermes' state.db read-only for session lineage, reads private AIAgent attributes via the call stack on Hermes builds without subagent hooks, and runs git on its own install directory for lcm_status/lcm_doctor; tiktoken may fetch its BPE file on first use."
+description: "Lossless memory for long sessions: LCM-X keeps every turn in a local store instead of compacting it away, and the agent can search and expand it. The store is local SQLite (lcm.db) with a recoverable DAG of summaries over it and 16 lcm_* tools for search, recall and expansion (lcm_memory only with LCM_ENTITIES_ENABLED=1). Select it with context.engine: lcm-x. Upgrading from hermes-lcm (breaking in v0.24.0): stop Hermes, then in plugins.enabled replace hermes-lcm with hermes-lcm-x and run exactly one LCM copy (the install script prints the steps; the old engine name lcm still resolves with a deprecation warning); lcm.db and the lcm: config block are unchanged. Summaries use the model Hermes is configured with. Disclosure — local semantic recall is on by default once its dependency companion is installed (hermes plugins install electricsheephq/lcm-x/companions/hermes-lcm-x-local-embeddings --ref <the LCM-X commit>; it carries fastembed): summaries and message chunks are embedded in-process with BAAI/bge-small-en-v1.5 after a one-time model download, in the background, and stay on the machine. Without the companion, recall answers from full text and lcm_doctor prints the install command; on hosts with 2 or fewer effective CPUs the default answers from full text unless LCM_EMBEDDINGS_ENABLED=true; LCM_EMBEDDINGS_ENABLED=false turns semantic recall off. Cloud embedding providers (Voyage via VOYAGE_API_KEY, an OpenAI-compatible endpoint, or a local Ollama) send message text to that provider and run only with LCM_EMBEDDINGS_ENABLED=true and an explicit model. For known cloud providers the provider-bound copy is privacy-transformed by default (LCM_EMBEDDING_PRIVACY_ENABLED=false opts out), while lcm.db keeps the raw text. Every turn (user, assistant and tool output) is stored in plaintext in lcm.db (secret redaction at rest is opt-in); on gateway platforms the sender's platform user ID is recorded with each user message by default (LCM_SENDER_CAPTURE=0 turns it off), and oversized tool outputs are by default written as plaintext files under HERMES_HOME/lcm-large-outputs and replaced in the model's context by recoverable references. The engine also reads Hermes' state.db read-only for session lineage, reads private AIAgent attributes via the call stack on Hermes builds without subagent hooks, and runs git on its own install directory for lcm_status/lcm_doctor; tiktoken may fetch its BPE file on first use."
 maintainer: 100yenadmin
 tier: community
 category: memory
 requires_hermes: '>=0.21.3'
 docs_url: https://github.com/electricsheephq/lcm-x#readme
-version: "0.28.1"
-image: https://raw.githubusercontent.com/electricsheephq/lcm-x/77b2b4f795fb6a4f84c55abf6d0441da4469971e/docs/media/banner.png
+version: "0.29.0"
+image: https://raw.githubusercontent.com/electricsheephq/lcm-x/c13dea3783bdbd1aab52d83dff5d009bfade0bd2/docs/media/banner.png
 platforms: []
 capabilities:
   provides_tools:
@@ -29,6 +29,7 @@ capabilities:
     - lcm_status
     - lcm_inspect
     - lcm_doctor
+    - lcm_memory
   provides_hooks:
     - pre_llm_call
     - post_llm_call

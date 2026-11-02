@@ -60,5 +60,3 @@ uv.lock                         @NousResearch/hermes-agent-core
 # The trust model and the scope authority for security reports.
 /SECURITY.md                    @NousResearch/hermes-agent-core
 
-# Each entry pins a third-party repo by sha; editing it changes what users install.
-/plugin-catalog/                @NousResearch/hermes-agent-core

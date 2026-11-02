@@ -220,6 +220,10 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+# The POSIX interpreter name the pinned Windows Python also answers to (see Python.stage).
+WINDOWS_PYTHON3 = "python3.exe"
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -261,6 +265,28 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # old bundle-time drop did) makes doctor's re-hash mismatch.
         if target == "win32-arm64":
             (staged / "vcruntime140_1.dll").unlink(missing_ok=True)
+        # python-build-standalone's Windows build ships python.exe only, so `python3` (npm and
+        # vitest helpers, POSIX-minded scripts) resolves past the activated PATH to the Microsoft
+        # Store's App Execution Alias stub, which installs nothing and fails. python.exe is a
+        # small launcher of pythonXY.dll that finds its home from its own directory, so a copy
+        # under the POSIX name is the same interpreter. Staged before publish, so the recorded
+        # tree digest covers it.
+        if target.startswith("win32"):
+            shutil.copy2(staged / "python.exe", staged / WINDOWS_PYTHON3)
+
+    def verify(self, entry: Path, target: str) -> str:
+        reason = super().verify(entry, target)
+        if reason or not target.startswith("win32"):
+            return reason
+        # An entry staged before python3.exe existed fails here, so an explicit install
+        # (activation's setup) restages it once; startup's facts check never calls verify.
+        alias = entry / WINDOWS_PYTHON3
+        try:
+            if alias.read_bytes() == (entry / "python.exe").read_bytes():
+                return ""
+        except OSError:
+            return f"{WINDOWS_PYTHON3} is missing beside python.exe"
+        return f"{WINDOWS_PYTHON3} differs from python.exe"
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
@@ -326,6 +352,13 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
     return dst
 
 
+def uv_cache_path() -> Path:
+    """Where the hermes-owned uv cache lives; unlike uv_cache_dir(), never seeds or writes."""
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "cache" / "uv"
+
+
 def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
@@ -336,11 +369,9 @@ def uv_cache_dir() -> Path:
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
-    from hermes_constants import get_default_hermes_root
-
     from pm.paths import repo_root, store_root
 
-    machine_cache = get_default_hermes_root() / "cache" / "uv"
+    machine_cache = uv_cache_path()
     marker = machine_cache / ".seeded"
     # The marker names the lock whose payload was merged. An update ships a new payload cache for
     # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins

@@ -476,8 +476,29 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
+_BARE_CUSTOM_SELECTORS = frozenset({"custom", "local"})
+
+
+def _same_endpoint(a: Any, b: Any) -> bool:
+    """Trailing-slash and case insensitive URL equality (``_save_custom_provider`` dedups the same way)."""
+    return str(a or "").strip().rstrip("/").lower() == str(b or "").strip().rstrip("/").lower()
+
+
+def _entry_points_elsewhere(entry: Any, base_url: str) -> bool:
+    """A configured provider block that names a DIFFERENT host than the submitted endpoint. Its
+    credentials belong to that host; a block for the same host (e.g. its ``key_env``) still applies."""
+    return isinstance(entry, dict) and not _same_endpoint(entry.get("base_url"), base_url)
+
+
+def _is_explicit_custom_endpoint(provider: str, base_url: str) -> bool:
+    """A bare ``custom`` / ``local`` pick that carries its own endpoint URL defines a route; it is
+    never a reference to an already-configured provider."""
+    return provider.strip().lower() in _BARE_CUSTOM_SELECTORS and bool((base_url or "").strip())
+
+
 def _validated_main_model_selection(
-    cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
+    cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = "",
+    explicit_endpoint: Optional[bool] = None,
 ) -> "ModelSwitchResult":
     """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
     validation) seeded with the configured route, exactly like a ``/model <model> --provider
@@ -488,13 +509,29 @@ def _validated_main_model_selection(
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    # An explicit endpoint must not resolve through the configured providers: the legacy
+    # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry, and
+    # a ``providers.custom`` / ``providers.local`` block (same key as the bare selector) would win
+    # the credential step and validate ITS host with ITS key. ``_prepare_main_assignment`` passes
+    # whether the URL was SUBMITTED; a URL it filled from that block is a selection, not a route.
+    if explicit_endpoint is None:
+        explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
+    user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    if explicit_endpoint:
+        user_providers = {k: v for k, v in user_providers.items()
+                          if not (str(k).strip().lower() in _BARE_CUSTOM_SELECTORS
+                                  and _entry_points_elsewhere(v, base_url))}
+    # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
+    # keeps it: arriving from another provider it re-resolves ``custom`` from config and would
+    # validate the saved ``model.base_url`` (and its key) instead of the endpoint being saved.
     result = switch_model(
         raw_input=model, explicit_provider=provider, is_global=True,
-        current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
+        current_provider="custom" if explicit_endpoint else str(model_cfg.get("provider") or ""),
+        current_model=str(model_cfg.get("default") or ""),
         current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
         current_api_key=api_key if is_bare_custom else "",
-        user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-        custom_providers=get_compatible_custom_providers(cfg))
+        user_providers=user_providers,
+        custom_providers=[] if explicit_endpoint else get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
     if is_bare_custom and base_url.strip():
@@ -767,17 +804,26 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
     ``_CONFIG_MUTATION_LOCK``; it writes nothing."""
     if not provider or not model:
         raise HTTPException(status_code=400, detail="provider and model required for main")
-    provider, model = _normalize_main_model_assignment(provider, model)
+    explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
+    if explicit_endpoint:
+        # The Local / custom endpoint wizard: the submitted URL IS the route. Normalizing would
+        # recover a bare ``custom`` onto the first named custom provider and keep ITS URL (#145466).
+        provider, model = provider.strip(), model.strip()
+    else:
+        provider, model = _normalize_main_model_assignment(provider, model)
     provider_entry = _provider_entry(cfg, provider)
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
-    return base_url, _validated_main_model_selection(cfg, provider, model, base_url, api_key)
+    return base_url, _validated_main_model_selection(
+        cfg, provider, model, base_url, api_key, explicit_endpoint=explicit_endpoint)
 
 
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
     from hermes_cli.free_tier_bootstrap import reconcile_record
+    # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
+    explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     provider_entry = _provider_entry(cfg, provider)
@@ -789,7 +835,11 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     endpoint_already_known = (
         provider_lc in {"custom", "local"} and bool(base_url) and _endpoint_known_to_config(cfg, base_url))
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
-    _resolve_assignment_credentials(model_cfg, provider, provider_entry)
+    if not (explicit_endpoint and _entry_points_elsewhere(provider_entry, base_url)):
+        # A submitted endpoint carries its own key (or none); a ``providers.custom`` block for
+        # ANOTHER host shares the selector's name, and hydrating from it would pair the new URL with
+        # that host's key. A block for the same host (its ``key_env``) still supplies the credential.
+        _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
     new_provider = provider.strip().lower()

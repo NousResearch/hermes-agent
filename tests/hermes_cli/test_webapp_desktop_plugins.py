@@ -188,3 +188,53 @@ def test_only_the_webapp_serves_desktop_plugins(monkeypatch, hermes_root, surfac
         assert client.get("/api/desktop-plugins/root").status_code == 404
     finally:
         client.close()
+
+
+def _git_plugin_repo(path, files):
+    """A real repository holding a desktop plugin, as the install dialog's clone would find it."""
+    import subprocess
+
+    path.mkdir()
+    for rel, text in files.items():
+        target = path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    for args in (("init", "-q", "-b", "main"), ("add", "-A"),
+                 ("-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "-m", "c")):
+        subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
+    return path
+
+
+def test_a_plugin_installed_through_the_backend_is_served_to_the_browser(webapp, hermes_root, tmp_path,
+                                                                        monkeypatch):
+    # The whole trip the dialog makes: `plugins.manage install_desktop` clones onto this host, then the
+    # browser's loader reads exactly what the Webapp serves.
+    import subprocess
+
+    from hermes_cli import plugins_cmd
+    from hermes_cli.desktop_plugin_install import install_desktop_plugin
+
+    repo = _git_plugin_repo(tmp_path / "gizmo", {"plugin.js": "export default { id: 'gizmo' }\n",
+                                                 "panel.js": "export const x = 1\n"})
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True,
+                         text=True, encoding="utf-8").stdout.strip()
+    real = plugins_cmd._clone_plugin_repo
+    monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo",
+                        lambda dest, _url, revision, subdir=None: real(dest, repo.as_uri(), revision, subdir))
+
+    result = install_desktop_plugin("https://example.invalid/acme/gizmo.git", ref=sha)
+
+    assert result["ok"] is True, result
+    folders = webapp.get("/api/desktop-plugins/root").json()["root"]
+    assert folders == str((hermes_root / "desktop-plugins").resolve())
+    listing = webapp.get("/api/desktop-plugins/list", params={"path": result["path"]}).json()
+    # `.git` comes along, as Electron's own clone leaves it: an install keeps its provenance so a later
+    # update can pull. The routes still refuse to read anything but the entry and the package marker.
+    names = sorted(entry["name"] for entry in listing["entries"])
+    assert [name for name in names if name != ".git"] == ["panel.js", "plugin.js"]
+    assert webapp.get("/api/desktop-plugins/read",
+                      params={"path": result["path"] + "/.git/config"}).status_code == 404
+    entry = webapp.get("/api/desktop-plugins/read",
+                       params={"path": result["path"] + "/plugin.js"}).json()
+    assert entry["text"].startswith("export default { id: 'gizmo' }")
+    assert entry["truncated"] is False

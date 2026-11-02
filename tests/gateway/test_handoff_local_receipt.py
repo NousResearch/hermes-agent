@@ -316,8 +316,8 @@ async def test_a_delivery_racing_the_lanes_new_mints_the_fresh_bot_chat(tmp_path
         runner.session_store.reset_session(route)
     seen = []
 
-    def racing(authority, row):
-        found = displaceable(authority, row)
+    def racing(authority, row, subject=None):
+        found = displaceable(authority, row, subject)
         seen.append(found)
         if lands == 'after the title read' and len(seen) == 1:
             runner.session_store.reset_session(route)  # the lane held it when the delivery read it

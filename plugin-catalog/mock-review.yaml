@@ -1,20 +1,24 @@
 name: mock-review
 title: Mock Review
-repo: https://github.com/arspesk/hermes-mock-review
-sha: "fb3d07bae45ab7a30f57fdc8cbc0e36df016e996"
-version: "1.0.1"
+repo: https://github.com/apelabs-dev/hermes-mock-review
+sha: "bb4740cb5467b8a0445a1701b3214bf1e6b309f7"
+version: "1.1.2"
 description: >-
   Review boards for UI mockups. The agent builds a board from a decisions.json file and
   your prototype pages; you open it on desktop or phone, mark each decision approve,
   change or skip, pin comments on the mocks and press Send, and your agent wakes up with
   the feedback as a markdown digest. Four mock_review tools, the `hermes mockreview` CLI
   and slash command, and a bundled usage skill. Boards are served from your computer
-  (loopback by default, or your tailnet) or published on here.now. Disclosure — when
+  (loopback by default, or your tailnet) or published on here.now, behind a random
+  per-review password by default (`herenow_password` setting, `--no-password` per review,
+  `hermes mockreview password <id> on|off` on a live board). Plain http(s) links in mocks
+  stay clickable and open in a new tab; every other link scheme is stripped. Disclosure — when
   autostart is on (off until `hermes mockreview setup`), a board web server
   (127.0.0.1:8790 by default) and one worker thread run inside the gateway process;
   setting host to 0.0.0.0 exposes every review to your network with no login. Outbound
   calls: a signed POST to the local Hermes webhook (localhost:8644) on Send, and, only for
-  reviews hosted on here.now, https://here.now/api/v1 with your HERENOW_API_KEY. Secrets
+  reviews hosted on here.now, https://here.now/api/v1 with your HERENOW_API_KEY (publish,
+  Site Data reads, a metadata PATCH that sets or removes the board password, delete on close). Secrets
   are read through Hermes's secret scope only. Runs `bash publish.sh` from the official
   here-now skill (key in the child environment), `tailscale status --json` and `tailscale serve status --json`
   (read only; on macOS the Tailscale app's own binary if the symlink crashes) for tailnet
@@ -26,10 +30,10 @@ maintainer: "arspesk"
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/arspesk/hermes-mock-review#readme
-image: https://raw.githubusercontent.com/arspesk/hermes-mock-review/57b1f581d03cb266b89bb4b6239573504a6405a6/docs/img/catalog-banner.jpg
+docs_url: https://github.com/apelabs-dev/hermes-mock-review#readme
+image: https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/bb4740cb5467b8a0445a1701b3214bf1e6b309f7/docs/img/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/arspesk/hermes-mock-review/fb3d07bae45ab7a30f57fdc8cbc0e36df016e996/docs/img/review-board.png
+  - https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/bb4740cb5467b8a0445a1701b3214bf1e6b309f7/docs/img/review-board.png
 platforms: []
 known_issues:
   - "here.now hosting needs the official here-now skill in the active profile (`hermes skills install official/productivity/here-now`) and a HERENOW_API_KEY; local and tailnet hosting need neither."

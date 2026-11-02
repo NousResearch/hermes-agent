@@ -229,8 +229,8 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
-        "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a /bg background task, a cron "
+        "job, a Kanban worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
         "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
@@ -486,10 +486,11 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
+    from tools.delegate_tool import session_joins_delegation
     # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
-    if background:
+    if background and not session_joins_delegation(batch.parent_agent):
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

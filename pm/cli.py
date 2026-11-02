@@ -471,7 +471,40 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         print(f"✓ {name} {fact['version']}")
+    bad += _doctor_uv_cache(repair=getattr(args, "repair", False))
     return 1 if bad else 0
+
+
+def _doctor_uv_cache(*, repair: bool) -> int:
+    """Report (and with --repair, remove) uv cache entries an interrupted install corrupted.
+
+    Read-only by default like the rest of doctor. Installs already purge a
+    corrupt entry they trip over; this finds them before an install does.
+    """
+    from pm.environment import managed_environment
+    from pm.packages import uv_cache_path
+    from pm.uv_cache_health import corrupt_cached_packages
+
+    cache = uv_cache_path()
+    corrupt = sorted(corrupt_cached_packages(cache))
+    if not corrupt:
+        print(f"✓ uv cache: no corrupt entries in {cache}")
+        return 0
+    if not repair:
+        print(f"✗ uv cache: corrupt entries for {', '.join(corrupt)} in {cache}; "
+              "run `hermes pm doctor --repair` (installs also remove them when they hit one)")
+        return 1
+    try:
+        managed_environment(cache, cache=cache).purge_cached_packages(corrupt)
+    except InstallError as exc:
+        print(f"✗ uv cache: {exc}")
+        return 1
+    left = sorted(corrupt_cached_packages(cache))
+    if left:
+        print(f"✗ uv cache: still corrupt after cleaning: {', '.join(left)} in {cache}")
+        return 1
+    print(f"✓ uv cache: removed corrupt entries for {', '.join(corrupt)}; they are fetched again on next use")
+    return 0
 
 
 def _gc_store(store, facts) -> tuple[int, int]:
@@ -820,6 +853,72 @@ def cmd_repair(args) -> int:
     return 0
 
 
+def _extra_requirements(project: Path, extras: list[str]) -> list[str]:
+    """The pinned requirements of declared extras, self-references expanded.
+
+    Pins, not the whole lock, define the environment: an identity over uv.lock
+    would build a new generation on every Hermes update, and superseded side
+    generations are never reclaimed while a caller may still run from them.
+    """
+    import re
+    import tomllib
+
+    declared = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    name = declared["project"]["name"]
+    table = declared["project"].get("optional-dependencies", {})
+    requirements: list[str] = []
+    pending, seen = list(extras), set()
+    while pending:
+        extra = pending.pop()
+        if extra in seen:
+            continue
+        if extra not in table:
+            raise ValueError(f"{extra!r} is not an extra declared in {project / 'pyproject.toml'}")
+        seen.add(extra)
+        for requirement in table[extra]:
+            own = re.fullmatch(rf"{re.escape(name)}\[([^\]]+)\]", requirement.replace(" ", ""))
+            if own:
+                pending.extend(own.group(1).split(","))
+            else:
+                requirements.append(requirement)
+    return requirements
+
+
+def cmd_environment(args) -> int:
+    """Make a named side environment current and print its interpreter.
+
+    Shell callers (skills) cannot import PM: the terminal's `python` is rarely
+    Hermes's own. Concurrent callers serialize on PM's per-environment lock and
+    a rebuild lands in a new generation, so a running caller keeps its files.
+    """
+    import contextlib
+    import os
+
+    import pm
+
+    if bool(args.extra) == bool(args.requirement):
+        print("hermes pm environment: pass --extra or --requirement (not both)", file=sys.stderr)
+        return 2
+    # stdout carries only the interpreter path, for PY=$(hermes pm environment ...);
+    # progress from PM and its uv children goes to stderr at both levels.
+    sys.stdout.flush()
+    saved = os.dup(1)
+    os.dup2(2, 1)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            requirements = _extra_requirements(repo_root(), args.extra) if args.extra else args.requirement
+            python = pm.ensure_environment(args.name, requirements, explicit=True)
+    except (InstallError, ValueError) as exc:
+        print(f"hermes pm environment: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+    print(python)
+    return 0
+
+
 def cmd_bundle(args) -> int:
     from scripts.bundles.native import stage_native
     return stage_native(args)
@@ -876,10 +975,23 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("doctor", help="check installed state against the lockfile")
+    p.add_argument("--repair", action="store_true",
+                   help="remove corrupt entries from PM's uv cache so they are fetched again")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("repair", help="rebuild the recorded dependency environment without changing its graph")
     p.set_defaults(func=cmd_repair)
+
+    p = sub.add_parser(
+        "environment", help="make a named side environment current and print its python",
+        description="Build or reuse HERMES_HOME/environments/NAME, an isolated venv that never "
+                    "touches Hermes's own: --extra installs the pins of a declared extra, "
+                    "--requirement an ad hoc bounded requirement (both repeatable). "
+                    "Prints only the interpreter path on stdout.")
+    p.add_argument("name")
+    p.add_argument("--extra", action="append", default=[], metavar="EXTRA")
+    p.add_argument("--requirement", action="append", default=[], metavar="REQ")
+    p.set_defaults(func=cmd_environment)
 
     p = sub.add_parser("gc", help="remove store entries nothing references")
     p.set_defaults(func=cmd_gc)

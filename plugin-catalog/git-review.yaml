@@ -1,15 +1,15 @@
 # Catalog entry for NousResearch/hermes-agent: plugin-catalog/git-review.yaml
-# Pinned to the merge commit of v0.2.0 (release published 2026-10-25). Bump sha and version together.
+# Pinned to the merge commit of v0.2.2 (release published 2026-10-27). Bump sha and version together.
 name: git-review
 repo: https://github.com/mister-ideas/git-review
-sha: 506b44804fbf90000c2d620975888f47427dfaa6
+sha: 99da6580de7ca6f6a2d4b65e808130ea10d7fe1a
 title: Git Review
 description: "Git review pane for Hermes Desktop: every changed file of the agent's last turn, uncommitted, staged or unstaged work, the branch since it left the default branch, or any selection of commits, in one scroll, unified or split, with syntax colours; cites changed lines into the composer as @line: references; and stages, unstages, discards, commits, pushes and opens pull requests from the pane. Disclosure — reads run git subprocesses (rev-parse, status, diff, log, show, cat-file, ls-files, for-each-ref, branch, remote, rev-list, merge-base, symbolic-ref, hash-object) with timeouts and output caps, external diff and textconv drivers disabled. Writes run only when the user clicks: git add, restore, reset, rm, commit and push, on paths validated inside the repository; discard asks first in Desktop's confirmation dialog and deletes only the untracked files it names. By default hooks are skipped and any write that would run a program named by the repository's own config (filter drivers, signing, SSH or credential commands) is refused; the run_repo_programs setting allows them, and the read_only setting hides and refuses every write. Network use: push to the branch's own name on its remote, and the user's own gh or glab CLI for the PR/MR badge and for Create pull request; the plugin itself makes no network requests. Generate commit message sends what the commit will contain and recent commit subjects to the focused chat's model through Hermes's commit_message one-shot template, only when clicked. It reads files and history inside authorized repositories only (the focused workspace, configured repos/roots and the latest agent selection), this profile's config.yaml, and the cwd column of the sessions table in state.db (read-only); it writes $HERMES_HOME/plugin-data/git-review/select.sqlite3 (agent selection requests), Desktop plugin storage (display settings, turn baselines) and, through the actions above, the user's repository. While the pane is open it polls the local backend every 3 s (agent selections) and 5 s (live diffs); the status-bar count and the commit box's branch state refresh every 15 s; no background processes, credentials or telemetry."
 maintainer: mister-ideas
 tier: community
 category: desktop
 requires_hermes: ">=0.21.6"
-version: "0.2.0"
+version: "0.2.2"
 docs_url: https://github.com/mister-ideas/git-review#readme
 image: https://raw.githubusercontent.com/mister-ideas/git-review/506b44804fbf90000c2d620975888f47427dfaa6/docs/banner.jpg
 screenshots:

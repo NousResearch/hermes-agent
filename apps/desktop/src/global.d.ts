@@ -522,6 +522,11 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
+      /** The same refresh, also naming each package whose desktop half it refused and why. */
+      reconcileDesktopPluginsReport?: () => Promise<{
+        published: string[]
+        refused: { name: string; reason: string }[]
+      }>
       /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
        *  profile) — error card "Open Logs". */
       logsRoot?: (profile?: string) => Promise<string>
@@ -625,7 +630,9 @@ declare global {
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
         start: (options?: {
           cols?: number
+          connectionId?: null | string
           cwd?: string
+          profile?: string
           rows?: number
           restoreKey?: string
           resumeOnly?: boolean
@@ -656,13 +663,28 @@ declare global {
         desktopName?: string | null
         warnings?: string[]
         insecure?: boolean
+        /** The commit that was inspected; an install of this source is held to it. */
+        sha?: string
+        /** The backend read the catalog entry at its pin (`inspectAgentPlugin`); never set by Electron's probe. */
+        catalogPin?: boolean
+        /** Inspection itself is missing here (not a failed read): Retry cannot help. */
+        unavailable?: boolean
         error?: string
       }>
       installDesktopPlugin?: (payload: {
         identifier?: string
         repo?: string
         force?: boolean
-      }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+        /** The commit the dialog reviewed; Electron installs exactly that tree or refuses. */
+        sha?: string
+      }) => Promise<{
+        ok: boolean
+        pluginName?: string
+        path?: string
+        error?: string
+        /** The reviewed commit is gone from the source: the dialog reads it again. */
+        sourceMoved?: boolean
+      }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */
       removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
@@ -763,8 +785,7 @@ export interface HermesPluginFolderGrant {
 }
 
 export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
-  | ({ ok: true } & T)
-  | { ok: false; error: string; message: string }
+  ({ ok: true } & T) | { ok: false; error: string; message: string }
 
 export interface DesktopMarketplaceSearchItem {
   extensionId: string
@@ -791,9 +812,14 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
+  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  connectionId?: null | string
   cwd: string
   id: string
   shell: string
+  /** No shell was started: the tab's gateway was removed (`missing`) or has
+   *  no shell transport (`no-shell`). */
+  unavailable?: 'missing' | 'no-shell'
   /** Server-owned process and replay; do not restore renderer scrollback. */
   persistent?: boolean
 }

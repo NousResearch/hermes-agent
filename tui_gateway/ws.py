@@ -57,7 +57,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
     path = None
     try:
         from gateway.scale_to_zero import dashboard_client_heartbeat_path
-        # Resolved here: the worker thread does not carry the caller's profile scope.
+        # The process's own home, whatever profile scope the socket runs in (the watcher reads it).
         path = dashboard_client_heartbeat_path()
         with _dashboard_client_touch_lock:
             if path in _dashboard_client_touch_pending:
@@ -392,7 +392,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
             # Session verbs live on the authority; everything else the sidecar still
             # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
             # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
-            # method neither side knows, which is what the client's version-skew notice keys on.
+            # method neither side knows, which the client's capability fallbacks key on.
             resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
         return resp
 

@@ -339,7 +339,12 @@ def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
         200 if locked else 400
     )
     monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
-    assert client.get("/api/files/stream", params=params).status_code == 413
+    # A player source streams one Range at a time, so the whole-file cap that guards the
+    # base64 read and attachment download never stops a long recording from playing.
+    capped = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert capped.status_code == 206, capped.text
+    assert capped.content == b"ell"
+    assert client.get("/api/files/read", params={"path": str(artifact)}).status_code == 413
 
 
 @pytest.mark.platforms("windows")
@@ -750,6 +755,8 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "webhook_subscriptions.json",
         "bws_cache.json",
         "bws_cache.enc.json",
+        "op_cache.json",
+        "photon-sidecar.json",
     ):
         p = root / name
         p.write_text("SECRET=abc123")

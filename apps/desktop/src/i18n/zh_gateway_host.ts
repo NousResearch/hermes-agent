@@ -27,6 +27,7 @@ export const zhGatewayHost: GatewayHostTranslations = {
     unavailableDetail: reason => `网关无法提供网页应用：${reason}`,
     restartBusy: '已保存。有对话正在进行，因此网关没有重启。对话结束后请选择“重启网关”。',
     restartFailed: '已保存，但网关无法重启。请选择“重启网关”重试。',
+    restartFailedBecause: reason => `网关无法重启：${reason}`,
     startTimedOut: '网关未能在 90 秒内提供网页应用。',
     stopTimedOut: '网关未能在 90 秒内停止提供网页应用。',
     start: '启动',

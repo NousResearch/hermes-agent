@@ -6,7 +6,10 @@ export const overlaysEn = {
   prompt: {
     approval: {
       title: '⚠ approval required',
-      moreLines: (count: number) => `… +${count} more line${count === 1 ? '' : 's'} (full text above)`,
+      pageMore: (from: number, to: number, total: number) =>
+        `lines ${from}–${to} of ${total} · press v to see the rest before choosing`,
+      pageEnd: (from: number, to: number, total: number) =>
+        `lines ${from}–${to} of ${total} (end) · press v to go back to the top`,
       once: 'Allow once',
       session: 'Allow this session',
       always: 'Always allow',

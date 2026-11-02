@@ -549,17 +549,17 @@ def _under_gateway_supervisor(argv: list) -> bool:
     service children only — consulted ONLY for gateway commands because it is
     inherited by every descendant of a systemd-launched process, e.g.
     self-hosted CI runners), HERMES_GATEWAY_EXTERNAL_SUPERVISOR (explicit
-    opt-in). XPC_SERVICE_NAME is deliberately NOT consulted: interactive macOS
-    terminals set it too.
+    opt-in) and HERMES_GATEWAY_PROFILE_PIN (its tool children's copy, which is
+    no supervisor claim). XPC_SERVICE_NAME is deliberately NOT consulted:
+    interactive macOS terminals set it too.
     """
     if os.environ.get("HERMES_SUPERVISED_CHILD") or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         return True
     is_gateway_cmd = next((a for a in argv if not a.startswith("-")), None) == "gateway"
     if is_gateway_cmd and os.environ.get("INVOCATION_ID"):
         return True
-    return os.environ.get(
-        "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    return any(os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+               for name in ("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "HERMES_GATEWAY_PROFILE_PIN"))
 
 
 def _s6_supervised_gateway_run(argv: list) -> bool:
@@ -681,21 +681,15 @@ if sys.argv[1:2] == ["pm"]:
 
     raise SystemExit(_pm_main(sys.argv[2:]))
 
-# Windows launcher self-heal — the ``hermes`` command is a COPY of the venv
-# console script staged into the managed bin dir (outside the checkout, since
-# ``hermes update``'s autostash once swept ``<checkout>\bin`` copies off disk;
-# venv\Scripts must stay off PATH as it shadows the user's ``python``).
-# Re-staging at process start reaches already-broken installs via the desktop
-# app's ``python -m hermes_cli.main`` spawn. Gates fail toward inaction. Sits
-# AFTER the profile override on purpose — no hermes module may import before
-# profiles resolve; the helper anchors on the DEFAULT root, so profile
-# sessions heal the same shared dir.
-# That dir lives OUTSIDE the git checkout precisely because an earlier layout staged the copies at
-# ``<checkout>\bin``, where ``hermes update``'s autostash (``git stash push --include-untracked``) swept
-# them off disk; with the desktop updater's ``--keep-stash`` nothing restored them and ``hermes`` stopped
-# resolving in every new terminal (venv\Scripts itself must stay off PATH — it shadows the user's
-# ``python``, #83797). Costs a few stat calls when healthy; gates fail toward inaction so source checkouts
-# are untouched.
+# Windows launcher self-heal: the ``hermes`` command is a COPY of the venv console script staged into
+# the managed bin dir, outside the checkout because ``hermes update``'s autostash (``git stash push
+# --include-untracked``) once swept ``<checkout>\bin`` copies off disk, the desktop updater's
+# ``--keep-stash`` never restored them, and ``hermes`` stopped resolving (venv\Scripts must stay off
+# PATH: it shadows the user's ``python``, #83797). Re-staging at process start reaches already-broken
+# installs via the desktop app's ``python -m hermes_cli.main`` spawn. Sits AFTER the profile override
+# on purpose (no hermes module may import before profiles resolve); the helper anchors on the DEFAULT
+# root, so profile sessions heal the same shared dir. A few stat calls when healthy; gates fail toward
+# inaction so source checkouts are untouched.
 if sys.platform == "win32":
     try:
         from hermes_cli import _install_repair as _install_repair_mod
@@ -742,6 +736,11 @@ try:
     del _cfg_path
 except Exception:
     pass  # best-effort — redaction stays at default (enabled) on config errors
+
+# Servers cap glibc malloc arenas HERE, before any thread exists: glibc latches its limit later.
+from hermes_cli.resource_limits import apply_malloc_arena_max, server_process_argv
+if server_process_argv(sys.argv[1:]):
+    apply_malloc_arena_max()
 
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.

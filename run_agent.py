@@ -1010,9 +1010,10 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
-        from hermes_cli.mem_trim import trim_memory
-        trim_memory(force=True, reason="agent close")
+        """Return freed pages to the OS; no full GC here (it would freeze every other session), the idle one runs."""
+        from hermes_cli.mem_trim import note_agent_closed, trim_memory
+        note_agent_closed()
+        trim_memory(force=True, reason="agent close", collect=False)
 
     def _finalize_owned_session_row(self) -> None:
         """End the session row unless ownership was handed forward (compression helpers, review forks sharing
@@ -1343,9 +1344,10 @@ class AIAgent(
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
-        # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
-        # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
-        # owns no gateway session. The schema-level `background` param is intentionally ignored.
+        # Top-level MODEL delegations run in the background (handle returned, results re-enter as messages),
+        # unless the session's delegate_task is the joined variant (one-shot, delegation.gateway_mode inline).
+        # An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and owns no gateway
+        # session. The schema-level `background` param is intentionally ignored.
         return _delegate_task(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),

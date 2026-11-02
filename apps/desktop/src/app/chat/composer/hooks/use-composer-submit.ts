@@ -132,7 +132,8 @@ export function useComposerSubmit({
     text: string,
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
-    target?: Parameters<ChatBarProps['onSubmit']>[1]
+    target?: Parameters<ChatBarProps['onSubmit']>[1],
+    onRejected?: (scope: string | null, submissionId: string) => void
   ) => {
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
@@ -180,8 +181,12 @@ export function useComposerSubmit({
     }
 
     // A hidden submit is machine text (a setup note, never something the user
-    // typed), so a rejection drops it instead of loading it into the draft.
-    const rejected = displayKind ? () => {} : restore
+    // typed), so a rejection drops it instead of loading it into the draft. An
+    // external request brings its own (it never took the draft, so it must not
+    // overwrite it).
+    // The callback gets the scope the send ended up in (a new chat's session.create may have
+    // re-homed it) and this send's identity, so a re-queued request is the same message.
+    const rejected = onRejected ? () => onRejected(restoreScope, submissionId) : displayKind ? () => {} : restore
 
     // A synchronous throw takes the rejection path too: the caller has already cleared the
     // composer, so a send that fails while it is being prepared must not take the words with it.
@@ -235,18 +240,32 @@ export function useComposerSubmit({
           !inputDisabled
         ) {
           const current = externalSubmitRef.current
-
-          if (!current.busy) {
-            current.dispatchSubmit(text, undefined, displayKind)
-
-            return
-          }
-
           const queueKey = activeQueueSessionKeyRef.current
 
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
-          const enqueue = () =>
-            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+          const enqueue = (key: string | null = queueKey, id?: string) =>
+            void enqueueQueuedPrompt(key, {
+              text,
+              attachments: [],
+              ...(id ? { id } : {}),
+              ...(displayKind ? { displayKind } : {})
+            })
+
+          if (!current.busy) {
+            // Explicitly no attachments: the send must not pick up the draft's files. A rejected
+            // visible request goes to the queue (sendable, editable), never over the user's draft:
+            // under its own submission id (a rejection can follow an uncertain delivery, and the
+            // owner dedupes by id) and in the scope the send landed in.
+            current.dispatchSubmit(
+              text,
+              [],
+              displayKind,
+              undefined,
+              displayKind ? () => {} : (scope, id) => enqueue(scope ?? queueKey, id)
+            )
+
+            return
+          }
 
           // A hidden note never becomes a user turn: it rides session.steer into
           // the model's next tool result, and keeps its kind if it has to queue.
@@ -258,7 +277,7 @@ export function useComposerSubmit({
                     enqueue()
                   }
                 })
-                .catch(enqueue)
+                .catch(() => enqueue())
             } else {
               enqueue()
             }
@@ -278,7 +297,7 @@ export function useComposerSubmit({
                   enqueue()
                 }
               })
-              .catch(enqueue)
+              .catch(() => enqueue())
           } else {
             enqueue()
           }

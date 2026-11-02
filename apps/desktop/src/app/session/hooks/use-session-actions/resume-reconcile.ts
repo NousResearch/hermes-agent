@@ -21,8 +21,9 @@ import { appendLiveSessionProjection, reconcileDurableHistory } from './utils'
 
 /**
  * Whether a re-resume of the chat on screen must keep the live transcript: a
- * turn of the resumed runtime settled after the resume started (`startedAtS`,
- * seconds). A cold open has no live transcript of its own to keep.
+ * turn of the resumed runtime settled on screen after the resume started
+ * (`startedAtS`, seconds). A cold open has no live transcript of its own to
+ * keep, and a settle the unbound view never painted leaves it nothing newer.
  */
 export function liveTurnSettledDuringResume(
   resumed: Pick<SessionResumeResult, 'session_id'>,

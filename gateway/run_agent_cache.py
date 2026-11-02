@@ -19,6 +19,7 @@ from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from hermes_cli.observability.shared_metrics_busy import observe_running_chats
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -292,6 +293,15 @@ class GatewayAgentCacheMixin:
             from hermes_cli.anon_auth import pin_model_for_route
             model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
         return model
+
+    def _persist_active_agents(self) -> None:
+        """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
+        Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
+        would clobber it). Best-effort: a failed write must never disrupt a turn. The running-turn
+        set also feeds the day's peak of chats running at once (in memory, see shared_metrics_busy)."""
+        from gateway.run import _write_runtime_status_quiet
+        _write_runtime_status_quiet(active_agents=self._active_work_count())
+        observe_running_chats(key for key, _ in self._running_agent_items())
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None

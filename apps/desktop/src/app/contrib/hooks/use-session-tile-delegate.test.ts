@@ -633,7 +633,15 @@ describe('useSessionTileDelegate resumeTile', () => {
     setSessions([row({ id: 'stored-c', profile: 'default' })])
 
     const liveState = { busy: false, messages: [{ id: 'm1' }], storedSessionId: 'stored-c' }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-c', 'runtime-dead']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([
+        ['stored-c', 'runtime-dead'],
+        // A canonical binding: the runtime id IS the durable id, which no backend can re-mint.
+        ['local-open', 'local-open']
+      ])
+    }
+
     const sessionStateByRuntimeIdRef = { current: new Map([['runtime-dead', liveState]]) }
 
     const requestGateway = vi.fn(async () => ({}) as never)
@@ -644,7 +652,7 @@ describe('useSessionTileDelegate resumeTile', () => {
 
     // Gateway reconnect (what resetTileRuntimeBindings calls on wake):
     sessionTileDelegate()!.invalidateRuntimeBindings!()
-    expect(runtimeIdByStoredSessionIdRef.current.size).toBe(0)
+    expect([...runtimeIdByStoredSessionIdRef.current]).toEqual([['local-open', 'local-open']])
 
     // The next resume goes cold instead of reusing the dead binding.
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')

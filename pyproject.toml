@@ -373,6 +373,24 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
+# Office/PDF authoring libraries for skills/productivity/{docx,xlsx,powerpoint,pdf}.
+# Baked into the Docker image (Dockerfile `--extra documents`), whose sealed
+# venv has no pip and whose root fs resets on restart; ~25 MB there. Not in
+# [all]: plain installs keep the skills' persistent side environment instead.
+documents = [
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "reportlab==5.1.0",
+  "pypdf==6.21.2",
+]
+# PDF text extraction and rasterization for skills/productivity/pdf. Only in
+# the skills' side environment (`hermes pm environment documents --extra
+# documents --extra documents-pdf`), never baked: ~17 MB of pdfminer/pdfium.
+documents-pdf = [
+  "pdfplumber==0.11.10",
+  "pypdfium2==5.14.0",
+]
 trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
@@ -699,6 +717,7 @@ hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",
+  "process_supervisor.sh",
 ]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —

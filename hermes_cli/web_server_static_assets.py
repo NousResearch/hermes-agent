@@ -14,12 +14,15 @@ from pathlib import Path
 # Requests under these prefixes are files, never client-side routes, so a miss is a 404 rather
 # than the SPA shell (a font answered with HTML renders in a fallback face, silently).
 STATIC_ASSET_PREFIXES: tuple[str, ...] = ("assets/", "ds-assets/", "fonts/", "fonts-terminal/")
+# Root page icons answer without sign-in, so a missing (or out-of-dist) icon must be a 404, not
+# the SPA shell served anonymously.
+STATIC_ASSET_FILES: frozenset[str] = frozenset({"apple-touch-icon.png", "favicon.ico"})
 _PUBLIC_FONT_DIRS: tuple[str, ...] = ("fonts", "fonts-terminal")
 _WEB_PUBLIC = Path(__file__).resolve().parent.parent / "web" / "public"
 
 
 def is_static_asset_path(full_path: str) -> bool:
-    return full_path.startswith(STATIC_ASSET_PREFIXES)
+    return full_path in STATIC_ASSET_FILES or full_path.startswith(STATIC_ASSET_PREFIXES)
 
 
 def public_font_file(dist: Path, dashboard_dist: Path, full_path: str) -> Path | None:

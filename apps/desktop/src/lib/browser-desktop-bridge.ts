@@ -1,4 +1,4 @@
-import { externalUrlTarget } from '@hermes/shared'
+import { externalUrlTarget, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
@@ -7,6 +7,7 @@ import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserDesktopPluginsBridge } from '@/lib/browser-desktop-plugins'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { onBrowserFocusSession, showBrowserNotification } from '@/lib/browser-notifications'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
@@ -20,6 +21,7 @@ import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
+import { tagRegistrySessionResponse } from '../../electron/profile-session-routing'
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -32,16 +34,34 @@ import { resolveGatewayVersion } from '../../electron/gateway-version'
  * only safe browser equivalents for machine-level capabilities.
  */
 export function installBrowserDesktopBridge(): boolean {
-  if (window.hermesDesktop) {return false}
+  if (window.hermesDesktop) {
+    return false
+  }
 
   const bootstrap = browserBootstrap()
 
-  if (!bootstrap) {return false}
+  if (!bootstrap) {
+    return false
+  }
 
   // A gated host's opener waits for this window to say it booted (createBrowserWindowOpener).
-  if (!bootstrap.privateSession) {announceWebappWindow()}
+  if (!bootstrap.privateSession) {
+    announceWebappWindow()
+  }
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
+
+  // The renderer's REST door, owning session rows the way Electron's main process does: every row
+  // this tab lists comes from the one gateway serving it, the `local` source the tab's sockets and
+  // new chats already name. An untagged listed row beside a `local` new chat read as two owners,
+  // which split one gateway's sessions into an unowned group and a `local` gateway group.
+  const rendererApi = async <T>(request: HermesApiRequest): Promise<T> => {
+    const response = await api<T>(request)
+
+    return (request.method || 'GET').toUpperCase() === 'GET'
+      ? (tagRegistrySessionResponse(request.path, response, LOCAL_CONNECTION_ID) as T)
+      : response
+  }
 
   const currentProfile = () => $connection.get()?.profile?.trim() || windowProfileOverride()
 
@@ -70,7 +90,9 @@ export function installBrowserDesktopBridge(): boolean {
   const openExternal = async (url: string) => {
     const target = externalUrlTarget(url)
 
-    if (target?.kind === 'web') {window.open(target.url, '_blank', 'noopener,noreferrer')}
+    if (target?.kind === 'web') {
+      window.open(target.url, '_blank', 'noopener,noreferrer')
+    }
   }
 
   const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
@@ -83,7 +105,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...files,
     ...createBrowserDesktopPluginsBridge({ api, files }),
     ...uploads,
-    api,
+    api: rendererApi,
     // This renderer is built from the serving checkout, so its version is the
     // server's, read the way native Desktop reads its runtime's.
     getVersion: async () => ({
@@ -98,16 +120,8 @@ export function installBrowserDesktopBridge(): boolean {
 
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
-    notify: async ({ title, body }: { title?: string; body?: string }) => {
-      if (!('Notification' in window)) {return false}
-
-      if (Notification.permission === 'default') {await Notification.requestPermission()}
-
-      if (Notification.permission !== 'granted') {return false}
-      new Notification(title || 'Hermes', { body })
-
-      return true
-    },
+    notify: async payload => showBrowserNotification(payload),
+    onFocusSession: onBrowserFocusSession,
     openExternal,
     openPreviewInBrowser: async url => {
       // Only this install's sandbox wrappers may open as same-origin blobs.
@@ -124,7 +138,10 @@ export function installBrowserDesktopBridge(): boolean {
     },
     settings: createBrowserSettings({ basePath: bootstrap.basePath, currentProfile }),
     requestMicrophoneAccess: async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {return false}
+      if (!navigator.mediaDevices?.getUserMedia) {
+        return false
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach(track => track.stop())
 
@@ -138,7 +155,9 @@ export function installBrowserDesktopBridge(): boolean {
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.
       onSignedOut: () => {
-        if (!bootstrap.authRequired) {failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)}
+        if (!bootstrap.authRequired) {
+          failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)
+        }
       }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),

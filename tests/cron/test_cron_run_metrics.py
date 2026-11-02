@@ -59,3 +59,21 @@ def test_an_occurrence_dropped_after_downtime_is_one_missed_row(tmp_path, cron_r
         assert jobs.get_due_jobs() == []
         assert jobs.get_due_jobs() == []
     assert cron_rows() == [{"delivery_kind": "local", "duration_bucket": "lt_1s", "outcome": "missed"}]
+
+
+def test_a_stopped_run_row_validates_against_the_package_schema(tmp_path):
+    import json
+    from pathlib import Path
+
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = Path(__file__).resolve().parents[2] / "hermes_cli/observability/schemas/hermes.shared_metrics.v4.schema.json"
+    resource = {"architecture": "x86_64", "hermes_version": "test", "install_method": "git", "os_family": "linux"}
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter(
+        contract.CRON_RUN_METRIC, smg.cron_run_fields(outcome="cancelled", delivery_kind="local", seconds=3), resource)
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+    jsonschema.Draft202012Validator(json.loads(schema.read_text(encoding="utf-8-sig"))).validate(package)

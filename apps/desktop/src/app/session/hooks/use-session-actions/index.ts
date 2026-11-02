@@ -190,6 +190,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { publishWarmSessionRuntime } from './session-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -1465,8 +1466,7 @@ export function useSessionActions({
           // `applyRuntimeInfo` runs, which would leave the workspace marked
           // un-owned for the life of the session (#71254).
           setWorkspaceCwdOwner(storedSessionId)
-          setCurrentBranch(cachedViewState.branch)
-          setSessionStartedAt(cachedViewState.runtimeStartedAt)
+          publishWarmSessionRuntime(cachedViewState, stored)
 
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)
@@ -1949,7 +1949,7 @@ export function useSessionActions({
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
-      applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
+      applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId, { sameSession: resumedSameSelectedSession })
 
       if (stored) {
         applyStoredUsage(stored)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
@@ -9,6 +10,20 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
+
+
+def _catch_up_flag(value: str) -> bool:
+    if value not in ("on", "off"):
+        raise argparse.ArgumentTypeError("use 'on' (run missed runs once) or 'off' (skip them)")
+    return value == "on"
+
+
+def _add_catch_up(parser) -> None:
+    parser.add_argument(
+        "--catch-up", dest="catch_up", type=_catch_up_flag, metavar="{on,off}",
+        help="Runs missed while the machine was off: 'on' runs once on return, 'off' skips "
+             "them (each is booked as a 'missed' row in `hermes cron runs`). Default: "
+             "cron.catch_up_missed for recurring jobs; one-shots skip.")
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -36,6 +51,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    _add_catch_up(cron_create)
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script",
@@ -81,6 +97,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
             "ship. .sh/.bash still run under bash. Omit to use Hermes' Python.")
+    cron_create.add_argument("--timezone",
+        help="IANA zone for this job's schedule (e.g. Asia/Hong_Kong), so the cron "
+            "expression is read as THAT zone's wall clock whatever the profile's timezone "
+            "is. Omit to inherit the profile timezone.")
+    cron_create.add_argument("--grace-minutes", dest="grace_minutes",
+        help="Catch-up window override in minutes (0-1440) for a cron schedule. "
+            "Default: half the period, clamped to 2-120 minutes. 0 = never catch up "
+            "(a missed occurrence is skipped, not run late).")
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "
@@ -102,6 +126,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    _add_catch_up(cron_edit)
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append",
@@ -151,6 +176,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--interpreter",
         help="Absolute or ~ path to a Python for a .py script / monitor script. "
             "Pass empty string to clear (back to Hermes' Python).")
+    cron_edit.add_argument("--timezone",
+        help="IANA zone for this job's schedule. Pass empty string to clear the pin "
+            "(back to the profile timezone); next_run_at is recomputed in the new zone.")
+    cron_edit.add_argument("--grace-minutes", dest="grace_minutes",
+        help="Catch-up window override in minutes (0-1440). 0 = never catch up. "
+            "Pass empty string to restore the computed window.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
@@ -164,6 +195,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_run = cron_subparsers.add_parser("run", help="Run a job on the next scheduler tick")
     cron_run.add_argument("job_id", help="Job ID to trigger")
     add_accept_hooks_flag(cron_run)
+
+    cron_cancel = cron_subparsers.add_parser(
+        "cancel", help="Stop a job's live run (its schedule is untouched)")
+    cron_cancel.add_argument("job_id", help="Job ID whose in-flight run to stop")
+    cron_cancel.add_argument(
+        "--reason", help="Optional note recorded with the cancelled run")
 
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job")

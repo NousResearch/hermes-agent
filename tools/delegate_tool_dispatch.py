@@ -229,8 +229,8 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
-        "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a /bg background task, a cron "
+        "job, a Kanban worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
         "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "

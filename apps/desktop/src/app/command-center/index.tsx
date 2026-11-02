@@ -26,6 +26,7 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { isSignedOutStatus } from '@/lib/signed-out-status'
 import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -223,7 +224,9 @@ export function CommandCenterView({
         })
       ])
 
-      setStatus(nextStatus)
+      // The Webapp's signed-out body (an access token expired since the last gated request) leaves
+      // out what this panel shows, so the last full answer stays up.
+      setStatus(previous => (previous && isSignedOutStatus(nextStatus) ? previous : nextStatus))
       setLogs(nextLogs.lines)
     } catch (error) {
       setSystemError(error instanceof Error ? error.message : String(error))

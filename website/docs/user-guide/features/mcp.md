@@ -15,7 +15,7 @@ MCP lets Hermes Agent connect to external tool servers so the agent can use tool
 If you have ever wanted Hermes to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
 
 :::tip Coming from Claude Code?
-The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Hermes' `config.yaml` — and `hermes import-agent claude-code` migrates it (along with skills and instructions) automatically. See [Import from Other Agents](../import-from-other-agents.md).
+The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Hermes' `config.yaml` — and `hermes import-agent claude-code` (from the `agent-importers` plugin) migrates it, along with skills and instructions. See [Import from Other Agents](../import-from-other-agents.md).
 :::
 
 ## What MCP gives you
@@ -503,6 +503,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -911,6 +912,13 @@ speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the req
 means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
 endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
 
+### A server's response is too large
+
+Hermes accepts up to 10 MiB in one HTTP response, or in one SSE event of a streamed response, so a
+large `tools/list` catalog or tool result (an editor screenshot, say) fits. On the legacy SSE
+transport (`transport: sse`) the MCP SDK caps each event at 1 MiB and offers no way to raise it; if
+the server also serves Streamable HTTP, remove `transport: sse` from its entry.
+
 ### Tools not appearing
 
 Possible causes:
@@ -1000,15 +1008,16 @@ mcp_servers:
 - The approval prompt names the cost: `Costs about 20 credits.` or `Costs 5-20 credits (per animation).`, plus `This chat has used about 40 credits on 'renders' (limit 100).` once the chat has spent something.
 - Hermes keeps a running total per chat and per server, counting the declared figure (the top of a range) for every costed call it approved and started. Declined or blocked calls add nothing; a call whose server dies before receiving it still counts, which errs toward asking sooner. The total lives in memory: it is a budget for one conversation, not the vendor's bill.
 - The total follows the conversation when context compression or `/branch` continues it under a new session id. Starting a new chat (`/new` in the CLI, a new Desktop chat) starts a new total; on messaging platforms the total belongs to the chat, so it survives `/new` there. Each cron run has its own total. Restarting Hermes resets every total.
-- With `spend_limit`, a costed call that would take the chat past the limit asks first, even on a `trust: full` server that otherwise never prompts, and every further costed call in that chat asks again ("Allow for this session" does not silence it). Where nobody can answer (cron jobs, `hermes chat -q`, a gateway with no approver), the call is refused without running and the model is told not to retry.
+- With `spend_limit`, a costed call that would take the chat past the limit asks first, even on a `trust: full` server that otherwise never prompts, and every further costed call in that chat asks again: that prompt offers only Allow Once and Deny, and an earlier Session or Always answer for the tool does not silence it. Where nobody can answer (cron jobs, `hermes chat -q`, a gateway with no approver), the call is refused without running and the model is told not to retry.
 - Below the limit, a `trust: full` server still runs costed tools without asking; on a `trust: untrusted` server every write-capable call already asks and the prompt now carries the cost. Tools annotated `readOnlyHint: true` stay unprompted unless the budget requires it.
+- [YOLO](../security.md#yolo-mode) (`/yolo`, `--yolo`) and `approvals.mode: off` skip the `trust: untrusted` prompt (`/yolo` for that chat, `--yolo` for that process, `approvals.mode: off` for that profile), but not the spend limit: below the limit a costed call runs without asking, and a call that would cross it still asks (or is refused where nobody can answer, such as a cron job with `approvals.mode: off`).
 - A malformed `tool_costs`, `spend_limit` or `cost_unit` skips the server with an error naming the key, so a budget you declared is never silently dropped. A `tool_costs` key the server does not offer (a typo, or Hermes' `mcp_<server>_` display prefix copied in) is named in a warning at connect time: use the server's own tool names.
 
 A [portable plugin package](../../developer-guide/plugins/index.md#portable-agent-plugins-v1-packages) can declare the same table for its server. If you add a same-name `mcp_servers` entry (for example to set `trust: full`), the package's `tool_costs`, `spend_limit` and `cost_unit` still apply unless your entry sets those keys itself; `spend_limit: 0` turns the package's limit off and `tool_costs: {}` drops its costs.
 
 ## MCP Elicitation Support
 
-MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
+MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. Each answer covers that one request, so the prompt offers only Allow Once and Deny. YOLO and `approvals.mode: off` do not answer these for you: the server is asking you a question, not asking permission. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
 
 Elicitation is **enabled by default** per server. Configure it under the `elicitation` key:
 
@@ -1022,6 +1031,62 @@ mcp_servers:
 ```
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
+
+## MCP Events (experimental)
+
+Some MCP servers can notify an agent when something happens upstream (a new email, an incident, a
+new item in a feed) through the `events/*` methods of the
+[MCP events design sketch](https://github.com/modelcontextprotocol/experimental-ext-triggers-events/blob/main/docs/design-sketch-proposal.md).
+The proposal is still a working-group draft. Hermes implements its **webhook** delivery mode: the
+server POSTs each event to the gateway's [webhook listener](../messaging/webhooks.md), and every
+event starts an agent run like any other webhook route.
+
+Turn it on per server, and tell Hermes the public HTTPS address of the webhook listener (servers
+reject plain-HTTP callbacks, so put a TLS-terminating reverse proxy or tunnel in front of port 8644):
+
+```yaml
+mcp_servers:
+  ambush:
+    url: "https://example.com/mcp"
+    events: true          # registers the event utility tools for this server
+
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      public_url: "https://hermes.example.com"
+```
+
+The server then gets three more utility tools:
+
+- `list_event_types`: the event types the server offers, and your current subscriptions to them
+- `subscribe_event`: subscribe with the event's arguments, what to do when it arrives
+  (`instructions`, up to 2000 characters) and where each run's result goes (`deliver`,
+  `deliver_chat_id`). You are asked to approve every subscription, since it starts unattended agent
+  runs; the approval shows the instructions and the destination in full.
+- `unsubscribe_event`: cancel a subscription
+
+Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
+`whsec_` signing secret; the grant and the replay cursor are kept beside it in
+`mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
+instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
+events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
+while the MCP connection is up (and again whenever it reconnects). With `lazy: true` or
+`idle_timeout_seconds` the connection is not always up, so a subscription can lapse until the next
+connection resubscribes it. A refresh the server refuses
+for good (access revoked, event type removed, arguments no longer valid) removes the route; other
+failures are retried with back-off. Turning the route off in the webhook dashboard lets the
+subscription lapse, and turning it back on resubscribes it. If the server ends a subscription,
+Hermes removes the route and tells the `deliver` target. Events only arrive while
+`hermes gateway run` is running. The event payload reaches the run whole, up to 32,000 characters
+of JSON, with a note when it is cut. Event payloads are external data: event runs use the same
+constrained webhook toolset as other webhook routes.
+The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
+applies to event deliveries too; raise it for a busy event type, since a server may not retry a
+rejected delivery.
+
+Not supported yet: the `poll` and `push` delivery modes, and subscriptions made from a secondary
+profile under `gateway.multiplex_profiles`.
 
 ## Running Hermes as an MCP server
 

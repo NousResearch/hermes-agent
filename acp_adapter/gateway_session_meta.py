@@ -12,11 +12,13 @@ from pathlib import Path
 import sqlite3
 
 from acp.schema import (
-    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionInfoUpdate, SessionMode, SessionModeState,
-    SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
+    AvailableCommand, AvailableCommandsUpdate, ModelInfo, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionInfoUpdate, SessionMode, SessionModeState, SessionModelState, UnstructuredCommandInput, Usage, UsageUpdate,
 )
 
-from acp_adapter.modes import DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_TO_MODE, MODES
+from acp_adapter.modes import (
+    DEFAULT_EDIT_APPROVAL_POLICY, DEFAULT_MODE, EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE, MODES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,35 @@ def current_mode(info: dict) -> str:
 def session_modes(info: dict | None = None) -> SessionModeState:
     return SessionModeState(current_mode_id=current_mode(info or {}), available_modes=[
         SessionMode(id=mode, name=name, description=description) for mode, (_p, name, description) in MODES.items()])
+
+
+REASONING_CONFIG_ID = "reasoning_effort"
+
+
+def reasoning_choices() -> tuple[str, ...]:
+    """The owner's ``reasoning`` levels; ``default`` hands the level back to the profile."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    return ("default", "none", *VALID_REASONING_EFFORTS)
+
+
+def config_options(models: SessionModelState | None, info: dict, mode_id: str) -> list:
+    """Zed renders its composer pickers only from ``configOptions``: the edit mode, the model
+    (``set_session_model``'s picker ids) and the reasoning effort (``session.info``'s level)."""
+    def select(config_id, name, category, current, choices):
+        return SessionConfigOptionSelect(id=config_id, name=name, category=category, type="select", current_value=current,
+                                         options=[SessionConfigSelectOption(value=v, name=n) for v, n in choices])
+    options = [select(EDIT_APPROVAL_POLICY_CONFIG_ID, "Edits", "mode", MODES[mode_id][0],
+                      [(policy, name) for policy, name, _ in MODES.values()])]
+    if models is not None:
+        options.append(select("model", "Model", "model", models.current_model_id,
+                              [(m.model_id, m.name) for m in models.available_models]))
+    # ``session.info`` reports the level in force, never ``default`` (a reset session reads the profile's), so
+    # ``default`` is offered only while no level is set: a pick never shows as another value than the one chosen.
+    levels = reasoning_choices()[1:]
+    effort = info.get("reasoning_effort") if info.get("reasoning_effort") in levels else "default"
+    options.append(select(REASONING_CONFIG_ID, "Reasoning effort", "thought_level", effort,
+                          [(v, v) for v in (levels if effort in levels else ("default", *levels))]))
+    return options
 
 
 def model_state(info: dict) -> SessionModelState | None:

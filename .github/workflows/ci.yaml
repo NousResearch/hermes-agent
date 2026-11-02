@@ -495,6 +495,9 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
+    permissions:
+      contents: read
+      actions: read # download completed jobs' cache transfer logs
     needs: [all-checks-pass]
     if: always()
     runs-on: blacksmith-4vcpu-ubuntu-2404

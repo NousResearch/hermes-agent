@@ -249,6 +249,19 @@ function staleRewindRefusal(error: unknown): 'compacted' | 'stale' | null {
   return typeof detail === 'string' && detail.startsWith('compacted:') ? 'compacted' : 'stale'
 }
 
+// The owner refuses every model pick and turn on a chat whose launch API key changed or was removed
+// (gateway/session_policy_credentials.py): `data.reason` on an RPC error, or the bare code a deferred
+// pick's refusal event carries.
+function isLaunchCredentialsRefusal(error: unknown): boolean {
+  const data = error && typeof error === 'object' ? (error as { data?: { reason?: unknown } }).data : undefined
+
+  if (data && typeof data === 'object' && data.reason === 'launch_credentials_unavailable') {
+    return true
+  }
+
+  return error instanceof Error && error.message.trim() === 'launch_credentials_unavailable'
+}
+
 // Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
 export function readableError(
@@ -261,6 +274,19 @@ export function readableError(
     const key = staleRewind === 'compacted' ? 'compactedTurnUnavailable' : 'staleTurnUnavailable'
 
     return { message: translateNow(`promptNotices.${key}`), category: 'other' }
+  }
+
+  if (isLaunchCredentialsRefusal(error)) {
+    // Same sentence and button as the chat's error card: a model pick, retry or option change on
+    // this chat repeats the refusal until the user starts a new one.
+    return {
+      message: translateNow('assistant.thread.errorCodes.launch_credentials_unavailable.body'),
+      action: {
+        label: translateNow('assistant.thread.errorStartNewSession'),
+        onClick: () => void import('@/store/profile').then(({ requestFreshSession }) => requestFreshSession())
+      },
+      category: 'other'
+    }
   }
 
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback

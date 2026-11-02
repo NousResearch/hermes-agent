@@ -273,6 +273,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 path: next.path,
                 mime: next.mime,
                 refText: next.refText,
+                stagedUpload: next.stagedUpload,
                 uploadState: next.uploadState
               })
             } else {

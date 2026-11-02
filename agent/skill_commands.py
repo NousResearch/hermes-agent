@@ -553,13 +553,25 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # Publishing under the lock keeps the (key, map) pair consistent for any
         # reader between the lookup and this store (#14536, #74574); the scan above
         # (file I/O, deferred imports) stays outside it.
-        _skill_commands_by_key[key] = commands
         _skill_commands_sig_by_key[key] = signature
+        _publish_scope(_skill_commands_by_key, key, commands)
     return commands
 
 
 # The most scopes the change watcher signs per pass (each is one ~1 ms stat walk).
 _MAX_WATCHED_SCOPES = 32
+# Scopes kept resident (LRU). Each distinct (platform, profile, project) keeps a whole command map; a
+# long-lived gateway visiting many repos would otherwise keep one per repo forever. An evicted scope
+# rescans on its next lookup, exactly as after /reload-skills.
+_MAX_CACHED_SCOPES = 2 * _MAX_WATCHED_SCOPES
+
+
+def _publish_scope(table: dict, key: tuple, value: Any) -> None:
+    """Store ``key`` as most recently used in ``table``; past the cap, the least recently used scope
+    leaves every per-scope table together. Caller holds ``_publish_lock``."""
+    from agent.cache_bounds import publish_lru
+    scoped = (_skill_commands_by_key, _skill_commands_sig_by_key, _last_interactive_skill_commands_by_key)
+    publish_lru(table, key, value, _MAX_CACHED_SCOPES, *(t for t in scoped if t is not table))
 
 
 def published_scopes_signature() -> tuple:
@@ -620,6 +632,8 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
         scanned_at = _skill_commands_sig_by_key.get(key)
+        if cached is not None:
+            _publish_scope(_skill_commands_by_key, key, cached)
     if cached is not None:
         # A skill installed or removed from another terminal moves the dir signature: rescan, so the
         # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
@@ -736,7 +750,7 @@ def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[identity] = dict(commands)
+        _publish_scope(_last_interactive_skill_commands_by_key, identity, dict(commands))
     return commands
 
 
@@ -780,6 +794,7 @@ def reload_skills() -> dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
+        _skill_commands_sig_by_key.clear()
     from tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()
@@ -788,7 +803,7 @@ def reload_skills() -> dict[str, Any]:
     after = command_snapshot(effective_commands)
     result = diff_command_snapshots(before, after)
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[key] = effective_commands
+        _publish_scope(_last_interactive_skill_commands_by_key, key, effective_commands)
     result["commands"] = len(effective_commands)
     return result
 

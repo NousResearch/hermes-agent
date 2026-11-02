@@ -1,7 +1,7 @@
 name: fortytwo-provider
 repo: https://github.com/Fortytwo-Network/fortytwo-hermes
 sha: 91c8f521ab357530c91a9660bd8f2db37571c1c8
-description: Fortytwo — Qwen3.8 27B inference; adds Fortytwo to the Hermes model provider list.
+description: "Fortytwo — Qwen3.8 27B inference; adds Fortytwo to the Hermes model provider list. Disclosure — model provider: Hermes sends prompts, images and tool results to Fortytwo's hosted API (api.fortytwo.network) with your FORTYTWO_API_KEY; requests carry attribution headers naming this plugin."
 maintainer: Fortytwo-Network
 tier: community
 category: models

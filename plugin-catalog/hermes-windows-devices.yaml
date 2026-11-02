@@ -21,7 +21,7 @@ description: >-
   names, enum values and ids do not change with the display language; the human-facing
   device names localize and are carried through as data, never parsed. The plugin
   declares no Python dependencies; there is no network call and no file write. Windows
-  only. Disclosure - the tools report device names, manufacturers, device ids and driver
+  only. Disclosure — the tools report device names, manufacturers, device ids and driver
   versions to the model, and those reveal the machine's hardware inventory and what is
   plugged into it; treat the output like a Device Manager window opened on their machine.
 maintainer: Yicheng-Mark

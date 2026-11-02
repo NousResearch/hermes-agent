@@ -1,6 +1,5 @@
 import { watch } from 'fs'
 import { readdir } from 'fs/promises'
-import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { pathToFileURL } from 'url'
 
@@ -12,6 +11,7 @@ import { Shimmer, ShimmerRows, useShimmerPhase } from '../components/loaders.js'
 import { Dialog, Overlay } from '../components/overlay.js'
 import { GridAreas, WidgetGrid } from '../components/widgetGrid.js'
 import { gauge, hbars, sparkline, sparkRows } from '../lib/charts.js'
+import { resolveHermesHome } from '../lib/hermesHome.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { openWidget, updateWidget } from './host.js'
@@ -58,7 +58,7 @@ export const widgetSdk = {
 
 export type WidgetSdk = typeof widgetSdk
 
-const widgetsDir = () => join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'tui-widgets')
+const widgetsDir = () => join(resolveHermesHome(), 'tui-widgets')
 
 export interface UserWidgetLoadResult {
   /** App ids newly registered by this scan. */

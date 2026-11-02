@@ -179,7 +179,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
             if authority is not beta:
                 authority.logical_owner = lambda sid: ""  # no lineage: the bare id is the owner
         entry = SimpleNamespace(session_id="s1", session_key="k1", last_resume_marked_at=None, updated_at=None)
-        host._resume_pending_candidates = lambda platform=None: [entry]
+        monkeypatch.setattr(host, "_resume_pending_candidates", lambda platform=None, *, profile=None: [entry])
         try:
             assert host._schedule_resume_pending_sessions() == 0
         except sqlite3.OperationalError as exc:

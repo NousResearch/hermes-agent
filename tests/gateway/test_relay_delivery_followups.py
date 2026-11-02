@@ -253,7 +253,7 @@ async def test_request_response_fails_fast_when_closing():
 
     result = await transport._request_response({"a": 1})
 
-    assert result == {"success": False, "error": "relay transport closed"}
+    assert result == {"success": False, "error": "relay transport closed", "not_sent": True}
     assert not transport._pending, (
         "no future may be registered once _closing is set"
     )

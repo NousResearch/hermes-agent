@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
@@ -27,6 +28,7 @@ from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
+_owner_identity_warning_logged = False
 
 # Redelivery policy knobs (deliberately not config — the ledger is gated by
 # ``gateway.delivery_ledger`` and these only matter in the rare recovery path).
@@ -49,12 +51,22 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
 
-# Errors whose send contract proves the platform never saw the request: retried as soon as the adapter
-# is back, no backoff. Every other rejection is retried too (#91653: a 5xx or a transient parse error
+# Transport failures retried when the adapter is back, without a timer. A lost connection can mean
+# a lost acknowledgement, so membership alone is NOT proof that no content was sent.
+# Every other rejection is retried too (#91653: a 5xx or a transient parse error
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
-_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+RELAY_DISCONNECTED_ERRORS = frozenset(
+    {
+        "relay transport not connected",
+        "relay transport connection lost",
+        "relay transport closed",
+    }
+)
+_RUNTIME_RETRYABLE_ERRORS = (
+    frozenset({"send_path_degraded"}) | RELAY_DISCONNECTED_ERRORS
+)
 # One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
 _RETRY_BACKOFF_SECONDS = (30.0, 120.0)
 assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1
@@ -327,7 +339,7 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     redelivery budget. Fail-closed to the exact current process instance and ``attempting`` state."""
     pid, started = _owner_stamp()
     if started is None:
-        return False
+        raise RuntimeError("cannot establish delivery recovery ownership")
     with _DB_LOCK, _transaction() as conn:
         cursor = conn.execute(
             """UPDATE delivery_obligations
@@ -442,7 +454,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default",
-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row,
+                                            last_error=last_error))
     return claimed
 
 
@@ -503,6 +516,81 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
     return claimed
+
+
+def pending_reconnects(now: Optional[float] = None) -> set[tuple[str, str]]:
+    """Owned, retry-eligible bot identities awaiting reconnect rather than a timer.
+
+    Suspension must not strand these rows before the reconnect sweep starts. This
+    is observational: do not claim, re-stamp, or spend attempts during idle checks.
+    Unknown ownership is not proof of idle; the suspend caller must fail awake.
+    """
+    global _owner_identity_warning_logged
+    path = _db_path()
+    if not path.exists():
+        return set()
+    now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
+    if started is None:
+        if not _owner_identity_warning_logged:
+            logger.warning(
+                "Cannot verify this process's delivery recovery ownership; "
+                "scale-to-zero will stay awake while process identity is unavailable"
+            )
+            _owner_identity_warning_logged = True
+        raise RuntimeError("cannot establish delivery recovery ownership")
+    # This probe runs on the gateway loop. Never wait behind a writer or invoke
+    # the normal opener's schema migrations and 10-second busy timeout.
+    if not _DB_LOCK.acquire(blocking=False):
+        raise RuntimeError("delivery recovery ledger is busy")
+    try:
+        with closing(
+            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0)
+        ) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+            ).fetchone():
+                return set()  # no reply has been recorded on this install yet
+            rows = conn.execute(
+                """SELECT platform, adapter_profile, last_error FROM delivery_obligations
+                   WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?
+                     AND attempts < ? AND created_at >= ?""",
+                (pid, started, MAX_ATTEMPTS, now - STALE_AFTER_SECONDS),
+            ).fetchall()
+    finally:
+        _DB_LOCK.release()
+    return {
+        (platform, profile or "default")
+        for platform, profile, error in rows
+        if is_reconnect_only(error)
+    }
+
+
+def pending_resume_sessions() -> set[str]:
+    """Answered turns cannot auto-resume while another recovery owns their reply.
+
+    This includes in-flight claims and flood waits, not just reconnect-only rows.
+    Do not create a database or wait on a writer from the synchronous resume pass.
+    Failure is uncertainty: callers must defer auto-resume, never assume an empty ledger.
+    """
+    path = _db_path()
+    if not path.exists():
+        return set()
+    if not _DB_LOCK.acquire(blocking=False):
+        raise RuntimeError("delivery recovery ledger is busy")
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0)) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+            ).fetchone():
+                return set()
+            return {
+                key for (key,) in conn.execute(
+                    """SELECT DISTINCT session_key FROM delivery_obligations
+                       WHERE state IN ('pending', 'attempting', 'failed')"""
+                )
+            }
+    finally:
+        _DB_LOCK.release()
 
 
 def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:

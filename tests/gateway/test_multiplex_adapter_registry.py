@@ -218,10 +218,12 @@ def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._running = running
+    runner.adapters = {}
     runner._profile_adapters = {}
     runner._profile_failed_platforms = {}
     runner._background_tasks = set()
-    runner.session_store = object()
+    runner.session_store = MagicMock()
+    runner.session_store._entries = {}
     runner._handle_active_session_busy_message = object()
     runner._recover_telegram_topic_thread_id = object()
     runner._busy_text_mode = "queue"
@@ -361,10 +363,12 @@ class TestSecondaryProfileFatalRecovery:
         assert synced == [adapter]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("recovery_result", [0, None])
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
-        self, monkeypatch
+        self, monkeypatch, recovery_result
     ):
         runner = _secondary_recovery_runner()
+        runner._schedule_resume_pending_sessions = MagicMock()
         stale = _SecondaryRecoveryAdapter()
         replacement = _SecondaryRecoveryAdapter()
         runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
@@ -387,7 +391,7 @@ class TestSecondaryProfileFatalRecovery:
             from hermes_constants import get_hermes_home
 
             redelivery_homes.append(Path(get_hermes_home()))
-            return 0
+            return recovery_result
 
         runner._redeliver_failed_obligations_for_platform.side_effect = redeliver
         await runner._handle_profile_adapter_fatal_error(
@@ -407,6 +411,12 @@ class TestSecondaryProfileFatalRecovery:
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
+        if recovery_result is None:
+            runner._schedule_resume_pending_sessions.assert_not_called()
+        else:
+            runner._schedule_resume_pending_sessions.assert_called_once_with(
+                platform=Platform.DISCORD, profile="reviewer"
+            )
 
 
     @pytest.mark.asyncio

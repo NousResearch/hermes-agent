@@ -3849,15 +3849,9 @@ class BasePlatformAdapter(ABC):
         """Record ``task`` as the session owner and track it for shutdown; False when
         ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
         for the caller."""
-        self._session_tasks[session_key] = task
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            return False
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
-        return True
+        from gateway.delivery_work import track_session_task
+
+        return track_session_task(self, session_key, task)
 
     async def cancel_session_processing(self, session_key: str, *, release_guard: bool = True,
                                         discard_pending: bool = True) -> None:
@@ -4181,33 +4175,9 @@ class BasePlatformAdapter(ABC):
     async def _finalize_delivery_obligation(
         self, obligation_id: str, result: Any, event: MessageEvent,
         delivery_adapter: "BasePlatformAdapter") -> None:
-        """Mark the ledger row delivered/failed (best-effort). On ``send_path_degraded`` with a
-        replacement adapter live, trigger another redelivery sweep (the watcher's may have run
-        before this failure landed; atomic claiming keeps it idempotent). On any other rejection arm
-        the runner's timed redelivery, so the reply goes out once the flood penalty or the retry
-        backoff has passed instead of waiting for the next restart (#91653)."""
-        try:
-            from gateway.dead_targets import classify_dead_error
-            from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
-            if getattr(result, "success", False):
-                await asyncio.to_thread(mark_delivered, obligation_id)
-                return
-            error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
-            if is_reconnect_only(error):
-                redeliver = getattr(
-                    self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)
-                live = self._final_delivery_adapter(event.source)
-                if live is not delivery_adapter and callable(redeliver):
-                    await redeliver(event.source.platform,
-                                    profile=getattr(delivery_adapter, "_owner_profile", None))
-            elif classify_dead_error(error) is None:  # a dead chat is never retried: no timer to wake
-                schedule = getattr(self.gateway_runner, "_schedule_flood_redelivery", None)
-                if callable(schedule):
-                    schedule(event.source.platform,
-                             profile=getattr(delivery_adapter, "_owner_profile", None))
-        except Exception:
-            logger.debug("delivery ledger update failed", exc_info=True)
+        """Settle a final send and retain failed ledger writes for recovery."""
+        from gateway.run_delivery_settlement import finalize_delivery
+        await finalize_delivery(self, obligation_id, result, event, delivery_adapter)
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,

@@ -29,6 +29,7 @@ from gateway.restart import (
 )
 from gateway.run_common import _UNSET
 from gateway.run_runtime import interrupt_side_agents, managed_turn_count, stop_managed_turns
+from gateway.delivery_work import messaging_work_count, total_work_count
 from gateway.run_shutdown_session_end import GatewaySessionEndMixin
 from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
 
@@ -192,13 +193,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     # Active-work accounting
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
-        return (
-            self._running_agent_count()
-            + managed_turn_count(self)
-            + self._active_cron_job_count()
-            + self._active_api_run_count()
-            + self._active_deferred_agent_worker_count()
-        )
+        return total_work_count(self)
 
     @staticmethod
     def _running_cron_job_count() -> int:
@@ -457,6 +452,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     def _scale_to_zero_is_idle(self) -> bool:
         from gateway.scale_to_zero import is_idle
+        from gateway.run_delivery_recovery import relay_recovery_pending
         # FULL work aggregate with fail-AWAKE reads: the drain counters swallow errors to 0, which a
         # suspend predicate would read as idle, so an unreadable source counts as work here.
 
@@ -477,10 +473,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if seen is not None and seen > last_inbound:
             last_inbound = seen
         return is_idle(
-            active_work_count=self._running_agent_count() + cron_count + api_count,
+            active_work_count=_read_or_awake("messaging work count", lambda: messaging_work_count(self), 1) + cron_count + api_count,
             seconds_since_last_inbound=time.time() - last_inbound,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
-            has_live_background_work=self._scale_to_zero_has_live_background_work(),
+            has_live_background_work=self._scale_to_zero_has_live_background_work()
+            or _read_or_awake("relay recovery ledger", lambda: relay_recovery_pending(self), True),
         )
 
     def _scale_to_zero_note_real_inbound(self) -> None:
@@ -1555,7 +1552,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         excluded run must not hide the other.
         """
         non_cron = (
-            self._running_agent_count()
+            messaging_work_count(self)
             + managed_turn_count(self)
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()

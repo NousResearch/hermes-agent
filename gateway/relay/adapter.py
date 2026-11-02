@@ -802,18 +802,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # durable buffer and replay on re-handshake; routine WS drops are handled by
         # the transport's own reconnect supervisor.
         if self._transport is None:
-            # ``is_reconnect`` is part of the BasePlatformAdapter.connect contract: the gateway's reconnect
-            # watcher (gateway/run.py) re-establishes a platform after a fatal adapter error by building a
-            # fresh adapter and calling ``connect(is_reconnect=True)``. Relay MUST accept the kwarg or that
-            # recovery path raises TypeError and the relay platform can never come back through the watcher.
-            # The flag exists so adapters with a server-side update queue (e.g. Telegram's Bot API) preserve
-            # that queue across an outage instead of dropping it (#46621). Routine WS drops are handled
-            # entirely by the transport's own reconnect supervisor (WebSocketRelayTransport,
-            # reconnect=True); a watcher-driven reconnect builds a fresh transport from scratch (the
-            # fatal-error handler disconnect()s the old adapter first, cancelling its supervisor), so there
-            # is nothing at the adapter layer to preserve.
             raise RuntimeError("RelayAdapter has no transport configured")
         self._transport.set_inbound_handler(self._on_inbound)
+        reconnect_handler = getattr(self._transport, "set_reconnect_handler", None)
+        if callable(reconnect_handler):
+            from gateway.run_delivery_recovery import schedule_relay_recovery
+            reconnect_handler(lambda: schedule_relay_recovery(self))
         # Interrupts and passthrough-plane forwards (Discord interactions, Twilio, …)
         # ride the SAME outbound WS — no inbound HTTP receiver, no public port.
         for setter_name, handler in (
@@ -1122,13 +1116,17 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                     meta[key] = value
         return meta
 
+    def fronted_platforms(self) -> tuple[str, ...]:
+        """Logical names advertised by this transport, including plugins."""
+        identities = getattr(self._transport, "_identities", None) or ()
+        return tuple(dict.fromkeys(str(p) for p, _ in identities))
+
     def fronts_platform(self, platform: Any) -> bool:
         """Whether the authenticated relay transport advertises ``platform`` — a
         restart-safe ownership signal from the identity set sent at handshake, not
         from an inbound chat cache."""
         platform_value = getattr(platform, "value", platform)
-        ids = getattr(self._transport, "_identities", None) or ()
-        return bool(platform_value) and any(p == str(platform_value) for p, _ in ids)
+        return bool(platform_value) and str(platform_value) in self.fronted_platforms()
 
     def supports_inchannel_continuable_for_platform(self, platform: Any) -> bool:
         """Whether ONE fronted platform can host the flat continuable cron surface (D6

@@ -357,10 +357,38 @@ def _append_skipped_tool_results(
     return True
 
 
+def _provider_injected_tool_names(agent) -> set[str]:
+    """Memory-provider and context-engine tools granted here but absent from the registry.
+
+    Bridge scope is registry-backed, so ``tool_call`` otherwise rejects them as out of
+    session (#34520). Memory names follow ``memory_provider_tools_exposed`` — the same
+    gate as injection, including the #5544 toolset leak guard. Context-engine names are
+    already gated when stored. A name the registry owns is left to that scope: a tool
+    upstream moved into the registry must not re-enter through this union.
+    """
+    names: set[str] = set()
+    manager = getattr(agent, "_memory_manager", None)
+    if manager is not None and getattr(agent, "tools", None) is not None:
+        from agent.memory_manager_tools import memory_provider_tools_exposed
+
+        if memory_provider_tools_exposed(agent):
+            names.update(manager.get_all_tool_names())
+    context_names = getattr(agent, "_context_engine_tool_names", None)
+    if context_names:
+        names.update(context_names)
+    if not names:
+        return set()
+    from tools.tool_search_catalog import _registry_entry
+
+    return {n for n in names if isinstance(n, str) and n and _registry_entry(n) is None}
+
+
 def _tool_search_scoped_names(agent) -> frozenset:
     """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
-    validate against this set. Cached on the agent, keyed by registry scope/generation."""
+    validate against this set. Also includes registry-invisible memory and context-engine
+    tools this session was actually granted. Cached on the agent, keyed by registry
+    scope/generation and that provider set."""
     try:
         import model_tools
         from tools import tool_search as _ts
@@ -370,11 +398,13 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    provider_names = _provider_injected_tool_names(agent)
     cache_key = (
         _registry.current_scope_key(),
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        frozenset(provider_names),
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -385,6 +415,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
         ) or [])
     except Exception:
         names = frozenset()
+    if provider_names:
+        names = frozenset(names | provider_names)
     with contextlib.suppress(Exception):
         agent._tool_search_scope_cache = (cache_key, names)
     return names
@@ -415,14 +447,17 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
+        scoped = _tool_search_scoped_names(agent)
+        underlying, underlying_args, err = _ts.resolve_underlying_call(
+            function_args, allowed_names=scoped,
+        )
         if err or not underlying:
             return function_name, function_args, None
         if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
             # Both executors retain the wrapper: scope/probe/hooks run per entry
             # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
-        if underlying not in _tool_search_scoped_names(agent):
+        if underlying not in scoped:
             # Session-gated GUI tools name their missing surface (#120413);
             # anything else keeps the generic block.
             return function_name, function_args, _ts.scope_block_reason(underlying)

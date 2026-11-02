@@ -476,6 +476,9 @@ class ToolCallGuardrailController:
             and self.config.read_only_loop_enabled
             and self.config.warnings_enabled
             and streak >= self.config.read_only_loop_warn_after
+            # Only a read may carry the "you are reading in a loop" warning: a non-read call
+            # (e.g. kanban_complete) must not be labelled a read-only call.
+            and self._read_only_call(tool_name, args)
         ):
             return self._decide("warn", "read_only_loop_warning", tool_name, streak, signature)
         return decision

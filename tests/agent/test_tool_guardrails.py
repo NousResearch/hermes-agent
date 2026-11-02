@@ -597,6 +597,31 @@ def test_read_only_exempt_call_opts_the_session_out():
         controller.after_call("read_file", args, json.dumps({"content": "x"}))
 
 
+def test_read_only_warning_does_not_attach_to_a_non_read_call():
+    """A closing call must not be labelled a read-only call.
+
+    The warning text says "you are reading in a loop, go edit something"; attached to
+    kanban_complete it mislabels that call and pushes the worker into editing files it
+    never needed to touch.
+    """
+    controller = _read_only_controller()
+
+    for i in range(3):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        controller.after_call("read_file", args, json.dumps({"content": "x"}))
+
+    for tool_name, args in (
+        ("kanban_complete", {"task_id": "t_1", "summary": "done"}),
+        ("kanban_comment", {"task_id": "t_1", "body": "note"}),
+    ):
+        controller.before_call(tool_name, args)
+        decision = controller.after_call(tool_name, args, json.dumps({"ok": True}))
+        assert decision.action == "allow", decision
+        assert decision.code != "read_only_loop_warning", decision
+        assert "read-only call" not in decision.message, decision
+
+
 def test_terminal_read_only_commands_count_but_edits_do_not():
     controller = _read_only_controller()
 

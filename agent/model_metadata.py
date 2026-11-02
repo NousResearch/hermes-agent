@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- native endpoint cache remains a compatibility seam; LM Studio matching helpers are isolated in topical siblings
 """Model metadata, context lengths, and token estimation utilities.
 
 Pure utility functions with no AIAgent dependency. Used by ContextCompressor
@@ -20,6 +21,8 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_lmstudio import _add_lmstudio_alias, _lmstudio_loaded_context
+from agent.model_metadata_matching import _lmstudio_model_match_rank, _lmstudio_model_matches, _model_id_matches
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -946,30 +949,35 @@ def _endpoint_model_entry(model: dict[str, Any], model_id: str, context_length: 
     return {"name": model.get("name", model_id), **{k: v for k, v in optional if v is not None}}
 
 
-def _lmstudio_loaded_context(model: dict[str, Any]) -> Optional[int]:
-    """Context of the first loaded LM Studio instance (the runtime value), else None."""
-    for inst in model.get("loaded_instances", []) or []:
-        cfg = inst.get("config", {}) if isinstance(inst, dict) else None
-        ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(ctx, int) and ctx > 0:
-            return ctx
-    return None
-
-
 def _lmstudio_native_models(normalized: str, headers: dict[str, str]) -> dict[str, dict[str, Any]]:
-    """LM Studio ``/api/v1/models`` → cache; context comes from the first loaded instance."""
+    """LM Studio ``/api/v1/models`` → cache; aliases retain their instance context."""
     response = model_metadata_http.get(_lmstudio_server_root(normalized).rstrip("/") + "/api/v1/models", headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify(normalized))
     response.raise_for_status()
     cache: dict[str, dict[str, Any]] = {}
-    for model in response.json().get("models", []):
+    alias_ranks: dict[str, int] = {}
+    payload = response.json()
+    models = payload.get("models", []) if isinstance(payload, dict) else []
+    if not isinstance(models, list):
+        return cache
+    for model in models:
         model_id = (model.get("key") or model.get("id")) if isinstance(model, dict) else None
-        if not model_id:
+        if not isinstance(model_id, str) or not model_id:
             continue
-        entry = _endpoint_model_entry(model, model_id, _lmstudio_loaded_context(model))
-        _add_model_aliases(cache, model_id, entry)
+        loaded_instances = model.get("loaded_instances", [])
+        if not isinstance(loaded_instances, list):
+            loaded_instances = []
+        entry = _endpoint_model_entry(model, model_id, _lmstudio_loaded_context(model, model_id))
+        parent_alias_rank = 3 if loaded_instances else 1
+        _add_lmstudio_alias(cache, alias_ranks, model_id, entry, short_alias_rank=parent_alias_rank)
         alt_id = model.get("id")
         if isinstance(alt_id, str) and alt_id and alt_id != model_id:
-            _add_model_aliases(cache, alt_id, entry)
+            alt_entry = _endpoint_model_entry(model, alt_id, _lmstudio_loaded_context(model, alt_id))
+            _add_lmstudio_alias(cache, alias_ranks, alt_id, alt_entry, short_alias_rank=parent_alias_rank)
+        for instance in loaded_instances:
+            instance_id = instance.get("id") if isinstance(instance, dict) else None
+            if isinstance(instance_id, str) and instance_id:
+                instance_entry = _endpoint_model_entry(model, instance_id, _lmstudio_loaded_context(model, instance_id))
+                _add_lmstudio_alias(cache, alias_ranks, instance_id, instance_entry, short_alias_rank=5)
     return cache
 
 
@@ -1404,11 +1412,6 @@ def is_output_cap_error(error_msg: str) -> bool:
     )
 
 
-def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
-    """Exact match, or ``publisher/slug`` (LM Studio native ids) whose slug equals the configured name."""
-    return candidate_id == lookup_model or ("/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model)
-
-
 def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float = 3.0, *, note_blackhole: bool = False) -> Optional[dict[str, Any]]:
     """Ollama ``/api/show`` JSON for ``bare_model``, or None on any failure (``note_blackhole``: connect timeouts condemn the host)."""
     import httpx
@@ -1561,9 +1564,13 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
     resp = client.get(f"{lmstudio_url}/api/v1/models")
     if resp.status_code != 200:
         return None
-    for m in resp.json().get("models", []):
-        if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-            return next((ctx for ctx in (_positive_int(inst.get("config", {}).get("context_length")) for inst in m.get("loaded_instances", [])) if ctx is not None), None)
+    matched = max(
+        (m for m in resp.json().get("models", []) if isinstance(m, dict)),
+        key=lambda candidate: _lmstudio_model_match_rank(candidate, model),
+        default=None,
+    )
+    if matched is not None and _lmstudio_model_matches(matched, model):
+        return _lmstudio_loaded_context(matched, model)
     return None
 
 

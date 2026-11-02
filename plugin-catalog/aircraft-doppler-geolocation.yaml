@@ -2,11 +2,7 @@ name: aircraft-doppler-geolocation
 repo: https://github.com/mojomast/hermes-aircraft-doppler-geolocation
 sha: 2c3ed20577bcce29058d73422dd4f85392d04c24
 version: "0.1.1"
-description: >-
-  Find aircraft flyover Doppler curves in a recording, fit speed and distance,
-  and score candidate locations against ADS-B tracks you supply. No network or
-  credentials. Scripts run ffmpeg on the path you pass and write CSV, PNG, and
-  JSON beside it. PyPI packages install only after Hermes dependency consent.
+description: "Find aircraft flyover Doppler curves in a recording, fit speed and distance, and score candidate locations against ADS-B tracks you supply. No network or credentials. Scripts run ffmpeg on the path you pass and write CSV, PNG, and JSON beside it. PyPI packages install only after Hermes dependency consent. Disclosure — skill scripts run ffmpeg and Python via the terminal tool on the recording you name and write CSV/PNG/JSON at the output path you give; no network calls; the method can geolocate where a recording was made, so use it only on recordings you are entitled to analyse."
 maintainer: mojomast
 tier: community
 category: tools

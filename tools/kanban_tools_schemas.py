@@ -195,6 +195,24 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "The others surface to a human. Omit only if none apply."
             ),
         },
+        "metadata": {
+            "type": "object",
+            "description": (
+                "Optional structured facts to store on the blocked run. Use for checkpoints "
+                "that should survive the block."
+            ),
+            "additionalProperties": True,
+        },
+        "artifacts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional absolute paths to deliverable files produced before blocking. Files "
+                "inside a managed scratch workspace are copied to durable task attachments "
+                "before the transition, subject to the shared 25 MB per-file limit. Missing "
+                "or oversized files keep the task in-flight so the handoff can be retried."
+            ),
+        },
     },
     ["reason"],
 )

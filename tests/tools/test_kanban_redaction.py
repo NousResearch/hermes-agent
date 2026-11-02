@@ -7,7 +7,7 @@ test_kanban_tools.py.
 """
 from __future__ import annotations
 
-
+import json
 import pytest
 
 
@@ -86,6 +86,26 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
     assert run.outcome == "blocked"
     stored = run.summary or ""
     assert jwt not in stored
+
+
+def test_kanban_block_metadata_scrubbed(worker_env):
+    """Structured block metadata is redacted before it reaches the run row."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    secret = "ghp_" + "B" * 40
+    kt._handle_block({
+        "reason": "need access",
+        "kind": "needs_input",
+        "metadata": {"diagnostic": f"token: {secret}"},
+    })
+    with kbc.connect() as conn:
+        run = kb.latest_run(conn, worker_env)
+    assert run is not None
+    assert run.metadata is not None
+    assert secret not in json.dumps(run.metadata)
+    assert "token:" in run.metadata["diagnostic"]
 
 
 # ---------------------------------------------------------------------------

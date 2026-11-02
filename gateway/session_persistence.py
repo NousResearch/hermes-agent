@@ -358,10 +358,10 @@ class SessionPersistenceMixin:
         mirror_retired = self._import_legacy_sessions_json(db_had_entries)
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
+        # Heal before the fallback baseline: a heal after it reads as a caller edit, and recovery
+        # would then keep the stale mirror entry over the newer DB row.
+        self._heal_missing_origins(self._entries.values())
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
-        for entry in self._entries.values():
-            if entry.origin is None:
-                entry.origin = self._stored_origin(entry)
         if mirror_retired and db_load_succeeded:
             # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
             # ages out, and the import would then restore the retired route.
@@ -375,6 +375,11 @@ class SessionPersistenceMixin:
                     logger.warning("gateway.session: could not strip retired routes from sessions.json", exc_info=True)
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
+
+    def _heal_missing_origins(self, entries) -> None:
+        for entry in entries:
+            if entry.origin is None:
+                entry.origin = self._stored_origin(entry)
 
     def _stored_origin(self, entry: SessionEntry) -> Optional[SessionSource]:
         """*entry*'s messaging source rebuilt from its conversation row, if it still routes to the
@@ -567,6 +572,7 @@ class SessionPersistenceMixin:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
+        self._heal_missing_origins(self._entries.values())
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
 

@@ -40,7 +40,9 @@ def _current_runtime(cli) -> dict:
         "api_mode": cli.api_mode,
         "command": cli.acp_command,
         "args": list(cli.acp_args or []),
-        "credential_pool": getattr(cli, "_credential_pool", None)}
+        "credential_pool": getattr(cli, "_credential_pool", None),
+        # model_aliases key_env: the agent's credential refresh re-reads only this var.
+        "api_key_env": _key_env if isinstance(_key_env := getattr(cli, "_api_key_env", ""), str) else ""}
 
 
 def _route_signature(model, runtime: dict) -> tuple:
@@ -699,6 +701,7 @@ class CLIAgentSetupMixin:
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
+                api_key_env=runtime.get("api_key_env") or "",
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,

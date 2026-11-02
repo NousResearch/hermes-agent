@@ -650,6 +650,12 @@ def _resolve_child_runtime(
     }
     if not override_provider:
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
+    # A child on the parent's own key_env-bound key keeps the binding, so its per-request credential refresh
+    # re-reads that var instead of swapping in the provider-default key (another account).
+    parent_key_env = getattr(parent_agent, "_api_key_env", "")
+    if (isinstance(parent_key_env, str) and parent_key_env and not override_api_key
+            and kwargs["api_key"] == getattr(parent_agent, "api_key", None)):
+        kwargs["api_key_env"] = parent_key_env
     child_max_tokens = getattr(parent_agent, "max_tokens", None)
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens

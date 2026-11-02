@@ -587,6 +587,10 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
     if any(overrides.values()):
         _rederive_per_model_route(model, resolution.runtime)
+    key_env = model_override.get("key_env") if isinstance(model_override, dict) else None
+    if isinstance(key_env, str) and key_env.strip():
+        # model_aliases key_env pick: the rebuilt agent re-reads only that var and never the provider pool.
+        resolution.runtime.update(api_key_env=key_env.strip(), credential_pool=None)
     return model, resolution.runtime
 
 
@@ -660,7 +664,7 @@ def _make_agent(
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
-        credential_pool=runtime.get("credential_pool"), quiet_mode=True,
+        credential_pool=runtime.get("credential_pool"), api_key_env=runtime.get("api_key_env") or "", quiet_mode=True,
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),

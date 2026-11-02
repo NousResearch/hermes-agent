@@ -65,6 +65,9 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
+    # The fallback carries its own credential; the primary's key_env binding must not follow it
+    # (restoring the primary runtime puts it back from _primary_runtime).
+    agent._api_key_env = ""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
     if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
@@ -846,9 +849,16 @@ class ClientLifecycleMixin:
         current_key = str(self._anthropic_api_key or "")
         if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
+        key_env = getattr(self, "_api_key_env", "") or ""
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token(model=self.model)
+            if key_env:
+                # A model_aliases key_env credential: re-read only that var (picks up a rotated .env value).
+                # The provider-default chain would swap in ANTHROPIC_API_KEY / OAuth, another account.
+                from agent.secret_scope import get_secret
+                new_token = get_secret(key_env, "")
+            else:
+                from agent.anthropic_credentials import resolve_anthropic_token
+                new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

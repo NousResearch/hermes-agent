@@ -224,8 +224,6 @@ _REQUEST_OPTION_MISSING = object()
 # Full internal ladder + "none" (what /reasoning and config.yaml accept); provider
 # vocabulary clamping happens downstream in agent.reasoning_effort.
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
-_RUNTIME_AGENT_OVERRIDE_KEYS = (
-    "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
 
 def _clean_request_string(value: Any) -> Optional[str]:
@@ -236,19 +234,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
 from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
-
-
-def _apply_runtime_agent_overrides(
-    runtime_kwargs: dict[str, Any], overrides: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Merge resolved provider/runtime fields into ``runtime_kwargs`` in place."""
-    if not isinstance(overrides, dict):
-        return runtime_kwargs
-    for key in _RUNTIME_AGENT_OVERRIDE_KEYS:
-        value = overrides.get(key)
-        if value is None:
-            continue
-        runtime_kwargs[key] = list(value) if key == "args" and isinstance(value, (list, tuple)) else value
-    return runtime_kwargs
+from gateway.platforms.api_server_runtime_overrides import _apply_runtime_agent_overrides
 
 
 def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[str] = None) -> dict[str, Any]:
@@ -2134,6 +2120,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 _clean_request_string(session_override.get("provider")) or current_provider,
                 target_model=model)
             _apply_runtime_agent_overrides(runtime_kwargs, session_override)
+            # An alias credential (key_env): never the provider default or its pool (another account).
+            from gateway.run_agent_cache import apply_override_key_env
+            apply_override_key_env(runtime_kwargs, session_override)
             if route or request_model or request_provider:
                 logger.debug(
                     "api_server request selection skipped: session /model override wins for %s",

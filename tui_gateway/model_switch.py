@@ -283,7 +283,8 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         agent.switch_model(
             new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
             base_url=result.base_url, api_mode=result.api_mode,
-            capabilities=getattr(result, "runtime_capabilities", None))
+            capabilities=getattr(result, "runtime_capabilities", None),
+            api_key_env=getattr(result, "key_env", "") or "")
     except Exception as exc:
         # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
         # restart, persist, marker, override, config write) or the session pins a broken model.
@@ -374,7 +375,9 @@ def _apply_model_switch(
     if pin_session_override and isinstance(session, dict) and not one_turn:
         session["model_override"] = {
             "model": result.new_model, "provider": result.target_provider,
-            "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
+            "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode,
+            # Alias credential's env var NAME, so a rebuilt agent (/new, resume) stays bound to it.
+            "key_env": getattr(result, "key_env", "") or ""}
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)

@@ -34,6 +34,31 @@ _OVERRIDE_APPLY_KEYS = (
 )
 
 
+def read_override_key_env(key_env: str) -> str:
+    """Current value of a /model alias's bound credential var (``model_aliases.<n>.key_env``).
+
+    Read through the per-profile secret scope on every resolution so a rotated ``.env`` value is
+    picked up. Raises when empty: an alias-bound session must never fall back to the provider's
+    default credential, which may belong to a different account."""
+    from agent.secret_scope import get_secret
+    value = (get_secret(key_env, "") or "").strip()
+    if not value:
+        raise RuntimeError(
+            f"this session's /model alias reads its API key from {key_env}, which is not set. "
+            f"Set {key_env} in this profile's .env, or run /model to pick another model."
+        )
+    return value
+
+
+def apply_override_key_env(runtime: dict[str, Any], override: dict[str, Any]) -> None:
+    """When a /model override is bound to an alias credential var (``key_env``), put that var's current
+    value on ``runtime`` (agent kwargs) with no provider pool (its rotation would move the session onto
+    another account), plus the var NAME so the agent's per-request refresh re-reads only that var."""
+    key_env = override.get("key_env")
+    if isinstance(key_env, str) and key_env:
+        runtime.update(api_key=read_override_key_env(key_env), credential_pool=None, api_key_env=key_env)
+
+
 def _first_agent(entry: Any) -> Any:
     """Unwrap a cache entry (``(agent, sig, ...)`` tuple or bare agent) to its agent."""
     return entry[0] if isinstance(entry, tuple) and entry else entry
@@ -163,6 +188,12 @@ class GatewayAgentCacheMixin:
             return
         override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
+        # A model_aliases key_env credential: keep the persisted var NAME and never re-resolve the provider
+        # default (another account). _resolve_session_agent_runtime re-reads the var on every turn.
+        key_env = persisted.get("key_env")
+        key_env = key_env.strip() if isinstance(key_env, str) else ""
+        if key_env:
+            override["key_env"] = key_env
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
             override["base_url"] = None  # left over from a switch that kept the previous provider's URL
@@ -172,7 +203,8 @@ class GatewayAgentCacheMixin:
             # retries the resolution for that provider on each turn (default route + notice meanwhile).
             try:
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=persisted.get("model") or None)
-                for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
+                cred_keys = () if key_env else ("api_key", "credential_pool")
+                for k in (*cred_keys, "api_mode", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
@@ -192,8 +224,8 @@ class GatewayAgentCacheMixin:
                 )
         self._session_state(session_key).conversation.model_override = override
         logger.info(
-            "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            "Rehydrated persisted /model override for session=%s: model=%s provider=%s key_env=%s",
+            session_key, override.get("model"), provider or "", key_env or "-",
         )
 
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:

@@ -57,6 +57,17 @@ describe('MermaidRenderer', () => {
     expect(container.querySelector('img')?.alt).toBe('Mermaid diagram')
   })
 
+  it('does not name a diagram after a nested <title> (journey actor)', async () => {
+    const { container } = render(
+      <MermaidRenderer code={'journey\n  title Ship it\n  section Build\n    Code: 5: Alice, Bob'} />
+    )
+
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+
+    expect(decodeImage(container.querySelector('img'))).toContain('<title>Alice</title>')
+    expect(container.querySelector('img')?.alt).not.toContain('Alice')
+  })
+
   it('typesets $$TeX$$ labels as MathML instead of showing the source', async () => {
     // jsdom lays nothing out; give the measured MathML a browser-like size.
     const rect = vi
@@ -103,8 +114,8 @@ describe('MermaidRenderer', () => {
     const probeReads = computed.mock.calls.filter(([el]) => el instanceof HTMLSpanElement).length
     computed.mockRestore()
 
-    // One read per palette token for all three diagrams together.
-    expect(probeReads).toBe(9)
+    // One read per distinct token for all three diagrams together.
+    expect(probeReads).toBe(7)
   })
 
   it('keeps a label with <br/> and &nbsp; loadable as an image (#133089)', async () => {

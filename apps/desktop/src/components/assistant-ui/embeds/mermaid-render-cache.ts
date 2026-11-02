@@ -1,14 +1,14 @@
-// Renders are keyed by (theme, code). `theme` is opaque here: the caller's
-// serialised diagram theme, so any palette change misses the cache.
-interface MermaidRenderCacheOptions {
+// Renders are keyed by (theme, code). `theme` is opaque here: any
+// JSON-serialisable diagram theme, so any palette change misses the cache.
+interface MermaidRenderCacheOptions<Theme> {
   defer?: (signal?: AbortSignal) => Promise<void>
   maxEntries: number
-  render: (code: string, theme: string) => Promise<string>
+  render: (code: string, theme: Theme) => Promise<string>
   yieldToMainThread?: () => Promise<void>
 }
 
-interface MermaidRenderCache {
-  render: (code: string, theme: string, signal?: AbortSignal) => Promise<string>
+interface MermaidRenderCache<Theme> {
+  render: (code: string, theme: Theme, signal?: AbortSignal) => Promise<string>
 }
 
 interface PendingRender {
@@ -158,12 +158,12 @@ export function createRetryableLoader<T>(load: () => Promise<T>): () => Promise<
   }
 }
 
-export function createMermaidRenderCache({
+export function createMermaidRenderCache<Theme>({
   defer = deferUntilIdle,
   maxEntries,
   render: renderSvg,
   yieldToMainThread = yieldTask
-}: MermaidRenderCacheOptions): MermaidRenderCache {
+}: MermaidRenderCacheOptions<Theme>): MermaidRenderCache<Theme> {
   if (!Number.isInteger(maxEntries) || maxEntries < 1) {
     throw new Error('Mermaid render cache must contain at least one entry')
   }

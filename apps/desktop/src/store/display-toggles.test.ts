@@ -14,6 +14,7 @@ vi.mock('@/store/gateway', () => ({
   $gateway,
   activeGatewayConnectionId: () => 'conn-a',
   activeGatewayProfileKey: () => 'work',
+  activeGatewayRoute: () => ({ connectionId: 'conn-a', profile: 'work' }),
   requestGatewayForAgent: request,
   requestGatewayForProfile: vi.fn()
 }))

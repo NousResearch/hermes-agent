@@ -25,8 +25,7 @@
 import type { ReadableAtom } from 'nanostores'
 
 import { readKey } from '@/lib/storage'
-import { requestGatewayForActiveRoute } from '@/store/active-route-request'
-import { $gateway, activeGatewayProfileKey } from '@/store/gateway'
+import { $gateway, activeGatewayRoute, requestGatewayForAgent } from '@/store/gateway'
 
 interface Mirror {
   configKey: string
@@ -41,7 +40,10 @@ function push(mirror: Mirror): void {
   // the shared-primary route an unscoped write edits the LAUNCH profile's
   // config.yaml instead of the viewed one (#125969 class). A bare profile name
   // would resolve through this machine's pool and miss a remote-only profile.
-  void requestGatewayForActiveRoute(activeGatewayProfileKey(), 'config.set', {
+  // Read from the registry: on a gateway switch this runs inside the $gateway
+  // notification, before the new route's profile atom is published.
+  const { connectionId, profile } = activeGatewayRoute()
+  void requestGatewayForAgent(connectionId, profile, 'config.set', {
     key: mirror.configKey,
     value: mirror.read() ? 'true' : 'false'
   }).catch(() => {

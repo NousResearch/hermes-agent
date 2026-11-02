@@ -451,7 +451,8 @@ def committed_route_envelope(authority, entry, *, human_only=False, user_id=None
     """The route's last committed native envelope with connector provenance (what a producer turn
     borrows), or ``None`` while no matching message was admitted there. ``human_only`` skips an
     automation wake's own envelope, so a reused route cannot launder a sender through it;
-    ``user_id`` keeps a shared route's wake on the producer's own authenticated sender."""
+    ``user_id`` keeps a shared route's wake on the producer's own authenticated sender. A chat no
+    message was ever admitted to is opened by ``snapshot_automation`` for an ``open_chats`` plugin."""
     from hermes_state_runtime import list_session_admissions
     # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
     prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
@@ -558,6 +559,9 @@ def snapshot_automation(authority, adapter, event, identity):
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
     envelope = wake_route_envelope(authority, entry, event.metadata.get('requester_user_id'))
+    opened = envelope is None and getattr(event, '_opens_route', False)
+    if opened:
+        envelope = _opening_envelope(runner, event.source)
     if envelope is None:
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
@@ -585,6 +589,8 @@ def snapshot_automation(authority, adapter, event, identity):
         'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
         'event': {'message_id': identity}, 'provenance': provenance,
         'automation': {'identity': identity, 'owner': owner}}
+    if opened:
+        envelope['automation']['opened'] = True
     envelope['automation'].update(notification)
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
@@ -592,6 +598,17 @@ def snapshot_automation(authority, adapter, event, identity):
     if identities:
         envelope['automation']['identities'] = sorted(set(identities))
     return {'text': event.text, 'native_text_v1': envelope}, entry
+
+
+def _opening_envelope(runner, source):
+    """The source and connector binding a first human message from *source*'s chat would commit, for
+    the plugin turn its operator lets open that chat (``open_chats``). No platform delivery exists
+    to bind, so only the binding is recorded, and the admission says ``opened``."""
+    from gateway.session_ingress_context import opening_provenance
+    encoded = source.to_dict()
+    encoded['is_bot'] = source.is_bot
+    return {'source': encoded, 'provenance': opening_provenance(runner, source), 'event': {},
+            'timestamp': datetime.fromtimestamp(0, UTC).isoformat()}
 
 
 def check_automation_route(runner, payload, session_id, available_source, adapter):

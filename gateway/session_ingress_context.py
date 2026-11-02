@@ -217,6 +217,22 @@ def capture_provenance(runner, event):
     return provenance
 
 
+def opening_provenance(runner, source):
+    """What ``capture_provenance`` records for a native message from *source*'s chat, resolved from
+    the live adapter that would receive it, for a plugin turn opening a chat its operator listed
+    (``open_chats``). A relay seal binds one delivery and an opened chat has none: relay chats are
+    refused."""
+    if source.delivered_via_upstream_relay:
+        raise RuntimeStoreError('permission_denied')
+    owner = runner._transport_owner(source)
+    if owner is None:
+        raise RuntimeStoreError('not_found')
+    adapter, _home, _runtime_home, provenance = _binding(runner, source, owner[1])
+    if adapter is not owner[0]:
+        raise RuntimeStoreError('not_found')
+    return provenance
+
+
 def restore_provenance(runner, source, provenance):
     """Resolve current owned connector/home before installing in-process auth context."""
     if not isinstance(provenance, dict):

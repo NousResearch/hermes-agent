@@ -2,15 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { VoiceLiveStatus } from '@/lib/voice-live'
 
-const { fetches, request, route } = vi.hoisted(() => ({
+const { fetches, request, requestAgent, route } = vi.hoisted(() => ({
   fetches: [] as Array<{ resolve: (status: null | VoiceLiveStatus) => void }>,
   request: vi.fn(async (_profile: string, _method: string, _params?: Record<string, unknown>) => undefined),
+  requestAgent: vi.fn(
+    async (_connectionId: null | string, _profile: string, _method: string, _params?: Record<string, unknown>) =>
+      undefined
+  ),
   route: { connectionId: 'conn-a', profile: 'work' }
 }))
 
 vi.mock('@/store/gateway', () => ({
   activeGatewayConnectionId: () => route.connectionId,
   activeGatewayProfileKey: () => route.profile,
+  requestGatewayForAgent: requestAgent,
   requestGatewayForProfile: request
 }))
 
@@ -52,7 +57,10 @@ describe('setVoiceChatMode', () => {
 
     // `config.set` is profile-scoped on the backend: an unscoped write on the
     // shared-primary route edits the LAUNCH profile's config.yaml (#125969 class).
-    expect(request).toHaveBeenCalledWith('work', 'config.set', { key: 'voice.voice_chat_mode', value: 'gpt-live' })
+    expect(requestAgent).toHaveBeenCalledWith('conn-a', 'work', 'config.set', {
+      key: 'voice.voice_chat_mode',
+      value: 'gpt-live'
+    })
   })
 
   it('re-reads the status after the write instead of joining a pre-write fetch', async () => {

@@ -2,14 +2,20 @@ import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const $gateway = atom<unknown>(null)
-const request = vi.fn(async (_profile: string, _method: string, _params?: Record<string, unknown>) => undefined)
+
+const request = vi.fn(
+  async (_connectionId: null | string, _profile: string, _method: string, _params?: Record<string, unknown>) =>
+    undefined
+)
 
 // The viewed profile is not the launch profile: an unscoped write would land in
 // the wrong config.yaml (#125969 class), so every push must be routed by profile.
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  activeGatewayConnectionId: () => 'conn-a',
   activeGatewayProfileKey: () => 'work',
-  requestGatewayForProfile: request
+  requestGatewayForAgent: request,
+  requestGatewayForProfile: vi.fn()
 }))
 
 const { mirrorDisplayToggle } = await import('./display-toggles')
@@ -22,8 +28,8 @@ mirrorDisplayToggle('display.test_toggle', STORAGE_KEY, $enabled)
 
 const sets = () =>
   request.mock.calls
-    .filter(([, method]) => method === 'config.set')
-    .map(([profile, , params]) => ({ ...params, profile }))
+    .filter(([, , method]) => method === 'config.set')
+    .map(([, profile, , params]) => ({ ...params, profile }))
 
 beforeEach(() => {
   localStorage.clear()

@@ -2,7 +2,8 @@ import { backendScopeKey } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { fetchVoiceLiveStatus, type VoiceLiveStatus } from '@/lib/voice-live'
-import { activeGatewayConnectionId, activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForActiveRoute } from '@/store/active-route-request'
+import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 
 /**
  * `voice.voice_chat_mode` as the backend resolves it, plus whether GPT-Live can
@@ -66,12 +67,14 @@ export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiv
  * what the backend will actually mount next. Takes effect on the NEXT
  * conversation; an active one keeps its engine.
  *
- * Routed by profile, not by socket: `config.set` is `@_profile_scoped`, so on
- * the shared-primary route an unscoped write lands in the LAUNCH profile's
- * config.yaml, not the viewed one (#125969 class).
+ * Routed by (connection, profile), not by socket: `config.set` is
+ * `@_profile_scoped`, so on the shared-primary route an unscoped write lands in
+ * the LAUNCH profile's config.yaml, not the viewed one (#125969 class); and a
+ * bare profile name would resolve through this machine's pool, missing a
+ * profile served only by a remote gateway.
  */
 export async function setVoiceChatMode(mode: 'chained' | 'gpt-live'): Promise<null | VoiceLiveStatus> {
-  await requestGatewayForProfile(activeGatewayProfileKey(), 'config.set', { key: 'voice.voice_chat_mode', value: mode })
+  await requestGatewayForActiveRoute(activeGatewayProfileKey(), 'config.set', { key: 'voice.voice_chat_mode', value: mode })
 
   writeEpoch += 1
 

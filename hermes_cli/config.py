@@ -2473,6 +2473,18 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Credential label — select a specific named entry from the delegation
+        # provider's credential pool rather than the pool's priority-ranked top
+        # entry.  Use together with delegation.provider.
+        # Example: delegation.credential_label: "secondary-oauth"
+        # Empty string (default) means use the pool's normal selection logic.
+        "credential_label": "",
+        # When credential_label is set and the labelled entry cannot be found,
+        # is exhausted, or refresh fails:
+        #   false (default) — fail-closed: raise ValueError with a clear message.
+        #   true             — fall back to normal pool selection (same behaviour as
+        #                      if credential_label were not set).
+        "credential_fallback": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

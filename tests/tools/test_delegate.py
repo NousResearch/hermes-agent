@@ -3311,5 +3311,406 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestDelegationCredentialLabel(unittest.TestCase):
+    """Unit tests for delegation.credential_label / delegation.credential_fallback.
+
+    Cases:
+      (a) label matches an entry → returns runtime dict with correct provider
+      (b) label not in pool (entry=None) + fallback=false → ValueError
+      (c) label found but exhausted + fallback=false → ValueError
+      (d) label found but exhausted + fallback=true → falls back (resolve_runtime_provider called)
+      (e) no credential_label configured → existing behaviour unchanged (resolve_runtime_provider called)
+    """
+
+    def _make_entry(self, label, status=None):
+        entry = MagicMock()
+        entry.label = label
+        entry.last_status = status
+        entry.id = f"entry-{label[:8]}-0000"
+        entry.auth_type = "api_key"
+        entry.runtime_api_key = "tok-test-key"
+        return entry
+
+    def _make_pool(self, entries):
+        pool = MagicMock()
+        pool.entries.return_value = entries
+        pool._refresh_entry.return_value = None  # no-op by default
+        return pool
+
+    # ------------------------------------------------------------------
+    # (a) label matches a live entry → returns runtime dict
+    # ------------------------------------------------------------------
+    def test_label_match_returns_runtime_dict(self):
+        from tools.delegate_tool import _resolve_delegation_credentials_by_label
+
+        entry = self._make_entry("secondary-oauth")
+        pool = self._make_pool([entry])
+        runtime = {
+            "api_key": "tok-test-key",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "model": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
+        with patch("agent.credential_pool.load_pool", return_value=pool), \
+             patch("hermes_cli.runtime_provider._resolve_runtime_from_pool_entry", return_value=runtime), \
+             patch("agent.credential_pool.STATUS_EXHAUSTED", "exhausted"), \
+             patch("agent.credential_pool.STATUS_DEAD", "dead"):
+            result = _resolve_delegation_credentials_by_label(
+                configured_provider="anthropic",
+                configured_model=None,
+                credential_label="secondary-oauth",
+                credential_fallback=False,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["api_key"], "tok-test-key")
+        self.assertEqual(result["provider"], "anthropic")
+        self.assertEqual(result["api_mode"], "anthropic_messages")
+
+    # ------------------------------------------------------------------
+    # (b) label not found + fallback=false → ValueError
+    # ------------------------------------------------------------------
+    def test_label_not_found_fail_closed(self):
+        from tools.delegate_tool import _resolve_delegation_credentials_by_label
+
+        pool = self._make_pool([self._make_entry("other-label")])
+
+        with patch("agent.credential_pool.load_pool", return_value=pool), \
+             patch("agent.credential_pool.STATUS_EXHAUSTED", "exhausted"), \
+             patch("agent.credential_pool.STATUS_DEAD", "dead"):
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials_by_label(
+                    configured_provider="anthropic",
+                    configured_model=None,
+                    credential_label="secondary-oauth",
+                    credential_fallback=False,
+                )
+
+        self.assertIn("secondary-oauth", str(ctx.exception))
+        self.assertIn("not found", str(ctx.exception))
+
+    # ------------------------------------------------------------------
+    # (c) label found but exhausted + fallback=false → ValueError
+    # ------------------------------------------------------------------
+    def test_exhausted_entry_fail_closed(self):
+        from tools.delegate_tool import _resolve_delegation_credentials_by_label
+
+        entry = self._make_entry("secondary-oauth", status="exhausted")
+        pool = self._make_pool([entry])
+
+        with patch("agent.credential_pool.load_pool", return_value=pool), \
+             patch("agent.credential_pool.STATUS_EXHAUSTED", "exhausted"), \
+             patch("agent.credential_pool.STATUS_DEAD", "dead"):
+            with self.assertRaises(ValueError) as ctx:
+                _resolve_delegation_credentials_by_label(
+                    configured_provider="anthropic",
+                    configured_model=None,
+                    credential_label="secondary-oauth",
+                    credential_fallback=False,
+                )
+
+        self.assertIn("exhausted", str(ctx.exception))
+        self.assertIn("secondary-oauth", str(ctx.exception))
+
+    # ------------------------------------------------------------------
+    # (d) exhausted + fallback=true → returns None (caller falls back)
+    # ------------------------------------------------------------------
+    def test_exhausted_entry_with_fallback_returns_none(self):
+        from tools.delegate_tool import _resolve_delegation_credentials_by_label
+
+        entry = self._make_entry("secondary-oauth", status="exhausted")
+        pool = self._make_pool([entry])
+
+        with patch("agent.credential_pool.load_pool", return_value=pool), \
+             patch("agent.credential_pool.STATUS_EXHAUSTED", "exhausted"), \
+             patch("agent.credential_pool.STATUS_DEAD", "dead"):
+            result = _resolve_delegation_credentials_by_label(
+                configured_provider="anthropic",
+                configured_model=None,
+                credential_label="secondary-oauth",
+                credential_fallback=True,
+            )
+
+        self.assertIsNone(result)
+
+    # ------------------------------------------------------------------
+    # (e) no credential_label → existing path unchanged (_resolve_delegation_credentials
+    #     calls resolve_runtime_provider, not _resolve_delegation_credentials_by_label)
+    # ------------------------------------------------------------------
+    def test_no_credential_label_uses_existing_path(self):
+        from tools.delegate_tool import _resolve_delegation_credentials
+
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "anthropic", "model": "", "credential_label": ""}
+        runtime = {
+            "api_key": "tok-existing",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "model": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime) as mock_resolve:
+            result = _resolve_delegation_credentials(cfg, parent)
+
+        mock_resolve.assert_called_once()
+        self.assertEqual(result["api_key"], "tok-existing")
+
+    # ------------------------------------------------------------------
+    # (f) pinned_label=True in return dict when label resolution succeeds
+    # ------------------------------------------------------------------
+    def test_label_match_sets_pinned_label_true(self):
+        """_resolve_delegation_credentials_by_label must include pinned_label=True
+        in the result so _build_child_agent knows to skip pool sharing."""
+        from tools.delegate_tool import _resolve_delegation_credentials_by_label
+
+        entry = self._make_entry("claude_code")
+        pool = self._make_pool([entry])
+        runtime = {
+            "api_key": "tok-label-key",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "model": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
+        with patch("agent.credential_pool.load_pool", return_value=pool), \
+             patch("hermes_cli.runtime_provider._resolve_runtime_from_pool_entry", return_value=runtime), \
+             patch("agent.credential_pool.STATUS_EXHAUSTED", "exhausted"), \
+             patch("agent.credential_pool.STATUS_DEAD", "dead"):
+            result = _resolve_delegation_credentials_by_label(
+                configured_provider="anthropic",
+                configured_model=None,
+                credential_label="claude_code",
+                credential_fallback=False,
+            )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        # pinned_label must be True — this is what _build_child_agent checks
+        # to skip attaching the parent's credential pool to the child.
+        self.assertTrue(result.get("pinned_label"), "pinned_label must be True for a resolved label")
+
+    # ------------------------------------------------------------------
+    # (g) no pinned_label when credential_label is not set
+    #     (existing path must be unchanged — parent pool sharing allowed)
+    # ------------------------------------------------------------------
+    def test_no_credential_label_no_pinned_label(self):
+        """When no credential_label is configured, _resolve_delegation_credentials
+        must NOT include pinned_label in the result dict (no pool-sharing block)."""
+        from tools.delegate_tool import _resolve_delegation_credentials
+
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "anthropic", "model": ""}
+        # credential_label absent — normal resolve_runtime_provider path
+        runtime = {
+            "api_key": "tok-pool-key",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+            "model": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+        }
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=runtime):
+            result = _resolve_delegation_credentials(cfg, parent)
+
+        # The normal path must not set pinned_label — pool sharing is allowed.
+        self.assertFalse(
+            result.get("pinned_label"),
+            "pinned_label must be absent/falsy when no credential_label is configured",
+        )
+
+    # ------------------------------------------------------------------
+    # (h) credential_label set but provider empty → warning logged, no pinned_label
+    # ------------------------------------------------------------------
+    def test_credential_label_without_provider_logs_warning(self):
+        """When credential_label is set but delegation.provider is empty, a
+        logger.warning must be emitted and credentials fall back to parent."""
+        import logging
+        from tools.delegate_tool import _resolve_delegation_credentials
+
+        parent = _make_mock_parent(depth=0)
+        cfg = {"provider": "", "model": "", "credential_label": "claude_code"}
+
+        with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
+            result = _resolve_delegation_credentials(cfg, parent)
+
+        # Must fall through to the "inherit from parent" return (no pinned_label).
+        self.assertIsNone(result["provider"])
+        self.assertFalse(result.get("pinned_label"))
+        # Must log a warning mentioning the label and the missing provider.
+        warning_text = " ".join(cm.output)
+        self.assertIn("claude_code", warning_text)
+        self.assertIn("delegation.provider", warning_text)
+
+
+class TestCredentialLabelRuntimeWiring(unittest.TestCase):
+    """Runtime-wiring tests for credential_label fail-closed behaviour.
+
+    These tests exercise the actual _build_child_agent / _build_child_preserving_parent_tools
+    path — not just the resolver return value — to verify that:
+
+      (f) pinned child: _credential_pool is NOT set + fallback_model is None
+      (g) unpinned child: _credential_pool IS the parent pool + fallback inherited
+      (h) base_url + credential_label simultaneously: ValueError (fail-closed)
+    """
+
+    def _make_runtime_dict(self, api_key="tok-test", provider="anthropic",
+                           base_url="https://api.anthropic.com",
+                           api_mode="anthropic_messages"):
+        return {
+            "api_key": api_key,
+            "provider": provider,
+            "base_url": base_url,
+            "api_mode": api_mode,
+            "model": None,
+            "request_overrides": {},
+            "max_output_tokens": None,
+            "command": None,
+            "args": [],
+            "pinned_label": True,
+        }
+
+    # ------------------------------------------------------------------
+    # (f) pinned child: pool must NOT be set and fallback_model must be None
+    # ------------------------------------------------------------------
+    def test_pinned_child_has_no_pool_and_no_fallback(self):
+        """When override_credential_pinned=True:
+        - child._credential_pool must not be set (no pool rotation)
+        - AIAgent(..., fallback_model=...) must receive None (no fallback escape)
+        """
+        from tools.delegate_tool import _build_child_agent
+
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [{"provider": "openrouter", "model": "gpt-4o-mini"}]
+        mock_pool = MagicMock()
+        mock_pool.entries.return_value = []
+        parent._credential_pool = mock_pool
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            # No _credential_pool set on the mock yet
+            del mock_child._credential_pool  # ensure attribute not auto-present
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="pinned child test",
+                context=None,
+                toolsets=None,
+                model="claude-sonnet-4-6",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_credential_pinned=True,
+                override_provider="anthropic",
+                override_base_url="https://api.anthropic.com",
+                override_api_key="tok-pinned",
+                override_api_mode="anthropic_messages",
+            )
+
+        _, kwargs = MockAgent.call_args
+        # fallback_model must be None — pinned child cannot escape via fallback
+        self.assertIsNone(kwargs.get("fallback_model"),
+                          "pinned child must receive fallback_model=None")
+        # _credential_pool must NOT be set on the child — no pool rotation
+        self.assertFalse(
+            hasattr(mock_child, "_credential_pool") and
+            isinstance(getattr(mock_child, "_credential_pool", None), type(mock_pool)),
+            "pinned child must not have a credential pool attached",
+        )
+
+    # ------------------------------------------------------------------
+    # (g) unpinned child: pool IS shared and fallback IS inherited
+    # ------------------------------------------------------------------
+    def test_unpinned_child_shares_pool_and_inherits_fallback(self):
+        """When override_credential_pinned=False (default):
+        - child._credential_pool must be set to the resolved pool (pool sharing)
+        - AIAgent receives the parent's fallback chain
+        """
+        from tools.delegate_tool import _build_child_agent
+        from agent.credential_pool import CredentialPool
+
+        parent = _make_mock_parent(depth=0)
+        fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "tok-fb"}
+        parent._fallback_chain = [fallback_entry]
+
+        # Provide a real-ish pool mock that _resolve_child_credential_pool will return
+        mock_pool = MagicMock(spec=CredentialPool)
+        mock_pool.entries.return_value = []
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("tools.delegate_tool._resolve_child_credential_pool",
+                   return_value=mock_pool) as mock_resolve_pool:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="unpinned child test",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_credential_pinned=False,
+            )
+
+        _, kwargs = MockAgent.call_args
+        # fallback_model must equal the parent's fallback chain
+        self.assertEqual(kwargs.get("fallback_model"), [fallback_entry],
+                         "unpinned child must inherit parent fallback chain")
+        # _credential_pool must be set (pool sharing active)
+        mock_resolve_pool.assert_called_once()
+        self.assertIs(mock_child._credential_pool, mock_pool,
+                      "unpinned child must share the resolved credential pool")
+
+    # ------------------------------------------------------------------
+    # (h) base_url + credential_label simultaneously → ValueError (fail-closed)
+    # ------------------------------------------------------------------
+    def test_base_url_plus_credential_label_raises(self):
+        """delegation.base_url and delegation.credential_label cannot be used
+        together.  _resolve_delegation_credentials must raise ValueError so the
+        user knows label-based fail-closed is not active.
+        """
+        from tools.delegate_tool import _resolve_delegation_credentials
+
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "provider": "anthropic",
+            "model": "",
+            "base_url": "https://my-proxy.example.com/v1",
+            "credential_label": "secondary-oauth",
+        }
+
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent)
+
+        err = str(ctx.exception)
+        self.assertIn("base_url", err)
+        self.assertIn("credential_label", err)
+        self.assertIn("secondary-oauth", err)
+
+
 if __name__ == "__main__":
     unittest.main()

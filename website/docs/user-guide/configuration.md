@@ -91,6 +91,23 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+On Linux with glibc, the gateway and `hermes serve` also cap the number of
+malloc arenas the process may create:
+
+```yaml
+runtime:
+  malloc_arena_max: 4
+```
+
+glibc otherwise hands every new thread its own arena, up to eight per CPU core,
+and keeps each arena's freed pages; a long-running gateway with many short-lived
+worker threads ends up holding hundreds of MB of free-but-unreturned memory.
+The cap applies only to the Hermes server process itself — commands it runs
+(terminal tools, MCP servers, builds) keep glibc's default. An explicit
+`MALLOC_ARENA_MAX` (or `GLIBC_TUNABLES=glibc.malloc.arena_max=…`) in the
+environment takes precedence. Set the value to `0`, `false`, or `null` to keep
+glibc's default. Other platforms ignore it.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database

@@ -725,8 +725,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()
 
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    from hermes_cli.resource_limits import apply_malloc_arena_max, apply_nofile_soft_limit
     apply_nofile_soft_limit()
+    apply_malloc_arena_max()
 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
     from gateway.code_skew import record_boot_fingerprint

@@ -180,3 +180,40 @@ def test_inferred_primary_transport_does_not_hide_a_secondary_local_session_poli
     assert identity.transport_inferred and identity.transport_profile == "default"
     assert policy_for_source(runner, source) is picked_policy
     assert runner._delivery_adapter_for(source) is secondary_adapter
+
+
+def test_restored_completion_injects_through_the_pinned_receiving_bot(mux):
+    """A detached completion (async delegation, watch) for a restored row injects through the bot its
+    routing entry persisted, as ``_delivery_adapter_for`` answers: the inverse row (team_b's bot ->
+    default) never through the default bot, and nothing while team_b's bot is down (#139726)."""
+    from gateway.session_identity import restore_identity
+
+    r = mux.runner
+    restored = SessionSource(platform=Platform.TELEGRAM, chat_id="999", chat_type="dm", user_id="999")
+    restore_identity(restored, runner=r, transport_profile="team_b")
+    assert r._resolve_injection_adapter("telegram", restored) is r._delivery_adapter_for(restored) is mux.team_b
+    r._profile_adapters["team_b"] = {}
+    r._profile_bot_platforms = {"team_b": {Platform.TELEGRAM}}
+    assert r._resolve_injection_adapter("telegram", restored) is None
+
+
+@pytest.mark.asyncio
+async def test_secondary_bot_route_runs_in_the_routed_runtime_scope(mux):
+    """A ``bot_profile`` route's event runs under its runtime profile's scope, as a shared-bot route
+    does: that runtime's authority admits the turn, so a later completion wake finds the committed
+    turn on the same ledger (#139726). The bot's own traffic keeps the bot profile's scope."""
+    from gateway.platforms.event import MessageEvent
+    from hermes_constants import get_hermes_home
+
+    r = mux.runner
+    scopes = []
+
+    async def _handle_message(event):
+        scopes.append(get_hermes_home())
+
+    r._handle_message = _handle_message
+    handler = r._make_profile_message_handler("team_b")
+    for chat in ("999", "1"):
+        await handler(MessageEvent(text="hi", source=mux.team_b.build_source(
+            chat_id=chat, chat_type="dm", user_id=chat)))
+    assert scopes == [mux.home, mux.home / "profiles" / "team_b"]

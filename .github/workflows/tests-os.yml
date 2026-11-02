@@ -75,6 +75,7 @@ concurrency:
 
 jobs:
   os-tests:
+    # (ci-perf control run: comment-only change)
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout || 30 }}

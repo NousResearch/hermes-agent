@@ -482,6 +482,46 @@ def test_a_parent_read_file_modified_by_an_earlier_attempt_is_still_reported(mon
     assert "re-read before editing" in entry["summary"] and str(shared) in entry["summary"]
 
 
+def _stop_low_after_its_retry_was_queued(monkeypatch):
+    from tools import delegate_tool_child_run
+    from tools.delegate_tool_registry import interrupt_subagent
+    modified = delegate_tool_child_run._ChildRun.modified_parent_paths
+
+    def stop_after_the_build_check(self):
+        if _effort_ran(self.child) == "low":
+            assert interrupt_subagent(self.subagent_id)
+        return modified(self)
+
+    monkeypatch.setattr(delegate_tool_child_run._ChildRun, "modified_parent_paths", stop_after_the_build_check)
+
+
+# How the chain's last attempt can end without a result of its own: its worker raised, it timed out, or a stop
+# cancelled it before it ran.
+_FAILED_FINAL = {"raise": X("raise"), "timeout": T(calls=3), "stopped": D("never runs")}
+
+
+@pytest.mark.parametrize("ending", sorted(_FAILED_FINAL))
+def test_a_parent_read_file_an_earlier_attempt_modified_is_reported_when_the_last_attempt_fails(
+        monkeypatch, tmp_path, ending):
+    from tools import file_state
+    shared = tmp_path / "retry.py"
+    shared.write_text("v1")
+    file_state.record_read("parent-task", str(shared))
+
+    def low(child, task_id, _record):
+        file_state.note_write(task_id, str(shared))
+        close = child.close
+        child.close = lambda: (file_state.get_registry().forget_task(task_id), close())
+        return M()
+
+    if ending == "stopped":
+        _stop_low_after_its_retry_was_queued(monkeypatch)
+    entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": _FAILED_FINAL[ending]}, effort="low",
+                                ceiling="medium", timeout=0.3)
+    assert len(log) == 2 and entry["status"] in ("error", "timeout", "interrupted")
+    assert entry["stale_paths"] == [str(shared)]
+
+
 def test_only_the_final_attempt_emits_a_completion(monkeypatch):
     events = []
     _entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": T(), "high": D()}, effort="low",
@@ -933,6 +973,26 @@ def test_background_process_handoffs_work_in_every_attempt_and_all_reach_the_res
     assert transfers == [log[0].task_ids[0], log[1].task_ids[0]]
     (entry,) = result["results"]
     assert [p["session_id"] for p in entry["handed_off_processes"]] == ["proc-low", "proc-medium"]
+
+
+@pytest.mark.parametrize("ending", ["raise", "stopped"])
+def test_a_process_an_earlier_attempt_handed_off_is_on_the_result_when_the_last_attempt_fails(monkeypatch, ending):
+    from tools import process_registry as registry_mod
+    monkeypatch.setattr(registry_mod.process_registry, "transfer_ownership",
+                        lambda session_id, **_: SimpleNamespace(id=session_id, command=f"watch {session_id}"))
+
+    def low(child, task_id, _record):
+        assert registry_mod._handoff_process("proc-low", {"data": "the test watcher"}, task_id)["status"] == "handed_off"
+        return M()
+
+    if ending == "stopped":
+        _stop_low_after_its_retry_was_queued(monkeypatch)
+    result, log, _, _ = _delegate({"low": low, "medium": _FAILED_FINAL[ending]},
+                                  [{**ESC, "reasoning_effort": "low", "escalate_ceiling": "medium"}])
+    (entry,) = result["results"]
+    assert len(log) == 2 and entry["status"] in ("error", "interrupted")
+    assert [p["session_id"] for p in entry["handed_off_processes"]] == ["proc-low"]
+    assert any("proc-low" in note for note in result["process_notes"])
 
 
 def test_a_detached_units_retry_is_never_attached_to_the_parent():

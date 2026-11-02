@@ -474,8 +474,7 @@ def _run_child_attempt(
                 return entry  # intermediate: the chain is still live
             schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
             entry = _build_result_entry(child, result, task_index, run.elapsed(), schema)
-        run.append_sibling_write_reminder(entry)
-        run.account_background_processes(entry)
+        run.add_final_facts(entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)
     except Exception as exc:

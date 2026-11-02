@@ -1166,14 +1166,22 @@ class _ChildRun:
         self, entry: dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,
     ) -> dict[str, Any]:
         """Shared tail of every failure path: emit ``subagent.complete`` (``status`` defaults to the entry's), note
-        the steer text that won the race with the failure, report the worktree."""
+        the steer text that won the race with the failure, add the chain's final-result facts, report the
+        worktree."""
         _safe_progress(
             self.child_progress_cb, "subagent.complete", preview=redact_child_text(preview, force=False), status=status or entry["status"],
             duration_seconds=entry["duration_seconds"],
             summary=redact_child_text(summary, force=False) if summary is not None else None,
         )
         _append_missed_steer(entry, late_steer)
+        self.add_final_facts(entry)
         return self.attach_worktree(entry)
+
+    def add_final_facts(self, entry: dict[str, Any]) -> None:
+        """What the parent must hear from the attempt that ends the chain, however it ended (completed, raised, timed
+        out, cancelled): parent-read files the chain modified and the chain's background-process accounting."""
+        self.append_sibling_write_reminder(entry)
+        self.account_background_processes(entry)
 
     def close_steering(self) -> Optional[str]:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""

@@ -418,6 +418,15 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "read a file before you can patch it). When in doubt and the calls are independent, batch them."
 )
 
+# Interim text before tool calls is delivered at once; otherwise models can stay silent for whole slow turns.
+# Gated on interim delivery. About 90 cached tokens — keep tight.
+INTERIM_PREAMBLE_GUIDANCE = (
+    "Text you write before a tool call is shown to the user right away, while the tools run. Before tool work, "
+    "write one short plain sentence saying what you are about to do, then make the tool calls in the same response; "
+    "on longer work, add a one-line update when you find something, change course or get blocked. One line per batch "
+    "of tool work, not narration of each call."
+)
+
 # Execution-discipline guidance for models that abandon partial results, skip prerequisite lookups, answer
 # from memory, or declare "done" unverified. Body is family-agnostic (OPENAI_ prefix reflects origin).
 # Injection gate: system_prompt.py via config.yaml ``agent.execution_guidance`` (auto/true/false/list).

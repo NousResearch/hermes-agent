@@ -6,6 +6,7 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
+import { keepRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
 import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
@@ -1051,6 +1052,54 @@ describe('useDesktopIntegrations', () => {
 
       unmount()
       dropSessionState('runtime-999')
+    })
+  })
+
+  describe('kept gateway opens', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('folds the launch burst of kept-route opens into one sessions refresh, and drops a pending one on unmount', () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const refreshSessions = vi.fn()
+      const gateways = ['homelab', 'vps', 'nas', 'office', 'lab']
+      const releases = gateways.map(gateway => keepRoute(gateway, 'default'))
+
+      const { unmount } = renderHook(() =>
+        useDesktopIntegrations({
+          activeProfile: 'default',
+          chatOpen: false,
+          hasPreview: false,
+          locationPathname: '/',
+          navigate,
+          profileReady: false,
+          refreshSessions,
+          resumeExhaustedSessionId: null,
+          resumeLastSession: false,
+          routedSessionId: null,
+          runtimeIdByStoredSessionId: { current: new Map() },
+          sessions: []
+        })
+      )
+
+      try {
+        for (const gateway of gateways) {
+          keptRouteOpened(gateway, 'default')
+          vi.advanceTimersByTime(100)
+        }
+
+        expect(refreshSessions).not.toHaveBeenCalled()
+        vi.advanceTimersByTime(1_000)
+        expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+        keptRouteOpened('homelab', 'default')
+        unmount()
+        vi.advanceTimersByTime(1_000)
+        expect(refreshSessions).toHaveBeenCalledTimes(1)
+      } finally {
+        releases.forEach(release => release())
+      }
     })
   })
 })

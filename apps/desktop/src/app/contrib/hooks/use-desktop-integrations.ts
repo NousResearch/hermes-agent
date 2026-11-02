@@ -51,6 +51,9 @@ import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionR
 
 import { resolveRememberedSessionId } from './remembered-session'
 
+// Trailing window that folds a burst of kept-route opens into one list refresh.
+const KEPT_ROUTE_REFRESH_COALESCE_MS = 400
+
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
 
 interface DesktopIntegrationsParams {
@@ -563,6 +566,20 @@ export function useDesktopIntegrations({
     return onSessionsChanged(() => void refreshSessions())
   }, [refreshSessions])
 
-  // A gateway that connects after the list was drawn adds its rows to it.
-  useEffect(() => onKeptRouteOpened(() => void refreshSessions()), [refreshSessions])
+  // A gateway that connects after the list was drawn adds its rows to it. The
+  // launch burst (every kept gateway opening at once) is one pull; reopens on
+  // the reconnect backoff land seconds apart and each still pulls.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const off = onKeptRouteOpened(() => {
+      clearTimeout(timer)
+      timer = setTimeout(() => void refreshSessions(), KEPT_ROUTE_REFRESH_COALESCE_MS)
+    })
+
+    return () => {
+      off()
+      clearTimeout(timer)
+    }
+  }, [refreshSessions])
 }

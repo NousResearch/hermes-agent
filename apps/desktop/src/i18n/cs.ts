@@ -5403,7 +5403,9 @@ export const csOverrides = {
       updateFailed: 'Aktualizace volby modelu selhala',
       fastFailed: 'Aktualizace rychlého režimu se nezdařila',
       ultrafast: 'Ultrarychlé',
-      useStandardSpeed: 'Použít standardní rychlost'
+      useStandardSpeed: 'Použít standardní rychlost',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualizace Daybreak se nezdařila'
     },
     gatewayMenu: {
       gateway: 'Gateway',

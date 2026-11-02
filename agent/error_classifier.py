@@ -127,6 +127,23 @@ _UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
 # scoped on purpose: other providers' billing codes on a 403 stay auth failures.
 _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 
+# Z.AI / Zhipu (BigModel) answer an exhausted prepaid balance with HTTP 429
+# and a structured numeric code: 1113 ("余额不足或无可用资源包,请充值") and
+# 1112 ("账户余额不足"). The account cannot serve paid traffic until it is
+# topped up, so this is billing, not throttling -- retrying only burns the
+# retry budget and hides the real cause.
+#
+# Provider-scoped on purpose: "1112"/"1113" are bare numeric codes that other
+# backends reuse for unrelated meanings, so they must not enter the global
+# _BILLING_ERROR_CODES table.
+_ZHIPU_BILLING_ERROR_CODES = frozenset({"1112", "1113"})
+
+# Provider slugs that reach the Z.AI / Zhipu API. The bundled `zai` profile
+# (plugins/model-providers/zai) registers name="zai" with aliases
+# ("glm", "z-ai", "z.ai", "zhipu"); the classifier sees the slug the caller
+# passed, so all spellings are listed here.
+_ZHIPU_PROVIDER_SLUGS = frozenset({"zai", "zhipu", "glm", "z-ai", "z.ai"})
+
 # Nous usage-window plan: included usage (or the large-model allowance) is spent AND
 # there are no top-up credits. Billing so the pool may rotate to a key the user
 # owns; the message names the reset, so it must never read as transient. Honoured
@@ -1107,6 +1124,12 @@ def _status_429(c: _Ctx) -> Verdict:
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
+    # Z.AI/Zhipu spend their prepaid balance: HTTP 429 carries a structured
+    # numeric code instead of a throttling phrase, so the global table above
+    # cannot see it (the codes are provider-scoped, not global). An exhausted
+    # balance is billing -- terminal for this key, and not worth retrying.
+    if c.code in _ZHIPU_BILLING_ERROR_CODES and c.provider_slug in _ZHIPU_PROVIDER_SLUGS:
         return _V_BILLING
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).

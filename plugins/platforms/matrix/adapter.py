@@ -1928,7 +1928,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     try:
                         await client.sync_store.put_next_batch(None)
                     except Exception as store_exc:
-                        logger.warning("Matrix: failed to persist cleared sync cursor: %s", store_exc)
+                        logger.warning(
+                            "Matrix: failed to persist cleared sync cursor: %s", store_exc, exc_info=True)
                     await asyncio.sleep(5)
                     continue
                 # Detect permanent auth/permission failures. Transient 5xx outages must retry.

@@ -1,13 +1,16 @@
 import { map } from 'nanostores'
 
-import { requestGatewayForAgent } from '@/store/gateway'
+import type { HermesGateway } from '@/hermes'
+import { gatewayRouteState, requestGatewayForAgent } from '@/store/gateway'
 import type { AgentProfileRoute } from '@/store/profile'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // A project another gateway owns is drawn from that gateway's session rows; its
 // look (color / icon) lives in THAT gateway profile's projects.db, the same
 // record its own window themes. Reads and writes go to the owner, so theming
-// "app · Studio" never mints a project on this window's gateway.
+// "app · Studio" never mints a project on this window's gateway. The sidebar's
+// reads are passive (only a socket already open to that owner); only a colour
+// pick, a user gesture, may dial it.
 
 export interface GatewayProjectLook {
   color: null | string
@@ -86,22 +89,26 @@ function publishOwnerLooks(route: AgentProfileRoute, looks: Record<string, Gatew
   $gatewayProjectLooks.setKey(key, next)
 }
 
-async function loadOwnerLooks(route: AgentProfileRoute): Promise<void> {
+async function loadOwnerLooks(route: AgentProfileRoute, gateway: HermesGateway): Promise<void> {
   const sentAt = writeSeq
+  const payload = await gateway.request<ProjectsPayload>('projects.list', { profile: route.profile })
 
-  publishOwnerLooks(route, await readOwnerLooks(route), sentAt)
+  publishOwnerLooks(route, looksByFolder(payload.projects ?? []), sentAt)
 }
 
 const requested = new Set<string>()
 
-/** Read each owner's looks once. A failed read stays unread until the next write to that owner. */
+/** Read each owner's looks once, on a socket already open to it: a sidebar render never dials or
+ *  spawns a backend (an idle-evicted local profile, a new pool entry per profile on a shared host).
+ *  An owner with no open socket is read on a later render that finds one. */
 export function loadGatewayProjectLooks(routes: AgentProfileRoute[]): void {
   for (const route of routes) {
     const key = gatewayRouteKey(route)
+    const { gateway } = gatewayRouteState(route.connectionId, route.profile)
 
-    if (!requested.has(key)) {
+    if (gateway && !requested.has(key)) {
       requested.add(key)
-      void loadOwnerLooks(route).catch(() => undefined)
+      void loadOwnerLooks(route, gateway).catch(() => undefined)
     }
   }
 }

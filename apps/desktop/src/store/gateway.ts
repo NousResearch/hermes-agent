@@ -323,19 +323,19 @@ export function activeGatewayProfileKey(): string {
   return g.$activeProfile.get()
 }
 
-/** Never dials or asks main: the socket a request for (connectionId, profile)
- *  would ride (`primary:<profile>` for the window primary and profiles known to
- *  share its backend, else the pooled scope) and whether it is open right now. */
-export function gatewayRouteState(connectionId: null | string, profile: string): { key: string; open: boolean } {
+/** Never dials or asks main: the socket a request for (connectionId, profile) would ride (`primary:<profile>` for the
+ *  window primary and profiles known to share its backend, else the pooled scope), and that socket only while open. */
+export function gatewayRouteState(
+  connectionId: null | string,
+  profile: string
+): { gateway: HermesGateway | null; key: string; open: boolean } {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
   const onPrimary = key === g.primaryProfile && (scope === key || isPrimaryRegistryRoute(connectionId, key))
+  const primary = onPrimary || isPrimaryRider(scope, primaryIdentity())
+  const gateway = primary ? g.primaryGateway : (g.secondaries.get(scope)?.gateway ?? null)
 
-  if (onPrimary || isPrimaryRider(scope, primaryIdentity())) {
-    return { key: `primary:${key}`, open: isOpen(g.primaryGateway) }
-  }
-
-  return { key: scope, open: isOpen(g.secondaries.get(scope)?.gateway ?? null) }
+  return { gateway: isOpen(gateway) ? gateway : null, key: primary ? `primary:${key}` : scope, open: isOpen(gateway) }
 }
 
 export function configureGatewayRegistry(cfg: RegistryConfig): void {

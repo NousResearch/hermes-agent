@@ -56,7 +56,7 @@ jobs:
           focus_count=$(node - "$file" <<'NODE'
           const fs = require('node:fs');
           const source = fs.readFileSync(process.argv[2], 'utf8');
-          const matches = source.match(/(?:window\.)?addEventListener\(\s*["']focus["']/g) || [];
+          const matches = source.match(/(?:window\.)?addEventListener\(\s*["'`]focus["'`]/g) || [];
           process.stdout.write(String(matches.length));
           NODE
           )

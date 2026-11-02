@@ -55,7 +55,15 @@ export function startPersistentGateways(): () => void {
   const localInstalled = () => {
     if (!localProbe) {
       const probe: Promise<boolean> = localBootstrapNeeded().then(
-        needed => (localSeenInstalled = !needed),
+        needed => {
+          // A dropped probe answers for its own callers only: its late verdict
+          // must not overwrite the one its replacement already recorded.
+          if (localProbe === probe) {
+            localSeenInstalled = !needed
+          }
+
+          return !needed
+        },
         (error: unknown) => {
           // A late failure of a dropped probe must not clear its replacement.
           if (localProbe === probe) {

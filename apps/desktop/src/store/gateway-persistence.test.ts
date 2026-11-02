@@ -195,3 +195,29 @@ it('a dropped probe that fails late leaves the newer cached probe in place', asy
   await vi.advanceTimersByTimeAsync(5 * 60_000)
   expect(probeLocalBackend).toHaveBeenCalledTimes(2)
 })
+
+it("a dropped probe's late not-installed answer does not overwrite its replacement's installed verdict", async () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  let answerFirst: (result: { bootstrapNeeded: boolean }) => void = () => undefined
+
+  const probeLocalBackend = vi
+    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
+    .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
+    .mockImplementation(async () => ({ bootstrapNeeded: false }))
+
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
+  stop = startPersistentGateways()
+
+  // The registry change drops the in-flight probe; its replacement finds Hermes installed.
+  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
+
+  answerFirst({ bootstrapNeeded: true })
+  await vi.advanceTimersByTimeAsync(0)
+
+  // Installed holds for the window, so a later registry change does not probe again.
+  $connectionsRegistry.set(registry(['local', 'homelab', 'vps']))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
+})

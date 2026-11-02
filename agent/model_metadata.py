@@ -236,18 +236,20 @@ def _get_endpoint_metadata_cache_path() -> Path:
     return _cache_file("endpoint_model_metadata.json")
 
 
-def _endpoint_disk_cache_get(normalized: str) -> Optional[dict[str, dict[str, Any]]]:
+def _endpoint_disk_cache_get(normalized: str, api_key: object = "") -> Optional[dict[str, dict[str, Any]]]:
     """Fresh cross-process memo of a remote ``/models`` probe (same TTL as in-memory): one-shot
     runs (``hermes -q``, cron) start cold and Nous bypasses the persistent context cache, so
     without this every launch paid the live probe. Local endpoints are never memoized."""
-    models = _ttl_memo_get(_get_endpoint_metadata_cache_path(), normalized, _ENDPOINT_MODEL_CACHE_TTL, ts_key="at", value_key="models")
+    models = None if callable(api_key) else _ttl_memo_get(_get_endpoint_metadata_cache_path(), model_metadata_http.metadata_cache_key(normalized, api_key), _ENDPOINT_MODEL_CACHE_TTL, ts_key="at", value_key="models")
     return models if isinstance(models, dict) else None
 
 
-def _endpoint_disk_cache_put(normalized: str, cache: dict[str, dict[str, Any]]) -> None:
+def _endpoint_disk_cache_put(normalized: str, cache: dict[str, dict[str, Any]], api_key: object = "") -> None:
     """Memoize a successful remote ``/models`` probe; expired siblings are dropped."""
+    if callable(api_key):
+        return
     _ttl_memo_put(
-        _get_endpoint_metadata_cache_path(), normalized, cache, _ENDPOINT_MODEL_CACHE_TTL,
+        _get_endpoint_metadata_cache_path(), model_metadata_http.metadata_cache_key(normalized, api_key), cache, _ENDPOINT_MODEL_CACHE_TTL,
         ts_key="at", value_key="models", what="endpoint model metadata disk cache", ts_first=True)
 
 
@@ -425,12 +427,6 @@ _CONTAINER_LOCAL_SUFFIXES = (".docker.internal", ".containers.internal", ".lima.
 
 def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
-
-
-def _auth_headers(api_key: object = "") -> dict[str, str]:
-    from agent.command_token_source import materialize_probe_api_key
-    token = materialize_probe_api_key(api_key)
-    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _is_custom_endpoint(base_url: str) -> bool:
@@ -750,7 +746,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     )
     result: Optional[str] = None
     try:
-        with httpx.Client(timeout=2.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
+        with httpx.Client(timeout=2.0, headers=model_metadata_http.auth_headers(api_key, base_url), verify=model_metadata_http.resolve_verify(base_url)) as client:
             for name, urls, check in waterfall:
                 try:
                     for url in urls:
@@ -1005,15 +1001,15 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
-    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
-    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
+def _endpoint_memo_key(normalized: str, api_key: object) -> Optional[tuple[str, str]]:
+    # Minted credentials have no stable identity without executing their source.
+    return None if callable(api_key) else (model_metadata_http.metadata_cache_key(normalized, api_key), "")
 
 
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
+def _remember_endpoint_models(memo_key: Optional[tuple[str, str]], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if memo_key is not None:
+        _endpoint_model_metadata_cache[memo_key] = cache
+        _endpoint_model_metadata_cache_time[memo_key] = time.time()
     return cache
 
 
@@ -1033,11 +1029,11 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     local = is_local_endpoint(normalized)
     memo_key = _endpoint_memo_key(normalized, api_key)
-    if not force_refresh:
+    if not force_refresh and memo_key is not None:
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
-        memo = _endpoint_disk_cache_get(normalized) if not local else None
+        memo = _endpoint_disk_cache_get(normalized, api_key) if not local else None
         if memo is not None:
             return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
@@ -1045,7 +1041,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
-    headers = _auth_headers(api_key)
+    headers = model_metadata_http.auth_headers(api_key, normalized)
     verify = model_metadata_http.resolve_verify(normalized)
     last_error: Optional[Exception] = None
     if local:
@@ -1075,7 +1071,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 with contextlib.suppress(Exception):
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
-                _endpoint_disk_cache_put(normalized, cache)
+                _endpoint_disk_cache_put(normalized, cache, api_key)
             return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
@@ -1409,11 +1405,11 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return candidate_id == lookup_model or ("/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model)
 
 
-def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float = 3.0, *, note_blackhole: bool = False) -> Optional[dict[str, Any]]:
+def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float = 3.0, *, note_blackhole: bool = False, base_url: str = "") -> Optional[dict[str, Any]]:
     """Ollama ``/api/show`` JSON for ``bare_model``, or None on any failure (``note_blackhole``: connect timeouts condemn the host)."""
     import httpx
     try:
-        with httpx.Client(timeout=timeout, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(server_url)) as client:
+        with httpx.Client(timeout=timeout, headers=model_metadata_http.auth_headers(api_key, base_url or server_url), verify=model_metadata_http.resolve_verify(base_url or server_url)) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             return resp.json() if resp.status_code == 200 else None
     except Exception as exc:
@@ -1440,7 +1436,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
     if isinstance(disk_hit, int) and disk_hit > 0:
         return disk_hit
-    data = _ollama_show(server_url, api_key, bare_model)
+    data = _ollama_show(server_url, api_key, bare_model, base_url=base_url)
     ctx = _ollama_show_context(data, gguf_first=False) if data is not None else None
     if ctx is not None:
         _local_probe_disk_put("ollama_num_ctx", _disk_key, ctx)
@@ -1453,7 +1449,7 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
     bare_model = _strip_provider_prefix(model)
     if not bare_model or not base_url or not _is_ollama_server(base_url, api_key):
         return None
-    data = _ollama_show(_server_root(base_url), api_key, bare_model)
+    data = _ollama_show(_server_root(base_url), api_key, bare_model, base_url=base_url)
     if data is None:
         return None
     caps = data.get("capabilities")
@@ -1489,7 +1485,7 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
     server_url = _server_root(base_url)
     if _endpoint_blackholed(server_url):
         return None
-    data = _ollama_show(server_url, api_key, model, timeout=5.0, note_blackhole=True)
+    data = _ollama_show(server_url, api_key, model, timeout=5.0, note_blackhole=True, base_url=base_url)
     # Hosted Ollama: the GGUF max is authoritative (the operator may have capped num_ctx arbitrarily).
     return _ollama_show_context(data, gguf_first=True, minimum=1024) if data is not None else None
 
@@ -1621,7 +1617,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     }.get(server_type)
     probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:
-        with httpx.Client(timeout=3.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
+        with httpx.Client(timeout=3.0, headers=model_metadata_http.auth_headers(api_key, base_url), verify=model_metadata_http.resolve_verify(base_url)) as client:
             return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)
     except Exception as exc:
         _note_if_connect_timeout(exc, server_url)

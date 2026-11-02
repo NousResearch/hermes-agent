@@ -47,6 +47,7 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { windowConnectionSettings } from './gateway-window-connection'
 import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
@@ -360,7 +361,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           return
         }
 
-        acceptSavedConfig(config)
+        acceptSavedConfig(windowConnectionSettings(normalizeGatewaySettingsState(config), registry, activeConnectionId))
       })
       .catch(err => notifyError(err, g.failedLoad))
       .finally(() => {

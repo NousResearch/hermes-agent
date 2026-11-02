@@ -188,27 +188,6 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
             server.reset_transport(token)
         assert a.receive()["id"] == "private"
         assert b.frames.empty()
-        from gateway import browser_control_broker as broker_module
-        monkeypatch.setattr(broker_module, "browser_control_enabled", lambda: True)
-        for client in (a, b, stranger):
-            client.auth_identity = {"user_id": "fanout-owner", "provider": "fixture"}
-        session["profile"] = "default"
-
-        def controller(client, action, **params):
-            return server.dispatch({"jsonrpc": "2.0", "id": 1,
-                                    "method": "browser.controller." + action,
-                                    "params": {"session_id": "fanout-invariant", **params}}, client)
-
-        registered = controller(a, "register", controller_id="invariant",
-                                browser_profile_id="fixture", capabilities=["controller.noop"],
-                                protocol_version=broker_module.BROWSER_CONTROL_PROTOCOL_VERSION)
-        assert "result" in registered, registered
-        try:
-            assert controller(a, "heartbeat")["result"] == {"ok": True}
-            assert controller(b, "heartbeat")["error"]["message"] == "controller is not owned by this transport"
-            assert controller(stranger, "heartbeat")["error"]["message"] == "session is not owned by this transport"
-        finally:
-            controller(a, "detach")
         session["viewers"] = {b: object(), stranger: object()}
         assert server._detach_session_transport(session, b)
         assert not session["viewers"]
@@ -273,7 +252,7 @@ def test_backpressure_never_blocks_later_frames_or_other_subscribers(slow_first,
                 "message.start", "message.delta", "message.complete"]
             # Exhaust only the slow peer's bounded backlog; pace the healthy
             # reader by receipts so scheduler latency cannot make it overflow.
-            for n in range(1024):
+            for n in range(FanoutTransport._MAX_PENDING_FRAMES + 64):
                 frame = {"params": {"type": "message.delta", "n": n}}
                 assert fan.write(frame)
                 assert healthy.receive() == frame

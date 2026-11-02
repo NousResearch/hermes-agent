@@ -1,6 +1,8 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
+import contextlib
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -9,9 +11,109 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.waiting import wait_until
+
+import psutil
 import pytest
 
 from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
+
+
+def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, tmp_path, monkeypatch):
+    """The boot hook returns with TMPDIR pointing at a scratch dir that already exists and
+    starts exactly one prune process, for that dir; the prompt build starts no other. A routed
+    caller's process prunes the routed home's dir, never the launch home's."""
+    import hermes_constants as constants
+    from agent.prompt_builder import _local_host_hints
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)
+    home = tmp_path / "launch"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    scratch = home / "cache" / "scratch"
+    env = {"HERMES_HOME": str(home)}
+    assert apply_scratch_tmp_env(env) is True
+    hints = _local_host_hints()
+    assert env["TMPDIR"] == str(scratch) and scratch.is_dir()
+    assert f"Scratch directory: {scratch} (TMPDIR points here" in hints[0]
+    assert scratch_prune_spawns == [scratch]
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)  # the routed caller's own process
+    routed = tmp_path / "routed"
+    token = constants.set_hermes_home_override(routed)
+    try:
+        assert get_scratch_dir() == routed / "cache" / "scratch"
+    finally:
+        constants.reset_hermes_home_override(token)
+    assert scratch_prune_spawns == [scratch, routed / "cache" / "scratch"]
+
+
+def _idle_entry(scratch: Path, name: str) -> Path:
+    entry = scratch / name
+    (entry / "sub").mkdir(parents=True)
+    (entry / "sub" / "out.log").write_text("old output", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (entry / "sub" / "out.log", entry / "sub", entry):
+        os.utime(path, (ancient, ancient))
+    return entry
+
+
+def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
+    """A `hermes` command that exits right after boot still gets its pass: the detached child
+    removes the idle entry of the (routed) home the command resolved, after the command is gone,
+    and leaves the launch home alone. Red on a daemon-thread prune, which dies with the command.
+    The user's shell stays the pass's own even when everything between it and the pass exited
+    first: a shell working inside an idle entry is neither signalled nor has its entry removed."""
+    launch, routed = tmp_path / "launch", tmp_path / "routed"
+    kept = _idle_entry(get_scratch_dir(launch, prune=False), "launch-lane")
+    doomed = _idle_entry(get_scratch_dir(routed, prune=False), "routed-lane")
+    shell_entry = _idle_entry(get_scratch_dir(routed, prune=False), "shell-lane")
+    repo = Path(__file__).resolve().parents[1]
+    launcher = ("import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; import hermes_constants as h; "
+                "h.set_hermes_home_override(Path(sys.argv[2])); h.get_scratch_dir()")
+    # shell (cwd in an idle entry, stays) -> wrapper (exits once the launcher does) -> launcher
+    run = "import subprocess, sys; subprocess.run(sys.argv[1:], cwd={!r}, stdin=subprocess.DEVNULL, check=True)"
+    wrapper = [sys.executable, "-c", run.format(str(tmp_path)), sys.executable, "-c", launcher, str(repo), str(routed)]
+    shell = [sys.executable, "-c", run.format(str(tmp_path)) + "; import time; time.sleep(120)", *wrapper]
+    env = {**os.environ, "HERMES_HOME": str(launch)}
+    user_shell = subprocess.Popen(shell, env=env, cwd=shell_entry / "sub", stdin=subprocess.DEVNULL)
+    log_file = routed / "logs" / "scratch-prune.log"
+
+    def removal_logged():  # the record follows the rmtree, so wait for it, not for the path
+        return log_file.exists() and f"removed {str(doomed)!r} (" in log_file.read_text(encoding="utf-8-sig")
+
+    try:
+        wait_until(removal_logged, timeout=60, what="the detached prune removing the idle entry")
+        assert not doomed.exists() and kept.exists() and shell_entry.exists()
+        assert user_shell.poll() is None, "the user's shell was signalled"
+        log = log_file.read_text(encoding="utf-8-sig")
+        assert f"kept {str(shell_entry)!r} — live Hermes process pid={user_shell.pid}" in log, log
+    finally:
+        user_shell.kill()
+        user_shell.wait(timeout=30)
+
+
+@pytest.mark.platforms("linux")  # /proc starttime and prctl(PR_SET_NAME)
+def test_launcher_ancestry_stamp_is_boot_relative_even_for_a_non_utf8_name(tmp_path):
+    """The ancestry stamp the detached pass compares is the kernel's start tick, never a
+    wall-clock birth that a clock step moves: a process whose name was cut mid-UTF-8 (comm is
+    15 bytes) still gets its tick, and is recognised as itself. A wall-clock fallback there
+    disowned the user's shell after a clock step and the pass killed it."""
+    import hermes_constants_scratch as rules
+
+    ready = tmp_path / "ready"
+    child = subprocess.Popen([sys.executable, "-c", (
+        "import ctypes, sys, time; ctypes.CDLL(None).prctl(15, ctypes.c_char_p(bytes.fromhex(sys.argv[1])), 0, 0, 0); "
+        "open(sys.argv[2], 'w').close(); time.sleep(60)"), "c3a9" * 7 + "c3", str(ready)], stdin=subprocess.DEVNULL)
+    try:
+        wait_until(ready.exists, timeout=30, what="the child renaming itself")
+        stat = Path(f"/proc/{child.pid}/stat").read_bytes()
+        assert b"\xc3)" in stat  # the name really is invalid UTF-8
+        stamp = rules._birth_stamp(psutil.Process(child.pid))
+        assert stamp == float(int(stat.rsplit(b")", 1)[1].split()[19]))
+        assert rules._same_birth(psutil.Process(child.pid), stamp)
+    finally:
+        child.kill()
+        child.wait(timeout=30)
 
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
@@ -65,6 +167,25 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
         os.utime(path, (ancient, ancient))
     assert prune_scratch_dir(scratch) == 1
     assert not idle.exists() and live.exists() and fresh.exists()
+
+
+@pytest.mark.platforms("posix")  # DirEntry.stat() reports st_nlink only on POSIX
+def test_prune_ignores_freshened_hardlinks_shared_with_a_live_repo(tmp_path):
+    """``git clone --local`` hardlinks packs into a scratch clone; when git freshens the source
+    repo's copy the shared inode's mtime moves, which must not keep the idle clone alive."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    live_pack = tmp_path / "live-repo" / "pack-1.pack"
+    live_pack.parent.mkdir()
+    live_pack.write_bytes(b"P" * 64)
+    clone = scratch / "clone" / ".git" / "objects" / "pack"
+    clone.mkdir(parents=True)
+    os.link(live_pack, clone / "pack-1.pack")
+    ancient = time.time() - 30 * 3600
+    for path in (clone, clone.parent, clone.parent.parent, scratch / "clone"):
+        os.utime(path, (ancient, ancient))
+    os.utime(live_pack)  # the live repo freshens its pack: the shared inode is "recent"
+    assert prune_scratch_dir(scratch) == 1
+    assert not (scratch / "clone").exists() and live_pack.read_bytes() == b"P" * 64
 
 
 @pytest.mark.platforms("posix")  # POSIX directory modes
@@ -417,7 +538,7 @@ def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
 
     with patch("hermes_constants_scratch._tree_bytes", write_during_size_walk):
         assert prune_scratch_dir(scratch) == 0
-    assert payload.read_text(encoding="utf-8") == "FRESH", "write during size walk was destroyed"
+    assert payload.read_text(encoding="utf-8-sig") == "FRESH", "write during size walk was destroyed"
     log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
     assert f"rescued {str(entry)!r} " in log, log
 
@@ -479,7 +600,7 @@ def test_midprune_nested_overwrite_is_rescued_by_descending_recheck(tmp_path: Pa
 
     with patch("hermes_constants_scratch.reap_processes_rooted_in", overwrite_during_reap):
         assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
-    assert payload.read_text(encoding="utf-8") == "FRESH OVERWRITE, DEEP\n", (
+    assert payload.read_text(encoding="utf-8-sig") == "FRESH OVERWRITE, DEEP\n", (
         "deep mid-prune overwrite was destroyed"
     )
     assert entry.exists()
@@ -551,8 +672,121 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
          patch("hermes_constants_scratch.shutil.rmtree", rmtree_leaves_residue), \
          patch("hermes_constants_scratch.os.lstat", lstat):
         assert prune_scratch_dir(scratch) == 0  # unknown, not removed
-    assert entry.exists() and payload.read_text(encoding="utf-8") == "still here"
+    assert entry.exists() and payload.read_text(encoding="utf-8-sig") == "still here"
     log = log_file.read_text(encoding="utf-8-sig")
     assert f"removed {str(entry)!r} (" not in log, log
     assert "could not confirm removal" in log, log
     assert "could not fully remove" not in log, log
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # a red run must kill the orphan this test made (reparented to init)
+def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphans(tmp_path, monkeypatch):
+    """#132401 live-worker guard: a background process Hermes itself started (tracked in the
+    process registry's ``processes.json``) is never reaped, and the idle entry it works in is
+    kept with an audit line. The orphaned grandchild of a registered shell that already exited
+    is no longer Hermes' — it is still reaped and its entry removed. Red on the cwd-only reap."""
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    owned_dir, orphan_dir = scratch / "live-worker", scratch / "dead-lane"
+    owned_dir.mkdir()
+    orphan_dir.mkdir()
+    sleeper = f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(60)'"
+    pidfile = tmp_path / "orphan.pid"
+    registry = ProcessRegistry()
+    worker = registry.spawn_local(sleeper, cwd=str(owned_dir))
+    lane = registry.spawn_local(f"{sleeper} >/dev/null 2>&1 </dev/null & echo $! > {shlex.quote(str(pidfile))}",
+                                cwd=str(orphan_dir))
+    def _lane_done():
+        registry.poll(lane.id)
+        return lane.exited and pidfile.exists() and pidfile.read_text(encoding="utf-8-sig").strip()
+    orphan = int(wait_until(_lane_done, timeout=15, what="lane shell exits after forking its orphan"))
+    ancient = time.time() - 30 * 3600
+    for path in (owned_dir, orphan_dir):
+        os.utime(path, (ancient, ancient))
+    try:
+        assert prune_scratch_dir(scratch) == 1
+        assert owned_dir.exists() and not orphan_dir.exists()
+        assert worker.process.poll() is None, "registered Hermes worker was reaped"
+        def _orphan_gone():
+            try:
+                return psutil.Process(orphan).status() == psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return True
+        wait_until(_orphan_gone, timeout=10, what="orphan reaped")
+        log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+        assert f"kept {str(owned_dir)!r} — live Hermes process pid=" in log, log
+    finally:
+        registry.kill_process(worker.id)
+        with contextlib.suppress(psutil.Error):
+            psutil.Process(orphan).kill()
+
+
+@pytest.mark.platforms("posix")
+def test_prune_keeps_entry_the_pruning_sessions_own_lineage_works_in(tmp_path, monkeypatch):
+    """#132401 review: a live session inside an idle entry that launches another Hermes
+    command is the pruner's ancestor — never signalled, and its entry must not be deleted
+    from under it either."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    session_dir = scratch / "session-cwd"
+    session_dir.mkdir()
+    ancient = time.time() - 30 * 3600
+    os.utime(session_dir, (ancient, ancient))
+    monkeypatch.chdir(session_dir)
+    assert prune_scratch_dir(scratch) == 0
+    assert session_dir.exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the helper outlives the spawner the test killed
+def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_helpers(tmp_path, monkeypatch):
+    """#132401 review: the owning home comes from the configured scratch path even when it is a
+    symlink onto another disk, and an MCP helper whose recorded spawner died is an orphan again
+    (reaped, entry removed) while a live background worker keeps its entry."""
+    from hermes_cli import process_identity
+    from tools.process_registry import ProcessRegistry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    elsewhere = tmp_path / "other-disk" / "scratch"
+    elsewhere.mkdir(parents=True)
+    (home / "cache").mkdir()
+    (home / "cache" / "scratch").symlink_to(elsewhere, target_is_directory=True)
+    scratch = home / "cache" / "scratch"
+    owned_dir, helper_dir = scratch / "live-worker", scratch / "orphan-helper"
+    owned_dir.mkdir()
+    helper_dir.mkdir()
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+    registry = ProcessRegistry()
+    worker = registry.spawn_local(" ".join(shlex.quote(a) for a in sleeper), cwd=str(owned_dir))
+    helper = subprocess.Popen(sleeper, cwd=str(helper_dir), stdin=subprocess.DEVNULL)
+    # A real spawner registers the helper the way the MCP client does, then dies.
+    repo = str(Path(__file__).resolve().parents[1])
+    spawner = subprocess.Popen(
+        [sys.executable, "-c",
+         f"import sys; sys.path.insert(0, {repo!r}); from hermes_cli.process_identity import register_child; "
+         f"assert register_child({helper.pid}, 'mcp-helper'); import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(home)})
+    wait_until(lambda: helper.pid in {e.get("pid") for e in process_identity.ledger_entries(all_installs=True)},
+               timeout=20, what="spawner registered the mcp-helper")
+    spawner.kill()
+    spawner.wait(timeout=10)
+    assert process_identity.spawner_is_dead(next(
+        e for e in process_identity.ledger_entries(all_installs=True) if e.get("pid") == helper.pid)) is True
+    ancient = time.time() - 30 * 3600
+    for path in (owned_dir, helper_dir):
+        os.utime(path, (ancient, ancient))
+    try:
+        assert prune_scratch_dir(scratch) == 1
+        assert owned_dir.exists() and not helper_dir.exists()
+        assert worker.process.poll() is None, "registered worker under a symlinked scratch was reaped"
+        assert helper.wait(timeout=10) is not None, "orphaned mcp-helper was kept"
+    finally:
+        registry.kill_process(worker.id)
+        if helper.poll() is None:
+            helper.kill()
+            helper.wait(timeout=10)
+

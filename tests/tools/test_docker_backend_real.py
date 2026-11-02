@@ -153,3 +153,86 @@ def test_home_survives_a_container_replacement(docker_task):
     assert r["output"].strip() == "durable"
     second = _container_id(docker_task)
     assert second and second != first
+
+
+@pytest.mark.parametrize("mount", [False, True])
+def test_desktop_workspace_selection_and_recreation(
+    docker_task, tmp_path, monkeypatch, mount
+):
+    """Desktop shares CLI's original sandbox unless a host workspace is actually selected for mounting."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import terminal_tool
+    from tools.file_tools import read_file_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tui_gateway import server
+
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "sandboxes"))
+    assert (
+        _run("printf original > /workspace/identity.txt", docker_task)["exit_code"] == 0
+    )
+    original = _container_id(docker_task)
+    assert original
+    containers = []
+    for index in range(2):
+        workspace = tmp_path / f"project-{index}"
+        workspace.mkdir()
+        (workspace / "identity.txt").write_text(f"project-{index}", encoding="utf-8")
+        sid = f"{docker_task}-desktop-{index}"
+        tokens = set_session_vars(session_key=sid)
+        # The gateway freezes the selected host workspace into the turn's terminal policy.
+        terminal = {
+            name: value
+            for name, value in os.environ.items()
+            if name.startswith("TERMINAL_")
+        }
+        terminal["TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE"] = str(mount).lower()
+        terminal["TERMINAL_CWD"] = str(workspace) if mount else "/root"
+        scope_token = set_terminal_scope(terminal)
+        key = None
+        try:
+            vars(server)["_register_session_cwd"](
+                {
+                    "session_key": sid,
+                    "cwd": str(workspace),
+                    "explicit_cwd": True,
+                    "source": "desktop",
+                }
+            )
+            assert terminal_tool.resolve_task_overrides(sid)["cwd_source"] == (
+                "session" if mount else "process"
+            )
+            key = _env_key(sid)
+            expected = f"project-{index}" if mount else "original"
+            for _ in range(2):
+                result = _run("cat /workspace/identity.txt", sid)
+                assert (
+                    result["exit_code"] == 0 and result["output"].strip() == expected
+                ), result
+                read = json.loads(
+                    read_file_tool("/workspace/identity.txt", task_id=sid)
+                )
+                assert expected in read.get("content", ""), read
+                cid = _container_id(sid)
+                assert cid
+                containers.append(cid)
+                if not mount:
+                    assert key == "default"
+                _teardown(sid)
+        finally:
+            if key is not None:
+                cleanup_vm(key, force_remove=True)
+            terminal_tool.clear_task_env_overrides(sid)
+            reset_terminal_scope(scope_token)
+            clear_session_vars(tokens)
+    if mount:
+        assert original not in containers
+    else:
+        assert containers[0] == original
+    assert len(set(containers)) == len(containers)
+    # Neither Desktop workspace nor recreating its container moves/deletes CLI's files.
+    assert (
+        _run("cat /workspace/identity.txt", docker_task)["output"].strip() == "original"
+    )

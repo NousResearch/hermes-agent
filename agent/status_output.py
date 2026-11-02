@@ -14,6 +14,21 @@ from agent.session_activity import ActivityProvenance
 logger = logging.getLogger("run_agent")
 
 
+def deliver_kept_startup_notices(agent) -> None:
+    """Hand *agent*'s turn the notices a migration kept for the home (a gateway start, a CLI resolution, an
+    agent's own start, in any process) when someone sees them: the CLI's print sink or a driver's
+    ``notice_callback``. A cron run, subagent, curator, kanban worker or background fork leaves them in the
+    home for the next such turn: claiming them there would drop them."""
+    from agent.side_question_lease import is_unattended_turn
+    if getattr(agent, "suppress_status_output", False) or is_unattended_turn(agent):
+        return
+    if (getattr(agent, "platform", None) or "cli") != "cli" and not getattr(agent, "notice_callback", None):
+        return
+    from hermes_cli.left_core_migration import claim_kept_notices
+    for message in claim_kept_notices():
+        agent._emit_startup_warning(message)
+
+
 class StatusOutputMixin:
     """Status/warning/notice emission and retry-chatter buffering (see module docstring)."""
 
@@ -107,12 +122,16 @@ class StatusOutputMixin:
 
     def _emit_startup_warning(self, message: str) -> None:
         """A warning raised during ``__init__`` that the user must see (e.g. a memory provider that
-        could not be recovered). The CLI prints it. Other drivers get a sticky warn ``AgentNotice``:
-        Desktop renders notices but no warn-kind ``status.update``, and the messaging gateway wires
-        its callbacks per turn, after init, so a notice raised before then waits for
-        :meth:`_replay_startup_warnings` on the first turn."""
+        could not be recovered). The CLI prints it; a CLI session the gateway hosts (``hermes chat``) has
+        no viewer sink until its first turn wires one, so the line waits for that turn. Other drivers get
+        a sticky warn ``AgentNotice``: Desktop renders notices but no warn-kind ``status.update``, and the
+        messaging gateway wires its callbacks per turn, after init, so a notice raised before then waits
+        for :meth:`_replay_startup_warnings` on the first turn."""
         message = message.strip()
         if (getattr(self, "platform", None) or "cli") == "cli":
+            if getattr(self, "_gateway_session_key", None):
+                self._pending_startup_prints = [*getattr(self, "_pending_startup_prints", ()), message]
+                return
             self._emit_warning(message)
             return
         import zlib
@@ -128,6 +147,11 @@ class StatusOutputMixin:
             self._pending_startup_notices = [*getattr(self, "_pending_startup_notices", ()), notice]
 
     def _replay_startup_warnings(self) -> None:
+        prints = getattr(self, "_pending_startup_prints", None)
+        if prints:
+            self._pending_startup_prints = []
+            for message in prints:
+                self._emit_warning(message)
         pending = getattr(self, "_pending_startup_notices", None)
         if pending and getattr(self, "notice_callback", None):
             self._pending_startup_notices = []

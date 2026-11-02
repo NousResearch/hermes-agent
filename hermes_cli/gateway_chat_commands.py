@@ -40,12 +40,13 @@ def refusal(name):
 
 
 def _user_turns(snapshot):
-    """Human-authored user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
-    kind other than a typed /steer, never a compaction handoff carrier."""
+    """Human-authored live user rows (``row_id`` = durable ``messages.id``), oldest first: no display-only
+    kind other than a typed /steer, never a compaction handoff carrier, never a row a compression
+    archived (shown in the snapshot's history, not a turn to rewind to)."""
     from agent.context_compressor import is_user_originated_turn
     return [row for row in snapshot.get("messages", [])
             if type(row.get("row_id")) is int and row.get("display_kind") in (None, "", "steer")
-            and is_user_originated_turn(row)]
+            and not row.get("archived") and is_user_originated_turn(row)]
 
 
 def _rewind_to(turns_back, *, retry=False):
@@ -75,10 +76,15 @@ async def _mutate(view, operation, payload):
 async def _rewind(view, turns_back, *, retry=False):
     """The rewound user turn's text (``/retry``: its lossless resend text), or None when there was
     nothing to rewind."""
-    result = await _mutate(view, "rewind", _rewind_to(turns_back, retry=retry))
+    payload = _rewind_to(turns_back, retry=retry)
+    result = await view.mutations.apply(view.client, view.session_id, "rewind", payload)
     if result.get("status") == "nothing" or not result.get("rewound_count"):
+        view.mutations.acknowledge(view.session_id, "rewind", payload)
         return None
+    # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
+    # deriving a new target from the already-shortened transcript (which would drop the turn before).
     snapshot = await view.client.rpc("session.resume", session_id=view.session_id)
+    view.mutations.acknowledge(view.session_id, "rewind", payload)
     view.generation = snapshot["execution_generation"]
     content = (result.get("target_message") or {}).get("content")
     if retry:

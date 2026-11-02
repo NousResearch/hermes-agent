@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
@@ -43,11 +44,12 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
-    is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
+    is_host_excluded_by_no_proxy, resolve_proxy_url, ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -56,18 +58,18 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_reactions_context import slack_reactions_marker
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_reactions_context import slack_reactions_marker  # type: ignore
 
 
 logger = logging.getLogger(__name__)
 
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
-from hermes_cli.version_info import get_version_info
-
-_HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{get_version_info().base_version}"
+from hermes_cli.version_info import hermes_user_agent
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
@@ -1753,7 +1755,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
-        client = AsyncWebClient(token=token, user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX)
+        client = AsyncWebClient(token=token, user_agent_prefix=hermes_user_agent("HermesAgent"))
         _apply_slack_proxy(client, proxy_url)
         return client
 
@@ -3028,7 +3030,7 @@ class SlackAdapter(BasePlatformAdapter):
         file_uploads: list[dict[str, Any]] = []
         initial_comment_parts: list[str] = []
         async with client_factory(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}
         ) as http_client:
             for image_url, alt_text in chunk:
                 if alt_text:
@@ -5079,11 +5081,15 @@ class SlackAdapter(BasePlatformAdapter):
         provider = next((p for p in providers if p["slug"] == provider_slug), None)
         pname = provider.get("name", provider_slug) if provider else provider_slug
         models = (provider or {}).get("models", [])[:100]
+        from hermes_cli.model_picker_usage import picker_row_suffix
         options = []
         for idx, model_id in enumerate(models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
+            # Window plans: "Large" / "Free" rides on the option; others unchanged.
+            suffix = picker_row_suffix(provider, model_id)
+            text = f"{short[:75 - len(suffix) - 3]} · {suffix}" if suffix else short[:75]
             options.append({
-                "text": {"type": "plain_text", "text": short[:75], "emoji": True},
+                "text": {"type": "plain_text", "text": text, "emoji": True},
                 "value": str(idx),
             })
         total = (provider or {}).get("total_models", len(models))
@@ -5092,7 +5098,8 @@ class SlackAdapter(BasePlatformAdapter):
             if total > len(models)
             else ""
         )
-        section_text = t("platform.slack.picker.model_header", provider=pname, extra=extra)
+        plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
+        section_text = plan_line + t("platform.slack.picker.model_header", provider=pname, extra=extra)
         elements = [
             {
                 "type": "static_select",
@@ -5647,7 +5654,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not count:
             decision_text = t("platform.shared.approval_expired")
         await self._finalize_interactive_message(
-            channel_id, msg_ts, self._section_text(message), decision_text,
+            channel_id, msg_ts, self._section_text(message).replace(self._ea_deadline_line(), ""), decision_text,
             "Command approval request", "approval", team_id or None)
 
     async def _update_clarify_message(
@@ -5909,6 +5916,10 @@ class SlackAdapter(BasePlatformAdapter):
                 parent_text = msg_text
                 if skip_for_delta:
                     continue
+            # Reactions are context-only: parent_text drives mention wake checks.
+            reactions = slack_reactions_marker(msg)
+            if reactions:
+                msg_text = f"{msg_text} {reactions}"
             context_parts.append(
                 await self._thread_context_line(msg, msg_text, is_parent, team_id, channel_id))
         content = ""
@@ -6298,7 +6309,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:
@@ -6904,15 +6915,19 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     return _apply_yaml_bridge(slack_cfg, _YAML_BRIDGE)
 
 
-
 _is_connected = _env_is_connected("SLACK_BOT_TOKEN")
-
 
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="slack",
+        **DASHBOARD_CARD,
         label="Slack",
         adapter_factory=SlackAdapter,
         check_fn=slack_deps_present,
@@ -6921,15 +6936,12 @@ def register(ctx) -> None:
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",
         setup_fn=interactive_setup,
-        # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
         # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="SLACK_ALLOWED_USERS",
-        allow_all_env="SLACK_ALLOW_ALL_USERS",
         cron_deliver_env_var="SLACK_HOME_CHANNEL",
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with
         # "No live adapter" when cron runs apart from the gateway.
@@ -6937,4 +6949,11 @@ def register(ctx) -> None:
         # Slack allows 40,000 chars; leave margin.
         max_message_length=39000,
         emoji="💼",
-        allow_update_command=True)
+        allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="medium",
+        # Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
+        display_overrides={"tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

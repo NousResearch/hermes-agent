@@ -33,6 +33,44 @@ it('projects resumed runtime pending receipts under durable identity without mak
   expect(getQueuedPrompts('runtime')).toEqual([])
 })
 
+it('carries the queued-row controls the owner lists onto the card, and none when it lists none (RT-35)', () => {
+  reconcilePendingSubmissions('chat', [
+    { admission_id: 'served', status: 'queued', user: 'edit me', controls: ['steer', 'replace'] },
+    { admission_id: 'older', status: 'queued', user: 'older owner' }
+  ])
+
+  expect(getQueuedPrompts('chat').map(({ id, serverControls }) => ({ id, serverControls }))).toEqual([
+    { id: 'served', serverControls: ['steer', 'replace'] },
+    { id: 'older', serverControls: undefined }
+  ])
+  expect(Object.values(readPendingSubmissions('chat')).some(entry => 'controls' in entry)).toBe(false)
+})
+
+it('a steer in transfer hides its card without retiring it, so a return to the queue repaints it in place (RT-35)', () => {
+  const later = { admission_id: 'later', status: 'queued', user: 'queued after it' }
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }, later])
+  // Handed to the running turn: listed `started` and `steering` until that turn settles it.
+  reconcilePendingSubmissions('chat', [
+    { admission_id: 'moving', status: 'started', steering: true, user: 'steer me' },
+    later
+  ])
+  expect(getQueuedPrompts('chat').map(({ id }) => id)).toEqual(['later'])
+
+  // The text never reached the turn: the owner puts the same admission back in its FIFO place, ahead
+  // of the admission queued after it, and the card is shown where the gateway will run it.
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }, later])
+  expect(getQueuedPrompts('chat').map(({ id, serverStatus }) => ({ id, serverStatus }))).toEqual([
+    { id: 'moving', serverStatus: 'queued' },
+    { id: 'later', serverStatus: 'queued' }
+  ])
+  reconcilePendingSubmissions('chat', [later])
+
+  // An ordinary claim still only moves forward: a replayed `queued` never repaints a started row.
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'started', user: 'steer me' }])
+  reconcilePendingSubmissions('chat', [{ admission_id: 'moving', status: 'queued', user: 'steer me' }])
+  expect(getQueuedPrompts('chat')).toEqual([])
+})
+
 it('reconciles server queue by identity without replaying or duplicating local entries', () => {
   enqueueQueuedPrompt('chat', { id: 'one', text: 'same', attachments: [] })
   enqueueQueuedPrompt('chat', { id: 'local', text: 'same', attachments: [] })

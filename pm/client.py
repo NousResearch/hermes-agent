@@ -17,10 +17,19 @@ from pm.worker_operations import OPERATIONS
 
 
 def _missing_or_refuse(name):
-    from pm.install import _refuse_lazy, is_installed, lazy_installs_allowed
-    from pm.registry import walk
+    from pm.install import _refuse_lazy, current_target, is_installed, lazy_installs_allowed
+    from pm.registry import get_package, walk
 
     missing = [package.name for package in walk([name]) if not is_installed(package.name)]
+    target = current_target() if missing else None
+    for gap in missing:
+        # A registry gap (git on POSIX: "uses system git by choice") is static: no worker can
+        # install it, so answer with the worker's own refusal here. Asking one anyway cost a PM
+        # worker round trip (about a second) on every ``selected_git_env()``, which each
+        # checkpoint git child calls, so one gateway /rollback or /diff paid it several times.
+        reason = get_package(gap).missing_reason(target)
+        if reason is not None:
+            raise InstallError(gap, f"unavailable on {target}: {reason}", "none")
     if missing and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(missing))
     return missing
@@ -224,7 +233,7 @@ def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None
     if isinstance(plugins, Selection) and "expected_config" not in plugins.data:
         from pm.filesystem import file_digest
         plugins = Selection({**plugins.data,
-                             "expected_config": file_digest(Path(plugins.data["home"]) / "config.yaml") or "missing"})
+                             "expected_config": file_digest(Path(plugins.data["home"]) / "config.yaml") or "missing"})  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
         from pm.install import sync_venv as direct
@@ -393,13 +402,13 @@ def build_requirements_environment(requirements: Sequence[str], *, out: Path,
                                    python: Path | None = None, cache: Path | None = None,
                                    env: Mapping[str, str] | None = None, wheelhouse: Path | None = None,
                                    offline: bool = False, sealed: bool = False,
-                                   explicit: bool = False) -> Path:
+                                   explicit: bool = False, lock: Path | None = None) -> Path:
     if isinstance(requirements, str):
         raise TypeError("requirements must be a sequence, not a string")
     return Path(_python_operation("build_requirements_environment", {
         "requirements": list(requirements), "out": Path(out), "python": python, "cache": cache,
         "env": dict(env) if env is not None else None, "wheelhouse": wheelhouse,
-        "offline": offline, "sealed": sealed, "explicit": explicit,
+        "offline": offline, "sealed": sealed, "explicit": explicit, "lock": lock,
     }))
 
 

@@ -77,6 +77,11 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  css: {
+    // Tailwind runs through its Vite plugin. Keep unrelated ancestor PostCSS
+    // configs (including BOM-marked JSON) out of this build.
+    postcss: { plugins: [] },
+  },
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),

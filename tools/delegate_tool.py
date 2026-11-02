@@ -397,6 +397,7 @@ def _run_single_child(
     owner = {"owner_session_id": owner_session_id, "owner_transport": owner_transport,
              "owner_session_record": owner_session_record}
     chain = _EscalationChain(original_goal=goal, first_child=child)
+    child._delegate_escalation_chain = chain
     first_child = child
     attached_to_parent = hasattr(parent_agent, "_active_children") and first_child in getattr(parent_agent, "_active_children", ())
     entry = _run_child_attempt(task_index, goal, child, parent_agent, chain, **owner)
@@ -456,7 +457,8 @@ def _run_child_attempt(
 
         # An exhausted attempt about to escalate gets no schema retry turn: its successor writes the answer.
         will_escalate = _next_escalation_effort(
-            child, {"exit_reason": _result_exit_reason(result), "api_calls": result.get("api_calls")}, parent_agent,
+            child, {"exit_reason": _result_exit_reason(result), "api_calls": result.get("api_calls"),
+                "summary": result.get("final_response")}, parent_agent,
         ) is not None
         no_schema = _SchemaOutcome(None, None, [], 0)
         schema = no_schema if will_escalate else _validate_child_output_schema(
@@ -572,6 +574,8 @@ def _build_task_child(
         child._delegate_escalate_reasoning = True
     if route.escalate_ceiling is not None:
         child._delegate_escalate_ceiling = route.escalate_ceiling
+    if route.escalate_reasoning and getattr(route, "provider", None) is not None:
+        child._delegate_routed_by = (route.provider, route.provider_config)
     if route.escalate_reasoning and route.escalate_ceiling:
         def _build_retry(next_effort: str) -> Any:
             # Same subagent_id as the attempt it replaces; attached only if that attempt still is. Same goal too:

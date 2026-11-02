@@ -13,7 +13,7 @@ import contextlib
 import json
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
@@ -44,6 +44,10 @@ class TaskRoute:
     child_timeout_seconds: Optional[float] = None
     escalate_reasoning: bool = False
     escalate_ceiling: Optional[str] = None
+    # The provider (and the config it routed with) that produced this route: a budget stop asks it, not whatever
+    # backend is saved by then, for ``next_attempt``.
+    provider: Any = field(default=None, repr=False, compare=False)
+    provider_config: Optional[Mapping[str, Any]] = field(default=None, repr=False, compare=False)
 
     def report(self) -> Optional[dict[str, Any]]:
         """The ``route`` a backend-routed task's result carries (None for the default backend's unlabelled route)."""
@@ -425,7 +429,8 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
             _check_route_child_timeout(i, route)
             _check_route_escalate_reasoning(i, route)
             _check_route_escalate_ceiling(i, route)
-            routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
+            routes.append(replace(_route_to_task_route(route, parent_agent, cache, config, provider.name),
+                                  provider=provider, provider_config=config))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals
             routes.append(TaskRoute({}, {}, backend=provider.name, error=str(exc)))
     return routes, None

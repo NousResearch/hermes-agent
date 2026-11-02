@@ -11,9 +11,11 @@ inheritance, the result the parent model reads and the parent's cost rollup).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,7 @@ import pytest
 from agent.delegation_provider import DelegationProvider
 from hermes_constants import parse_reasoning_effort
 from tools import delegate_tool
+from agent.reasoning_effort import EFFORT_LADDER
 from tools.delegate_tool_child_run import _effort_ran
 
 GOAL = "Fix the flaky retry test in tests/test_retry.py"
@@ -1106,3 +1109,629 @@ def test_a_detached_units_retry_is_never_attached_to_the_parent():
     _delegate({"low": low, "medium": D()}, [{**ESC, "reasoning_effort": "low", "escalate_ceiling": "medium"}],
               parent=parent)
     assert attached_at_build == [False]
+
+
+# ── Provider hook: next_attempt ───────────────────────────────────────────────
+
+class _Decider(DelegationProvider):
+    """A provider whose ``next_attempt`` is scripted; records every ``stop`` it was asked about."""
+
+    def __init__(self, answer):
+        self.answer, self.asked = answer, []
+
+    @property
+    def name(self):
+        return "decider"
+
+    def route_task(self, task, config):
+        return dict(config)
+
+    def next_attempt(self, stop, config):
+        self.asked.append(dict(stop))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def _with_provider(monkeypatch, provider):
+    from tools import delegate_tool_routes
+    monkeypatch.setattr(delegate_tool_routes, "_active_provider", lambda _config: provider)
+    return provider
+
+
+def _hook_warnings(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "next_attempt" in r.getMessage()]
+
+
+def test_a_provider_that_returns_none_keeps_the_ladder(monkeypatch, caplog):
+    decider = _with_provider(monkeypatch, _Decider(None))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": M(), "high": D()}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low", "medium", "high"]
+    assert decider.asked and not any("decided_by" in a for a in entry["attempts"])
+    assert _hook_warnings(caplog) == []
+
+
+def test_a_provider_can_end_the_chain(monkeypatch):
+    _with_provider(monkeypatch, _Decider({"retry": False}))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low"]
+    assert entry["exit_reason"] == "max_iterations" and "attempts" not in entry
+
+
+def test_a_provider_can_pick_the_level_and_the_attempt_names_it(monkeypatch):
+    _with_provider(monkeypatch, _Decider({"effort": "high"}))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "high": D("high did it")}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low", "high"]
+    assert entry["attempts"] == [{"effort": "low", "exit_reason": "max_iterations", "decided_by": "provider"},
+                                 {"effort": "high", "exit_reason": "completed"}]
+
+
+# WARNING text is structural: a level is named only when it is a ladder level; anything else by its type alone.
+_CEILING_WARNING = "Delegation provider next_attempt asked for {}, unusable under the ceiling high; using the ladder"
+_NOT_A_LEVEL_WARNING = ("Delegation provider next_attempt asked for a {} effort that is not a ladder level "
+                        "(ceiling high); using the ladder")
+_CLAMP_WARNING = "Delegation provider next_attempt asked for {}, not stronger than low after the clamp; using the ladder"
+
+
+def _ceiling(value):
+    if type(value) is str and value in EFFORT_LADDER:
+        return _CEILING_WARNING.format(value)
+    return _NOT_A_LEVEL_WARNING.format(type(value).__name__)
+
+
+def _clamp(value):
+    return _CLAMP_WARNING.format(value)
+
+
+@pytest.mark.parametrize("answer, warning", [
+    ({"effort": "max"}, _ceiling("max")),
+    ({"effort": "low"}, _clamp("low")),
+    ({"effort": "bogus"}, _ceiling("bogus")),
+    ({"effort": 3}, _ceiling(3)),
+    ("high", "Delegation provider next_attempt returned a str, not a mapping; using the ladder"),
+    ({}, _ceiling(None)),
+    # Levels are canonical: core does not normalise case or whitespace.
+    ({"effort": "High"}, _ceiling("High")),
+    ({"effort": " high "}, _ceiling(" high ")),
+], ids=["past-ceiling", "not-stronger", "unknown", "not-a-string", "not-a-mapping", "no-effort", "not-lowercase",
+        "padded"])
+def test_a_level_core_cannot_use_falls_back_to_the_ladder(monkeypatch, caplog, answer, warning):
+    decider = _with_provider(monkeypatch, _Decider(answer))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high")
+    assert _efforts(log) == ["low", "medium"]
+    assert decider.asked and not any("decided_by" in a for a in entry["attempts"])
+    assert len(decider.asked) == 1 and _hook_warnings(caplog) == [warning]  # one ask, one warning per stop
+
+
+def test_a_level_that_clamps_to_the_current_one_falls_back_to_the_ladder(monkeypatch, caplog):
+    """``high`` is above ``low`` and under the ceiling, but this route's clamp sends it as ``low``."""
+    decider = _with_provider(monkeypatch, _Decider({"effort": "high"}))
+    with patch("tools.delegate_tool_child_run.clamp_effort",
+               side_effect=lambda effort, supported, overrides=None: "low" if effort == "high" else effort):
+        entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low", "medium"]
+    assert decider.asked and not any("decided_by" in a for a in entry["attempts"])
+    assert len(decider.asked) == 1 and _hook_warnings(caplog) == [_clamp("high")]
+
+
+def test_a_provider_error_falls_back_to_the_ladder(monkeypatch, caplog):
+    decider = _with_provider(monkeypatch, _Decider(RuntimeError("plugin broke")))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high")
+    assert _efforts(log) == ["low", "medium"]
+    assert decider.asked and not any("decided_by" in a for a in entry["attempts"])
+    assert len(decider.asked) == 1 and _hook_warnings(caplog) == [
+        "Delegation provider next_attempt failed (RuntimeError); using the reasoning ladder"]
+
+
+def test_the_provider_sees_the_stop_facts(monkeypatch):
+    decider = _with_provider(monkeypatch, _Decider(None))
+    _run_direct(monkeypatch, {"low": M("low got halfway", calls=7), "medium": M("medium got further", calls=9),
+                              "high": D()}, effort="low", ceiling="high")
+    facts = [(s["effort"], s["exit_reason"], s["api_calls"], s["attempt"], s["ceiling"], s["summary"])
+             for s in decider.asked]
+    # Core asks once per stop: the retry prediction's answer is the decision.
+    low = ("low", "max_iterations", 7, 1, "high", "low got halfway")
+    medium = ("medium", "max_iterations", 9, 2, "high", "medium got further")
+    assert facts == [low, medium]
+
+
+def test_the_provider_sees_the_route_and_the_stripped_summary(monkeypatch):
+    route = {"backend": "local", "label": "esc"}
+    decider = _with_provider(monkeypatch, _Decider(None))
+    _run_direct(monkeypatch, {"low": M("  low got halfway  "), "medium": D()}, effort="low", ceiling="high",
+                first_attrs={"_delegate_route": route})
+    (stop,) = decider.asked
+    assert stop["summary"] == "low got halfway"
+    assert stop["route"]["label"] == "esc" and stop["route"]["reasoning_effort"] == "low"
+
+
+def test_a_missed_steer_note_is_not_part_of_the_summary_the_provider_sees(monkeypatch):
+    from tools.delegate_tool_registry import steer_subagent
+
+    def low(child, *_):
+        assert steer_subagent(child._subagent_id, "use the v2 API")
+        return M("low got halfway")
+
+    decider = _with_provider(monkeypatch, _Decider(None))
+    _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="medium")
+    assert [s["summary"] for s in decider.asked] == ["low got halfway"]
+
+
+class _NeedsASummary(_Decider):
+    """Ends the chain only when the stopped attempt left no final text."""
+
+    def next_attempt(self, stop, config):
+        self.asked.append(dict(stop))
+        return {"retry": False} if stop["summary"] is None else None
+
+
+def test_a_provider_keyed_on_the_summary_answers_the_prediction_and_the_decision_alike(monkeypatch):
+    decider = _with_provider(monkeypatch, _NeedsASummary(None))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": M(), "high": D()}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low", "medium", "high"]
+    assert all(s["summary"] for s in decider.asked) and len(decider.asked) == 2
+    assert [a["effort"] for a in entry["attempts"]] == ["low", "medium", "high"]
+
+
+@pytest.mark.parametrize("outcome", [D(), X("error"), X("interrupted"), X("timeout0")])
+def test_the_provider_is_not_asked_when_the_attempt_did_not_stop_on_its_budget(monkeypatch, outcome):
+    decider = _with_provider(monkeypatch, _Decider({"effort": "high"}))
+    _, log, _ = _run_direct(monkeypatch, {"low": outcome, "high": D()}, effort="low", ceiling="xhigh", timeout=0.3)
+    assert len(log) == 1 and decider.asked == []
+
+
+def test_the_provider_is_not_asked_when_escalation_is_off_or_the_attempt_finished(monkeypatch):
+    decider = _with_provider(monkeypatch, _Decider({"effort": "high"}))
+    _run_direct(monkeypatch, {"low": D()}, effort="low", ceiling="xhigh")
+    _run_direct(monkeypatch, {"low": M()}, effort="low", ceiling=None)
+    assert decider.asked == []
+
+
+class _Scripted(_Decider):
+    """Answers each ask with the next scripted answer (a provider whose answer changes between calls)."""
+
+    def __init__(self, *answers):
+        super().__init__(None)
+        self.answers = list(answers)
+
+    def next_attempt(self, stop, config):
+        self.asked.append(dict(stop))
+        return self.answers.pop(0) if self.answers else None
+
+
+def _wedged_timed_out_low(monkeypatch, order, release):
+    """A low attempt that times out after 3 calls and ignores the stop until ``release`` is set."""
+    original = _FakeChild.run_conversation
+
+    def run_conversation(self, user_message, task_id=None, stream_callback=None, **kw):
+        if _effort_ran(self) == "low":
+            self.messages.append(user_message)
+            self._calls = 3
+            release.wait(10)  # ignores the interrupt
+            order.append("low exited")
+            return {"final_response": "", "interrupted": True, "api_calls": 3, "messages": []}
+        order.append(f"{_effort_ran(self)} started")
+        return original(self, user_message, task_id=task_id, stream_callback=stream_callback, **kw)
+
+    monkeypatch.setattr(_FakeChild, "run_conversation", run_conversation)
+
+
+def test_a_provider_changing_its_answer_is_asked_once_per_timeout_stop(monkeypatch):
+    """The answer that decides whether core awaits the timed-out worker is the answer that decides the retry."""
+    from tests.waiting import wait_until
+    order, release = [], threading.Event()
+    _wedged_timed_out_low(monkeypatch, order, release)
+    decider = _with_provider(monkeypatch, _Scripted({"retry": False}, {"effort": "medium"}, {"effort": "medium"}))
+    try:
+        entry, log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="high",
+                                    timeout=0.3)
+        assert len(decider.asked) == 1
+        assert len(log) == 1 and "attempts" not in entry and entry["status"] == "timeout"
+    finally:
+        release.set()
+    wait_until(lambda: "low exited" in order, timeout=5)
+    assert order == ["low exited"]
+
+
+def test_a_timeout_retry_always_awaits_the_timed_out_worker(monkeypatch):
+    """Defence in depth: whatever the prediction said, no timeout retry starts while its predecessor still runs."""
+    from tools import delegate_tool_child_run
+    monkeypatch.setattr(delegate_tool_child_run, "_next_escalation_effort", lambda *_a, **_k: None)
+    order, release = [], threading.Event()
+    real_await = delegate_tool_child_run._await_timed_out_worker_exit
+
+    def await_exit(child, future, grace=None):
+        release.set()  # the worker exits only once core waits for it
+        return real_await(child, future, grace)
+
+    monkeypatch.setattr(delegate_tool_child_run, "_await_timed_out_worker_exit", await_exit)
+    _wedged_timed_out_low(monkeypatch, order, release)
+    _with_provider(monkeypatch, _Decider({"effort": "medium"}))
+    try:
+        entry, _log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="high",
+                                     timeout=0.3)
+    finally:
+        release.set()
+    assert order == ["low exited", "medium started"]
+    assert entry["status"] == "completed"
+
+
+class _NamedDecider(_Decider):
+    def __init__(self, name, route):
+        super().__init__(None)
+        self._name, self.route = name, route
+
+    @property
+    def name(self):
+        return self._name
+
+    def route_task(self, task, config):
+        return dict(self.route)
+
+
+def test_the_provider_that_routed_the_child_is_asked_not_the_saved_backend(monkeypatch):
+    """The session's pinned backend routed the child; the saved config names another one."""
+    route = {**ESC, "reasoning_effort": "low"}
+    pinned, saved = _NamedDecider("pinned", route), _NamedDecider("saved", route)
+    by_name = {"pinned": pinned, "saved": saved}
+    log: list[_FakeChild] = []
+    parent = _mock_parent()
+    parent._delegation_backend = "pinned"
+    with (
+        patch("tools.delegate_tool._load_config", return_value={"backend": "saved"}),
+        patch("tools.delegate_tool_config._load_config", return_value={"backend": "saved"}),
+        patch("tools.delegate_tool_routes._active_provider",
+              side_effect=lambda config: by_name[config.get("backend") or "saved"]),
+        patch("run_agent.AIAgent", side_effect=lambda **kw: _FakeChild({"low": M(), "medium": D()}, log, kw)),
+        patch("tools.delegate_tool._get_worktree_isolation", return_value=False),
+        patch("tools.delegate_tool._get_child_timeout", return_value=None),
+    ):
+        result = json.loads(delegate_tool.delegate_task(tasks=[{"goal": "task"}], parent_agent=parent))
+    assert [a["effort"] for a in result["results"][0]["attempts"]] == ["low", "medium"]
+    assert len(pinned.asked) == 1 and saved.asked == []
+
+
+class _Mutator(_Decider):
+    """Scribbles over everything it is handed, then ends the chain (so the stopped attempt's entry is final)."""
+
+    def next_attempt(self, stop, config):
+        self.asked.append(dict(stop))
+        stop["route"]["label"] = "hijacked"
+        stop["route"]["meta"]["owner"] = "hijacked"
+        config["nested"]["value"] = "hijacked"
+        config["added"] = True
+        return {"retry": False}
+
+
+@pytest.mark.parametrize("first", [M(), T(calls=3)], ids=["max_iterations", "timeout"])
+def test_the_provider_gets_copies_of_the_stop_and_the_config(monkeypatch, first):
+    shared = {"nested": {"value": "original"}}
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: shared)
+    decider = _with_provider(monkeypatch, _Mutator(None))
+    route = {"backend": "local", "label": "esc", "meta": {"owner": "core"}}
+    entry, log, _ = _run_direct(monkeypatch, {"low": first, "medium": D()}, effort="low", ceiling="medium",
+                                timeout=0.3, first_attrs={"_delegate_route": route})
+    assert len(decider.asked) == 1 and len(log) == 1
+    assert entry["route"]["label"] == "esc" and entry["route"]["meta"] == {"owner": "core"}
+    assert route == {"backend": "local", "label": "esc", "meta": {"owner": "core"}}
+    assert shared == {"nested": {"value": "original"}}
+
+
+class _ExplodingMapping(Mapping):
+    def __getitem__(self, key):
+        raise RuntimeError("lookup broke")
+
+    def __iter__(self):
+        return iter(("retry", "effort"))
+
+    def __len__(self):
+        return 2
+
+
+def test_a_mapping_that_raises_on_lookup_falls_back_to_the_ladder(monkeypatch, caplog):
+    decider = _with_provider(monkeypatch, _Decider(_ExplodingMapping()))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high")
+    assert _efforts(log) == ["low", "medium"] and entry["status"] == "completed"
+    assert len(decider.asked) == 1 and _hook_warnings(caplog) == [
+        "Delegation provider next_attempt failed (RuntimeError); using the reasoning ladder"]
+
+
+def test_retry_false_wins_over_an_effort_in_the_same_answer(monkeypatch):
+    _with_provider(monkeypatch, _Decider({"retry": False, "effort": "high"}))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "high": D()}, effort="low", ceiling="xhigh")
+    assert _efforts(log) == ["low"] and "attempts" not in entry
+
+
+def test_an_unusable_answer_is_logged_bounded(monkeypatch, caplog):
+    huge = "x" * 5000
+    _with_provider(monkeypatch, _Decider(huge))
+    _run_direct(monkeypatch, {"low": M("secret summary " * 50), "medium": D()}, effort="low", ceiling="high")
+    (warning,) = _hook_warnings(caplog)
+    assert "str" in warning and len(warning) < 400 and "secret summary" not in warning
+
+
+def test_a_provider_error_is_logged_on_one_bounded_line(monkeypatch, caplog):
+    _with_provider(monkeypatch, _Decider(RuntimeError("boom " * 1000)))
+    with caplog.at_level(logging.DEBUG, logger="tools.delegate_tool_child_run"):
+        _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "next_attempt" in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].exc_info is None
+    assert "\n" not in warnings[0].getMessage() and len(warnings[0].getMessage()) < 400
+
+
+class _UnrepresentableEffort:
+    def __repr__(self):
+        raise RuntimeError("effort repr broke")
+
+
+class _EffortWithBrokenEq(str):
+    """A ``str`` subclass whose comparison raises: core accepts only an exact ``str`` level, never a subclass."""
+
+    def __eq__(self, other):
+        raise RuntimeError("effort equality broke")
+
+    __hash__ = str.__hash__
+
+
+_HOSTILE_EFFORTS = pytest.mark.parametrize("effort, warning", [
+    (_UnrepresentableEffort(), _ceiling(_UnrepresentableEffort())),
+    # Rejected by type before any comparison: a str subclass is not a level, even one that spells a valid level.
+    (_EffortWithBrokenEq("high"), _ceiling(_EffortWithBrokenEq("high"))),
+], ids=["raising-repr", "str-subclass-raising-eq"])
+
+
+@_HOSTILE_EFFORTS
+def test_an_effort_that_breaks_on_inspection_falls_back_to_the_ladder(monkeypatch, caplog, effort, warning):
+    decider = _with_provider(monkeypatch, _Decider({"effort": effort}))
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high")
+    assert _efforts(log) == ["low", "medium"] and entry["status"] == "completed"
+    assert len(decider.asked) == 1 and not any("decided_by" in a for a in entry["attempts"])
+    assert _hook_warnings(caplog) == [warning]
+
+
+@_HOSTILE_EFFORTS
+def test_an_effort_that_breaks_on_inspection_falls_back_to_the_ladder_on_a_timeout(monkeypatch, caplog, effort,
+                                                                                    warning):
+    from tools import delegate_tool_child_run
+    order, release = [], threading.Event()
+    real_await = delegate_tool_child_run._await_timed_out_worker_exit
+
+    def await_exit(child, future, grace=None):
+        release.set()  # the worker exits only once core waits for it
+        return real_await(child, future, grace)
+
+    monkeypatch.setattr(delegate_tool_child_run, "_await_timed_out_worker_exit", await_exit)
+    _wedged_timed_out_low(monkeypatch, order, release)
+    decider = _with_provider(monkeypatch, _Decider({"effort": effort}))
+    try:
+        entry, log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="high",
+                                    timeout=0.3)
+    finally:
+        release.set()
+    assert order == ["low exited", "medium started"] and _efforts(log) == ["low", "medium"]
+    assert entry["status"] == "completed" and not any("decided_by" in a for a in entry["attempts"])
+    assert len(decider.asked) == 1 and _hook_warnings(caplog) == [warning]
+
+
+@pytest.mark.parametrize("fault", ["hostile-answer", "escalation-raises"])
+def test_a_timed_out_worker_still_running_is_never_closed_when_escalation_fails(monkeypatch, fault):
+    """Close stays contingent on the timed-out worker's exit whichever way the timeout path ends, a raise included."""
+    from tests.waiting import wait_until
+    from tools import delegate_tool_child_run
+    order, release = [], threading.Event()
+    _wedged_timed_out_low(monkeypatch, order, release)
+    _with_provider(monkeypatch, _Decider({"effort": _UnrepresentableEffort()}))
+    monkeypatch.setattr(delegate_tool_child_run, "_ESCALATION_TIMEOUT_SETTLE_SECONDS", 0.03)
+    if fault == "escalation-raises":
+        def boom(*_a, **_k):
+            raise RuntimeError("escalation broke")
+        monkeypatch.setattr(delegate_tool_child_run, "_provider_escalation_effort", boom)
+    closes = []
+    original_close = _FakeChild.close
+
+    def close(self):
+        closes.append("low exited" in order)
+        original_close(self)
+
+    monkeypatch.setattr(_FakeChild, "close", close)
+    try:
+        entry, log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="high",
+                                    timeout=0.05)
+        assert not log[0].closed, "child.close() ran while the timed-out worker still owned the child"
+        assert len(log) == 1
+        if fault == "escalation-raises":
+            assert entry["status"] == "error" and "escalation broke" in entry["error"]
+        else:
+            assert entry["status"] == "timeout"
+    finally:
+        release.set()
+    wait_until(lambda: log[0].closed, timeout=5)
+    assert closes == [True]  # closed once, after the worker exited
+
+
+def test_the_answer_cache_belongs_to_the_chain_not_only_the_attempt_number():
+    from tools import delegate_tool_child_run as cr
+    decider = _Decider({"retry": False})
+    child = SimpleNamespace(
+        reasoning_config={"effort": "low"}, provider="openrouter", model="anthropic/claude-sonnet-4",
+        api_mode="chat_completions", _delegate_escalate_reasoning=True, _delegate_escalate_ceiling="high",
+        _delegate_routed_by=(decider, {}))
+    parent = SimpleNamespace(_interrupt_requested=False, _active_children=[])
+    entry = {"exit_reason": "max_iterations", "api_calls": 3, "summary": "partial"}
+    child._delegate_escalation_chain = cr._EscalationChain("one", first_child=child)
+    assert cr._next_escalation_effort(child, entry, parent) is None
+    assert cr._next_escalation_effort(child, entry, parent) is None and len(decider.asked) == 1  # same stop: cached
+    decider.answer = {"effort": "high"}
+    child._delegate_escalation_chain = cr._EscalationChain("two", first_child=child)  # a new chain's first attempt
+    assert cr._next_escalation_effort(child, entry, parent) == "high" and len(decider.asked) == 2
+
+
+@pytest.mark.parametrize("failure", [
+    KeyboardInterrupt("original"), SystemExit("original"), GeneratorExit("original"),
+    __import__("asyncio").CancelledError("original"), RuntimeError("escalation broke"),
+], ids=lambda e: type(e).__name__)
+@pytest.mark.parametrize("break_at", ["timer_start", "defer"])
+def test_deferred_close_setup_failure_never_replaces_the_propagating_error(monkeypatch, failure, break_at):
+    """A thread-creation failure while arranging the deferred close must not mask the error already in flight,
+    and the timed-out child is still closed exactly once after its worker exits."""
+    from tests.waiting import wait_until
+    from tools import delegate_tool_child_run as cr
+    release, order = threading.Event(), []
+    _wedged_timed_out_low(monkeypatch, order, release)
+    closes = []
+    original_close = _FakeChild.close
+
+    def close(self):
+        closes.append("low exited" in order)
+        original_close(self)
+    monkeypatch.setattr(_FakeChild, "close", close)
+
+    def boom(*a, **k):
+        raise failure
+    monkeypatch.setattr(cr, "_provider_escalation_effort", boom)
+    if break_at == "timer_start":
+        def cannot_start(self):
+            raise RuntimeError("can't start new thread")
+        monkeypatch.setattr(threading.Timer, "start", cannot_start)
+    else:
+        original_defer = cr._defer_close_after_timeout
+
+        def defer(child, future):
+            original_defer(child, future)  # the close is registered; then setup fails
+            raise RuntimeError("can't start new thread")
+        monkeypatch.setattr(cr, "_defer_close_after_timeout", defer)
+    try:
+        if isinstance(failure, RuntimeError):
+            entry, _, _ = _run_direct(monkeypatch, {"low": T(calls=3)}, timeout=0.05,
+                                      first_attrs={"_drain_transports_after_abandonment": lambda **kw: None})
+            assert entry["status"] == "error" and entry["error"] == "escalation broke"
+        else:
+            with pytest.raises(type(failure)) as caught:
+                _run_direct(monkeypatch, {"low": T(calls=3)}, timeout=0.05,
+                            first_attrs={"_drain_transports_after_abandonment": lambda **kw: None})
+            assert caught.value is failure
+        assert closes == []
+    finally:
+        release.set()
+        wait_until(lambda: bool(closes), timeout=5)
+    assert closes == [True]
+
+
+def _rendered(record):
+    """The record as any handler would emit it: message plus formatted traceback."""
+    return logging.Formatter().format(record) + (record.exc_text or "")
+
+
+def test_a_deferred_close_failure_never_logs_the_provider_exception_above_debug(monkeypatch, caplog):
+    """The provider's exception rides the chain of the cleanup failure; only DEBUG may carry that traceback."""
+    import asyncio
+    from tests.waiting import wait_until
+    payload = "PROVIDER_PRIVATE_PAYLOAD_" + uuid.uuid4().hex
+    release, order = threading.Event(), []
+    _wedged_timed_out_low(monkeypatch, order, release)
+    closes = []
+    original_close = _FakeChild.close
+
+    def close(self):
+        closes.append("low exited" in order)
+        original_close(self)
+    monkeypatch.setattr(_FakeChild, "close", close)
+    failure = asyncio.CancelledError(payload)
+
+    class RaisingProvider(_Decider):
+        def next_attempt(self, stop, config):
+            raise failure
+    _with_provider(monkeypatch, RaisingProvider(None))
+
+    def cannot_start(self):
+        raise MemoryError("can't start new thread")
+    monkeypatch.setattr(threading.Timer, "start", cannot_start)
+    caplog.set_level(logging.DEBUG)
+    try:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            _run_direct(monkeypatch, {"low": T(calls=3)}, timeout=0.05,
+                        first_attrs={"_drain_transports_after_abandonment": lambda **kw: None})
+        assert caught.value is failure
+        assert closes == []
+    finally:
+        release.set()
+        wait_until(lambda: bool(closes), timeout=5)
+    assert closes == [True]
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert all(payload not in _rendered(r) for r in loud), [_rendered(r) for r in loud]
+    (warning,) = [r for r in loud if "deferred close" in r.getMessage()]
+    assert warning.exc_info is None and "MemoryError" in warning.getMessage()
+    debug = [r for r in caplog.records if r.levelno == logging.DEBUG and "deferred close" in r.getMessage()]
+    assert len(debug) == 1 and debug[0].exc_info is not None
+    assert payload in _rendered(debug[0])  # the full chain is still there for debugging
+
+
+_LEAK_MODES = ["raises", "non-mapping", "effort-payload", "effort-payload-subclass"]
+
+
+class _PayloadEffort(str):
+    """A ``str`` subclass carrying the payload: rejected by type, so its value must not reach WARNING."""
+
+
+class _EchoingProvider(_Decider):
+    """Echoes the stop's summary back through every unusable-answer path."""
+
+    def __init__(self, mode):
+        super().__init__(None)
+        self.mode = mode
+
+    def next_attempt(self, stop, config):
+        self.asked.append(dict(stop))
+        summary = stop["summary"]
+        if self.mode == "raises":
+            raise RuntimeError(summary)
+        if self.mode == "non-mapping":
+            return [summary]
+        if self.mode == "effort-payload":
+            return {"effort": summary}
+        return {"effort": _PayloadEffort(summary)}
+
+
+def _assert_payload_only_at_debug(caplog, payload):
+    loud = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert all(payload not in _rendered(r) for r in loud), [_rendered(r) for r in loud]
+    assert len(_hook_warnings(caplog)) == 1  # still exactly one warning per stop
+    assert any(payload in _rendered(r) for r in caplog.records if r.levelno == logging.DEBUG)
+
+
+@pytest.mark.parametrize("mode", _LEAK_MODES)
+def test_a_provider_value_never_reaches_warning_on_a_max_iterations_stop(monkeypatch, caplog, mode):
+    payload = "PROVIDER_PRIVATE_PAYLOAD_" + uuid.uuid4().hex
+    _with_provider(monkeypatch, _EchoingProvider(mode))
+    caplog.set_level(logging.DEBUG)
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(payload), "medium": D()}, effort="low", ceiling="high")
+    assert _efforts(log) == ["low", "medium"] and entry["status"] == "completed"
+    _assert_payload_only_at_debug(caplog, payload)
+
+
+@pytest.mark.parametrize("mode", _LEAK_MODES)
+def test_a_provider_value_never_reaches_warning_on_a_timeout_stop(monkeypatch, caplog, mode):
+    from tools import delegate_tool_child_run
+    payload = "PROVIDER_PRIVATE_PAYLOAD_" + uuid.uuid4().hex
+    order, release = [], threading.Event()
+    real_await = delegate_tool_child_run._await_timed_out_worker_exit
+
+    def await_exit(child, future, grace=None):
+        release.set()
+        return real_await(child, future, grace)
+
+    monkeypatch.setattr(delegate_tool_child_run, "_await_timed_out_worker_exit", await_exit)
+    _wedged_timed_out_low(monkeypatch, order, release)
+    provider = _with_provider(monkeypatch, _EchoingProvider(mode))
+    monkeypatch.setattr(provider, "next_attempt",
+                        lambda stop, config, _real=provider.next_attempt: _real({**stop, "summary": payload}, config))
+    caplog.set_level(logging.DEBUG)
+    try:
+        entry, log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="high",
+                                    timeout=0.3)
+    finally:
+        release.set()
+    assert _efforts(log) == ["low", "medium"] and entry["status"] == "completed"
+    assert len(provider.asked) == 1
+    _assert_payload_only_at_debug(caplog, payload)

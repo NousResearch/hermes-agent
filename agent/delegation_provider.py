@@ -41,6 +41,9 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
 * ``escalate_ceiling`` - a reasoning ladder level: none, minimal, low, medium, high, xhigh, max,
   or ultra (case-insensitive, whitespace trimmed). Required for escalation, never enough on its own.
   Route-only; a profile route ignores it. Invalid values refuse only this task.
+* A provider can decide the retry of a budget stop with :meth:`DelegationProvider.next_attempt`:
+  keep core's one-level climb (``None``), stop (``{"retry": False}``) or pick the level
+  (``{"effort": level}``, same route, not past the ceiling).
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
 never beside the core ``delegation`` keys.
@@ -50,7 +53,7 @@ from __future__ import annotations
 
 import abc
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from agent.provider_base import ProviderBase
 from agent.reasoning_effort import EFFORT_LADDER
@@ -151,3 +154,18 @@ class DelegationProvider(ProviderBase):
         this provider's :meth:`task_parameters` (absent when omitted). Raise
         :class:`DelegationRouteError` to refuse the task.
         """
+
+    def next_attempt(self, stop: Mapping[str, Any], config: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+        """Decide the retry after a budget stop of a child whose route has reasoning escalation on.
+
+        ``stop`` carries ``effort`` (the level the attempt ran at), ``exit_reason`` (``max_iterations`` or
+        ``timeout``), ``api_calls``, ``attempt`` (1 for the first attempt), ``ceiling`` (the route's
+        ``escalate_ceiling``), ``route`` (the route report, or None) and ``summary`` (the attempt's final text,
+        or None). Return ``None`` for core's rule: one level up, never past the ceiling. Return
+        ``{"retry": False}`` to end the chain. Return ``{"effort": level}`` to retry on the same route at that
+        level: it must be a ladder level, not past the ceiling, and stronger than ``effort`` after the
+        provider's clamp, else core logs a warning and uses its rule. Never called for a finished, failed or
+        interrupted attempt, or for a route without escalation. An exception here is logged and treated as
+        ``None``.
+        """
+        return None

@@ -70,6 +70,34 @@ async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_post_delivery_is_taken_by_the_key_the_turn_registered_under(tmp_path, monkeypatch):
+    """A route rebind while the turn runs must not strand the slot under the key it registered with."""
+    from gateway.session_contract import Submission
+    from gateway.session_local import create_local_session
+
+    runner, authority, db = await _owner(tmp_path, monkeypatch)
+    fired = []
+
+    async def turn(event):
+        live = authority.sessions[ref.session_id]
+        runner._delivery_adapter_for(live.source).register_post_delivery_callback(
+            live.route, lambda: fired.append(event.text), generation=1)
+        live.route = live.route + ":rebound"
+        return "ok"
+
+    monkeypatch.setattr(runner, "_handle_message", turn)
+    try:
+        ref = create_local_session(authority, _viewer(), dict(request_id="r", source="tui", model="fixture",
+                                                              toolsets=[]))
+        live = authority.sessions[ref.session_id]
+        await authority.submit(_viewer(), Submission("answers", ref, {"text": "answers"}, "queue"))
+        await async_wait_until(lambda: fired == ["answers"], timeout=10, what="the post-delivery callback")
+        assert runner._delivery_adapter_for(live.source)._post_delivery_callbacks == {}
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 async def test_deleted_local_session_leaves_nothing_on_the_local_adapter(tmp_path, monkeypatch):
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session

@@ -137,9 +137,11 @@ class LocalSessionAdapter(BasePlatformAdapter):
 def forget_live_session(authority, session_id, live):
     """What the local adapter and the authority keyed by a deleted live session."""
     authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
     from gateway.session_local_recovery import local_adapter_map
     local = local_adapter_map(authority).get(Platform.LOCAL)
-    if local is not None and live.source is not None:
+    if local is not None:
         local.forget(live.source, live.route)
 
 

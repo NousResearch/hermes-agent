@@ -418,7 +418,8 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
 
 export function setPrimaryGatewayConnectionId(
   connectionId: null | string | undefined,
-  mode: 'local' | 'remote' | null | undefined = undefined
+  mode: 'local' | 'remote' | null | undefined = undefined,
+  profile?: string
 ): void {
   // Every caller publishes the window's OWN primary socket (boot, reconnect,
   // connection apply, HMR survivor), so record it even while a secondary is
@@ -431,8 +432,12 @@ export function setPrimaryGatewayConnectionId(
   const primaryMode = mode === 'local' || mode === 'remote' ? mode : null
   $primaryGatewayRoute.set({ connectionId: id, mode: primaryMode })
 
+  // A re-home names the profile the primary will serve on its new machine;
+  // pairing the new connection with the OLD machine's primary profile let a
+  // scope listener (the version poller) ask that machine for a profile it
+  // does not have while the ticket/connect was in flight.
   if (g.activeKey === g.primaryProfile) {
-    publishRequestConnection(id, g.primaryProfile)
+    publishRequestConnection(id, profile ? normKey(profile) : g.primaryProfile)
   }
 }
 
@@ -457,8 +462,11 @@ export function dialedGatewayModeFor(connectionId: null | string, profile: strin
 }
 
 /** Publish the registry source owned by the window primary socket. */
-export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null): void {
-  setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode)
+export function setPrimaryGatewayConnection(
+  connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null,
+  profile?: string
+): void {
+  setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode, profile)
 }
 
 function traceAgentRoute(scope: string, via: string): void {

@@ -95,8 +95,10 @@ describe('ambient request scope across a gateway switch', () => {
   })
 
   it('re-homing the foregrounded primary to another machine carries the primary profile with it', () => {
+    // Production order (boot / Settings apply): the connection is recorded with
+    // the profile it serves there, the primary socket is adopted afterwards.
+    setPrimaryGatewayConnectionId('box', 'remote', 'default')
     setPrimaryGateway(primarySocket, 'default')
-    setPrimaryGatewayConnectionId('box', 'remote')
 
     expect(seen).not.toContain('box|alpha')
     expect($apiRequestScope.get()).toEqual({ connectionId: 'box', profile: 'default' })

@@ -640,9 +640,17 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             )
         profiles = _parse_json_list(out)
         if not profiles or not profiles[0].get("pubkey"):
+            # `users get` answers [] for a key that has simply never published a profile on this relay
+            # — the normal state of a freshly minted identity — so the message must name that cause and
+            # the command that fixes it. Sending the reader after membership (which is a separate thing
+            # and usually fine) costs them the wrong debugging session (cowork #117).
             return self._connect_failed(
-                "connect_failed", "buzz users get returned no profile",
-                "Buzz: 'users get' returned no profile — is the key a member of this community?", retryable=True,
+                "connect_failed",
+                f"this identity has no profile on {self.relay_url} — publish one with "
+                "`buzz users set-profile --name <name>`",
+                "Buzz: this identity has no profile on %s yet — publish one with "
+                "`buzz users set-profile --name <name>` (membership is not the problem here)",
+                self.relay_url, retryable=True,
             )
         self._self_pubkey = str(profiles[0]["pubkey"]).lower()
         self._display_name = str(profiles[0].get("display_name") or "").strip()

@@ -158,7 +158,7 @@ class GatewayStartupMixin:
                 source = getattr(event, "source", None)
                 adapter = self._intake_adapter_for(source)
                 if adapter is None:
-                    logger.debug(
+                    logger.warning(
                         "Dropping startup-restore queued message: adapter unavailable for %s",
                         getattr(getattr(source, "platform", None), "value", None),
                     )
@@ -1851,6 +1851,9 @@ class GatewayStartupMixin:
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
             scope_id=scope_id,
         )
+        # The handoff turn answers through the queuing profile's own bot; naming it keeps the
+        # turn's authorization home and the saved receiving bot on that profile, not a primary guess.
+        self._canonicalize(dest_source, transport_profile=profile_name)
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,

@@ -25,6 +25,11 @@ def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch
     assert result.returncode != 0
     assert "timed out" in result.stderr and "fetch" in result.stderr
     assert run.call_args.kwargs["timeout"] == update_cmd.NETWORK_GIT_TIMEOUT_SECONDS
+    env = run.call_args.kwargs["env"]
+    assert env["GIT_CONFIG_KEY_0"] == "http.lowSpeedLimit"
+    assert env["GIT_CONFIG_VALUE_0"] == "1"
+    assert env["GIT_CONFIG_KEY_1"] == "http.lowSpeedTime"
+    assert env["GIT_CONFIG_VALUE_1"] == "60"
     # The no-prompt guard still rides along with the bound.
     assert run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 

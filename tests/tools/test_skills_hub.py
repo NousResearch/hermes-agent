@@ -20,7 +20,7 @@ from tools.skills_hub_search import (
     HERMES_INDEX_TTL, _load_hermes_index, create_source_router, parallel_search_sources, unified_search,
 )
 from tools.skills_hub_skillssh import SkillsShSource
-from tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
+from tools.skills_hub_sources import LobeHubSource, UrlSource
 
 # ---------------------------------------------------------------------------
 # GitHubSource._parse_frontmatter_quick
@@ -460,60 +460,6 @@ class TestRepoRootSkillLayout:
 
         assert self._source().inspect(self.IDENTIFIER) is None
 
-class TestWellKnownSkillSource:
-    @pytest.fixture(autouse=True)
-    def _allow_public_skill_fetches(self, monkeypatch):
-        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-
-    def _source(self):
-        return WellKnownSkillSource()
-
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_search_reads_index_from_well_known_url(self, mock_get, _mock_read_cache, _mock_write_cache):
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            json=lambda: {
-                "skills": [
-                    {"name": "git-workflow", "description": "Git rules", "files": ["SKILL.md"]},
-                    {"name": "code-review", "description": "Review code", "files": ["SKILL.md", "references/checklist.md"]},
-                ]
-            },
-        )
-
-        results = self._source().search("https://example.com/.well-known/skills/index.json", limit=10)
-
-        assert [r.identifier for r in results] == [
-            "well-known:https://example.com/.well-known/skills/git-workflow",
-            "well-known:https://example.com/.well-known/skills/code-review",
-        ]
-        assert all(r.source == "well-known" for r in results)
-
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
-    def test_fetch_rejects_unsafe_file_paths_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
-        def fake_get(url, *args, **kwargs):
-            if url.endswith("/index.json"):
-                return MagicMock(status_code=200, json=lambda: {
-                    "skills": [{
-                        "name": "code-review",
-                        "description": "Review code",
-                        "files": ["SKILL.md", "../../../escape.txt"],
-                    }]
-                })
-            if url.endswith("/code-review/SKILL.md"):
-                return MagicMock(status_code=200, text="# Code Review\n")
-            raise AssertionError(url)
-
-        mock_get.side_effect = fake_get
-
-        bundle = self._source().fetch("well-known:https://example.com/.well-known/skills/code-review")
-
-        assert bundle is None
-
 class TestUrlSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):
@@ -580,6 +526,9 @@ Complex cases are documented under `{glob_reference}`.
         ) is False
         assert self._source()._matches(
             "https://example.com/.well-known/skills/index.json"
+        ) is False
+        assert self._source()._matches(
+            "https://example.com/.well-known/agent-skills/agent/SKILL.md"
         ) is False
 
     # ── inspect ─────────────────────────────────────────────────────────

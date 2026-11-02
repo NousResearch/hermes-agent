@@ -435,6 +435,7 @@ Trust levels:
 Hermes can now consume third-party skills from multiple external discovery models:
 - direct GitHub identifiers (for example `openai/skills/k8s`)
 - `skills.sh` identifiers (for example `skills-sh/vercel-labs/json-render/json-render-react`)
-- well-known endpoints served from `/.well-known/skills/index.json`
+- Agent Skills v0.2 well-known endpoints served from `/.well-known/agent-skills/index.json`
+- legacy v0.1 well-known endpoints served from `/.well-known/skills/index.json`
 
-If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace.
+If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace. Hermes prefers the v0.2 endpoint, where each `skill-md` entry has an explicit `url` for the skill file, and falls back to the v0.1 endpoint for existing publishers.

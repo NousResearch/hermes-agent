@@ -199,3 +199,87 @@ async def test_forward_wakes_on_the_completion_frame_instead_of_a_fixed_100ms_po
     assert receipt['status'] == 'terminal'
     assert elapsed < 1.6, elapsed  # woken by the frame, not a late tick
     assert len(calls) <= 5, f'{len(calls)} a2a.forward RPCs for a 1 s turn'
+
+
+@pytest.mark.asyncio
+async def test_status_reads_the_forwarded_admission_at_its_identity(tmp_path, monkeypatch):
+    """a2a.status is the read side of accept-then-poll: the same identity tuple reads its admission
+    back without holding a socket, a never-forwarded identity reads 'missing', and another peer's
+    identical tuple is a different identity — it never sees this admission."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway import run
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
+    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    db = authority.db
+    authority._schedule = lambda ref: None
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
+    params = dict(agent='dev', tenant='team', peer='alice', context_id='ctx/a', input_id='first', text='hello')
+    sent = await conn.dispatch({'id': 1, 'method': 'a2a.forward', 'params': params})
+    assert 'result' in sent, sent
+
+    identity = {k: params[k] for k in ('agent', 'tenant', 'peer', 'context_id', 'input_id')}
+    status = await conn.dispatch({'id': 2, 'method': 'a2a.status', 'params': identity})
+    assert 'result' in status, status
+    got = status['result']
+    assert got['session_id'] == sent['result']['session_id']
+    assert got['admission_id'] == sent['result']['admission_id']
+    assert got['status'] in ('queued', 'started')
+    assert got['result'] is None  # not terminal yet
+
+    # An identity that was never forwarded has no admission — that is a state, not an error.
+    missing = await conn.dispatch({'id': 3, 'method': 'a2a.status', 'params': dict(
+        identity, context_id='ctx/b', input_id='never')})
+    assert missing['result']['status'] == 'missing'
+    assert missing['result']['admission_id'] == ''
+
+    # A different peer on the same context is a different identity, so it must not see this admission.
+    other = await conn.dispatch({'id': 4, 'method': 'a2a.status', 'params': dict(identity, peer='bob')})
+    assert other['result']['status'] == 'missing'
+
+    # A malformed call is refused, never answered with a partial read.
+    bad = await conn.dispatch({'id': 5, 'method': 'a2a.status', 'params': {'agent': 'dev'}})
+    assert 'error' in bad, bad
+    await conn.close()
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_forward_to_owner_wait_false_returns_the_first_receipt(tmp_path, monkeypatch):
+    """wait=False is accept-then-poll: the caller gets the first durable receipt instead of holding
+    the socket until the turn completes — the difference between parking a task and blocking on it."""
+    from websockets.asyncio.server import serve
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime
+    from gateway.session_a2a import forward_to_owner
+
+    seen = []
+
+    async def owner(ws):
+        async for raw in ws:
+            request = json.loads(raw)
+            seen.append(request['method'])
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {
+                'status': 'queued', 'admission_id': 'adm', 'outcome': None}}))
+
+    async with serve(owner, '127.0.0.1', 0, subprotocols=['hermes-gateway-v1']) as server:
+        port = server.sockets[0].getsockname()[1]
+        endpoint = SimpleNamespace(api_origin=f'http://127.0.0.1:{port}')
+        monkeypatch.setattr(gateway_runtime, 'ensure_gateway_runtime',
+                            lambda home: SimpleNamespace(state='ready', endpoint=endpoint, reason_code=None))
+        monkeypatch.setattr(gateway_client, '_session_ticket', lambda home, ep: 'fixture')
+        receipt = await forward_to_owner(tmp_path, agent='dev', tenant='', peer='alice', context_id='ctx',
+                                         input_id='i1', text='hello', timeout=10, wait=False)
+    assert receipt['status'] == 'queued'
+    assert receipt['admission_id'] == 'adm'
+    assert seen == ['a2a.forward'], seen  # one RPC: it never waits for the completion frame

@@ -5,7 +5,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { makeSessionInfo } from '../test/session-info'
 
 import type { SidebarSessionEntry } from './session-branch-tree'
-import { groupEntriesByRecency, hideCollapsedGroupRows, toSessionRows } from './session-date-groups'
+import { groupEntriesByRecency, groupEntriesByStatus, hideCollapsedGroupRows, toSessionRows } from './session-date-groups'
 
 const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
   makeSessionInfo({ id, message_count: 1, source: 'cli', title: id, ...overrides })
@@ -264,6 +264,59 @@ describe('toSessionRows', () => {
     expect(toSessionRows(entries)).toEqual([
       { entry: entries[0], kind: 'session' },
       { entry: entries[1], kind: 'session' }
+    ])
+  })
+})
+
+describe('groupEntriesByStatus', () => {
+  const labels = { blocked: 'Blocked', inactive: 'Inactive', ready: 'Ready', working: 'Working' }
+
+  it('files sessions under Working / Blocked / Ready / Inactive in that order, skipping empty lanes', () => {
+    const lanes: Record<string, 'blocked' | 'inactive' | 'ready' | 'working'> = {
+      a: 'inactive',
+      b: 'blocked',
+      c: 'working',
+      d: 'ready',
+      e: 'blocked'
+    }
+
+    const entries = Object.keys(lanes).map(id => entry(session(id)))
+
+    const rows = groupEntriesByStatus(entries, e => lanes[e.session.id], labels)
+
+    expect(rows.map(row => (row.kind === 'divider' ? row.key : row.entry.session.id))).toEqual([
+      'status:working',
+      'c',
+      'status:blocked',
+      'b',
+      'e',
+      'status:ready',
+      'd',
+      'status:inactive',
+      'a'
+    ])
+
+    // A lane nobody is in draws no divider.
+    expect(groupEntriesByStatus([entry(session('x'))], () => 'ready', labels).map(row => row.kind)).toEqual([
+      'divider',
+      'session'
+    ])
+  })
+
+  it('keeps branch children in their parent lane regardless of their own state', () => {
+    const parent = session('parent')
+    const child = session('child', { parent_session_id: 'parent' })
+
+    const rows = groupEntriesByStatus(
+      [entry(parent), entry(child, '└─ ')],
+      e => (e.session.id === 'parent' ? 'blocked' : 'working'),
+      labels
+    )
+
+    expect(rows).toEqual([
+      { key: 'status:blocked', kind: 'divider', label: 'Blocked' },
+      { entry: entry(parent), kind: 'session' },
+      { entry: entry(child, '└─ '), kind: 'session' }
     ])
   })
 })

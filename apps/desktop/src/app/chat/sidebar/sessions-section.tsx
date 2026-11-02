@@ -27,8 +27,9 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import { $pullRequestsByBranch, pullRequestBucket, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
-import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionDotStateById, sessionStatusLane } from '@/store/session-dot-state'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -246,6 +247,7 @@ export function SidebarSessionsSection({
   const dividerLabels = t.sidebar.dateDivider
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
+  const pullRequests = useStore($pullRequestsByBranch)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
   const sectionOpen = collapsible ? open : true
@@ -429,13 +431,22 @@ export function SidebarSessionsSection({
         : grouping === 'status'
           ? groupEntriesByStatus(
               displayEntries,
-              entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
+              entry => {
+                // An open PR files an idle session under Ready: the work is
+                // done and waiting on a reviewer, which is a different answer
+                // from "nothing happened here lately". Only when PR data is on
+                // screen already — the lane never pays for a `gh` call itself.
+                const prKey = sessionPrKey(entry.session)
+                const prOpen = prKey ? pullRequestBucket(pullRequests[prKey]) === 'open' : false
+
+                return sessionStatusLane(dotStates[entry.session.id], prOpen)
+              },
               statusDividerLabels
             )
           : toSessionRows(displayEntries)
 
     return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
-  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels])
+  }, [grouping, displayEntries, dotStates, pullRequests, manualOrderIds, statusDividerLabels])
 
   // Closed date/status buckets keep their divider and drop the sessions under
   // it. Same array when nothing is collapsed so the virtualizer's rows ref

@@ -1,183 +1,318 @@
 ---
 name: core-testflight
-description: Verify TestFlight builds before giving install instructions.
-version: 1.4.0
+description: Verify, prepare, and install exact iOS builds through TestFlight using Core Secrets and App Store Connect.
+version: 2.0.0
 author: Peter Beddow, Hermes Agent
 license: MIT
 platforms: [macos]
 metadata:
   hermes:
-    tags: [Apple, TestFlight, verification, installation]
-    related_skills: []
+    tags: [Apple, TestFlight, App Store Connect, Xcode Cloud, verification, installation]
+    related_skills: [core-secrets]
 ---
 # Core TestFlight Skill
 
-Use this procedure for Accessible Core iOS TestFlight work. It separates source revision, Xcode Cloud build, App Store Connect availability, tester assignment, and actual device installation. Never treat one state as proof of another.
+Use this procedure for Accessible Core iOS TestFlight work. Keep these states separate:
 
-## Recovered Accessible Core workflow
+1. source published;
+2. Xcode Cloud archive succeeded;
+3. App Store Connect received and processed the exact build;
+4. the build is compliant and assigned to the intended TestFlight group;
+5. the intended tester can see that exact build;
+6. that exact build is installed on the intended device.
 
-The established November 1–2 workflow was recovered from the terminal-output records and the authenticated Xcode Cloud/App Store Connect API reads. Reuse this path; do not replace it with a new Apple login or a local export/upload path.
+Never use one state as proof of another. Never claim `DONE` until the requested installation state is directly evidenced.
 
-### Source and trigger
+## Safety and ownership
 
-Run on the established macOS workstation as the existing local macOS account, from the published native checkout:
+- Native iOS is the only implementation scope for this skill.
+- Preserve the existing Xcode Cloud workflow. Do not create another upload, signing, build-number, or authentication system.
+- Do not use `xcodebuild -exportArchive`, `altool`, `iTMSTransporter`, or a local IPA as a substitute for the existing Xcode Cloud/TestFlight path.
+- Do not open a general Apple login page or ask for an Apple password or verification code when the API path below is available.
+- Never print, log, commit, or place in a receipt the App Store Connect private key, Key ID, Issuer ID, JWT, bearer token, Core Secrets bearer credential, password, or connection string. Replace sensitive values with `[REDACTED]` in reports.
+- Do not create a second credential store. Use the existing Core Secrets skill and the authorized workstation procedure.
+- Before a write, state what will change and why. After every App Store Connect write, read the exact target back.
+
+## Exact target
+
+Record these values before acting. Never substitute “latest,” a workflow number, or a guessed build:
+
+- app bundle ID;
+- marketing version;
+- exact build number;
+- intended TestFlight group;
+- intended tester/device;
+- source commit and Xcode Cloud workflow.
+
+For the verified Accessible Capture release:
+
+```text
+bundle ID: com.accessiblecore.capture
+marketing version: 1.0
+build: 72
+source commit: 1c89ab662722a53f7189ae01f3f8d26654fb157f
+ref: native-auth-client
+Xcode Cloud workflow: Capture
+workflow ID: E38EEB84-A954-4181-BEEF-D5FC9502DADC
+TestFlight group: Accessible Core
+```
+
+## Source and Xcode Cloud
+
+From the established native checkout, inspect before pushing:
 
 ```bash
 git status --short
 git diff --check
 git rev-parse HEAD
+```
+
+The existing workflow watches `native-auth-client` and is triggered by a source-ref change:
+
+```bash
 git push origin native-auth-client
 ```
 
-The connected Xcode Cloud workflow watches the `native-auth-client` GitHub branch. A successful source-change trigger is recorded as `startReason: GIT_REF_CHANGE`; the prior successful runs used workflow `E38EEB84-A954-4181-BEEF-D5FC9502DADC` and were tied to the pushed commit SHA. Do not create a no-op or follow-up commit merely to force a run: the run must identify the requested source commit exactly. A repeat push with no new commit is not a new build trigger.
+Do not create a no-op commit merely to force a run. Confirm that the Xcode Cloud run identifies the requested source commit exactly, completed successfully, and produced the requested version/build. A local build, simulator launch, archive, or Xcode Cloud check alone does not prove TestFlight availability.
 
-### Authentication and readback
+If Xcode Cloud reports `action_required`, `Preparing build for App Store Connect failed`, or another preparation failure, record that failure separately. Do not change signing, build numbers, or workflow configuration just to force another run.
 
-The established verification used an already-authenticated App Store Connect/Xcode Cloud browser session on the workstation. Hermes did not type an Apple password, verification code, API key, or private key. From an attached authenticated page, read the JSON endpoints with browser `fetch`/CDP; use the existing session only. If the session is unauthenticated or expired, stop and report the missing external evidence. Do not open a login page, request credentials, or invent a replacement authentication method.
+## Core Secrets and App Store Connect authentication
 
-Read the run and its linked build, then independently read the exact build record:
+Use the existing `core-secrets` skill. The authorized workstation flow is:
 
-```text
-GET /iris/v1/ciWorkflows/{workflowId}/buildRuns?limit=100&sort=-number&include=workflow,builds
-GET /iris/v1/ciBuildRuns/{runId}/builds
-GET /iris/v1/ciBuildRuns/{runId}?include=builds
-GET /iris/v1/builds/{buildId}
-GET /iris/v1/apps/{appId}/builds?filter[buildNumber]={buildNumber}&limit=10
+```python
+from accessible_core_secrets.client import SecretsServiceClient
+from core_secrets_keychain_client import credential_file_read, principal_for_workstation
+
+reference = "apple/app-store-connect"
+principal = principal_for_workstation("WKST-01")
+client = SecretsServiceClient(
+    CORE_SECRETS_URL,
+    credential_file_read(principal),
+    timeout=15,
+)
+fields = client.resolve(reference)
 ```
 
-The successful readback requires all of the following to match: the run's `sourceCommit.commitSha`, the pushed commit; `completionStatus: SUCCEEDED`; `executionProgress: COMPLETE`; the linked build's exact version/build number; `processingState: VALID`; `buildAudienceType: INTERNAL_ONLY`; and `qcState: BETA_INTERNAL_TESTING` (or the current equivalent that explicitly permits testing). Continue with the exact build's compliance, beta-group, tester, and tester-facing records. A local Xcode Cloud SQLite cache, a successful local archive, a signed `.app`, or a workflow/run number alone is not authoritative.
+The record must contain `key_id`, `issuer_id`, and `private_key`. Keep `fields` and the short-lived JWT in process memory only. Never write them to a script, environment file, receipt, terminal output, browser field, or chat.
 
-### Existing operation ownership
+Create an App Store Connect JWT in memory with ES256:
 
-- Repository source and trigger: the native checkout's existing Git workflow (`git push origin native-auth-client`).
-- Cloud archive and TestFlight upload: the connected Xcode Cloud workflow, triggered by `GIT_REF_CHANGE`.
-- Authenticated Apple readback: the existing authenticated browser session plus App Store Connect/Xcode Cloud JSON endpoints; no new credential entry.
-- Exact availability and installation decision: this `core-testflight` skill and the native repository receipt validator.
-- Release evidence: `docs/testflight-release-receipt.template.json` and `scripts/verify-testflight-receipt.py` in the same published native checkout.
+- header: `alg=ES256`, `kid=<key_id>`, `typ=JWT`;
+- payload: `iss=<issuer_id>`, `iat=now-30`, `exp=now+900`, `aud=appstoreconnect-v1`;
+- sign with the private key using ECDSA SHA-256;
+- encode the signature as the JWT's raw 64-byte `r || s` value, not DER;
+- send it only as `Authorization: Bearer <JWT>` over TLS.
 
-If any recovered operation cannot be executed with the existing authenticated session, preserve the known source/build facts and report the precise missing read or trigger evidence. Do not substitute `xcodebuild -exportArchive`, `altool`, `iTMSTransporter`, a guessed API token, or a new Apple authentication flow.
+Use a certificate-verifying TLS context, for example Python `ssl.create_default_context(cafile=certifi.where())`. On authentication failure, report only the redacted endpoint, HTTP status, and Apple error title/detail. Do not ask Peter for a secret if the established Core Secrets route is available.
 
-## When to Use
+## App Store Connect read sequence
 
-- When preparing or checking an Accessible Core TestFlight build.
-- When deciding whether to tell Peter to install or update an app.
-- When verifying a build after a reported device installation.
+Use fresh authenticated API reads. The App Store Connect API represents the build number in the build resource's `attributes.version`; do not assume a `buildNumber` attribute exists. The marketing version is read from the linked `preReleaseVersion` resource.
 
-Do not use an older build, the latest build, a guessed next build number, or an Xcode Cloud run number as a substitute for the exact build requested.
+1. Find the app:
 
-## Non-negotiable install gate
+```text
+GET /v1/apps?filter[bundleId]={bundleId}&limit=10
+```
 
-Before using imperative wording such as “install Build N,” “update to Build N,” or “open TestFlight and install it,” create a verification record for that exact build. Every item below must be `YES`:
+Require exactly one matching app.
 
-1. **Exact build exists:** App Store Connect shows the requested app, version, and build number in a fresh authenticated read. A desired build number, source setting, Xcode Cloud run number, or successful archive is not evidence that the TestFlight build exists.
-2. **Exact build is processed and testable:** the build is not missing, queued, processing, failed, expired, rejected, missing compliance, or otherwise unavailable. `Ready to Test`/`Testing` is acceptable only for the same exact build number.
-3. **Exact group assignment exists:** the same build is assigned to the intended TestFlight group.
-4. **Tester access exists:** the intended tester is enrolled or otherwise has access to that group.
+2. List builds for that app and select the exact build:
 
-If any item is `NO`, unknown, stale, or cannot be read back, do not give installation or update instructions. Report that no installable exact build has been established and continue verification if the capability is available. Do not silently substitute another build.
+```text
+GET /v1/builds?filter[app]={appId}&limit=200&sort=-uploadedDate
+```
 
-A direct report from Peter that a build is installed is evidence for **installation state**, not evidence that a different requested build exists or is testable. App Store Connect install counters may lag and must not override Peter’s current device report.
+Select the record whose `attributes.version` equals the requested build number. Do not select by position or “latest.”
 
-## Mandatory release receipt
+3. Read the exact build and linked beta detail:
 
-For every TestFlight attempt, create a JSON release receipt using the native repository template at `docs/testflight-release-receipt.template.json` and validate it with:
+```text
+GET /v1/builds/{buildId}?include=preReleaseVersion,buildBetaDetail
+GET /v1/preReleaseVersions/{preReleaseVersionId}
+GET /v1/buildBetaDetails?filter[build]={buildId}&limit=10
+```
+
+Require the exact version/build tuple, `processingState=VALID` (or an explicitly testable equivalent), a non-expired build, and a beta state that permits testing. For the verified Build 72, the readback was `VALID`, internal beta state `IN_BETA_TESTING`, and no non-exempt encryption.
+
+4. Read groups and exact build membership:
+
+```text
+GET /v1/betaGroups?filter[app]={appId}&limit=200
+GET /v1/betaGroups/{groupId}/builds?limit=200
+```
+
+Find the intended group by exact name. Confirm that the exact build ID is present.
+
+5. Read tester membership without exposing identity:
+
+```text
+GET /v1/betaGroups/{groupId}/betaTesters?limit=200
+GET /v1/betaTesters/{testerId}/betaGroups?limit=200
+```
+
+Require an enrolled tester whose group membership includes the intended group. A general tester state such as `INSTALLED` is not proof of the requested build. The per-tester `/builds` relationship may omit builds inherited from a group; do not treat an empty direct relationship as proof that group-inherited access is absent. Group build membership plus tester group membership must still be read and recorded.
+
+## Conditional App Store Connect writes
+
+Only write when a fresh read shows a specific correction is required. Never repeat a successful write blindly.
+
+### Export compliance
+
+Inspect the app source before answering export compliance. For the verified Accessible Capture release, CryptoKit was used for SHA-256 checksums, not app-level encryption. When the exact build is missing its answer, submit Apple's no-non-exempt-encryption value:
+
+```http
+PATCH /v1/builds/{buildId}
+Content-Type: application/json
+
+{
+  "data": {
+    "type": "builds",
+    "id": "{buildId}",
+    "attributes": {"usesNonExemptEncryption": false}
+  }
+}
+```
+
+Immediately read `/v1/builds/{buildId}` again and require `usesNonExemptEncryption=false`. Record compliance as complete only after that readback. If the source actually uses non-exempt encryption, stop and request the correct Apple-side compliance decision; do not guess.
+
+### TestFlight group assignment
+
+If the exact build is absent from the intended group, add only that exact build:
+
+```http
+POST /v1/betaGroups/{groupId}/relationships/builds
+Content-Type: application/json
+
+{"data":[{"type":"builds","id":"{buildId}"}]}
+```
+
+Read `/v1/betaGroups/{groupId}/builds` again and require the exact build ID. If a write returns a permission error, report the exact missing permission and request only that correction. Do not create another key or credential route.
+
+## Installability gate
+
+Before saying “install Build N” or “update to Build N,” all of these must be true for the same exact build:
+
+1. App Store Connect contains the exact app/version/build.
+2. Processing, QC/beta state, expiration, and compliance permit testing.
+3. The exact build is assigned to the intended group.
+4. An intended tester is enrolled and belongs to that group.
+5. The tester-facing build number is the requested number.
+6. A release receipt passes:
 
 ```bash
 python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installable
 ```
 
-The receipt is the communication boundary. It must record the source commit, checked-in project build setting, effective build number passed to Xcode, Xcode Cloud workflow/run, exact App Store Connect build record, version/build number, processing state, QC state, audience, export compliance, exact group ID, tester access, tester-visible build number, and—only when directly proven—the installed build number. Do not report a build as available or installed until the validator passes.
+Do not rely on local builds, Xcode Cloud completion, an App Store Connect row for another build, a tester's generic state, or a stale browser page.
 
-The validator must be run from the same published native checkout that produced the build. It rejects mismatched build numbers, stale or unauthenticated reads, incomplete compliance, non-internal audience, missing group membership, and a tester-visible or installed number that differs from the target. Use `--require installed` only when direct tester/device evidence identifies the exact target build.
+## Device discovery and TestFlight launch
 
-A general tester state such as `INSTALLED` is not sufficient. It must be accompanied by the exact installed build number. If the exact number cannot be read, record `installed_build_number` as empty and `installation_evidence` as `false`.
+Use the connected, paired device. Do not request Peter to manage windows or change his normal computer use.
 
-Never put credentials, tokens, API keys, or other secrets in the receipt. IDs and ordinary App Store Connect record identifiers are acceptable; redact sensitive values in any report copied outside the controlled workspace.
+```bash
+xcrun devicectl list devices
+xcrun devicectl device process launch \
+  --device "{deviceIdentifier}" \
+  com.apple.TestFlight --activate
+```
 
-## Direct-install failure and TestFlight fallback
+Check that the device is paired and available before attempting the launch. A successful TestFlight launch proves only that TestFlight opened. It does not prove that the requested build was installed.
 
-When a fresh direct-install attempt reports the target device unavailable, do not
-keep retrying device discovery, pairing, networking, administrator access, or a
-different workstation. Switch to this TestFlight procedure. The direct route's
-failure is an availability result; it is not evidence that TestFlight is ready.
+## No-intervention installation policy
 
-Before asking Peter to do anything, reconcile the accumulated state in this
-order:
+Try all agent-controlled steps first:
 
-1. Confirm the exact published source commit and checked-in/effective build
-   number in the native checkout.
-2. Search the checkout and controlled workspace for an existing release receipt
-   or App Store Connect/Xcode Cloud record. Never treat a template, a local
-   signed `.app`, a successful simulator/device build, or a prior build's
-   receipt as the current TestFlight record.
-3. Inspect the current authenticated App Store Connect/TestFlight browser
-   session without opening a login page. If no session is authenticated, preserve
-   the exact missing external evidence and stop; do not request or type an Apple
-   password, verification code, API key, or private key.
-4. If no authenticated read or saved login is available, report the precise missing
-   evidence. Do not ask Peter to sign in, and do not ask him to install or update
-   an unverified build.
+1. discover the paired device;
+2. launch TestFlight remotely;
+3. use an approved device-control capability, if installed, to select the exact app/build and activate Install;
+4. wait for installation to finish;
+5. inspect the device for the exact bundle ID and `CFBundleVersion`.
 
-TestFlight is not a second local installation route. A local `xcodebuild`, an
-archive, or a signed app proves only that a local artifact exists. It does not
-prove that App Store Connect received it, processed it, assigned it to the
-intended group, or exposed it to the tester. If the exact build has not been
-uploaded through an authorized App Store Connect/Xcode Cloud path, the correct
-state is `TestFlight verification pending`; do not invent workflow IDs, run IDs,
-build record IDs, group IDs, or tester-facing states.
+`xcrun devicectl` provides device discovery, process launch, and app inspection, but it does not provide a supported command to press TestFlight's in-app Install control. Do not substitute `devicectl device install app`, `ios-deploy`, or a local IPA: those are direct installs, not TestFlight installation.
 
-For an incomplete attempt, write a receipt containing the known exact source and
-build values and explicit `unknown` values for unread facts, then run the
-validator. Preserve the validator failure as evidence of the missing gate; never
-edit unknown fields to make the receipt pass.
+Therefore:
 
-## Procedure
+- If an approved remote-UI/device-control capability is available, use it and retain its direct result.
+- If the device is already configured for automatic TestFlight installation/update, wait and verify the exact installed build.
+- If neither is available, the physical TestFlight Install tap is an unavoidable boundary. State exactly that one action is required; do not claim no-intervention automation.
+- Never ask Peter to sign in, enter credentials, or approve an unverified build.
 
-1. Record the exact app, version, build number, intended group, and intended tester before acting. Completion criterion: the target is explicit and contains no guessed number.
-2. Record the source commit and Xcode Cloud workflow/run for that build. Completion criterion: the run is tied to the intended published source revision and its archive succeeded.
-3. Read App Store Connect and match the exact app/version/build tuple. Completion criterion: the requested build number appears in a fresh authenticated response or page; do not infer existence from Xcode Cloud.
-4. Check the exact build’s processing, QC, audience, and compliance state. Completion criterion: the build is processed and testable, with no unresolved compliance or availability state.
-5. Check the exact build’s TestFlight group and tester access. Completion criterion: the requested group contains the exact build and the intended tester is enrolled or has access.
-6. Read the tester-facing build number. Completion criterion: the tester-visible number equals the requested build number; a general `INSTALLED` status without an exact number is insufficient.
-7. Write the release receipt and run `python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installable`. Completion criterion: the command exits successfully and reports the same exact build number.
-8. Only after step 7 passes, give concise availability or install/update instructions for that exact build. Completion criterion: every availability gate is recorded as `YES`.
-9. After Peter confirms installation, update the same receipt with the exact installed build number and direct evidence, then run the validator with `--require installed`. Completion criterion: later messages distinguish installed, tester-visible, assigned, and merely built/uploaded states.
+## Installation verification
 
-If verification is incomplete, say exactly which gate is missing. Do not tell Peter to refresh, install, update, or look for a build that has not been verified.
+Prefer structured device inspection:
 
-## Build Number Rules
+```bash
+xcrun devicectl device info apps \
+  --device "{deviceIdentifier}" \
+  --bundle-id "{bundleId}" \
+  --include-all-apps \
+  --json-output device-apps.json
+```
 
-- A new source revision containing diagnostics or fixes must use a new build number.
-- The build number must be read from the produced app/archive or the exact App Store Connect record; never infer it from a workflow name, run ID, local expectation, or “latest build” label.
-- Record both the checked-in source setting and the effective build number passed to Xcode. If they differ, report the effective produced number and explain the override in the receipt.
-- Do not claim a build exists until an exact App Store Connect record is independently visible.
-- Do not claim a build is testable until its processing, QC, audience, compliance, and group assignment are confirmed for that same number.
-- Do not claim a build is tester-visible until the tester-facing record identifies that same number.
-- Do not claim any build is installed until Peter or trusted direct-device evidence confirms that exact number.
+Parse the structured result and require:
 
-## Verification Record
+- bundle ID equals the target bundle ID;
+- installed `CFBundleShortVersionString` equals the target marketing version;
+- installed `CFBundleVersion` equals the target build number;
+- the device and app record are current, not a stale saved file.
 
-Retain these separate facts for the exact build:
+A successful `process launch` is not installation evidence. In the verified November 2026 run, `devicectl device info apps` did not enumerate the TestFlight-installed record even though Peter directly confirmed that Build 72 was installed. In that situation, preserve the command result, accept Peter's direct confirmation of the exact build as the installation evidence, and do not pretend that the device tool independently supplied the version. If Peter only says “it is installed” without naming the exact build, the installed gate remains incomplete.
 
-- source commit;
-- checked-in project build setting and effective produced build number;
-- successful Xcode Cloud workflow/run and archive;
-- App Store Connect exact build record;
-- processed/testable status, QC, audience, and compliance state;
-- exact TestFlight group assignment;
-- tester enrollment/access and exact tester-visible build number;
-- direct installation evidence and exact installed build number, if claimed;
-- final release state: uploaded, assigned, tester-visible, or installed.
+## Mandatory release receipt
 
-Use explicit `unknown` values when a read fails. Never convert an unknown value into `YES` based on context or expectation.
+For every TestFlight attempt, create a JSON receipt in the native checkout using `docs/testflight-release-receipt.template.json`. It must contain:
 
-## Pitfalls
+- exact target app, bundle ID, marketing version, build, group ID, and tester label;
+- source commit, ref, checked-in build number, effective build number, workflow ID, run ID or an explicit non-guessing unavailable marker, and archive status;
+- exact App Store Connect build record ID, processing state, QC state, audience, and compliance;
+- exact group ID, group-build membership, tester access, tester-visible build number;
+- installed build number and installation evidence only when directly proven;
+- UTC capture time, fresh-authenticated-read flag, and final release state.
 
-- A successful Xcode Cloud archive does not prove that a TestFlight build exists.
-- A build row for a different number does not prove the requested build exists.
-- “Latest build,” “next build,” and Xcode Cloud run number are not exact build verification.
-- An App Store Connect row alone does not prove installation.
-- An enrolled tester alone does not prove that the exact build is assigned to the group.
-- `Missing Compliance`, processing, expiry, or failed status means no install instruction may be given.
-- A stale page, failed API read, or partial result is incomplete verification, not permission to guess.
-- If Peter already confirms installation of the exact build, do not repeat installation instructions or ask him to install it again.
+Never put credentials or tokens in the receipt. Validate it from the native checkout:
+
+```bash
+python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installable
+```
+
+After exact installation evidence:
+
+```bash
+python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installed
+```
+
+The receipt is the communication boundary. Preserve failed validation as evidence of a missing gate; never edit unknown values merely to make validation pass.
+
+## Verified Build 72 record
+
+The tested receipt is:
+
+```text
+docs/testflight-build72-release-receipt.json
+```
+
+It passed:
+
+```text
+TESTFLIGHT_VERIFICATION_PASSED app=Accessible Capture build=72 requirement=installed state=installed
+```
+
+The record shows Build 72 as `VALID`, internally testable, compliance complete, assigned to `Accessible Core`, accessible to the enrolled tester, tester-visible as Build 72, and installed as Build 72. The Xcode Cloud run ID was not exposed by the current App Store Connect API read and is recorded with an explicit non-guessing marker rather than an invented identifier.
+
+## Final reporting
+
+Report separately:
+
+- source published;
+- Xcode Cloud archive;
+- App Store Connect processing/compliance;
+- group assignment;
+- tester access;
+- tester-visible build;
+- installed build;
+- any remaining physical or tooling limitation.
+
+Never report TestFlight success from an Xcode Cloud result or TestFlight launch alone. Never say Peter needs to do nothing while an agent-owned verification remains, a background process is active, or the exact installation evidence is missing.

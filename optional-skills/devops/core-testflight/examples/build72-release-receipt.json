@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "target": {
+    "app_name": "Accessible Capture",
+    "bundle_id": "com.accessiblecore.capture",
+    "marketing_version": "1.0",
+    "build_number": "72",
+    "group_id": "6742136a-4f2b-4fb7-b304-0e3abe5a4385",
+    "tester_label": "PHN-01 / Accessible Core internal tester"
+  },
+  "source": {
+    "commit": "1c89ab662722a53f7189ae01f3f8d26654fb157f",
+    "ref": "native-auth-client",
+    "checked_in_build_number": "72",
+    "effective_build_number": "72",
+    "xcode_cloud_workflow_id": "E38EEB84-A954-4181-BEEF-D5FC9502DADC",
+    "xcode_cloud_run_id": "not-recovered-from-current-api-read",
+    "archive_status": "SUCCEEDED"
+  },
+  "app_store_connect": {
+    "build_record_id": "86b5f485-6ac1-4026-8f81-9bc86e2acb31",
+    "version": "1.0",
+    "build_number": "72",
+    "processing_state": "VALID",
+    "qc_state": "PASS",
+    "build_audience_type": "INTERNAL",
+    "export_compliance_status": "COMPLETE"
+  },
+  "testflight": {
+    "group_id": "6742136a-4f2b-4fb7-b304-0e3abe5a4385",
+    "group_build_membership": true,
+    "tester_access": true,
+    "tester_visible_build_number": "72",
+    "installed_build_number": "72",
+    "installation_evidence": true
+  },
+  "verification": {
+    "captured_at_utc": "2026-11-02T22:51:42.738897Z",
+    "fresh_authenticated_read": true,
+    "release_state": "installed"
+  }
+}

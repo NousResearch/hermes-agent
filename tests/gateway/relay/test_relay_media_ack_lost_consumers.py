@@ -1,0 +1,71 @@
+"""A relay attachment whose ack is lost reaches its consumers as "possibly delivered".
+
+The connector applied ``send_media`` but its ack never came back (socket hiccup,
+connector restart). The relay adapter reports that as success with
+``raw_response["ambiguous"]``. Both consumers that re-send on failure must carry
+the doubt instead of dropping it: the model's ``send_message`` tool says "do not
+resend", and a cron run marks the target unverified (``last_delivery_unverified``)
+rather than reporting a clean delivery.
+
+Real ``RelayAdapter`` + ``WebSocketRelayTransport`` + ``RelayMediaClient``; only the
+connector is fake, at its network boundary.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+from gateway.config import Platform
+from tests.cron.test_cron_relay_media_upload_failure import CHAT, _gateway_config, live_relay
+
+
+@pytest.fixture
+def ack_lost_relay(request):
+    """The connected relay, with every ``send_media`` applied but never acked."""
+    connector, adapter, loop = request.getfixturevalue("live_relay")
+    connector.unacked_ops = {"send_media"}
+    adapter._transport._outbound_timeout_s = 0.5
+    return connector, adapter, loop
+
+
+def test_send_message_tool_reports_an_unconfirmed_attachment(ack_lost_relay, tmp_path):
+    from tools.send_message_tool import _send_live_adapter_media
+
+    connector, adapter, loop = ack_lost_relay
+    pdf = tmp_path / "q3-report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 q3")
+
+    result = asyncio.run_coroutine_threadsafe(
+        _send_live_adapter_media(adapter, CHAT, "Q3 report", [(str(pdf), False)]), loop
+    ).result(timeout=20)
+
+    assert len(connector.ops("send_media")) == 1        # it went out once
+    assert result["success"] is True                     # not a failure the model would retry
+    assert "do not resend" in result["delivery_unconfirmed"]
+
+
+def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_path):
+    from cron.jobs import create_job, get_job, mark_job_run
+    from cron.scheduler import _deliver_result
+
+    connector, adapter, loop = ack_lost_relay
+    pdf = tmp_path / "q3-report.pdf"
+    pdf.write_bytes(b"%PDF-1.4 q3")
+    job = create_job("Post the Q3 report", "every 1d", name="Q3 report", deliver="origin",
+                     origin={"platform": "slack", "chat_id": CHAT})
+    with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
+         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
+        error = _deliver_result(job, f"Q3 numbers are in.\n\nMEDIA:{pdf}",
+                                adapters={Platform.RELAY: adapter}, loop=loop)
+    mark_job_run(job["id"], True, delivery_error=error)
+    record = get_job(job["id"])
+    assert record is not None
+
+    assert len(connector.ops("send_media")) == 1
+    assert error is None                                  # possibly delivered: not a failed run
+    assert record["last_delivery_unverified"], record     # ...but not a confirmed one either
+    assert any(CHAT in target for target in record["last_delivery_unverified"])

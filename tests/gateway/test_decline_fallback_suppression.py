@@ -207,7 +207,7 @@ def _card_state(adapter: _CardAdapter):
         tasks=[{"text": "step"}],
         native_failed=False,
         publication_suppressed=False,
-        visible_tasks=lambda: [{"text": "step"}],
+        tasks_to_publish=lambda: [{"text": "step"}],
         fallback_text=lambda: "step",
         adapter=adapter,
     )

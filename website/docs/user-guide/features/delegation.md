@@ -322,8 +322,8 @@ delegation:
           service_tier: fast            # optional; refused at spawn if this route has no fast tier
           max_iterations: 15            # optional; turn limit for this route, overrides delegation.max_iterations
           child_timeout_seconds: 300    # optional; idle timeout for this route, overrides the global one
-          escalate_reasoning: true     # optional; route-only boolean, default false
-          escalate_ceiling: xhigh       # optional; does not enable escalation by itself
+          escalate_reasoning: true      # optional; route-only boolean, default false; needs escalate_ceiling too
+          escalate_ceiling: xhigh       # the highest level a retry may reach; alone it enables nothing
       default: fast                     # optional: option for tasks that set none
     profile_routes:                     # read when backend: profile_routes
       profiles:
@@ -331,7 +331,7 @@ delegation:
           description: Writes and refactors code; runs tests.
 ```
 
-`escalate_reasoning` is a route-only boolean, defaulting to `false`; set it to `true` to enable reasoning escalation for that model route. The optional `escalate_ceiling` is trimmed and lowercased to a level on the ladder `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Setting a ceiling alone never enables escalation. Invalid values refuse the task, and profile routes ignore both settings.
+`escalate_reasoning` is a route-only boolean, defaulting to `false`. Reasoning escalation runs on a model route only when it sets both `escalate_reasoning: true` and an `escalate_ceiling`; either one alone leaves escalation off. `escalate_ceiling` is trimmed and lowercased to a level on the ladder `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Invalid values refuse the task, and profile routes ignore both settings.
 
 The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. Each result of a backend-routed task carries `route`: the backend, the option or profile name, and the provider, model, reasoning effort and speed tier the child actually ran on (`fallback_activated: true` when a fallback provider took over). Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
 

@@ -35,10 +35,11 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
   value for this task only. Any other value refuses the task. A profile route ignores it: that
   child uses the profile's own ``delegation.child_timeout_seconds`` (default: no idle timeout).
 
-* ``escalate_reasoning`` - a boolean enabling reasoning escalation for this child (default false).
-  Route-only: not a ``delegation`` section global. A profile route ignores it.
+* ``escalate_reasoning`` - a boolean (default false). Reasoning escalation runs for this child only
+  when the route sets both ``escalate_reasoning: true`` and ``escalate_ceiling``; either one alone
+  leaves it off. Route-only: not a ``delegation`` section global. A profile route ignores it.
 * ``escalate_ceiling`` - a reasoning ladder level: none, minimal, low, medium, high, xhigh, max,
-  or ultra (case-insensitive, whitespace trimmed). Does not enable escalation by itself.
+  or ultra (case-insensitive, whitespace trimmed). Required for escalation, never enough on its own.
   Route-only; a profile route ignores it. Invalid values refuse only this task.
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),

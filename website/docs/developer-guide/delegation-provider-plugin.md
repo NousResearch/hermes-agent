@@ -118,11 +118,12 @@ A route is a dict with any of:
 - `child_timeout_seconds`: a number of 0 or more. The idle timeout for children on this route, with the
   same meaning as `delegation.child_timeout_seconds` (0 disables it; values under 30 are raised to 30);
   overrides the global value.
-- `escalate_reasoning`: route-only boolean (default `false`), enabling reasoning escalation for this
-  route's children. Strings such as `"true"` are invalid; forward values unchanged so core validates them.
-- `escalate_ceiling`: optional route-only reasoning ceiling, trimmed and lowercased to one of
-  `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. A ceiling alone never enables
-  escalation. Invalid escalation settings refuse the task; profile routes ignore both settings.
+- `escalate_reasoning`: route-only boolean (default `false`). Reasoning escalation runs for this route's
+  children only when the route sets both `escalate_reasoning: true` and `escalate_ceiling`; either one
+  alone leaves it off. Strings such as `"true"` are invalid; forward values unchanged so core validates them.
+- `escalate_ceiling`: route-only reasoning ceiling, trimmed and lowercased to one of
+  `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; required for escalation, never
+  enough on its own. Invalid escalation settings refuse the task; profile routes ignore both settings.
 - `profile`: the name of a Hermes profile. The child runs **as that profile**: its `config.yaml`,
   primary model and credentials (a `model.default` alias or named provider resolves exactly as at
   CLI startup), credential pool, fallback chain, reasoning (`agent.reasoning_effort` and

@@ -1687,3 +1687,22 @@ export async function fetchAllProfilesAggregatePerProfile(
 
   return mergeProfilePullRequests(reads)
 }
+
+/** Which registry connection the primary session aggregate reads: the registry id stamped on a
+ *  remote primary's descriptor, else this device. `resolve` must be passive, so a sidebar refresh
+ *  never spawns or dials for it. */
+export async function primaryAggregateConnectionId(resolve: () => Promise<unknown>): Promise<string> {
+  try {
+    const descriptor = (await resolve()) as { connectionId?: unknown } | null
+
+    return String(descriptor?.connectionId || '').trim() || 'local'
+  } catch {
+    return 'local'
+  }
+}
+
+/** A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson). Session lookups are a
+ *  probe ladder: "not on this profile" is a normal rung outcome, not a failure. */
+export function isNotFoundApiError(error: unknown): boolean {
+  return /(?:^|\s)404\b/.test(String((error as { message?: unknown } | null)?.message ?? error))
+}

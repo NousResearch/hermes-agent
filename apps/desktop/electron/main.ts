@@ -186,7 +186,6 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForPendingLogin,
-  LOCAL_CONNECTION_ID,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -470,8 +469,10 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isNotFoundApiError,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
+  primaryAggregateConnectionId,
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
@@ -15882,22 +15883,15 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
 // than breaking the sidebar. Connected registry gateways' sessions are spliced
 // in too (#88880) — the unified Sessions list shows EVERY connected gateway's
 // chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(
-  searchParams,
-  remoteProfiles,
-  registrySourcesOverride = null,
-  pinnedConnectionId = null
-) {
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null, pinned = null) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
 
-  // A window pinned to another gateway still merges the primary's rows here.
-  // Name their real owner, or the renderer files them under the pinned gateway.
-  if (pinnedConnectionId) {
-    tagPrimarySessionRows(base, await primaryAggregateConnectionId(), pinnedConnectionId)
+  if (pinned) {
+    tagPrimarySessionRows(base, await primaryAggregateConnectionId(() => ensureBackend(null, { passive: true })), pinned)
   }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
@@ -16011,19 +16005,6 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
   return sources
 }
 
-// Which registry connection the primary session aggregate reads: the registry
-// id stamped on a remote primary's descriptor, else this device. Passive, so a
-// sidebar refresh never spawns or dials for it.
-async function primaryAggregateConnectionId(): Promise<string> {
-  try {
-    const descriptor: any = await ensureBackend(null, { passive: true })
-
-    return String(descriptor?.connectionId || '').trim() || LOCAL_CONNECTION_ID
-  } catch {
-    return LOCAL_CONNECTION_ID
-  }
-}
-
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
 const primaryBackendInstallId = createPrimaryInstallIdResolver({
   resolve: () => ensureBackend(null, { passive: true }),
@@ -16083,13 +16064,6 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
     stopPoolBackend(key),
     sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
   ])
-}
-
-// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
-// Session lookups are a probe ladder: "not on this profile" is a normal rung
-// outcome, not a failure.
-function isNotFoundApiError(error) {
-  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
 }
 
 async function handleHermesApiRequest(request) {

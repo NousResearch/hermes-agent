@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-import gateway.run_adapters as adapters_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.run import GatewayRunner
@@ -1376,7 +1375,7 @@ class TestSecondaryAdapterUnavailableRecovery:
 
         monkeypatch.setattr(runner, "_create_adapter", create)
         rearm = AsyncMock(return_value=None)
-        monkeypatch.setattr(adapters_run, "rearm_secondary_plugin_load", rearm)
+        monkeypatch.setattr(runner, "_rearm_failed_plugin_load", rearm)
         monkeypatch.setattr(
             runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True)
         )
@@ -1511,10 +1510,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         queue_info = {}
 
         for _ in range(5):
-            # The name the reconnect loop calls (imported from the recovery module).
-            await adapters_run.rearm_secondary_plugin_load(
-                runner, "reviewer", Platform("irc"), queue_info
-            )
+            await runner._rearm_failed_plugin_load(Platform("irc"), queue_info)
 
         assert rearmed == ["irc"] * 3  # a permanently broken plugin stops being re-imported
         assert queue_info["load_rearms"] == 3

@@ -14,6 +14,7 @@ import logging
 import re
 import threading
 import time
+from dataclasses import replace
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
@@ -36,6 +37,7 @@ from agent.memory_provider import (
     MemoryPrefetchResult,
     MemoryProvider,
     PRE_COMPRESS_CHECKPOINT_API_VERSION,
+    _freeze_memory_observation_payload,
     ctx_bound,
     spawn_context_thread,
 )
@@ -405,7 +407,10 @@ class MemoryManager:
                     "session_id": session_id,
                     "task_id": task_id,
                     "turn_id": turn_id,
-                    "observations": result.observations,
+                    "observations": tuple(
+                        replace(observation, payload=_freeze_memory_observation_payload(observation.payload)[0])
+                        for observation in result.observations
+                    ),
                     "context_sha256": hashlib.sha256(context_bytes).hexdigest(),
                     "context_byte_length": len(context_bytes),
                 }

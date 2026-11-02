@@ -63,6 +63,7 @@ class _ConsumerDispatcher:
     callback: Callable[..., Any]
     manager_ref: weakref.ReferenceType | None
     events: queue.Queue[_QueuedObserverEvent | object]
+    hosted_owner: str | None = None
     thread: threading.Thread | None = None
     retired: bool = False
     stop_requested: bool = False
@@ -423,6 +424,8 @@ def _dispatchers_for_scope(
     with _dispatcher_lock:
         for key, dispatcher in list(_dispatchers.items()):
             thread = dispatcher.thread
+            if dispatcher.stop_requested:
+                dispatcher.retired = True
             if dispatcher.retired and (thread is None or not thread.is_alive()):
                 _dispatchers.pop(key, None)
 
@@ -469,6 +472,7 @@ def _dispatchers_for_scope(
                     )
                     if (
                         old_key[1] != hook_name
+                        or candidate.callback is not callback
                         or not candidate.retired
                         or thread is None
                         or not thread.is_alive()
@@ -495,6 +499,26 @@ def _dispatchers_for_scope(
                     break
 
             if dispatcher is None or dispatcher.retired:
+                from hermes_cli.plugin_host import _hosted_callables
+
+                hosted_owner = next(
+                    (registration.plugin_key
+                     for registration in getattr(manager, "_registration_order", ())
+                     if registration.kind == "hook" and registration.key == hook_name
+                     and registration.hook_callback is callback),
+                    None,
+                ) if _hosted_callables.get(id(callback)) is callback else None
+                # ponytail: two live workers per profile/plugin/hook; use cancellable
+                # hosted observer RPCs if more concurrent blocked generations are needed.
+                if hosted_owner is not None and sum(
+                    candidate.thread is not None and candidate.thread.is_alive()
+                    and candidate.hosted_owner == hosted_owner
+                    and candidate.hook_name == hook_name
+                    and (candidate.profile_key == profile_key if profile_key is not None
+                         else candidate.manager_ref is not None and candidate.manager_ref() is manager)
+                    for candidate in _dispatchers.values()
+                ) >= 2:
+                    continue
                 events: queue.Queue[_QueuedObserverEvent | object] = queue.Queue(
                     maxsize=_QUEUE_SIZE
                 )
@@ -506,6 +530,7 @@ def _dispatchers_for_scope(
                     callback=callback,
                     manager_ref=manager_ref,
                     events=events,
+                    hosted_owner=hosted_owner,
                 )
                 dispatcher.thread = spawn_context_thread(
                     _worker,
@@ -582,14 +607,14 @@ def _enqueue_plugin_observer_hook(
                         retained_text.release()
                 logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
                 dispatchers = []
-        for dispatcher in dispatchers:
+        for index, dispatcher in enumerate(dispatchers):
             # A Context cannot be entered concurrently by two workers. Each
             # consumer gets an independent copy of the originating enqueue
-            # context, while retaining the same event payload.
+            # context and, for factory-built events, its own bounded payload.
             item = _QueuedObserverEvent(
                 scope_key=scope_key,
                 generation=dispatcher.generation,
-                payload=event_payload,
+                payload=dict(payload_factory()) if payload_factory is not None and index else event_payload,
                 context=event_context.copy(),
                 retained_text=retained_text,
             )
@@ -710,10 +735,8 @@ def shutdown_plugin_observer_dispatcher(timeout: float = 1.0) -> None:
     callback remains on its daemon worker and is never allowed to hold process
     teardown indefinitely.
     """
-    global _dispatchers
     with _dispatcher_lock:
         dispatchers = list(_dispatchers.values())
-        _dispatchers = {}
         for dispatcher in dispatchers:
             dispatcher.stop_requested = True
     for dispatcher in dispatchers:

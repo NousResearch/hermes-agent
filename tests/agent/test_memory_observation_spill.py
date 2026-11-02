@@ -90,8 +90,9 @@ def test_external_spill_preserves_wire_truncation_for_later_providers(
     assert hosted._wire_truncated is True
     hosted_prefix_size = 1
 
+    from tests.agent.test_memory_wire_truncation_provenance import _hosted
     manager = MemoryManager()
-    manager.add_provider(_StructuredProvider(name="external", result=hosted))
+    manager.add_provider(_hosted(_StructuredProvider(name="external", result=raw)))
     manager.add_provider(
         _StructuredProvider(
             name="builtin",

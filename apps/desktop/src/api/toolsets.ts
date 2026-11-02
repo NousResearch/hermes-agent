@@ -26,11 +26,17 @@ export function setToolsetEnabled(
   enabled: boolean,
   profile?: ProfileScope
 ): Promise<{ ok: boolean; name: string; enabled: boolean }> {
+  const scope = capabilityScoped(profile)
+
   return window.hermesDesktop.api<{ ok: boolean; name: string; enabled: boolean }>({
-    ...capabilityScoped(profile),
+    ...scope,
     path: `/api/tools/toolsets/${encodeURIComponent(name)}`,
     method: 'PUT',
-    body: { enabled }
+    // The toggle endpoint scopes its write by body.profile first
+    // (web_routers/tools.py). On a multiplex host the Electron bridge can
+    // classify this PUT as unscopable and drop the `?profile=` query — the
+    // body copy keeps the write off the launch profile's config (#118633).
+    body: { enabled, profile: scope.profile }
   })
 }
 

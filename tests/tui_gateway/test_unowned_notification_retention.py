@@ -9,9 +9,12 @@ route (#140718). The event is parked instead (bounded), and only its owner's pol
 
 from __future__ import annotations
 
+import collections
 import contextlib
+import logging
 import queue
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -60,8 +63,9 @@ class _Batch:
 
 @pytest.fixture(autouse=True)
 def _isolated_state(monkeypatch):
-    """The park, the session registry and the lineage store are process-global: pin all three."""
+    """The park, its held-copy marks, the session registry and the lineage store are process-global: pin them."""
     monkeypatch.setattr(notification_park, "_parked", [])
+    monkeypatch.setattr("tools.async_delegation._held_copies", collections.Counter())
     monkeypatch.setattr(server, "_sessions", {})
 
     @contextlib.contextmanager
@@ -100,6 +104,8 @@ def test_resumed_owner_gets_what_a_foreign_poller_could_not_deliver(monkeypatch,
     server._notif_handle_ready("other-sid", other, [evt], set(), registry, lambda _evt: "text", None)
     assert registry.completion_queue.empty()
     assert started == [] and _parked() == [evt]
+    from tools import async_delegation
+    assert sum(async_delegation._held_copies.values()) == (evt["type"] == "async_delegation")
     assert notification_park.claim(lambda evt: server._session_owns_notification_event("other-sid", other, evt)) == []
 
     owner = _session(OWNER_KEY)
@@ -111,6 +117,8 @@ def test_resumed_owner_gets_what_a_foreign_poller_could_not_deliver(monkeypatch,
 
     assert started == ["resumed-sid"]
     assert _parked() == []
+    from tools import async_delegation
+    assert not async_delegation._held_copies  # the claimed copy's park mark ended once it was routed
 
 
 def test_the_finalizing_owners_drain_parks_instead_of_dropping(monkeypatch):
@@ -190,3 +198,51 @@ def test_shutdown_drain_hands_back_what_it_could_not_route(monkeypatch):
         server._notification_poller_scoped_loop(stop, "owner-sid", owner)
 
     assert list(registry.completion_queue.queue) == [foreign]
+
+
+def test_the_orphan_sweep_counts_a_parked_delegation_as_live_until_the_park_lets_go(tmp_path, monkeypatch, caplog):
+    """The park is out of the ledger sweep's sight: without the held-copy mark, a live delegation parked past a
+    claim lease reads as lost, so the sweep warns and queues a duplicate every lease. While parked it is never
+    re-offered; once the park lets go of it (TTL) the sweep re-offers the still-pending row."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tests.waiting import wait_until
+    from tools import async_delegation as ad
+    from tools.process_registry_awaiting import release, take_ready
+
+    home = tmp_path / "home"
+    home.mkdir()
+    registry = _registry()
+    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    ad._reset_for_tests()
+    token = set_hermes_home_override(str(home))
+    try:
+        handle = ad.dispatch_async_delegation(
+            goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key=OWNER_KEY,
+            runner=lambda: {"status": "completed", "summary": "done"})
+        wait_until(lambda: ad.active_count() == 0, timeout=10, what="delegation finished")
+        other, sweep_q = _session(OTHER_KEY), queue.Queue()
+        monkeypatch.setattr(server, "_sessions", {"other-sid": other})
+        ready = take_ready(registry.completion_queue, 0)  # a foreign poller drains the owner's result...
+        server._notif_handle_ready("other-sid", other, ready, set(), registry, lambda _evt: "text", None)
+        release(ready)  # ...and parks it
+        assert [evt["delegation_id"] for evt in _parked()] == [handle["delegation_id"]]
+        lease = time.time() + ad._CLAIM_LEASE_S + 1
+        caplog.set_level(logging.WARNING, logger="tools.async_delegation")
+
+        assert ad.sweep_orphaned_completions(sweep_q, now=lease) == 0
+        assert sweep_q.empty() and not [r for r in caplog.records if "Re-offering" in r.getMessage()]
+
+        monkeypatch.setattr(notification_park, "time", SimpleNamespace(monotonic=lambda: float("inf")))  # past the TTL
+        assert notification_park.claim(lambda _evt: False) == [] and _parked() == []
+        assert ad.sweep_orphaned_completions(sweep_q, now=lease + ad._CLAIM_LEASE_S) == 1
+        assert [evt["delegation_id"] for evt in _drain(sweep_q)] == [handle["delegation_id"]]
+    finally:
+        reset_hermes_home_override(token)
+        ad._reset_for_tests()
+
+
+def _drain(q) -> list:
+    out = []
+    while not q.empty():
+        out.append(q.get_nowait())
+    return out

@@ -3,12 +3,14 @@ token reload (mtime-based disk watch so tokens refreshed by cron/another CLI are
 deduplication (N concurrent 401s with the same access_token trigger one recovery) and reconnect signalling
 (``MCPServerTask`` drives the reconnect; the manager decides when). The ONLY place that instantiates the SDK's
 ``OAuthClientProvider`` for runtime use; refresh stays lazy in the SDK — one ``stat()`` per tool call is cheaper
-than an await + refresh round-trip."""
+than an await + refresh round-trip — except that a refreshable access token within the refresh margin of its
+expiry is refreshed before the request (``HermesMCPOAuthProvider._hermes_force_refresh_if_near_expiry``)."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import threading
 import time
@@ -53,8 +55,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     """
 
     _hermes_logger = logger
+    _HERMES_DEFAULT_REFRESH_MARGIN_SECONDS = 120.0
 
-    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
+    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False,
+                 refresh_margin_seconds: Any = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # mcp 2.0 uses a task-owned anyio.Lock held across the yielded resource request (a session-long GET blocks
         # every POST; HTTPX may close the generator from another task). A binary semaphore drops task ownership.
@@ -64,6 +68,57 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        self._hermes_refresh_margin = self._hermes_resolve_refresh_margin(refresh_margin_seconds)
+
+    @classmethod
+    def _hermes_resolve_refresh_margin(cls, configured: Any) -> float:
+        """Seconds before expiry at which a request refreshes the access token first: the server's
+        ``oauth.refresh_margin_seconds`` (``0`` disables the early refresh), else the default. A value
+        that is not a non-negative number is refused here, where the config is read."""
+        if configured is None or (isinstance(configured, str) and not configured.strip()):
+            return cls._HERMES_DEFAULT_REFRESH_MARGIN_SECONDS
+        try:
+            value = math.nan if isinstance(configured, bool) else float(configured)
+        except (TypeError, ValueError):
+            value = math.nan
+        if math.isnan(value) or math.isinf(value) or value < 0:
+            raise ValueError(
+                "oauth.refresh_margin_seconds must be a non-negative number of seconds "
+                f"(0 disables the early refresh), got {configured!r}")
+        return value
+
+    def _hermes_force_refresh_if_near_expiry(self) -> bool:
+        """Mark a still-valid, refreshable access token as expired when it has at most the refresh margin
+        left, so the SDK's pre-request refresh branch runs before the request goes out.
+
+        Why: the SDK refreshes only once ``time.time()`` has passed the expiry. An authorization server
+        that issues short tokens (Keycloak's default access-token lifetime is 300 s) lets a request start
+        a second before expiry, and an MCP server whose admission re-introspects the token mid-request
+        sees it inactive and fails the call with an application error, not a 401, so nothing retries.
+        Only tokens with a refresh grant are touched, and the margin is capped at half the token's known
+        lifetime so very short-lived tokens are not refreshed on every request. Returns True when the
+        expiry was forced."""
+        margin = getattr(self, "_hermes_refresh_margin", None)
+        if margin is None:  # built without __init__ (a subclass that skips it): the default
+            margin = self._hermes_resolve_refresh_margin(None)
+        context = self.context
+        tokens = context.current_tokens
+        expiry = context.token_expiry_time
+        # Only real numbers count: an unknown expiry (None, or a test double) means no early refresh.
+        if margin <= 0 or tokens is None or not isinstance(expiry, (int, float)) or not expiry:
+            return False
+        if not context.can_refresh_token():
+            return False
+        lifetime = getattr(tokens, "expires_in", None)
+        if isinstance(lifetime, (int, float)):
+            margin = min(margin, max(float(lifetime), 0.0) / 2.0)
+        remaining = float(expiry) - time.time()
+        if remaining > margin:
+            return False
+        logger.info("MCP OAuth '%s': access token expires in %.0fs (refresh margin %.0fs); refreshing before the request",
+                    self._hermes_server_name, remaining, margin)
+        context.token_expiry_time = time.time() - 1
+        return True
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -244,6 +299,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
             self._log_nonfatal("pre-flow disk-watch", exc)
+        # Pre-flow hook: refresh first when the access token is about to expire (reads context state only).
+        self._hermes_force_refresh_if_near_expiry()
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
         # item`` DISCARDS the responses httpx sends back via ``asend``, and the SDK crashes on None.
         # Manually bridge the bidirectional generator protocol. httpx's auth_flow driver
@@ -358,6 +415,7 @@ class MCPOAuthManager:
                 f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
         return _HERMES_PROVIDER_CLS(
             server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
+            refresh_margin_seconds=cfg.get("refresh_margin_seconds"),
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:

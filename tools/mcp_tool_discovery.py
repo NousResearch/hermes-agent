@@ -687,8 +687,31 @@ def reconcile_mcp_servers_with_config() -> dict[str, list[str]]:
     added = _awaiting_connect(wanted, scope)
     if added:
         discover_mcp_tools()
-    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
+    revived = _reconnect_reauthorized_servers(servers, wanted, scope)
+    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added + revived,
             "pending": sorted(connecting - wanted)}
+
+
+def _reconnect_reauthorized_servers(servers, wanted, scope) -> list[str]:
+    """A parked task is registered, so discovery skips it. Adopt a newly saved grant only for
+    this profile's own task, waiting for discovery before reload checks readiness. Serialize with
+    settings-driven reconnects so concurrent reloads do not rebuild the same transport twice."""
+    revived = []
+    with _RESTART_LOCK:
+        for name in sorted(wanted):
+            with _core._lock:
+                server = _core._servers.get(_server_key(name, scope, current=False))
+            parked = getattr(server, "_auth_park", None)
+            if parked is None or getattr(server, "session", None) is not None:
+                continue
+            storage, stamp = parked
+            if not storage.has_cached_tokens() or storage.credential_stamp() == stamp:
+                continue
+            if _loop._signal_reconnect_and_wait(
+                    name, server, op_description="saved OAuth credentials changed",
+                    timeout=servers[name].get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)):
+                revived.append(name)
+    return revived
 
 
 def _unregistered(wanted: set[str], scope) -> set[str]:
@@ -725,9 +748,16 @@ def _not_connected(wanted: set[str], scope) -> set[str]:
         serving_nothing = {name for name in wanted
                            if ((key := _resolve_server_key(name, scope, current=False)) in _core._servers
                                and (key in _core._server_connect_errors
-                                    or getattr(_core._servers[key], "_park_reason", None) is not None))
+                                    or _parked_without_ready_session(_core._servers[key])))
                            or (key in _core._lazy_server_configs and key in _core._server_connect_errors)}
     return _unregistered(wanted, scope) | serving_nothing
+
+
+def _parked_without_ready_session(server) -> bool:
+    # A revived transport retains its park reason until keepalive proves health. That retry-budget
+    # history must not hide tools already discovered and published by the fresh session.
+    return (getattr(server, "_park_reason", None) is not None
+            and not (getattr(server, "session", None) is not None and server._ready.is_set()))
 
 
 def mcp_servers_not_connected() -> list[str]:

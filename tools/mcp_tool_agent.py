@@ -69,7 +69,8 @@ def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set],
+    refresh_bridge: bool = False) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -82,7 +83,8 @@ def _publish_tool_snapshot(
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
-            new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
+            new_defs, new_names = _merge_preserving_prefix(
+                current_defs, new_defs, prefix_registered, refresh_bridge=refresh_bridge)
         new_defs, new_names = _drop_session_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
@@ -102,7 +104,7 @@ def _publish_tool_snapshot(
 
 def refresh_agent_mcp_tools(
     agent, *, enabled_override=None, disabled_override=None, quiet_mode: bool = True,
-    content_aware: bool = False, preserve_prefix: bool = False) -> set:
+    content_aware: bool = False, preserve_prefix: bool = False, refresh_bridge: bool = False) -> set:
     """Re-derive an already-built agent's tool snapshot from the live registry; returns the
     newly-added tool names (empty when unchanged). The agent snapshots ``agent.tools`` at build
     time, so servers that connect later (slow OAuth, ``/reload-mcp``) are invisible until
@@ -121,7 +123,13 @@ def refresh_agent_mcp_tools(
 
     With ``preserve_prefix`` off (explicit ``/reload-mcp``, and a rebuild before the
     first turn) a same-name schema change is published. The caller has already
-    accepted the cache break, or nothing has been cached yet."""
+    accepted the cache break, or nothing has been cached yet.
+
+    ``refresh_bridge`` (with ``preserve_prefix`` and ``content_aware``): the tool_search bridge
+    alone takes its fresh bytes, so its embedded catalog listing names tools a server registered
+    after the snapshot. Everything else keeps the prefix contract. The mid-turn refresh uses it:
+    the model reads that listing to pick a name, and dispatch reads the live catalog only when
+    the model searches again."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
@@ -151,7 +159,8 @@ def refresh_agent_mcp_tools(
         content_aware = True
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered,
+        refresh_bridge=refresh_bridge)
     backend_before = getattr(agent, "_delegation_backend", None)
     published_gen = getattr(agent, "_tool_snapshot_generation", -1)
     stale = isinstance(published_gen, int) and snapshot_generation < published_gen  # a newer snapshot won
@@ -163,6 +172,38 @@ def refresh_agent_mcp_tools(
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
     return added
+
+
+def refresh_agent_tools_after_registry_move(agent) -> set:
+    """Inside a turn, before a request is built: when the tool registry moved past this agent's
+    snapshot (a parked server revived and re-registered its tools, a slow server connected after
+    the turn began), fold the live registry into the snapshot append-only, re-rendering only the
+    bridge listing so the model can name the new tools in its next call. Nothing moved: one
+    integer compare. No-op without registered MCP tools (the between-turns gate), for a frozen
+    cache-parity fork (its sentinel generation is never passed), and for an agent that opted out.
+    Returns the added tool names. The caller gates on ``tools.mcp_tool`` being imported, as the
+    between-turns refresh does: no MCP code loaded, nothing to fold in.
+
+    Why: the between-turns refresh has already run when a server revives seconds into a turn,
+    and the bridge keeps its sent listing, so the model has no name for the new tools until the
+    next turn and guesses (dispatch's live lookup only rescues a guess that happens to be right)."""
+    if getattr(agent, "_skip_mcp_refresh", False):
+        return set()
+    published = getattr(agent, "_tool_snapshot_generation", None)
+    if not isinstance(published, int):
+        return set()
+    try:
+        from tools.registry import registry
+        if registry._generation <= published:
+            return set()
+        from tools.mcp_tool_discovery import has_registered_mcp_tools
+        if not has_registered_mcp_tools():
+            return set()
+        return refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True,
+                                       content_aware=True, refresh_bridge=True)
+    except Exception:
+        logger.debug("mid-turn MCP tool refresh skipped", exc_info=True)
+        return set()
 
 
 def reprobe_tool_availability() -> None:
@@ -297,7 +338,8 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     return changed
 
 
-def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
+def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set, *,
+                             refresh_bridge: bool = False) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
     ``current_defs`` (the cached request prefix): a name already sent keeps its slot and the
     schema bytes already sent; a name only in the live list is kept if still registered
@@ -314,14 +356,21 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
 
     The bridge tools are synthesized by ``assemble_tool_defs``, never registered, and a fresh
     snapshot omits them when the deferred set shrinks under the activation threshold: they
-    keep their slot regardless (search reads the live catalog at dispatch)."""
+    keep their slot regardless (search reads the live catalog at dispatch).
+
+    ``refresh_bridge``: a bridge entry the fresh snapshot still carries takes its fresh bytes.
+    Its description embeds the catalog listing, and that is what the model reads to name a
+    deferred tool; a server that registered tools after the snapshot stays unnameable until
+    the listing moves (the mid-turn refresh). The sent bytes of every other tool still stand."""
     from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
         name = _def_name(entry)
         replacement = fresh.pop(name, None)
-        if replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
+        if name in BRIDGE_TOOL_NAMES and refresh_bridge and replacement is not None:
+            merged.append(replacement)
+        elif replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
             merged.append(entry)
     merged.extend(fresh.values())
     return merged, {_def_name(t) for t in merged}

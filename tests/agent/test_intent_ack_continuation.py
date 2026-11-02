@@ -17,9 +17,12 @@ gates relate, plus false-positive guards on realistic prose — not snapshots of
 the marker lists.
 """
 
+import json
 from types import SimpleNamespace
 from typing import Union
 from unittest.mock import patch
+
+import pytest
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
@@ -550,6 +553,40 @@ def test_scoped_decline_suppresses():
         ag, user, "I'll update the project files.",
         [{"role": "user", "content": user}], require_workspace=False,
     )
+
+
+def _answered(answer):
+    return [
+        {"role": "user", "content": "Please implement the panel highlight in the repository."},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "clarify", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "clarify", "content": json.dumps({
+            "outcome": "submitted", "responses": [{"status": "answered", "user_response": answer}]})},
+    ]
+
+
+@pytest.mark.parametrize("answer,authorized", [
+    ("Design only, please.", False),
+    ("Only a plan for now.", False),
+    ("Just outline the approach, no code.", False),
+    ("A write-up without changing anything.", False),
+    ("Implement it now.", True),
+    ("Implement the design only, not the tests.", True),
+    ("Trace selection means route highlighting, not viewport tracking.", True),
+])
+def test_scope_narrowing_clarification_answer_is_not_authorization(answer, authorized):
+    """An answer that narrows the request to a design or plan is not a decline, so
+    ``_DECLINED_RE`` let it through and the original edit request was recovered
+    against "I'll implement the panel change." (#69779, reported by @kvnloo). Such an
+    answer now reads as unresolved on both paths; an answer that still names an
+    execution verb keeps the request."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    user = "Please implement the panel highlight in the repository."
+    for require_workspace in (True, False):
+        assert looks_like_codex_intermediate_ack(
+            ag, user, "I'll implement the panel change.", _answered(answer),
+            require_workspace=require_workspace,
+        ) is authorized, (answer, require_workspace)
 
 
 def test_decline_guard_does_not_suppress_an_ordinary_request():

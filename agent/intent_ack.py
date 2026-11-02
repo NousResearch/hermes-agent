@@ -40,6 +40,29 @@ _DECLINED_RE = re.compile(
     r"approval|permission|confirmation|credentials?|password|nothing|not now|not to|"
     r"do not|don['’]t|did not provide a response)\b)"
 )
+# A clarification answer that narrows the request to a non-execution deliverable
+# ("Design only, please", "just a plan for now", "no code") is not a decline, but it
+# does not authorize the edit either. An answer that still names an execution verb
+# ("implement the design only, not the tests") keeps the request.
+_DELIVERABLE = (
+    r"(?:design|plan|proposal|outline|spec(?:ification)?|write-?up|summary|explanation|"
+    r"analysis|recommendation|advice|discussion|review)"
+)
+_SCOPE_ONLY_RE = re.compile(
+    r"\b(?:" + _DELIVERABLE + r"s?\s+only|"
+    r"(?:only|just)\s+(?:an?\s+|the\s+)?" + _DELIVERABLE + r"s?\b|"
+    r"(?:only|just)\s+(?:design|plan|outline|explain|describe|discuss|summari[sz]e|document|analy[sz]e)\b|"
+    r"no\s+(?:code|coding|implementation|edits?|changes?)|"
+    r"without\s+(?:implementing|changing|editing|coding|touching))\b"
+)
+_EXECUTION_VERB_RE = re.compile(
+    r"\b(?:implement|build|change|update|edit|fix|add|remove|refactor|apply|write the code|code it)\b"
+)
+
+
+def _scope_narrowed(text: str) -> bool:
+    """The answer asks for a deliverable other than the work: no authorization to act."""
+    return bool(_SCOPE_ONLY_RE.search(text)) and not _EXECUTION_VERB_RE.search(text)
 
 
 def _answered_clarification(content: Any) -> bool:
@@ -47,7 +70,8 @@ def _answered_clarification(content: Any) -> bool:
 
     Mirrors ``tools.clarify_tool._result``: ``{"responses": [{"status",
     "user_response"}], "outcome"}``. Cancelled, timed-out, undelivered, partial and
-    skipped forms never prove the user authorized the work.
+    skipped forms never prove the user authorized the work; nor does an answer that
+    declines it or narrows it to a design, plan or explanation (#69779, @kvnloo).
     """
     try:
         result = json.loads(content)
@@ -73,7 +97,7 @@ def _answered_clarification(content: Any) -> bool:
             # still declines. Explicit stop/wait language wins in either form.
             if _CONTRASTIVE_ANSWER_RE.fullmatch(text):
                 text = text[3:].lstrip()
-            if _DECLINED_RE.search(text):
+            if _DECLINED_RE.search(text) or _scope_narrowed(text):
                 return False
     return True
 

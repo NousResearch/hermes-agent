@@ -188,6 +188,10 @@ def test_answered_clarification_resumes_work_with_bounded_clean_history(harness,
     pytest.param("Do not implement anything. Stop here.", TAIL_ACK, False, id="tail-declined"),
     pytest.param("Wait for my decision.", TAIL_ACK, False, id="tail-wait"),
     pytest.param(CORRECTION, TAIL_ACK, True, id="tail-cancel-race"),
+    # A scope change is not a decline, but it does not authorize the edit either
+    # (@kvnloo on #69779): the answer asks for a design, so the retry must not fire.
+    pytest.param("Design only, please.", "I’ll implement the panel change.", False, id="scope-design-only"),
+    pytest.param("Just a plan for now, no code.", GOVERNED_ACK, False, id="scope-plan-only"),
 ])
 def test_clarification_terminal_boundaries_do_not_spend_recovery(harness, answer, text, interrupt):
     result, durable, requests = _run(harness, [text], answer=answer, interrupt=interrupt)
@@ -196,6 +200,19 @@ def test_clarification_terminal_boundaries_do_not_spend_recovery(harness, answer
     if not interrupt:
         assert result["final_response"] == text
         _assert_transcript_contract(result, durable)
+
+
+def test_scope_narrowing_control_still_resumes(harness):
+    """Positive control for the scope-change seam: the same question answered with
+    "Implement it now" still gets its bounded retry and one read."""
+    user = "Please implement the panel highlight in the repository."
+    result, durable, requests = _run(
+        harness, ["I’ll implement the panel change."], answer="Implement it now.", user=user, resume=True,
+    )
+    assert len(requests) == 4                       # clarify, ack, retried read, final
+    assert sum(m.get("tool_call_id") == "work" for m in durable) == 1
+    assert result["final_response"] != "I’ll implement the panel change."
+    assert [m["content"] for m in durable if m["role"] == "user"] == [user]
 
 
 @pytest.mark.parametrize("live_work", [False, "process", "delegation"])

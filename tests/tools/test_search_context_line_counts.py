@@ -1,6 +1,7 @@
 """search_files counts and paginates real matches; context=N lines ride along, marked."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -49,7 +50,11 @@ def test_dense_block_marks_context_rows(proj):
 def test_context_free_search_keeps_its_shape(proj):
     r = json.loads(search_tool("HERON", path=str(proj), task_id="t-ctx"))
     assert r["total_count"] == 1
-    assert r["matches"] == [{"path": str(proj / "one.md"), "line": 3, "content": "Codeword: HERON-41."}]
+    assert len(r["matches"]) == 1
+    row = r["matches"][0]
+    assert Path(row["path"]) == proj / "one.md"
+    assert {key: value for key, value in row.items() if key != "path"} == {
+        "line": 3, "content": "Codeword: HERON-41."}
     assert "context lines" not in json.dumps(r)
 
 

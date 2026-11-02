@@ -349,6 +349,55 @@ def test_provider_wall_budget_routes_to_human(board):
         )
 
 
+def test_wall_budget_counts_wall_RUNS_not_distinct_cards(board):
+    """Five walls on ONE card are five hits, not one.
+
+    The budget answers "how many times did this provider hit a wall". A
+    count of distinct cards would turn a card's five walls into a single
+    hit and make the budget unreachable in exactly the case it exists for.
+    """
+    kb, kbd, kbc = board["kb"], board["kbd"], board["kbc"]
+    with kbc.connect_closing() as conn:
+        card = _mk_card(kb, kbc, conn, title="five walls one card", provider="anthropic")
+        for _ in range(5):
+            _record_run(kb, kbc, conn, card.id, outcome="rate_limited", status="rate_limited")
+        result = kbd.dispatch_once(conn, dry_run=False, spawn_fn=lambda *a, **k: 999)
+        assert _ineligible_reasons(result).get(card.id) == "provider_wall_budget", (
+            "five walls on one card must exhaust the provider's wall budget"
+        )
+
+
+def test_wall_budget_window_ignores_old_walls(board, policy_file):
+    """Walls outside the budget window do not count against the budget.
+
+    An all-time counter would permanently kill a provider whose walls were
+    spread over months - the cards could never run again, with no path back
+    except editing governance by hand.
+    """
+    kb, kbd, kbc = board["kb"], board["kbd"], board["kbc"]
+    import json as _json
+    data = _json.loads(policy_file.read_text())
+    data["provider_budget"]["wall_window_seconds"] = 3600
+    policy_file.write_text(_json.dumps(data))
+    with kbc.connect_closing() as conn:
+        card = _mk_card(kb, kbc, conn, title="old walls", provider="anthropic")
+        # Five walls, but each ended 2 hours ago - outside the 1h window.
+        old = int(time.time()) - 7200
+        with kb.write_txn(conn):
+            for _ in range(5):
+                conn.execute(
+                    "INSERT INTO task_runs "
+                    "  (task_id, profile, status, outcome, started_at, ended_at) "
+                    "VALUES (?, 'alpha', 'rate_limited', 'rate_limited', ?, ?)",
+                    (card.id, old - 60, old),
+                )
+        result = kbd.dispatch_once(conn, dry_run=False, spawn_fn=lambda *a, **k: 999)
+        reasons = _ineligible_reasons(result)
+        assert reasons.get(card.id) != "provider_wall_budget", (
+            "walls outside the budget window must not exhaust the budget"
+        )
+
+
 # ------------------------------------------------------- provider capacity ---
 
 def test_provider_capacity_is_not_double_claimed_in_one_tick(board):

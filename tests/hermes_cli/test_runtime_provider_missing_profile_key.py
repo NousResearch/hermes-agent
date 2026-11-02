@@ -15,10 +15,10 @@ import pytest
 from agent import secret_scope
 
 
-def _named_profile(tmp_path, monkeypatch, *, key_env: bool, dotenv: str = ""):
+def _named_profile(tmp_path, monkeypatch, *, key_env: bool, dotenv: str = "", model_extra=None):
     home = tmp_path / ".hermes" / "profiles" / "beta"
     home.mkdir(parents=True)
-    model = {"default": "fake-model", "provider": "custom", "base_url": "http://127.0.0.1:18991/v1"}
+    model = {"default": "fake-model", "provider": "custom", "base_url": "http://127.0.0.1:18991/v1", **(model_extra or {})}
     entry = {"name": "FakeUp", "base_url": "http://127.0.0.1:18991/v1"}
     if key_env:
         entry["key_env"] = "CANARY_KEY"
@@ -74,3 +74,26 @@ def test_keyless_endpoint_and_profile_key_still_resolve(tmp_path, monkeypatch, m
     runtime = resolve_runtime_provider()
     assert runtime["provider"] == "custom"
     assert runtime["api_key"] == expected_key
+
+
+@pytest.mark.parametrize("model_extra,kwargs,expect", [
+    # The codex app-server authenticates with its own login and never sends the resolved key.
+    ({"provider": "custom:FakeUp", "openai_runtime": "codex_app_server"}, {}, "codex_app_server"),
+    # A caller-supplied placeholder is a choice, not a synthesized stand-in for the unset variable.
+    ({}, {"explicit_api_key": "no-key-required"}, "chat_completions"),
+    # An explicit base_url replaces the selected entry's URL, not its key declaration.
+    ({"provider": "custom:FakeUp"}, {"explicit_base_url": "http://127.0.0.1:18992/v1"}, "missing_api_key"),
+], ids=["codex-app-server-owns-auth", "explicit-placeholder", "explicit-base-url-keeps-entry"])
+def test_only_a_synthesized_placeholder_for_the_selected_entry_is_refused(tmp_path, monkeypatch, multiplexed,
+                                                                         model_extra, kwargs, expect):
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    multiplexed(_named_profile(tmp_path, monkeypatch, key_env=True, model_extra=model_extra))
+    if expect == "missing_api_key":
+        with pytest.raises(AuthError) as excinfo:
+            resolve_runtime_provider(**kwargs)
+        assert excinfo.value.code == "missing_api_key" and "FakeUp" in str(excinfo.value)
+        return
+    runtime = resolve_runtime_provider(**kwargs)
+    assert (runtime["provider"], runtime["api_mode"]) == ("custom", expect)

@@ -25,14 +25,19 @@ def _declared_key_env(entry: Optional[dict[str, Any]]) -> str:
     return str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
 
 
-def _declared_custom_key(requested_provider: str, base_url: str, model_cfg: dict[str, Any],
+def _declared_custom_key(requested_provider: str, runtime: dict[str, Any], model_cfg: dict[str, Any],
                          config: Optional[dict[str, Any]]) -> tuple[str, str]:
     """``(label, key_env)`` of the config block that declared a key variable for this custom
-    endpoint, else ``("", "")``: the owning ``providers:`` / ``custom_providers:`` entry (by name,
-    then URL), then ``model.key_env`` when ``model.base_url`` is this endpoint."""
-    from agent.custom_entry_pool import custom_entry_for_endpoint
+    endpoint, else ``("", "")``: the owning ``providers:`` / ``custom_providers:`` entry, then
+    ``model.key_env`` when ``model.base_url`` is this endpoint. A runtime the named-entry rung built
+    (``source: custom_provider:<name>``) took its credential from the SELECTED entry even when an
+    explicit base_url replaced the entry's URL, so that entry is found by name alone; any other
+    runtime (direct alias, URL-matched bare custom) is owned by whichever entry serves its URL."""
+    from agent.custom_entry_pool import custom_entry_for_endpoint, named_custom_entry
+    base_url = str(runtime.get("base_url") or "")
     name = requested_provider if requested_provider not in ("", "auto", "custom") else None
-    match = custom_entry_for_endpoint(base_url, name, config)
+    from_named_entry = str(runtime.get("source") or "").startswith("custom_provider:")
+    match = named_custom_entry(name, config) if name and from_named_entry else custom_entry_for_endpoint(base_url, name, config)
     if match is not None and (key_env := _declared_key_env(match[1])):
         return f"custom provider '{match[1].get('name') or match[0]}'", key_env
     cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -68,24 +73,33 @@ def named_profile_key_hint(env_vars) -> str:
     return f" {where_to_set_key(names[0])}"
 
 
+# Transports that never send the resolved key: the codex app-server authenticates with its own login,
+# Bedrock with the AWS SDK credential chain (agent_init builds neither client from ``api_key``).
+_KEYLESS_API_MODES = frozenset({"codex_app_server", "bedrock_converse"})
+
+
 def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: dict[str, Any], model_cfg: dict[str, Any],
-                                  config: Optional[dict[str, Any]] = None) -> None:
+                                  config: Optional[dict[str, Any]] = None, *, explicit_api_key: Optional[str] = None) -> None:
     """Refuse a custom runtime carrying the placeholder when its config declared a key variable
     that resolves to nothing in a ROUTED profile's scope (a profile served by a process launched
     for another, which never reads that process's environment). A single-profile process keeps
     the placeholder plus ``_key_env_secret``'s warning: there the variable is read from the
     process environment too, and callers rely on the placeholder rather than an error. A block
     that declares no key variable keeps the placeholder: that IS the keyless local-server
-    configuration. ``config`` is a frozen
+    configuration. Only a placeholder the resolver SYNTHESIZED is refused: a caller-supplied key
+    (even the literal ``no-key-required``, the same value a set key variable may hold) and a
+    transport that never sends the key (``_KEYLESS_API_MODES``, judged on the final api_mode) pass.
+    ``config`` is a frozen
     route's config (the entry that owned the endpoint when the session froze it). Typed ``AuthError``
     (``missing_api_key``) so every caller's fallback chain still advances."""
     from agent.secret_scope import serves_routed_profile
     if runtime.get("provider") != "custom" or runtime.get("api_key") != NO_KEY_PLACEHOLDER:
         return
+    if str(explicit_api_key or "").strip() or runtime.get("api_mode") in _KEYLESS_API_MODES:
+        return
     if not serves_routed_profile():
         return
-    label, key_env = _declared_custom_key(str(requested_provider or "").strip().lower(),
-                                          str(runtime.get("base_url") or ""), model_cfg, config)
+    label, key_env = _declared_custom_key(str(requested_provider or "").strip().lower(), runtime, model_cfg, config)
     if not key_env or get_secret_str(key_env, "").strip():
         return
     from hermes_cli.auth import AuthError

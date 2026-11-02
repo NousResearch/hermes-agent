@@ -45,7 +45,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, is_fence_delimiter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -222,7 +222,7 @@ def _wrap_markdown_tables(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        if line.lstrip().startswith("```"):
+        if is_fence_delimiter(line.lstrip()):
             in_fence = not in_fence
         elif (
             not in_fence and "|" in line and i + 1 < len(lines)

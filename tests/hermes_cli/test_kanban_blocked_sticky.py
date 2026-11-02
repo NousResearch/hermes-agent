@@ -77,6 +77,49 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+# ---------------------------------------------------------------------------
+# --initial-status blocked must be sticky from birth (#91178)
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_not_auto_promoted(kanban_home: Path) -> None:
+    """A task BORN blocked via --initial-status blocked is an operator
+    activation gate (setup/credential/deployment prerequisite). Before the
+    fix, create wrote only the status column with no "blocked" event row, so
+    _has_sticky_block saw an event-less task and recompute_ready auto-promoted
+    it on the next dispatch tick — spawning an assignee past the gate."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="gated on setup", initial_status="blocked")
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb._has_sticky_block(conn, tid) is True, (
+            "initial blocked must leave a durable block transition in the "
+            "event stream, exactly like a post-create kanban block"
+        )
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "initial-blocked task must not auto-promote"
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initial_status_blocked_unblock_still_promotes(kanban_home: Path) -> None:
+    """The gate is explicitly clearable: an unblock fires the "unblocked"
+    event and the task returns to the normal promotion path."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="gated", initial_status="blocked")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status != "blocked"
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status in ("ready", "todo")
+
+
+def test_default_create_still_auto_promotes(kanban_home: Path) -> None:
+    """Guard: ordinary tasks (no initial block) keep the event-less
+    auto-recover semantics — the fix must not make every task sticky."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="plain work")
+        assert kb._has_sticky_block(conn, tid) is False
+
+
 
 
 # ---------------------------------------------------------------------------

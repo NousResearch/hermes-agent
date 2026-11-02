@@ -33,7 +33,11 @@ one-off at the call site.
    one `SearchField`, one `Loader`, one `ErrorState`. Migrate onto them; don't
    fork.
 4. **Tokens, not literals.** Reference CSS vars (`--ui-*`, `--shadow-nous`,
-   `--theme-*`), never raw hex / ad-hoc rgba in components.
+   `--theme-*`), never raw hex / ad-hoc rgba in components. `npm run
+   check:design-tokens` enforces raw-hex usage in authored source. Theme
+   definitions, terminal palettes, and third-party brand artwork are the
+   documented sanctioned sources. The checker carries an exact baseline for
+   legacy visual assets; add a token rather than extending that baseline.
 5. **Style lives in the primitive.** Variants and sizes own padding, radius,
    color, chrome. Call sites pass a `variant`/`size`, not `className` overrides
    that re-specify those.

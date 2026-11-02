@@ -292,10 +292,14 @@ def _get_approval_config() -> dict:
 
 
 def _get_approval_mode() -> str:
-    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config)."""
+    """Return 'manual', 'smart', or 'off' (a hosted-room policy overrides config).
+
+    A subagent routed to another profile is the exception: the room policy
+    was signed for the room member's profile, so under the profile route's
+    own mark the routed profile's own config governs instead."""
     try:
-        from gateway.hosted_room_execution_policy import current_room_execution_policy
-        if (room_policy := current_room_execution_policy()) is not None:
+        from gateway.hosted_room_execution_policy import current_room_execution_policy, profile_routed
+        if not profile_routed() and (room_policy := current_room_execution_policy()) is not None:
             return room_policy.approval_mode
     except Exception:
         pass

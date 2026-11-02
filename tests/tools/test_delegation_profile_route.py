@@ -381,6 +381,20 @@ def test_profile_child_uses_the_target_profiles_persistent_container(two_profile
         clear_session_vars(tokens)
 
 
+def test_profile_route_scope_marks_the_child_as_profile_routed(two_profiles):
+    """The route's own scope marks the child, so a hosted room's execution
+    policy (signed for the delegating member's profile) does not govern
+    this child's approval decisions; the mark clears on exit."""
+    from gateway.hosted_room_execution_policy import profile_routed
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    _, coder = two_profiles
+    assert profile_routed() is False
+    with delegated_profile_scope(coder):
+        assert profile_routed() is True
+    assert profile_routed() is False
+
+
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):
     """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
     a child to ``default`` runs that child in default's persistent container, not the parent chat's."""

@@ -111,6 +111,7 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
 
 
 _CURRENT_POLICY: ContextVar[RoomExecutionPolicy | None] = ContextVar("hosted_room_execution_policy", default=None)
+_PROFILE_ROUTED: ContextVar[bool] = ContextVar("hosted_room_profile_routed", default=False)
 
 
 def bind_room_execution_policy(policy: RoomExecutionPolicy) -> Token:
@@ -125,7 +126,29 @@ def current_room_execution_policy() -> RoomExecutionPolicy | None:
     return _CURRENT_POLICY.get()
 
 
+def bind_profile_routed() -> Token:
+    """Mark this scope as a subagent routed to another profile.
+
+    The room policy was signed for the room MEMBER's profile. A child the
+    member delegates to a different profile executes as that profile (its
+    own home, secret scope and config), so the member's room policy must
+    not govern the child's approval decisions. The mark is set by the
+    profile route's own scope, never inferred from profile-name
+    comparisons: a shared-namespace room can legitimately target the
+    profile that is already home."""
+    return _PROFILE_ROUTED.set(True)
+
+
+def reset_profile_routed(token: Token) -> None:
+    _PROFILE_ROUTED.reset(token)
+
+
+def profile_routed() -> bool:
+    return _PROFILE_ROUTED.get()
+
+
 __all__ = [
     "MAX_POLICY_ITERATIONS", "POLICY_VERSION", "RoomExecutionPolicy", "RoomExecutionPolicyError",
-    "bind_room_execution_policy", "current_room_execution_policy", "execution_policy_mapping",
+    "bind_profile_routed", "bind_room_execution_policy", "current_room_execution_policy",
+    "execution_policy_mapping", "profile_routed", "reset_profile_routed",
     "reset_room_execution_policy"]

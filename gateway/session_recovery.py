@@ -265,8 +265,14 @@ class SessionRecoveryMixin:
         (pre-workspace) Slack key fallback lives here: exact-key lookup, claimed once per process;
         ``migrated_legacy`` tells the caller to rewrite the peer row to the scoped key."""
         legacy_key = self._legacy_slack_session_key(source)
+        # A key built on a Discord prospective thread already names its thread; the peer tuple
+        # cannot (the row's thread_id is NULL), so it would adopt another thread's session (#147943).
+        keyed_on_prospective_thread = bool(
+            getattr(source, "prospective_thread_id", None)
+            and not source.thread_id and source.chat_type != "dm")
         recovered = self._find_gateway_session_row(
-            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
+            session_key=session_key, source=source,
+            allow_peer_fallback=legacy_key is None and not keyed_on_prospective_thread,
             raise_on_lookup_error=raise_on_lookup_error)
         migrated_legacy = False
         if not recovered and legacy_key and self._claim_legacy_slack_key(legacy_key):

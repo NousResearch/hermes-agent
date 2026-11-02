@@ -840,6 +840,75 @@ class TestSlackWorkspaceSessionKeys:
         assert restarted._db.get_session("legacy-db-session")["session_key"] == recovered.session_key
 
 
+class TestDiscordProspectiveThreadRecovery:
+    """#147943: after a restart, a new top-level Discord message keyed on its own prospective
+    thread must not adopt the session of an earlier prospective thread in the same channel."""
+
+    @staticmethod
+    def _seed_first_thread(tmp_path):
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        original = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        entry = original.get_or_create_session(first)
+        original.append_to_transcript(entry.session_id, {"role": "user", "content": "first thread"})
+        original._db.close()
+        (tmp_path / "sessions.json").unlink(missing_ok=True)
+        return entry
+
+    def test_new_prospective_thread_does_not_adopt_older_thread_session(self, tmp_path, monkeypatch):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        first = self._seed_first_thread(tmp_path)
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-200",
+        )
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        routed = restarted.get_or_create_session(second)
+        follow_up_in_first = restarted.get_or_create_session(
+            SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="channel-1",
+                chat_type="thread",
+                thread_id="msg-100",
+                user_id="cthulhu",
+            )
+        )
+
+        assert routed.session_key.endswith(":msg-200")
+        assert routed.session_id != first.session_id
+        # The first thread keeps its own session instead of having it re-keyed to msg-200.
+        assert follow_up_in_first.session_id == first.session_id
+
+    def test_follow_up_in_the_thread_still_recovers_its_session(self, tmp_path, monkeypatch):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        first = self._seed_first_thread(tmp_path)
+        follow_up = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="msg-100",
+            user_id="cthulhu",
+        )
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+
+        recovered = restarted.get_or_create_session(follow_up)
+
+        assert recovered.session_id == first.session_id
+
+
 class TestWhatsAppIdentifierPublicHelpers:
     """Contract tests for the public WhatsApp identifier helpers.
 

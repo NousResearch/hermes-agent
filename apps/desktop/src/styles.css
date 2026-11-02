@@ -4248,3 +4248,54 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   background: none;
   color: var(--err-ink);
 }
+
+/* Response annotations are attachments inside the composer, with one shared preview. */
+.ref[data-ref='annotation'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 100%;
+  margin-block: 0.25rem 0.5rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 0.65rem;
+  color: var(--ui-text-primary);
+  background: var(--ui-bg-elevated);
+  font: inherit;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  text-decoration: none;
+}
+.ref[data-ref='annotation']:hover {
+  background: var(--chrome-action-hover);
+  text-decoration: none;
+}
+.ref[data-ref='annotation']:focus-visible,
+[data-annotation-remove]:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+.ref[data-ref='annotation'] > svg {
+  margin: 0;
+}
+[data-annotation-remove] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-inline-start: 0.15rem;
+  border-radius: 50%;
+  color: var(--ui-text-secondary);
+  cursor: pointer;
+}
+[data-annotation-remove]:hover {
+  background: var(--ui-stroke-secondary);
+  color: var(--ui-text-primary);
+}
+[data-annotation-remove] svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}

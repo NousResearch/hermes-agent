@@ -645,6 +645,35 @@ A multi-session plugin keeps its per-session state on its side (which session
 its panel is editing) and passes that id here; the bus guarantees one
 plugin write can never land in another session's composer.
 
+### Response annotation attachments
+
+`host.composer.annotations` is a versioned native attachment contract for selection-feedback
+plugins. Feature-detect `version === 1` and `captureSelection` before enabling the interaction.
+`captureSelection()` returns `{ text, range, anchor }` for a nonempty selection within one
+assistant response, or `null`. The native layer owns transcript eligibility and markup;
+plugins do not query private message or composer DOM. The cloned `Range` is temporary and
+must not be used as persisted source identity.
+
+`format({ type: 'response-annotations', version: 1, label, annotations })` returns one draft
+reference. Each ordered annotation has a unique string `id`, selected `text`, and `comment`
+(which may be empty). It escapes reference delimiters and validates the payload. `parse(value)`
+accepts the reference's JSON value and returns the payload or `null`. Limits are 100 items,
+64,000 characters per selected text/comment, and 512,000 encoded characters.
+
+The draft and saved message carry the complete payload. One native chip displays `label`;
+selected text and comments do not expand into the ordinary reply textbox. Staging still uses
+`getDraft`/`setDraft`, and never implies `submit`.
+
+Register `onOpen(({ value, editable, remove, anchor }) => ...)` to open a plugin-owned preview
+or editor. It returns a disposer; register that with `ctx.onDispose`. Saved-message events
+have `editable: false`. For a draft edit/removal, capture the current connection, profile and
+stored session, reread that draft, and reject a missing/changed reference before writing.
+Do not mutate other chats if focus changes while an async operation is pending.
+
+The API does not change gateway processing, model selection, memory, ordinary references,
+or the existing send/queue lifecycle. Plugins remain responsible for accessible preview UI,
+retaining comments after failed writes, and releasing their own listeners and temporary ranges.
+
 **Migrating off DOM reach-in** (the held catalog plugins that motivated this API
 and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 

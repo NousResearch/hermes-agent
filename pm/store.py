@@ -326,6 +326,16 @@ def merge_tree(src: Path, dst: Path) -> None:
 
 
 def tree_digest(root: Path) -> str:
+    return _tree_digest(root, skip_metadata=True)
+
+
+def digest_matches(root: Path, recorded: str | None) -> bool:
+    """Facts recorded before desktop metadata was skipped hashed it as payload."""
+    return recorded is not None and (
+        tree_digest(root) == recorded or _tree_digest(root, skip_metadata=False) == recorded)
+
+
+def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     """Deterministic sha256 over a directory tree: walk every file, sort
     by posix relpath, hash `relpath\\0<content>` per entry. No mtimes, no
     mode bits. Symlinks contribute their LINK TARGET TEXT (os.readlink),
@@ -350,7 +360,7 @@ def tree_digest(root: Path) -> str:
         dirnames[:] = descend
         for fname in filenames:
             path = Path(dirpath) / fname
-            if _is_os_metadata(path):
+            if skip_metadata and _is_os_metadata(path):
                 continue
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])

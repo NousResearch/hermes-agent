@@ -1,5 +1,6 @@
 """Desktop metadata must not hide package payloads or obstruct extraction (#128588)."""
 
+import hashlib
 import io
 import tarfile
 from pathlib import Path
@@ -63,6 +64,38 @@ def test_metadata_named_directories_links_and_executables_are_hashed(tmp_path: P
     (wrapper / "bin").mkdir()
     flatten_single_dir(tree)
     assert (wrapper / "bin").is_dir()
+
+
+@pytest.mark.platforms("any")
+def test_facts_recorded_with_metadata_in_the_digest_still_verify(tmp_path: Path):
+    from pm import build_operations
+    from pm.lock import Facts, Lockfile
+    from pm.package import InstallError
+    from pm.registry import get_package
+    from pm.store import current_target
+
+    target, store = current_target(), tmp_path / "tools"
+    lock = Lockfile(tmp_path / "lock.json")
+    lock.set_pin("python", "1.0", {target: {"url": "https://invalid.test/python", "sha256": "a" * 64}})
+    package = get_package("python")
+    entry = store / package.store_entry("1.0", target)
+    binary = package.binary(entry, target)
+    assert binary is not None
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"runtime")
+    (entry / ".DS_Store").write_bytes(b"desktop metadata")
+    # Earlier releases hashed every regular file, metadata included.
+    legacy = hashlib.sha256()
+    for path in sorted((p for p in entry.rglob("*") if p.is_file()), key=lambda p: p.relative_to(entry).as_posix()):
+        legacy.update(path.relative_to(entry).as_posix().encode() + b"\0" + path.read_bytes())
+    Facts(store / "facts.json").record("python", "1.0", entry.name, package.env(entry, target), store,
+                                       target=target, artifacts=["a" * 64], digest=legacy.hexdigest())
+
+    selected = build_operations.verified_tools(["python"], source_store=store, target=target, lock=lock)
+    assert selected.entries["python"].binary == binary
+    binary.write_bytes(b"changed runtime")
+    with pytest.raises(InstallError, match="source failed verification"):
+        build_operations.verified_tools(["python"], source_store=store, target=target, lock=lock)
 
 
 @pytest.mark.platforms("any")

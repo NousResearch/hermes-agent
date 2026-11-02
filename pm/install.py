@@ -20,7 +20,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, merge_tree, tree_digest
+from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
 
@@ -300,7 +300,7 @@ def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> 
     """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
     entry = store.entry(fact["entry"])
     try:
-        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+        return not package.verify(entry, target) and digest_matches(entry, fact.get("digest"))
     except OSError:
         return False
 
@@ -416,7 +416,7 @@ def _copy_verified_source(package, lockfile, copy_from, staged, version, target)
             or not _entry_verified(package, source, source_store, target)):
         raise InstallError(package.name, "bundled copy source failed verification")
     shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
-    if tree_digest(staged) != source["digest"]:
+    if not digest_matches(staged, source["digest"]):
         raise InstallError(package.name, "copied bytes do not match the bundled source")
 
 

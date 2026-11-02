@@ -71,11 +71,18 @@ def named_profile_key_hint(env_vars) -> str:
 def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: dict[str, Any], model_cfg: dict[str, Any],
                                   config: Optional[dict[str, Any]] = None) -> None:
     """Refuse a custom runtime carrying the placeholder when its config declared a key variable
-    that resolves to nothing in the active profile's scope. A block that declares no key variable
-    keeps the placeholder: that IS the keyless local-server configuration. ``config`` is a frozen
+    that resolves to nothing in a ROUTED profile's scope (a profile served by a process launched
+    for another, which never reads that process's environment). A single-profile process keeps
+    the placeholder plus ``_key_env_secret``'s warning: there the variable is read from the
+    process environment too, and callers rely on the placeholder rather than an error. A block
+    that declares no key variable keeps the placeholder: that IS the keyless local-server
+    configuration. ``config`` is a frozen
     route's config (the entry that owned the endpoint when the session froze it). Typed ``AuthError``
     (``missing_api_key``) so every caller's fallback chain still advances."""
+    from agent.secret_scope import serves_routed_profile
     if runtime.get("provider") != "custom" or runtime.get("api_key") != NO_KEY_PLACEHOLDER:
+        return
+    if not serves_routed_profile():
         return
     label, key_env = _declared_custom_key(str(requested_provider or "").strip().lower(),
                                           str(runtime.get("base_url") or ""), model_cfg, config)

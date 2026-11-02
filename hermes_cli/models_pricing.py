@@ -76,7 +76,8 @@ def _evict_superseded_credentials(cache_key: str) -> None:
     root, sep, _ = cache_key.partition(_PRICING_AUTH_KEY_PREFIX)
     if not sep:
         return
-    same_endpoint = [key for key in _pricing_cache if key.startswith(root + _PRICING_AUTH_KEY_PREFIX)]
+    # list() copies under the GIL: prewarm threads write this cache concurrently.
+    same_endpoint = [key for key in list(_pricing_cache) if key.startswith(root + _PRICING_AUTH_KEY_PREFIX)]
     for key in same_endpoint[:-_AUTHED_CATALOGS_PER_ENDPOINT]:
         _pricing_cache.pop(key, None)
         _pricing_cache_retry_after.pop(key, None)

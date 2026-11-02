@@ -170,8 +170,20 @@ async def fire_post_delivery(authority, admission_id):
 def discard_post_delivery(authority, admission_id):
     """Drop the slots of a turn that settled with no reply to follow (or whose reply another
     lifecycle sends and fires): popped from their adapters so none outlives the turn."""
-    for adapter, session_key, generation in owed_post_delivery(authority).pop(admission_id, None) or ():
-        adapter.pop_post_delivery_callback(session_key, generation=generation)
+    from gateway.platforms.base_post_delivery import drop_slots
+    drop_slots(owed_post_delivery(authority).pop(admission_id, None) or ())
+
+
+def _take_turn_slots(authority, admission_id, captured, *, owed):
+    """No adapter task delivers an authority-run turn, so none fires what it registered to run
+    after its reply. A turn that returned owes its slots to ``deliver_settled``; one that raised
+    or was cancelled has no reply to follow, so they are dropped now."""
+    from gateway.platforms.base_post_delivery import close_owed_slots, drop_slots
+    slots = close_owed_slots(captured)
+    if owed and slots:
+        owed_post_delivery(authority)[admission_id] = slots
+    else:
+        drop_slots(slots)
 
 
 def waiter_replies(authority):
@@ -325,13 +337,14 @@ async def execute_admission(authority, ref, row):
                     event.text = '\n'.join(part['text'] for part in prepared['content'] if part.get('type') == 'text')
                 event.allow_gateway_control = False
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
-            response = await authority.runner._handle_message(event)
+            try:
+                response = await authority.runner._handle_message(event)
+            except BaseException:
+                if not native:
+                    _take_turn_slots(authority, row['admission_id'], captured, owed=False)
+                raise
             if not native:
-                # No adapter task delivers this turn, so none fires what it registered to run after
-                # its reply: ``deliver_settled`` does, once the reply went out.
-                from gateway.platforms.base_post_delivery import owed_slots
-                if slots := owed_slots(captured):
-                    owed_post_delivery(authority)[row['admission_id']] = slots
+                _take_turn_slots(authority, row['admission_id'], captured, owed=True)
             result = captured.get('terminal_result', captured.get('result'))
             if result is None:
                 # No TurnRunner result means the handler answered without executing the turn.

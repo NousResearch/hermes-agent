@@ -22,7 +22,8 @@ def remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[st
     from agent.model_metadata import (
         _ENDPOINT_MODEL_CACHE_TTL, _endpoint_model_metadata_cache as memo, _endpoint_model_metadata_cache_time as stamps)
     now = time.time()
-    for key in [key for key, at in stamps.items() if now - at >= _ENDPOINT_MODEL_CACHE_TTL]:
+    # list() copies under the GIL: executor threads write this memo concurrently.
+    for key in [key for key, at in list(stamps.items()) if now - at >= _ENDPOINT_MODEL_CACHE_TTL]:
         memo.pop(key, None)
         stamps.pop(key, None)
     memo[memo_key] = cache

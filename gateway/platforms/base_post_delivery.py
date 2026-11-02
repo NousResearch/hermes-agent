@@ -28,6 +28,17 @@ def split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
     return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
 
 
+_CLOSED = "post_delivery_closed"
+
+
+def _turn_closed() -> bool:
+    """The authority-run turn this code belongs to already ended (an abandoned executor thread
+    registering late): nothing would ever release the slot, so it must not be registered."""
+    from gateway.session_results import execution_result
+
+    return bool((execution_result.get() or {}).get(_CLOSED))
+
+
 def _note_owed_slot(adapter: Any, session_key: str, generation: Optional[int]) -> None:
     """Record the slot on the executing admission's result context, when there is one."""
     from gateway.session_results import execution_result
@@ -37,9 +48,17 @@ def _note_owed_slot(adapter: Any, session_key: str, generation: Optional[int]) -
         captured.setdefault("post_delivery", {})[(id(adapter), session_key)] = (adapter, session_key, generation)
 
 
-def owed_slots(captured: Optional[dict]) -> list[OwedSlot]:
-    """The slots registered while the turn behind *captured* ran."""
-    return list(((captured or {}).get("post_delivery") or {}).values())
+def close_owed_slots(captured: dict) -> list[OwedSlot]:
+    """End the turn behind *captured*: return the slots it registered; later registrations from
+    that turn are refused."""
+    captured[_CLOSED] = True
+    return list((captured.get("post_delivery") or {}).values())
+
+
+def drop_slots(slots: Iterable[OwedSlot]) -> None:
+    """Pop *slots* from their adapters without running them."""
+    for adapter, session_key, generation in slots:
+        adapter.pop_post_delivery_callback(session_key, generation=generation)
 
 
 async def release_owed_slots(slots: Iterable[OwedSlot], *, fire: bool, timeout: float) -> None:
@@ -66,7 +85,7 @@ class PostDeliveryMixin:
         chained (both fire in order, per-callback exception isolation) so independent features
         coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
         fresher slot."""
-        if not session_key or not callable(callback):
+        if not session_key or not callable(callback) or _turn_closed():
             return
         existing = self._post_delivery_callbacks.get(session_key)
         if existing is not None:

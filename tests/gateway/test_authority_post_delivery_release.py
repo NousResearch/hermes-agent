@@ -59,3 +59,33 @@ async def test_a_turn_that_never_settles_drops_its_callback_unfired(tmp_path, mo
         assert adapter._post_delivery_callbacks == {}
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_raises_drops_its_callback_unfired(tmp_path, monkeypatch):
+    runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
+    try:
+        authority.sessions[ref.session_id].subscribers['watching'] = actor
+        fired = []
+        live = authority.sessions[ref.session_id]
+        adapter = runner._delivery_adapter_for(live.source)
+
+        async def handle(event):
+            adapter.register_post_delivery_callback(live.route, lambda: fired.append(event.text), generation=7)
+            raise RuntimeError('agent crashed mid-turn')
+        runner._handle_message = handle
+        await _deliver(runner, authority, ref, _PROCESS)
+        await authority._drain(ref)
+        assert fired == [] and adapter._post_delivery_callbacks == {}
+        # A registration arriving after the turn ended (an abandoned executor thread) is refused.
+        from gateway.platforms.base_post_delivery import close_owed_slots
+        from gateway.session_results import execution_result
+        token = execution_result.set({})
+        try:
+            close_owed_slots(execution_result.get())
+            adapter.register_post_delivery_callback(live.route, lambda: None, generation=8)
+        finally:
+            execution_result.reset(token)
+        assert adapter._post_delivery_callbacks == {}
+    finally:
+        authority.db.close()

@@ -19,14 +19,11 @@ def model_override_conflict(params: dict, build_scope) -> dict | None:
     model = str(params.get("model") or "").strip()
     if not model:
         return None
-    from hermes_cli.models_validate import static_model_provider_conflict
-    from hermes_cli.runtime_provider import resolve_requested_provider
+    from hermes_cli.models_validate import launch_model_conflict
+    from hermes_cli.runtime_provider import _get_model_config
 
-    provider = str(params.get("provider") or "").strip()
-    if not provider:
-        with build_scope:
-            provider = resolve_requested_provider()
-    return static_model_provider_conflict(model, provider)
+    with build_scope:
+        return launch_model_conflict(model, params.get("provider"), _get_model_config())
 
 
 def create_overrides(params: dict) -> tuple:

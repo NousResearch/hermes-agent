@@ -1734,6 +1734,14 @@ export const setCurrentProvider = (next: Updater<string>) => {
 export const setCurrentModelTransient = (next: Updater<string>) => updateAtom($currentModel, next)
 export const setCurrentProviderTransient = (next: Updater<string>) => updateAtom($currentProvider, next)
 
+/** Put the composer back on its sticky selection after a selected conversation
+ *  painted the atoms transiently. An abandoned preview leaves a stored model with
+ *  an EMPTY provider, and a new chat must never ship that half of a pair. */
+export const restoreComposerSelection = (): void => {
+  setCurrentModelTransient(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
+  setCurrentProviderTransient(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
+}
+
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
 

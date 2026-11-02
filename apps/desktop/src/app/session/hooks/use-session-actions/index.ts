@@ -73,6 +73,7 @@ import {
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
+  restoreComposerSelection,
   rotateFreshDraftKey,
   sessionPinId,
   setActiveSessionId,
@@ -190,6 +191,7 @@ import {
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
+import { applyStoredUsage } from './stored-usage'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -266,15 +268,6 @@ export interface BranchLoadedSessionOptions {
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
-
-// Reflect a stored row's persisted token counts into the live usage atom
-// (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
-
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
 
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
@@ -555,6 +548,9 @@ export function useSessionActions({
       // profile default still owns first-run seeding and profile switches (see
       // refreshCurrentModel). Keep the canonical service tier too: clearing
       // it while retaining fast=true would silently downgrade Ultrafast.
+      // "Your last pick" is the stored selection, not what the previous
+      // conversation (or an abandoned preview) left painted on the atoms.
+      restoreComposerSelection()
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
       // #52589 provenance: only a deliberate string workspace target is an explicit

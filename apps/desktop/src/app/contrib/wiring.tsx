@@ -59,6 +59,7 @@ import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $profileScope,
+  type AgentProfileRoute,
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
@@ -585,11 +586,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // "branch off into a new worktree" flow keeps the fresh-draft path — it
   // prefills the MAIN composer right after, so it has to own that surface.
   const startSessionInWorkspace = useCallback(
-    (path: null | string, options?: { openTab?: boolean }) => {
+    (path: null | string, options?: { openTab?: boolean; owner?: AgentProfileRoute }) => {
+      const owner = options?.owner
       setWorkspaceScope('sessions')
 
       if (options?.openTab && mainChatOccupied(activeSessionIdRef.current, $selectedStoredSessionId.get())) {
-        void openNewSessionTile('center', { cwd: path, listed: false })
+        void openNewSessionTile('center', {
+          cwd: path,
+          listed: false,
+          ...(owner && { profile: owner.profile, route: owner })
+        })
 
         return
       }
@@ -598,6 +604,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         activeSessionIdRef,
         followActiveSessionCwd,
         onExplicitWorkspace: restoreWorktree,
+        owner,
         path,
         requestGateway,
         startFreshSessionDraft
@@ -1100,7 +1107,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       navigate(CRON_ROUTE)
     },
     onNavigate: selectSidebarItem,
-    onNewSessionInWorkspace: path => startSessionInWorkspace(path, { openTab: true }),
+    onNewSessionInWorkspace: (path, owner) => startSessionInWorkspace(path, { openTab: true, owner }),
     onNewSessionSplit: (dir, opts) =>
       void openNewSessionTile(dir, {
         ...opts,

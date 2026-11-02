@@ -81,6 +81,7 @@ import {
   $profileColors,
   $profiles,
   $profileScope,
+  type AgentProfileRoute,
   ALL_PROFILES,
   messagingTotalsKey,
   normalizeProfileKey,
@@ -161,6 +162,7 @@ import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
+  enteredProjectLiveRows,
   excludeProjectSessions,
   orderProjectsByIds,
   overlayLiveLanes,
@@ -169,7 +171,6 @@ import {
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
-  reconcileEnteredProjectSessions,
   sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
@@ -383,7 +384,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
-  onNewSessionInWorkspace: (path: null | string) => void
+  onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a
    *  specific zone / tab-strip slot, and `cwd` pins it to a project's path —
@@ -781,7 +782,7 @@ export function ChatSidebar({
   // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
   // among its own day's chats instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
-  const gatewayProjectTree = useGatewayProjectTree(projectTree, agentSessions)
+  const { owners, ownerKey, tree: gatewayProjectTree } = useGatewayProjectTree(projectTree, agentSessions)
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -1086,8 +1087,8 @@ export function ChatSidebar({
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
   const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
+    () => enteredProjectLiveRows(overviewEnteredProject, agentSessions, owners),
+    [agentSessions, overviewEnteredProject, owners]
   )
 
   // Overlay live `$sessions` onto the entered project so a just-created session
@@ -1100,9 +1101,9 @@ export function ChatSidebar({
   const enteredProjectContent = useMemo(
     () =>
       enteredProject
-        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners)
+        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey)
         : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners]
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, projectOwners, ownerKey]
   )
 
   const scopedRepoPaths = useMemo(
@@ -1208,13 +1209,14 @@ export function ChatSidebar({
         projects,
         showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
         {
+          ownerKey,
           removed: removedSessionIds,
           // Rank before the trim, so "3 priciest in this project" isn't "3 most
           // recent, priciest first".
           rankIds: sortOrderIds
         }
       ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions, ownerKey]
   )
 
   // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —

@@ -11,10 +11,12 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
+import { ownedNewSessionHandlers } from './gateway-project-rows'
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
@@ -41,7 +43,8 @@ export function EnteredProjectContent({
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
-  onNewSession?: (path: null | string) => void
+  /** `owner` is set for a project another gateway owns: the session starts there. */
+  onNewSession?: (path: null | string, owner?: AgentProfileRoute) => void
   onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
@@ -58,6 +61,7 @@ export function EnteredProjectContent({
   }
 
   const single = project.repos.length === 1
+  const owned = ownedNewSessionHandlers(project, onNewSession, onNewSessionSplit)
 
   return (
     <>
@@ -66,8 +70,8 @@ export function EnteredProjectContent({
           discoveredWorktrees={repo.path ? repoWorktrees?.[repo.path] : undefined}
           key={repo.id}
           liveSessions={liveSessions}
-          onNewSession={onNewSession}
-          onNewSessionSplit={onNewSessionSplit}
+          onNewSession={owned.onNewSession}
+          onNewSessionSplit={owned.onNewSessionSplit}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}

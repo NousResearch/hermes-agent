@@ -110,6 +110,21 @@ def _mark_internal_notification(text: str) -> str:
     return text + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
 
 
+def _held_reason(source, platform: str, multiplexed: bool) -> str:
+    """Why a completion has no transport, naming what is actually missing: the saved receiving bot
+    is down, or the route never saved one (a row older than the column), which no reconnect fixes."""
+    from gateway.session_identity import identity_of
+    identity = identity_of(source)
+    runtime = getattr(source, "profile", None) or "default"
+    if identity is not None and identity.multiplexed and not identity.transport_inferred:
+        return (f"the {platform} bot of profile {identity.transport_profile!r} that received this chat "
+                f"(runtime profile {runtime!r}) is not connected; the row stays pending until it reconnects")
+    if multiplexed:
+        return (f"the {platform} route of profile {runtime!r} has no saved receiving bot and no shared bot "
+                f"covers it; the row stays pending until a new message in that chat records the bot")
+    return f"no live {platform} transport for profile {runtime!r}; the row stays pending until it connects"
+
+
 def _raw_process_event_session_id(evt: dict) -> str:
     """Recognize API routes, not malformed structured or partial messaging routes."""
     session_key = str(evt.get("session_key") or "").strip()
@@ -1152,10 +1167,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # The watcher requeues silently every tick; say once per outage which lane has no transport.
             if key is not None and key not in warned:
                 warned.add(key)
-                logger.warning(
-                    "Async completion held: no live %s transport for profile %r; "
-                    "the row stays pending until one connects", platform, key[0] or "default",
-                )
+                logger.warning("Async completion held: %s", _held_reason(
+                    source, platform, getattr(self.config, "multiplex_profiles", False)))
             return False
         warned.discard(key)
         if not adapter_supports_push(adapter):

@@ -146,6 +146,36 @@ _BOARD_SPECS = [
     )),
 ]
 
+# Recurring task templates: ``hermes kanban routine <action>``.
+_ROUTINE_SPECS = [
+    _cmd("create", [
+        _arg("title", help="Routine task title"),
+        _arg("--cron", required=True, dest="cron_expr",
+             help="5-field cron schedule, e.g. '0 9 * * 1'"),
+        _arg("--body", default=None, help="Task body template"),
+        _arg("--assignee", default=None, help="Profile name to assign"),
+        _arg("--priority", type=int, default=0, help="Task priority"),
+        _arg("--skill", action="append", default=[], dest="skills",
+             help="Skill to force-load into materialized workers"),
+        _arg("--concurrency", choices=sorted(kb.VALID_ROUTINE_CONCURRENCY),
+             default="skip_if_active",
+             help="How to behave when a previous routine task is still live"),
+        _arg("--catch-up", dest="catch_up", choices=sorted(kb.VALID_ROUTINE_CATCH_UP),
+             default="skip_missed",
+             help="How to handle missed windows after downtime"),
+        _json_flag(),
+    ], help="Create a recurring task routine"),
+    _cmd("list", [
+        _arg("--active-only", action="store_true", help="Hide paused routines"),
+        _json_flag(),
+    ], aliases=["ls"], help="List routines"),
+    _cmd("pause", [_arg("routine_id", type=int)], help="Pause a routine"),
+    _cmd("resume", [_arg("routine_id", type=int)], help="Resume a routine"),
+    _cmd("run-now", [_arg("routine_id", type=int), _json_flag()],
+         help="Materialize a routine immediately"),
+    _cmd("delete", [_arg("routine_id", type=int)], aliases=["rm"], help="Delete a routine"),
+]
+
 # Top-level ``hermes kanban <action>`` records, in ``--help`` order.
 _SPECS = [
     _cmd("init", help="Create kanban.db if missing (idempotent)"),
@@ -450,6 +480,14 @@ _SPECS = [
              "the same narrow auto-repair the connect-time guard applies. Any other corruption "
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
              "or was repaired, non-zero when it is still corrupt."
+         )),
+    _cmd("routine", children=("routine_action", _ROUTINE_SPECS),
+         help="Manage recurring task templates that materialize normal Kanban tasks",
+         description=(
+             "Routines are cron-scheduled task templates. On each dispatcher tick every due "
+             "active routine materializes a normal Kanban task, deduplicated per schedule "
+             "window via idempotency keys. Manage them with `hermes kanban routine "
+             "create|list|pause|resume|run-now|delete`."
          )),
 ]
 

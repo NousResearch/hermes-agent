@@ -18,13 +18,24 @@ import { resolveSiblingWsUrl } from '@/lib/sibling-ws-url'
 export interface DictationStreamSession {
   /** Feed one PCM chunk (s16le mono at the announced rate). No-op once settled. */
   pushAudio: (chunk: ArrayBuffer) => void
-  /** End the recording; resolves with the final transcript ('' = heard nothing). */
+  /**
+   * End the recording; resolves with the final transcript ('' = heard nothing).
+   * Rejects when the session fails or no final frame lands within
+   * `FINALIZE_TIMEOUT_MS`, so the caller always gets control back.
+   */
   stop: () => Promise<string>
   /** Abort without a transcript (cancel / unmount). */
   cancel: () => void
 }
 
 const OPEN_TIMEOUT_MS = 5_000
+// The host bounds its own provider flush (`transcription_streaming._FINALIZE_TIMEOUT_S`, 20 s),
+// so this covers the leg that bound cannot: a final frame that never reaches this renderer at
+// all. Without it `stop()` settles only when a frame (or the socket) arrives, and a stall in the
+// meantime holds the composer in "transcribing" — every voice control disabled, `dictate()` a
+// no-op — for the rest of the session. The same budget as the file path's `sttTimeoutSeconds`
+// default, for the same transcription; on expiry the take falls back to the recorded blob.
+const FINALIZE_TIMEOUT_MS = 60_000
 
 export async function openDictationStream(
   owner: ResolvedOwner,
@@ -50,6 +61,14 @@ export async function openDictationStream(
   let settled = false
   let failure: Error | null = null
   let pending: { reject: (error: Error) => void; resolve: (text: string) => void } | null = null
+  let finalizeTimer: number | null = null
+
+  const clearFinalizeTimer = () => {
+    if (finalizeTimer !== null) {
+      window.clearTimeout(finalizeTimer)
+      finalizeTimer = null
+    }
+  }
 
   const settle = (outcome: Error | string) => {
     if (settled) {
@@ -57,6 +76,7 @@ export async function openDictationStream(
     }
 
     settled = true
+    clearFinalizeTimer()
 
     if (typeof outcome !== 'string') {
       failure = outcome
@@ -127,11 +147,19 @@ export async function openDictationStream(
         }
 
         pending = { reject, resolve }
+        // `eos` asks the host for the final transcript. The wait for that frame is the one leg of
+        // a dictation with no bound of its own, so arm one: on expiry the session fails like any
+        // other socket failure and the caller transcribes the recorded blob instead.
+        finalizeTimer = window.setTimeout(() => {
+          settle(new Error(`live transcription timed out after ${FINALIZE_TIMEOUT_MS / 1000}s (no final frame)`))
+          ws.close()
+        }, FINALIZE_TIMEOUT_MS)
         ws.send(JSON.stringify({ eos: true }))
       }),
     cancel: () => {
       settled = true
       pending = null
+      clearFinalizeTimer()
       ws.close()
     }
   }

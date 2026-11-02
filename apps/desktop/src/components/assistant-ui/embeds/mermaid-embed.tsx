@@ -129,9 +129,12 @@ const typesetMath: MathResolver = (tex, size) => {
   host.attachShadow({ mode: 'open' }).append(probe)
   document.body.append(host)
   const { height, width } = probe.getBoundingClientRect()
+  // The browser-hosted app's UI scale is CSS zoom on <html>; the rect is in
+  // zoomed pixels, the SVG draws at the unzoomed font size.
+  const zoom = probe.currentCSSZoom || 1
   host.remove()
 
-  return { height: Math.ceil(height), html, width: Math.ceil(width) }
+  return { height: Math.ceil(height / zoom), html, width: Math.ceil(width / zoom) }
 }
 
 const renderCache = createMermaidRenderCache<DiagramTheme>({

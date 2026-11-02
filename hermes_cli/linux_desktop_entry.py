@@ -140,7 +140,27 @@ def resolve_exec_command(project_root: Optional[Path] = None) -> str:
         prefix = [interpreter] if _needs_interpreter(resolved) else []
         # See #90292.
         argv = [*prefix, str(resolved), *_desktop_argv_tail(project_root)]
+    hermes_home = _custom_hermes_home()
+    if hermes_home:
+        # Desktop Entry Exec uses argv semantics: an assignment has to be an
+        # argument to env, rather than a shell prefix.
+        env = shutil.which("env")
+        if env:
+            argv = [env, f"HERMES_HOME={hermes_home}", *argv]
     return " ".join(_quote_exec_arg(a) for a in argv)
+
+
+def _custom_hermes_home() -> Optional[str]:
+    """Return the absolute non-default ``HERMES_HOME`` to persist, if any."""
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    if not raw:
+        return None
+    try:
+        home = Path(raw).expanduser().resolve(strict=False)
+        default = (Path.home() / ".hermes").resolve(strict=False)
+    except OSError:
+        return None
+    return None if home == default else str(home)
 
 
 def _desktop_argv_tail(project_root: Optional[Path]) -> list[str]:

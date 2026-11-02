@@ -901,7 +901,9 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     # to the first request and make a later fallback look like a silent provider switch.
     if not has_usable_secret(creds.get("api_key")):
         from hermes_cli.runtime_readiness import missing_credentials_suffix
+        from hermes_cli.runtime_provider_missing_key import named_profile_key_hint
         hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
+        hint += named_profile_key_hint(pconfig.api_key_env_vars)
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
     base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
@@ -1070,6 +1072,8 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     _raise_if_local_alias_missing_endpoint(requested_provider, explicit_base_url)
     runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
     _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    from hermes_cli.runtime_provider_missing_key import raise_if_declared_key_missing
+    raise_if_declared_key_missing(requested_provider, runtime, _get_model_config(), _FROZEN_RUNTIME_CONFIG.get())
     # model.openai_runtime is applied ONCE, after the ladder: every rung (pool, OAuth store,
     # explicit --api-key/--base-url, env key) hardcodes the wire api_mode for openai/openai-codex,
     # so applying the opt-in inside one rung left the others on codex_responses (#115169).

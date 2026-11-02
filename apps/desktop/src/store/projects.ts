@@ -651,6 +651,44 @@ function dropRemovedProjectSessions(
   )
 }
 
+// All-profiles counterpart of the RPC read below: `projects.project_sessions`
+// answers for one backend profile, so this view reads the REST fan-out that
+// merges every profile the same way `refreshProjectTreeAcrossProfiles` does.
+// An unreachable profile is reported in `errors` while the rest still load, so
+// the lanes may be partial; that matches the tree this view is drawn from.
+async function fetchProjectSessionsAcrossProfiles(
+  projectId: string,
+  generation: null | number,
+  removalSnapshot: SessionTombstoneGenerationSnapshot
+): Promise<SidebarProjectTree | null> {
+  const owner = projectRowOwner()
+  // Declared project ids differ per profile, so the folder is what finds the project in each
+  // profile's read. A folder-less node (Home) resolves by id.
+  const params = new URLSearchParams({ project_id: projectId })
+  const path = $projectTree.get().find(node => node.id === projectId)?.path
+
+  if (path) {
+    params.set('path', path)
+  }
+
+  const res = await hermesApi<{ project: SidebarProjectTree | null }>({
+    path: `/api/profiles/projects/sessions?${params}`,
+    timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
+  })
+
+  // A scope or connection change mid-flight leaves this answer describing the
+  // wrong view; the newer request owns it.
+  if (
+    (generation !== null && generation !== projectSessionsRefreshGeneration) ||
+    !viewingAllProfiles() ||
+    activeGatewayConnectionId() !== owner.connectionId
+  ) {
+    return null
+  }
+
+  return dropRemovedProjectSessions(res.project ? tagProjectSessionConnection(res.project, owner) : null, removalSnapshot)
+}
+
 // A drill-in only wants the LATEST request (an older one resolving late would
 // paint the wrong project), so those are `supersedable` and resolve null when
 // overtaken. A per-row "Show all" expansion is not: two rows expanding at once,
@@ -662,12 +700,12 @@ export async function fetchProjectSessions(
   const generation = supersedable ? ++projectSessionsRefreshGeneration : null
   const profile = projectProfile()
 
-  if (!profile) {
-    return null
-  }
-
   // Snapshot before the read: the guard must cover the whole request window.
   const removalSnapshot = captureSessionTombstoneGenerations()
+
+  if (!profile) {
+    return fetchProjectSessionsAcrossProfiles(projectId, generation, removalSnapshot)
+  }
 
   let context: ActiveProjectsContext | undefined
 

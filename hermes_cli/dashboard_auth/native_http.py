@@ -89,7 +89,7 @@ async def _check_profile_scope(request, profile_id):
         collection = profile_collection_route(path, request.method)
         aggregate_selector = {
             'sessions': 'profile', 'sessions/sidebar': 'recents_profile',
-            'projects/tree': 'profile', 'sessions/pull-requests': 'profile',
+            'projects/tree': 'profile', 'projects/sessions': 'profile', 'sessions/pull-requests': 'profile',
         }.get(collection)
         if aggregate_selector:
             values = request.query_params.getlist(aggregate_selector)
@@ -116,7 +116,7 @@ async def _check_profile_scope(request, profile_id):
 # Desktop mirror: apps/desktop/electron/profile-routes.ts.
 PROFILE_COLLECTION_ROUTES = {
     'active': frozenset({'GET', 'POST'}), 'import': frozenset({'POST'}),
-    'projects/tree': frozenset({'GET'}), 'sessions': frozenset({'GET'}),
+    'projects/tree': frozenset({'GET'}), 'projects/sessions': frozenset({'GET'}), 'sessions': frozenset({'GET'}),
     'sessions/pull-requests': frozenset({'POST'}), 'sessions/sidebar': frozenset({'GET'}),
 }
 

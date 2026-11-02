@@ -29,6 +29,7 @@ vi.mock('@/i18n', () => ({
           reorder: (label: string) => `Reorder ${label}`,
           toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
           showAllCount: (count: number) => `Show all ${count} sessions`,
+          showLess: 'Show fewer sessions',
           autoDiscovered: 'Auto-discovered'
         },
         showMoreIn: (count: number, label: string) => `Show ${count} more in ${label}`
@@ -102,6 +103,35 @@ describe('ProjectOverviewRow', () => {
     await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith('p1', { supersedable: false })
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
+  })
+
+  it('collapses an expanded project back to its preview and offers Show all again', async () => {
+    workspaceOpen.value = true
+    const five = Array.from({ length: 5 }, (_, index) => session(`s${index + 1}`, 500 - index))
+    const busy = { ...project, sessionCount: 5 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...busy,
+      repos: [{ groups: [{ sessions: five }] }]
+    } as unknown as SidebarProjectTree)
+
+    render(
+      <ProjectOverviewRow
+        previewSessions={five.slice(0, 3)}
+        project={busy}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'Show fewer sessions' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 5 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3,s4,s5'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer sessions' }))
+
+    expect(screen.getByTestId('rows').textContent).toBe('s1,s2,s3')
+    expect(screen.getByRole('button', { name: 'Show all 5 sessions' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Show fewer sessions' })).toBeNull()
   })
 
   // A project with hundreds of chats hydrates them all, but the overview must

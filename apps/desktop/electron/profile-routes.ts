@@ -7,6 +7,7 @@ const PROFILE_COLLECTION_ROUTES: Readonly<Record<string, readonly string[]>> = {
   active: ['GET', 'POST'],
   import: ['POST'],
   'projects/tree': ['GET'],
+  'projects/sessions': ['GET'],
   sessions: ['GET'],
   'sessions/pull-requests': ['POST'],
   'sessions/sidebar': ['GET']

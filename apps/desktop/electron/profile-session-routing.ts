@@ -1450,10 +1450,10 @@ export async function fetchAllProfilesSessionsPerProfile(
 }
 
 /** Cross-profile reads the gateway builds by scanning every profile: the all-profiles project
- *  tree, the PR scan and the cron job list. The renderer asks for the first two only for the
- *  all-profiles view, so a `profile` already on their path is the route's own scope, not a
- *  selector; the cron list is cross-profile only when it names `all` or no profile. The
- *  per-profile reads carry their own scope and are made with `profileScoped`. */
+ *  tree, one project's hydrated lanes, the PR scan and the cron job list. The renderer asks for
+ *  the first three only for the all-profiles view, so a `profile` already on their path is the
+ *  route's own scope, not a selector; the cron list is cross-profile only when it names `all` or
+ *  no profile. The per-profile reads carry their own scope and are made with `profileScoped`. */
 export function isAllProfilesAggregateRequest(method: string | undefined, path: string | undefined): boolean {
   if (!path) {
     return false
@@ -1472,6 +1472,7 @@ export function isAllProfilesAggregateRequest(method: string | undefined, path: 
 
   return (
     (verb === 'GET' && pathname === '/api/profiles/projects/tree') ||
+    (verb === 'GET' && pathname === '/api/profiles/projects/sessions') ||
     (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests') ||
     (verb === 'GET' && pathname === '/api/cron/jobs' && (url.searchParams.get('profile') || 'all').trim().toLowerCase() === 'all')
   )
@@ -1561,6 +1562,42 @@ function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
   return { projects, active_id: null, scoped_session_ids: scopedSessionIds, errors }
 }
 
+// Each per-profile read holds only the requested folder's node; fold them as the tree merge does.
+// Preview cap 0: the gateway's read builds no previews.
+function mergeProfileProjectSessions(reads: ProfileRead[]) {
+  let project: any = null
+  const errors: SessionScanError[] = []
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    errors.push(...(errorsOf(read.data) ?? []))
+    let incoming = read.data?.project
+
+    if (!incoming) {
+      continue
+    }
+
+    if (!project) {
+      project = incoming
+
+      continue
+    }
+
+    if (project.isAuto && !incoming.isAuto) {
+      ;[project, incoming] = [incoming, project]
+    }
+
+    mergeProjectInto(project, incoming, 0)
+  }
+
+  return { project, errors }
+}
+
 function mergeProfilePullRequests(reads: ProfileRead[]) {
   const pullRequests: Record<string, unknown> = {}
   let scanned: unknown[] = []
@@ -1617,7 +1654,8 @@ function mergeProfileCronJobs(reads: ProfileRead[]) {
   return [...byId.values(), ...unkeyed]
 }
 
-/** The all-profiles project tree, PR scan or cron list, assembled from one read per profile.
+/** The all-profiles project tree, one project's hydrated lanes, PR scan or cron list, assembled
+ *  from one read per profile.
  *
  *  A native gateway grant names ONE profile, so each profile is read with its own grant
  *  (`fetchProfile` gets the path scoped to it). A profile that cannot be read is reported in
@@ -1644,6 +1682,10 @@ export async function fetchAllProfilesAggregatePerProfile(
 
   if (pathname === '/api/profiles/projects/tree') {
     return mergeProfileProjectTrees(reads, Math.max(0, Number(url.searchParams.get('preview_limit') ?? 3) || 0))
+  }
+
+  if (pathname === '/api/profiles/projects/sessions') {
+    return mergeProfileProjectSessions(reads)
   }
 
   if (pathname === '/api/cron/jobs') {

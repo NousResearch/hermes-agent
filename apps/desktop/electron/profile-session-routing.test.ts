@@ -1602,7 +1602,78 @@ test('the project tree and PR scan are all-profiles reads whatever route scope t
   assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/sessions/pull-requests'), true)
   assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions/pull-requests'), false)
   assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/projects/tree'), false)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo'), true)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/projects/sessions'), false)
   assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions?profile=all'), false)
+})
+
+test("all-profiles project lanes fold each profile's node for the folder into one", async () => {
+  const reads: string[] = []
+  const session = (id: string, profile: string) => ({ id, profile })
+
+  const pages: Record<string, unknown> = {
+    default: {
+      project: {
+        id: 'auto:/repo', mergeKey: '/repo', path: '/repo', label: 'repo', isAuto: true, sessionCount: 2,
+        totalTokens: 10, totalCostUsd: 1, lastActive: 5, previewSessions: [],
+        repos: [{ id: 'r', sessionCount: 2, groups: [{ id: 'main', sessionCount: 2, sessions: [session('d1', 'default'), session('d2', 'default')] }] }]
+      },
+      errors: []
+    },
+    // Declared here under its own id; it still owns the merged node's identity.
+    work: {
+      project: {
+        id: 'p_abc', mergeKey: '/repo', path: '/repo', label: 'Declared', isAuto: false, sessionCount: 1,
+        totalTokens: 5, totalCostUsd: 0.5, lastActive: 9, previewSessions: [],
+        repos: [{ id: 'r', sessionCount: 1, groups: [{ id: 'main', sessionCount: 1, sessions: [session('w1', 'work')] }] }]
+      },
+      errors: []
+    },
+    // Never worked in this folder.
+    idle: { project: null, errors: [] }
+  }
+
+  // Either arrival order: the declared node keeps the identity whether it is read first or second.
+  for (const order of [['default', 'work', 'idle', 'broken'], ['work', 'default', 'idle', 'broken']]) {
+    reads.length = 0
+
+    const result = (await fetchAllProfilesAggregatePerProfile(
+      '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo',
+      order,
+      async (profile, path) => {
+        reads.push(path)
+
+        if (profile === 'broken') {
+          throw new Error('403: denied')
+        }
+
+        return structuredClone(pages[profile])
+      }
+    )) as any
+
+    assert.deepEqual(reads.sort(), [
+      '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo&profile=broken',
+      '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo&profile=default',
+      '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo&profile=idle',
+      '/api/profiles/projects/sessions?project_id=p_abc&path=%2Frepo&profile=work'
+    ])
+    assert.equal(result.project.id, 'p_abc', order.join())
+    assert.equal(result.project.label, 'Declared')
+    assert.equal(result.project.sessionCount, 3)
+    assert.equal(result.project.totalTokens, 15)
+    assert.deepEqual(result.project.repos[0].groups[0].sessions.map((s: any) => s.id).sort(), ['d1', 'd2', 'w1'])
+    assert.deepEqual(result.errors, [{ profile: 'broken', error: '403: denied' }])
+  }
+})
+
+test('all-profiles project lanes are null when no profile holds the folder', async () => {
+  const result = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/projects/sessions?project_id=nope',
+    ['default', 'work'],
+    async () => ({ project: null, errors: [] })
+  )) as any
+
+  assert.deepEqual(result, { project: null, errors: [] })
 })
 
 test('all-profiles project tree merges one read per profile by folder', async () => {

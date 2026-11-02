@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { transcriptBodyWidth } from '../lib/inputMetrics.js'
 import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
@@ -25,6 +27,28 @@ describe('virtual height estimates', () => {
 
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+  })
+
+  it('estimates valid diff envelopes at the indented code width without prose gaps', () => {
+    const cols = 48
+    const bodyWidth = transcriptBodyWidth(cols, 'assistant', '', TERMUX_TUI_MODE)
+    const codeWidth = Math.max(1, bodyWidth - 2)
+    const body = [`+${'x'.repeat(codeWidth - 1)}`, '', `-${'y'.repeat(codeWidth)}`, '', ' context'].join('\n')
+    const msg: Msg = { kind: 'diff', role: 'assistant', text: `\`\`\`diff\n${body}\n\`\`\`` }
+
+    expect(body).toContain('\n\n')
+    expect(body.split('\n').some(line => line.length === codeWidth + 1)).toBe(true)
+    expect(estimatedMsgHeight(msg, cols, { compact: false, details: false })).toBe(wrappedLines(body, codeWidth) + 2)
+  })
+
+  it('keeps malformed historical diff content on the generic fallback path', () => {
+    const text = '```diff\nline one\n\nline two without a closing fence'
+    const malformed: Msg = { kind: 'diff', role: 'assistant', text }
+    const generic: Msg = { role: 'assistant', text }
+
+    expect(estimatedMsgHeight(malformed, 80, { compact: false, details: false })).toBe(
+      estimatedMsgHeight(generic, 80, { compact: false, details: false }) + 2
+    )
   })
 
   it('adds one row for a group-boundary lead gap', () => {

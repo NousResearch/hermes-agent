@@ -29,6 +29,7 @@ import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { fixedTrackSize, paneChrome, type TrackContext } from './track-model'
+import { zoneHeaderChrome } from './zone-header-chrome'
 
 /** The width a revealed narrow overlay sizes itself to: the SAME resolution
  *  the pane's zone uses while docked — declared max() refined by the live
@@ -299,7 +300,7 @@ export function NarrowOverlays() {
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
           {zonePanes.length > 1 && (
-            <PaneTabStrip>
+            <PaneTabStrip variant={zoneHeaderChrome(zonePanes).stripVariant}>
               {zonePanes.map(pane => (
                 <PaneTab
                   active={pane.id === revealed.id}

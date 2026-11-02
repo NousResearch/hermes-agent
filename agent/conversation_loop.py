@@ -1621,7 +1621,17 @@ def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optiona
 
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
-    generic loop retries the same user turn."""
+    generic loop retries the same user turn. The app-server owns its own loop, so a registered completion
+    policy could not review its answer before delivery: the turn fails before the runtime starts."""
+    from agent.turn_end_hooks import _failure, defers_text_delivery
+    if defers_text_delivery():
+        gate = _failure(agent, "Completion review requires the regular SDK runtime. Switch away from codex_app_server.",
+                        "final_policy_unsupported_runtime")
+        s.final_response, s.failed, s._turn_exit_reason = gate.message, True, gate.code
+        return finalize_turn(agent, **{
+            name: getattr(s, name)
+            for name in inspect.signature(finalize_turn).parameters if name != "agent"
+        })
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
@@ -1853,6 +1863,8 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    from agent.turn_end_hooks import finalize_early_result
+    result = finalize_early_result(agent, result, user_message)
     settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):

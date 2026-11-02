@@ -626,6 +626,12 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     """Reset retry counters, guardrails, iteration and run budgets at turn start."""
     for name, value in _PER_TURN_RESET_STATE:
         setattr(agent, name, value)
+    agent._turn_end_continuations = 0
+    agent._turn_end_pending = False
+    agent._turn_end_failure = None
+    agent._turn_end_checked = None
+    agent._turn_end_prepared = None
+    agent._turn_end_request_route = None
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._tool_guardrails.reset_for_turn()

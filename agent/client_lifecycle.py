@@ -872,10 +872,21 @@ class ClientLifecycleMixin:
             return False
         old_token = self._anthropic_api_key
         self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
-        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
-        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
         if self.api_key == old_token:
             self.api_key = new_token
+        self._move_renewed_anthropic_token_holders(old_token, new_token)
+        return True
+
+    def _move_renewed_anthropic_token_holders(self, old_token, new_token) -> None:
+        """Point every other holder of a renewed Anthropic token at its replacement.
+
+        Claude OAuth revokes the old token on refresh, so the compressor, the fallback-restore
+        snapshot and the turn's published aux runtime (approvals, goal judge, plugin llm) would
+        otherwise keep sending a dead token: compression 401s for the rest of the session. Only
+        holders that still carry *old_token* move; a holder on another credential is left alone.
+        """
+        if not old_token or old_token == new_token:
+            return
         cc = getattr(self, "context_compressor", None)
         if cc is not None and getattr(cc, "api_key", None) == old_token:
             cc.api_key = new_token
@@ -885,11 +896,8 @@ class ClientLifecycleMixin:
         for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
             if rt.get(k) == old_token:
                 rt[k] = new_token
-        # The turn's aux runtime was published before the first request triggered this refresh, so
-        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
         from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
         rotate_runtime_main_api_key(old_token, new_token)
-        return True
 
     def _refresh_bound_anthropic_pool_entry(self, pool) -> bool:
         """Pre-request refresh for a pool-bound agent: renew only the bound entry, never another account.
@@ -921,8 +929,16 @@ class ClientLifecycleMixin:
         if (runtime_key == self._anthropic_api_key and runtime_key == key_hint
                 and entry.id == getattr(self, "_credential_pool_entry_id", None)):
             return False
+        old_tokens = {str(t) for t in (self._anthropic_api_key, key_hint) if t and t != runtime_key}
         # A refused swap (route cannot serve the model) leaves the agent untouched: "no refresh".
-        return bool(self._swap_credential(entry))
+        if not self._swap_credential(entry):
+            return False
+        # Same account, new token (renewed here, by another process or by the CLI): the swap moved
+        # the wire key, api_key and entry id; the compressor, the fallback snapshot and the aux
+        # runtime still hold the revoked token unless they move too.
+        for old_token in old_tokens:
+            self._move_renewed_anthropic_token_holders(old_token, runtime_key)
+        return True
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:

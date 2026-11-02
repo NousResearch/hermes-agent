@@ -206,3 +206,90 @@ def test_non_native_routes_are_unchanged(pool, provider, base):
     assert agent._try_refresh_anthropic_client_credentials() is False
     assert agent.api_key == agent._anthropic_api_key == BOUND
     agent._anthropic_client.close()
+
+
+def _expire_bound_entry(pool, monkeypatch):
+    entry = next(e for e in pool.entries() if e.id == "second")
+    pool._replace_entry(entry, replace(entry, expires_at_ms=int(time.time() * 1000) - 1))
+    refresh = Mock(return_value={
+        "access_token": RENEWED, "refresh_token": "fake-refresh-second-next",
+        "expires_at_ms": int((time.time() + 3600) * 1000),
+    })
+    monkeypatch.setattr(anthropic_credentials, "refresh_anthropic_oauth_pure", refresh)
+    return refresh
+
+
+def _with_holders(agent, token):
+    """The compressor, the fallback-restore snapshot and the turn's published aux runtime all
+    hold the agent's token, the way a live turn leaves them before its first request."""
+    from types import SimpleNamespace
+
+    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT
+
+    agent.context_compressor = SimpleNamespace(api_key=token)
+    agent._primary_runtime = {
+        "api_key": token, "anthropic_api_key": token, "compressor_api_key": token, "is_anthropic_oauth": False,
+    }
+    runtime = {"provider": "anthropic", "model": agent.model, "api_key": token}
+    return runtime, _RUNTIME_MAIN_CONTEXT.set(runtime)
+
+
+@pytest.mark.parametrize("renewed_where", ["here", "elsewhere"])
+def test_bound_renewal_moves_every_holder_of_the_old_token(pool, wire, monkeypatch, renewed_where):
+    """Claude OAuth revokes the old token on refresh. The global path already moved the compressor,
+    the fallback snapshot and the aux runtime; the bound path must too, or compression, approvals
+    and the goal judge 401 for the rest of the session while the main request works."""
+    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT
+
+    agent = _agent(pool, "second")
+    runtime, token = _with_holders(agent, BOUND)
+    if renewed_where == "here":
+        refresh = _expire_bound_entry(pool, monkeypatch)
+    else:  # Another process (or pool instance) renewed the row; this pool adopted it.
+        refresh = Mock(side_effect=AssertionError("an adopted renewal must not POST again"))
+        monkeypatch.setattr(anthropic_credentials, "refresh_anthropic_oauth_pure", refresh)
+        entry = next(e for e in pool.entries() if e.id == "second")
+        pool._replace_entry(entry, replace(entry, access_token=RENEWED))
+    try:
+        _send(agent)
+    finally:
+        _RUNTIME_MAIN_CONTEXT.reset(token)
+    assert wire[0].headers["Authorization"] == f"Bearer {RENEWED}"
+    assert agent.api_key == agent._anthropic_api_key == RENEWED
+    assert agent.context_compressor.api_key == RENEWED
+    assert {k: agent._primary_runtime[k] for k in ("api_key", "anthropic_api_key", "compressor_api_key")} == {
+        "api_key": RENEWED, "anthropic_api_key": RENEWED, "compressor_api_key": RENEWED}
+    assert agent._primary_runtime["is_anthropic_oauth"] is agent._is_anthropic_oauth
+    assert runtime["api_key"] == RENEWED
+    assert refresh.call_count == (1 if renewed_where == "here" else 0)
+
+
+def test_bound_renewal_leaves_holders_on_another_credential(pool, wire, monkeypatch):
+    """Only holders of the renewed token move: a compressor routed to another credential (an
+    explicit auxiliary key, a fallback provider) keeps its own."""
+    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT
+
+    _expire_bound_entry(pool, monkeypatch)
+    agent = _agent(pool, "second")
+    runtime, token = _with_holders(agent, OTHER)
+    try:
+        _send(agent)
+    finally:
+        _RUNTIME_MAIN_CONTEXT.reset(token)
+    assert agent._anthropic_api_key == RENEWED
+    assert agent.context_compressor.api_key == OTHER
+    assert agent._primary_runtime["anthropic_api_key"] == OTHER
+    assert runtime["api_key"] == OTHER
+
+
+def test_healthy_bound_entry_touches_no_holder(pool, wire, no_refresh_post):
+    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT
+
+    agent = _agent(pool, "second")
+    runtime, token = _with_holders(agent, BOUND)
+    try:
+        _send(agent)
+    finally:
+        _RUNTIME_MAIN_CONTEXT.reset(token)
+    assert agent.context_compressor.api_key == runtime["api_key"] == BOUND
+    assert agent._primary_runtime["is_anthropic_oauth"] is False

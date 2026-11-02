@@ -1625,15 +1625,15 @@ Manage MCP (Model Context Protocol) server configurations. Running Hermes itself
 
 | Subcommand | Description |
 |------------|-------------|
-| *(none)* or `picker` | Interactive catalog picker — browse Nous-approved MCPs and install/enable/disable. |
-| `catalog` | List Nous-approved MCPs (plain text, scriptable). |
-| `install <name>` | Install a catalog entry (e.g. `hermes mcp install deepwiki`). |
-| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
+| *(none)* | List configured MCP servers, then the subcommands. |
+| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add an MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
 | `test <name>` | Test connection to an MCP server. |
 | `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
+| `reauth <name>` or `reauth --all` | Re-authenticate one OAuth server, or every OAuth server in turn. |
+| `install`, `catalog`, `picker` | Removed with the MCP catalog. They print the `hermes mcp add` command to use instead; `install` exits 1. |
 
 See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
 

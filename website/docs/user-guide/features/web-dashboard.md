@@ -79,7 +79,7 @@ child with the selected profile's `HERMES_HOME`, so the conversation runs
 with that profile's model, skills, memory, and session history. Switching
 profiles starts a fresh terminal session.
 
-Hub actions (skill install/update/uninstall, MCP install, toolset setup)
+Hub actions (skill install/update/uninstall, MCP add, toolset setup)
 run with the target profile's own secret scope — its `.env` and configured
 secret sources — not the dashboard process's environment; this includes
 actions targeting the `default` profile from the machine dashboard.
@@ -356,13 +356,6 @@ block in `config.yaml` that `hermes mcp` reads from.
 - **Remove** — delete a server from the config
 - Secret-shaped env values are redacted in the list view
 
-**Catalog:** browse the Nous-approved MCP servers (the bundled `optional-mcps/`
-catalog) and install any of them with one click. Entries that need API keys
-prompt for them inline; the values go to `.env`. This is the same catalog
-`hermes mcp catalog` / `hermes mcp install` use.
-
-![MCP admin page — your servers with enable/disable toggles, plus the install catalog](/img/dashboard/admin-mcp.png)
-
 ### Webhooks
 
 Manage dynamic [webhook subscriptions](../messaging/webhooks.md). The
@@ -619,8 +612,8 @@ same auth gate as the rest of `/api/`.
 | `POST /api/mcp/servers/{name}/test` | Connect, list tools, disconnect |
 | `PUT /api/mcp/servers/{name}/enabled` | Enable / disable a server |
 | `DELETE /api/mcp/servers/{name}` | Remove a server |
-| `GET /api/mcp/catalog` | Browse the Nous-approved MCP catalog |
-| `POST /api/mcp/catalog/install` | Install a catalog entry (with required env) |
+| `GET /api/mcp/catalog` | Removed catalog; kept for older clients, always `{entries: [], diagnostics: []}` |
+| `POST /api/mcp/catalog/install` | Removed catalog; answers 410 pointing at `hermes mcp add` |
 | `GET /api/messaging/platforms` | List every messaging channel with status + per-platform setup fields |
 | `PUT /api/messaging/platforms/{id}` | Configure a channel. Body: `{enabled?, env?, clear_env?}` (env writes to `.env`, enabled to `config.yaml`) |
 | `POST /api/messaging/platforms/{id}/test` | Report whether a channel is configured, enabled, and connected |

@@ -111,7 +111,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
-        return BuildFailure("venv", cause)
+        from pm.build_compilers import missing_compiler_remedy
+
+        return BuildFailure("venv", cause, missing_compiler_remedy(output))
     return InstallError("venv", cause)
 
 
@@ -265,10 +267,12 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if sys.platform == "darwin" and python.resolve() == pinned_python.resolve():
-        # PBS's AR still names its deleted build directory. Its CC is already
-        # clang; only the archiver needs a default, and only for our interpreter.
-        build_env.setdefault("AR", "/usr/bin/ar")
+    if python.resolve() == pinned_python.resolve():
+        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+        from pm.build_compilers import pinned_build_defaults
+
+        for key, value in pinned_build_defaults(python, build_env).items():
+            build_env.setdefault(key, value)
     return PythonEnvironment(
         uv=uv, python=python,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),

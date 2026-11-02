@@ -57,7 +57,14 @@ export function mcpOAuthRpc(scope?: ProfileScope) {
   return async <T>(action: 'start' | 'poll' | 'callback' | 'cancel', params: Record<string, unknown>): Promise<T> => {
     const { requestGatewayForAgent } = await import('@/store/gateway')
 
-    return requestGatewayForAgent<T>(connectionId, profile, `mcp.servers.oauth.${action}`, params, 60_000)
+    // A remote socket can serve several homes even when routing does not inject a profile.
+    return requestGatewayForAgent<T>(
+      connectionId,
+      profile,
+      `mcp.servers.oauth.${action}`,
+      { ...params, profile },
+      60_000
+    )
   }
 }
 

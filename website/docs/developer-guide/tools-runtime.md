@@ -196,6 +196,15 @@ The terminal tool integrates a dangerous-command approval system defined in `too
 
 2. **Detection** — before executing any terminal command, `detect_dangerous_command(command)` checks against all patterns.
 
+   A narrow systemd exception exists for exact sibling-profile Hermes gateway restarts. `systemctl --user restart hermes-gateway-<profile>[.service]` may skip the dangerous-command prompt only when all of these are true:
+
+   - the command is direct `systemctl` invocation, not `bash -c`, `sh -c`, `env`, `sudo`, scripts, wildcards, templates, or multi-target fleet operations;
+   - the current profile and target profile are both known, and the target is not the current gateway;
+   - gateway multiplexing is not active, because one process may then host more than the nominal current profile;
+   - the installed user unit pins `HERMES_HOME` to the expected sibling profile home.
+
+   Any uncertainty falls back to the normal approval path. This is intentionally an approval bypass, not an execution broker: the terminal/process registry still records the actual command and output for audit. Rollback is the same audited path against the previously running sibling service (`systemctl --user restart <old-unit>` or `systemctl --user start <old-unit>` after a failed stop); self and global gateway operations remain approval-gated/blocked by the same lifecycle patterns.
+
 3. **Approval prompt** — if a match is found:
    - **CLI mode** — an interactive prompt asks the user to approve, deny, or allow permanently
    - **Gateway mode** — an async approval callback sends the request to the messaging platform

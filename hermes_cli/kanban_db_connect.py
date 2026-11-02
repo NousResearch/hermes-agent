@@ -46,6 +46,21 @@ _CORRUPT_BACKUP_RETENTION = 10
 _INIT_LOCK_TIMEOUT_SECONDS = 10.0
 _INIT_LOCK_POLL_SECONDS = 0.05
 
+# Durable healthy-verdict cache beside the board (``<db>.health.json``). The
+# in-process ``_INITIALIZED_PATHS`` set cannot outlive a CLI invocation, so every
+# `hermes kanban …` process re-ran the full ``PRAGMA integrity_check`` walk —
+# seconds of CPU on a large board, serialized on the init flock, with the
+# processes that timed out out of the bounded acquire proceeding unlocked (the
+# "kanban init lock … not acquired within 10s" stampede). The verdict is
+# remembered on disk instead: the walk is paid at most once per TTL per board,
+# and a process that did not get the init lock never walks and never writes it.
+_HEALTH_VERDICT_SUFFIX = ".health.json"
+_HEALTH_VERDICT_VERSION = 1
+# A day, per the card. Longer than any plausible corruption window for the
+# classes only a walk can see (index/table disagreement); page-level damage
+# surfaces as a read error first, which fails closed at once.
+_HEALTH_VERDICT_TTL_SECONDS = 24 * 60 * 60
+
 
 def _resolve_busy_timeout_ms() -> int:
     """Return the SQLite busy timeout for Kanban connections. Kanban is the
@@ -126,6 +141,11 @@ def _cross_process_init_lock(path: Path):
     traceback. After the deadline we WARN and proceed WITHOUT the lock — safe
     because ``_INIT_LOCK`` still serializes same-process threads and init is
     idempotent: two racing first-inits mean redundant work, not corruption.
+
+    Yields whether the lock was actually acquired. A caller that did NOT get it
+    must not do the expensive, cache-writing half of init (see
+    :func:`_guard_existing_db_is_healthy`): letting every timed-out process run
+    its own page walk is the stampede this lock is supposed to prevent.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
@@ -147,7 +167,7 @@ def _cross_process_init_lock(path: Path):
                 "able to block this connect indefinitely (#36644).",
                 lock_path, _INIT_LOCK_TIMEOUT_SECONDS,
             )
-        yield
+        yield acquired
     finally:
         try:
             if acquired:
@@ -503,16 +523,223 @@ def _probe_for_corruption(resolved: Path) -> tuple[Optional[list[str]], Optional
     return messages, f"integrity_check returned {messages[0] if messages else '<no row>'!r}"
 
 
-def _guard_existing_db_is_healthy(path: Path) -> None:
-    """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
+# ---------------------------------------------------------------------------
+# Durable healthy-verdict cache: "<db>.health.json"
+# ---------------------------------------------------------------------------
+#
+# ``PRAGMA integrity_check`` walks every b-tree page — seconds of CPU and disk on
+# a 500 MB board. The in-process ``_INITIALIZED_PATHS`` set cannot outlive a CLI
+# invocation, so every process paid that walk on its first connect, serialized on
+# the init flock; the processes that timed out of the bounded acquire then ran it
+# anyway, unlocked. The verdict is remembered on disk instead, bound to the exact
+# file it describes:
+#
+#     {version, verdict: "ok", db, dev, ino, size, mtime_ns,
+#      schema_version, checked_at}
+#
+# so the walk is paid at most once per TTL per board and a lock-less process
+# neither walks nor writes. Only a healthy verdict is ever stored: a failed walk
+# raises, and nothing is cached, so the next process fails closed again.
 
-    Narrow auto-repair when the failure is ONLY index-scoped (table b-trees
-    intact): content-addressed corrupt backup FIRST, REINDEX under the
+
+def _health_verdict_path(resolved: Path) -> Path:
+    """The verdict file beside the board: ``kanban.db`` -> ``kanban.db.health.json``."""
+    return resolved.with_name(resolved.name + _HEALTH_VERDICT_SUFFIX)
+
+
+def _file_identity(resolved: Path) -> Optional[dict]:
+    """``{dev, ino, size, mtime_ns}`` — the binding a verdict is valid for.
+
+    ``dev``/``ino`` are what make a verdict die when the file is REPLACED rather
+    than edited: a fresh inode is a different board as far as a cached verdict is
+    concerned, so a swap can never inherit the old file's clean bill of health.
+    """
+    try:
+        st = resolved.stat()
+    except OSError:
+        return None
+    return {"dev": st.st_dev, "ino": st.st_ino,
+            "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+
+def _read_health_verdict(resolved: Path) -> Optional[dict]:
+    """The stored healthy verdict, or ``None`` when absent / unreadable / not one.
+
+    A broken cache file is treated as no cache at all (the walk runs), never as
+    evidence of health.
+    """
+    import json
+
+    try:
+        raw = json.loads(_health_verdict_path(resolved).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("verdict") != "ok" or raw.get("version") != _HEALTH_VERDICT_VERSION:
+        return None
+    return raw
+
+
+def _verdict_age(verdict: Optional[dict]) -> Optional[float]:
+    """Seconds since the stored verdict was taken, or ``None`` when unusable."""
+    if not isinstance(verdict, dict):
+        return None
+    try:
+        checked_at = float(verdict.get("checked_at"))
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, time.time() - checked_at)
+
+
+def _verdict_same_file(verdict: dict, identity: dict) -> bool:
+    """True iff the verdict was taken from this very inode/device."""
+    try:
+        return (int(verdict["dev"]), int(verdict["ino"])) == (identity["dev"], identity["ino"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _verdict_same_bytes(verdict: dict, identity: dict) -> bool:
+    """True iff the file still has the size/mtime the verdict was taken on."""
+    try:
+        return (int(verdict["size"]), int(verdict["mtime_ns"])) == (
+            identity["size"], identity["mtime_ns"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _structural_probe(resolved: Path) -> int:
+    """O(1) structural probe: the schema header parses and the object catalog
+    reads. Returns ``schema_version``.
+
+    Catches the classes the 64-byte header check cannot (zeroed or truncated
+    page 1, a file sqlite refuses to open, an unreadable schema) WITHOUT walking
+    every page, which is what makes it affordable on every connect. Errors
+    propagate: ``OperationalError`` (locked/busy) is not corruption, and
+    ``DatabaseError`` is the caller's to quarantine.
+    """
+    probe = _sqlite_connect(resolved)
+    try:
+        row = probe.execute("PRAGMA schema_version").fetchone()
+        schema_version = int(row[0]) if row is not None and row[0] is not None else 0
+        # sqlite_master lives on page 1: reading it proves the header page and
+        # the schema table are intact, not just the first 64 bytes.
+        probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        probe.execute("PRAGMA page_count").fetchone()
+        probe.execute("PRAGMA page_size").fetchone()
+        return schema_version
+    finally:
+        probe.close()
+
+
+def _probe_structure_fail_closed(resolved: Path) -> int:
+    """``_structural_probe`` with the guard's policy: a file sqlite cannot read
+    its own schema out of is quarantined and refused, never recreated over."""
+    try:
+        return _structural_probe(resolved)
+    except sqlite3.OperationalError:
+        raise  # busy/locked is not corruption
+    except sqlite3.DatabaseError as exc:
+        # Nothing on disk may keep vouching for bytes that just failed.
+        _drop_health_verdict(resolved)
+        backup = _backup_corrupt_db(resolved)
+        raise KanbanDbCorruptError(
+            resolved, backup, f"structural probe failed: {exc}")
+
+
+def _drop_health_verdict(resolved: Path) -> None:
+    """Forget a stored verdict (best-effort).
+
+    Called when the guard has just refused the file, so nothing on disk can later
+    vouch for bytes that failed a check. A failed walk is never cached in the
+    first place; this also clears a verdict that predates the damage.
+    """
+    try:
+        _health_verdict_path(resolved).unlink()
+    except OSError:
+        pass
+
+
+def _write_health_verdict(resolved: Path, *, checked_at: Optional[float] = None) -> None:
+    """Record a healthy verdict beside the board, atomically and best-effort.
+
+    ``checked_at`` is preserved when refreshing a verdict whose identity moved,
+    so a refresh never buys extra time before the next full walk. Never raises: a
+    cache write must not fail a connect that already passed the guard. Callers
+    MUST hold the board's init flock (a process that did not get it must not
+    write at all) — the write is what makes the walk single-flight.
+    """
+    import json
+    import os
+
+    try:
+        # Read the schema_version through the same probe path; if the file is not
+        # readable enough for that, record nothing rather than a claim we cannot
+        # stand behind.
+        schema_version = _structural_probe(resolved)
+    except sqlite3.Error as exc:
+        _kb._log.debug("kanban DB %s: not recording a health verdict (%s)", resolved, exc)
+        return
+    # Identity AFTER the probe: closing the probe connection can checkpoint the
+    # WAL, which moves size/mtime.
+    identity = _file_identity(resolved)
+    if identity is None:
+        return
+    stamp = time.time() if checked_at is None else float(checked_at)
+    payload = {
+        "version": _HEALTH_VERDICT_VERSION,
+        "verdict": "ok",
+        "db": resolved.name,
+        "schema_version": schema_version,
+        "checked_at": stamp,
+        **identity,
+    }
+    target = _health_verdict_path(resolved)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        _kb._log.debug("kanban DB %s: could not write %s (%s)", resolved, target.name, exc)
+
+
+def _guard_existing_db_is_healthy(path: Path, *, full_check_allowed: bool = True) -> None:
+    """Vouch for an existing non-empty DB file before anyone opens it for use.
+
+    The expensive half is ``PRAGMA integrity_check`` (walks every b-tree page:
+    seconds on a 500 MB board). It is now paid **at most once per TTL per board**
+    and its verdict is remembered beside the board in
+    ``<db>.health.json`` — because the in-process cache cannot outlive a CLI
+    invocation, so every process used to pay it:
+
+    * verdict matches this exact file (dev/ino/size/mtime) and is inside the
+      TTL -> reuse it and do not even open a connection;
+    * same file, bytes moved (a write, a checkpoint, an in-place overwrite) ->
+      an O(1) *structural* probe (``schema_version`` + ``sqlite_master`` + page
+      geometry) that fails closed exactly like the walk, then the identity is
+      refreshed while ``checked_at`` is kept, so the walk keeps its TTL slot.
+      A bare mtime bump must not re-walk: on a live board the main file's mtime
+      advances on every WAL checkpoint;
+    * no verdict, a different file (inode/dev changed: replaced under us), a
+      changed ``schema_version``, or an expired TTL -> the real walk.
+
+    Narrow auto-repair when the walk's failure is ONLY index-scoped (table
+    b-trees intact): content-addressed corrupt backup FIRST, REINDEX under the
     caller-held init flock, re-check, proceed only if clean. Anything else
-    (page corruption, ``malformed``, unclean re-check) fails closed: back up
-    the file + sidecars and raise :class:`KanbanDbCorruptError` so callers
-    never recreate the schema on top of a damaged DB. ``OperationalError``
-    (lock/busy) is NOT corruption and propagates raw (no spurious backup).
+    (page corruption, ``malformed``, unclean re-check, a file whose schema
+    cannot be read) fails closed: back up the file + sidecars and raise
+    :class:`KanbanDbCorruptError` so callers never recreate the schema on top of
+    a damaged DB. ``OperationalError`` (lock/busy) is NOT corruption and
+    propagates raw (no spurious backup).
+
+    ``full_check_allowed=False`` is the bounded-acquire fallback (this process
+    did NOT get the init flock): it runs the structural probe, never the walk,
+    and never writes the verdict cache — one timed-out process must not add
+    another page walk to the stampede. The next lock holder does the walk.
+
     No-op for missing / zero-byte files and paths already proven healthy this
     process. All writes are confined to the resolved path's parent.
     """
@@ -522,8 +749,35 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     if _missing_or_empty(resolved) or str(resolved) in _INITIALIZED_PATHS:
         return
+    identity = _file_identity(resolved)
+    if identity is None:
+        return  # unstat-able: let the later open report it
+    verdict = _read_health_verdict(resolved)
+    age = _verdict_age(verdict)
+    if verdict is not None and age is not None and age < _HEALTH_VERDICT_TTL_SECONDS:
+        if _verdict_same_file(verdict, identity) and _verdict_same_bytes(verdict, identity):
+            return  # healthy verdict for these exact bytes, inside the TTL
+        if _verdict_same_file(verdict, identity):
+            # The bytes moved under the verdict. Probe the structure; keep the
+            # walk for its TTL slot unless the schema itself changed under us.
+            schema_version = _probe_structure_fail_closed(resolved)
+            if verdict.get("schema_version") == schema_version:
+                if full_check_allowed:
+                    _write_health_verdict(resolved, checked_at=verdict["checked_at"])
+                return
+    if not full_check_allowed:
+        # Timed out of the bounded init acquire: fail closed on what the cheap
+        # probe can see, leave the page walk to the lock holder.
+        _probe_structure_fail_closed(resolved)
+        _kb._log.info(
+            "kanban DB %s: periodic integrity_check deferred (bounded acquire of "
+            "the init flock timed out); the structural probe passed.",
+            resolved,
+        )
+        return
     messages, reason = _probe_for_corruption(resolved)
     if reason is None:
+        _write_health_verdict(resolved)
         return
     # Quarantine FIRST — both the repair and fail-closed paths preserve the
     # pre-touch bytes before anything mutates the file.
@@ -542,11 +796,13 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
                 "integrity_check now clean. Pre-repair copy kept at %s.",
                 resolved, ", ".join(index_names), _backup_label(backup),
             )
+            _write_health_verdict(resolved)
             return
         reason = (
             f"{reason}; REINDEX auto-repair attempted but integrity_check "
             f"still returned {post[0] if post else '<no row>'!r}"
         )
+    _drop_health_verdict(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
@@ -581,28 +837,39 @@ def repair_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) ->
     if _missing_or_empty(resolved):
         return RepairResult(status="missing", db_path=resolved)
 
-    with _cross_process_init_lock(resolved):
+    with _cross_process_init_lock(resolved) as init_lock_held:
         messages, reason = _probe_for_corruption(resolved)
         if messages is None:
             # Same quarantine the connect-time guard takes when sqlite
             # refuses to open the file at all.
+            _drop_health_verdict(resolved)
             return RepairResult(
                 status="corrupt", db_path=resolved, messages=[str(reason)],
                 backup_path=_backup_corrupt_db(resolved),
             )
         if reason is None:
+            # A walk just happened: record it so the next connect can reuse the
+            # verdict instead of paying for another page walk.
+            if init_lock_held:
+                _write_health_verdict(resolved)
             return RepairResult(status="ok", db_path=resolved, messages=messages)
 
         # Quarantine FIRST — identical policy to the connect-time guard.
         backup = _backup_corrupt_db(resolved)
         index_names = _repairable_index_names(messages)
         if not index_names:
+            _drop_health_verdict(resolved)
             return RepairResult(status="corrupt", db_path=resolved, messages=messages, backup_path=backup)
         repaired, post = _attempt_index_reindex_repair(resolved, index_names)
         # The file changed on disk; force the next connect() in this process
         # to re-probe instead of trusting the stale healthy-path cache.
         with _INIT_LOCK:
             _INITIALIZED_PATHS.discard(str(resolved))
+        if init_lock_held:
+            if repaired:
+                _write_health_verdict(resolved)
+            else:
+                _drop_health_verdict(resolved)
         return RepairResult(
             status="repaired" if repaired else "corrupt",
             db_path=resolved,
@@ -759,16 +1026,18 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             path,
         )
 
-    with _cross_process_init_lock(path):
+    with _cross_process_init_lock(path) as init_lock_held:
         # Read-only file/sidecar preflight first, so a stray read-only kanban.db
         # fails actionably instead of "attempt to write a readonly database".
         # See #12508.
         from hermes_state import preflight_db_writability
         preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
         # Cheap byte-level header check before any sqlite connection, then the
-        # full integrity probe (cached per path via _INITIALIZED_PATHS).
+        # health guard (in-process memo, then the durable per-board verdict).
+        # `init_lock_held` decides whether this process may pay for the page
+        # walk: a process that timed out of the bounded acquire must not.
         _validate_sqlite_header(path)
-        _guard_existing_db_is_healthy(path)
+        _guard_existing_db_is_healthy(path, full_check_allowed=init_lock_held)
         resolved = str(path.resolve())
 
         def _init_if_needed(conn: sqlite3.Connection) -> None:

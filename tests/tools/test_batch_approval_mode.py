@@ -21,6 +21,7 @@ def _batch_mode():
 
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
+    import os
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
@@ -28,6 +29,10 @@ def _clear_approval_state():
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    # test_batch_runner_exports_marker calls the real _export_batch_approval_context(),
+    # which writes os.environ directly (monkeypatch cannot restore that) — without this
+    # pop the batch marker leaks into every later test file in the same pytest process.
+    os.environ.pop("HERMES_BATCH_SESSION", None)
 
 
 # ---------------------------------------------------------------------------

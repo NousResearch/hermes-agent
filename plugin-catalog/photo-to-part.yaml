@@ -1,33 +1,35 @@
 name: photo-to-part
 repo: https://github.com/mojomast/hermes-photo-to-part
-sha: a0e96d0be44459cfa90e7de413fdb5f95e722ed6
-version: "0.1.1"
+sha: 05f205695a8984fa6ce8d65617363f47f502e278
+version: "0.1.2"
 description: >-
-  Turn photos, a few measurements, or a messy scan into a parametric printable
-  part and check the mesh locally. Tools read and write only the paths you
-  pass (STL, 3MF, PNG, JSON). No credentials and no printer connection.
-  Enabling the plugin installs its Python packages from PyPI after Hermes
-  dependency consent. A STEP solid needs CadQuery or build123d in the project
-  environment; that install downloads packages and can take several minutes.
-  Chat photos still go to your model provider.
+  Skill id photo-to-part:photo-to-printable-part. Turn photos, a few
+  measurements, or a messy scan into a parametric printable part and check
+  the mesh locally. Tools read and write only the paths you pass (STL, 3MF,
+  PNG, JSON). No credentials and no printer connection. Enabling the plugin
+  installs its Python packages from PyPI after Hermes dependency consent.
+  A STEP solid needs CadQuery or build123d in the project environment; that
+  install downloads packages and can take several minutes. Chat photos still
+  go to your model provider.
 maintainer: mojomast
 tier: community
 category: tools
 title: Photo to Part
-docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/a0e96d0be44459cfa90e7de413fdb5f95e722ed6/README.md
+docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/05f205695a8984fa6ce8d65617363f47f502e278/README.md
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a0e96d0be44459cfa90e7de413fdb5f95e722ed6/docs/catalog-banner.png
+image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a0e96d0be44459cfa90e7de413fdb5f95e722ed6/docs/screenshot-views.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a0e96d0be44459cfa90e7de413fdb5f95e722ed6/examples/plate-clip/renders/compare_front.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a0e96d0be44459cfa90e7de413fdb5f95e722ed6/examples/plate-clip/renders/front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/docs/screenshot-views.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/examples/plate-clip/renders/compare_front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/examples/plate-clip/renders/front.png
 capabilities:
   provides_tools:
     - photo_part_validate
     - photo_part_render
     - photo_part_heal
     - photo_part_template
+    - photo_part_measure
   provides_hooks: []
   provides_middleware: []
   requires_env: []

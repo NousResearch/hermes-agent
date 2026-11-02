@@ -1497,6 +1497,23 @@ export interface DisplayLeaseReleaseParams {
   viewer_id?: string | null
   force?: boolean | null
 }
+export interface GroupsPreviewParams {
+  profile?: string | null
+  room_id: string
+  text: string
+}
+export interface GroupsPreviewResult {
+  room_id: string
+  authority_gateway_id: string
+  authority_epoch: number
+  revision: number
+  members: PreviewMember[]
+}
+export interface PreviewMember {
+  member_id: string
+  handle: string
+  display_name?: string | null
+}
 export interface GroupsCapabilitiesParams {
   profile?: string | null
 }
@@ -6192,6 +6209,8 @@ export interface RpcMethods {
   'groups.peer.register': { params: GroupsPeerRegisterParams; result: GroupsPeerRegisterResult }
   /** Revoke one target-issued grant using its exact profile scope. */
   'groups.peer.revoke': { params: GroupsPeerRevokeParams; result: GroupsPeerRevokeResult }
+  /** Preview first-round selection without admitting a message. */
+  'groups.preview': { params: GroupsPreviewParams; result: GroupsPreviewResult }
   /** Continue a replicated room on this gateway at epoch + 1; requires confirm=true. */
   'groups.promote': { params: GroupsPromoteParams; result: GroupsPromoteResult }
   /** Rename one hosted room atomically with its replay event. */
@@ -6639,6 +6658,7 @@ export const RPC_METHODS = [
   'groups.peer.invite',
   'groups.peer.register',
   'groups.peer.revoke',
+  'groups.preview',
   'groups.promote',
   'groups.rename',
   'groups.replica_state',
@@ -6858,6 +6878,8 @@ export interface CanonicalRpcMethods {
   'groups.create': { params: CanonicalRoomCreateParams; result: GroupsCreateResult }
   /** Discard one indeterminate room task after explicit user confirmation. */
   'groups.discard': { params: GroupsDiscardParams; result: GroupsDiscardResult }
+  /** Preview first-round selection without admitting a message. */
+  'groups.preview': { params: GroupsPreviewParams; result: GroupsPreviewResult }
   'groups.retry': { params: CanonicalRoomAttemptParams; result: GroupsRetryResult }
   'image.attach_bytes': { params: ImageAttachBytesParams; result: CanonicalAttachedImageResult }
   /** Native-owner only: admit the dispatcher's current claim on a kanban task. */
@@ -6928,6 +6950,7 @@ export const CANONICAL_RPC_METHODS = [
   'groups.attachment.upload',
   'groups.create',
   'groups.discard',
+  'groups.preview',
   'groups.retry',
   'image.attach_bytes',
   'kanban.run',

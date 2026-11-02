@@ -29,6 +29,8 @@ export interface CanonicalGroupMessages {
   memberWorking: string
   memberQueued: string
   groupWorking: string
+  firstRound: string
+  firstRoundCaveat: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -62,7 +64,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Upload failed',
     memberWorking: 'Working',
     memberQueued: 'Queued',
-    groupWorking: 'The group is working…'
+    groupWorking: 'The group is working…',
+    firstRound: 'First-round selected:', firstRoundCaveat: 'Members may pass or wait.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -94,7 +97,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'アップロードに失敗しました',
     memberWorking: '作業中',
     memberQueued: '待機中',
-    groupWorking: 'グループが作業中です…'
+    groupWorking: 'グループが作業中です…',
+    firstRound: '最初のラウンドの対象:', firstRoundCaveat: 'メンバーはパスまたは待機する場合があります。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -126,7 +130,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上传失败',
     memberWorking: '工作中',
     memberQueued: '排队中',
-    groupWorking: '群组正在处理…'
+    groupWorking: '群组正在处理…',
+    firstRound: '首轮选中：', firstRoundCaveat: '成员可能跳过或等待。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -158,7 +163,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: '上傳失敗',
     memberWorking: '工作中',
     memberQueued: '排隊中',
-    groupWorking: '群組正在處理…'
+    groupWorking: '群組正在處理…',
+    firstRound: '首輪選中：', firstRoundCaveat: '成員可能跳過或等待。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -190,7 +196,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'فشل الرفع',
     memberWorking: 'يعمل',
     memberQueued: 'في الانتظار',
-    groupWorking: 'المجموعة تعمل…'
+    groupWorking: 'المجموعة تعمل…',
+    firstRound: 'المختارون للجولة الأولى:', firstRoundCaveat: 'قد يتخطى الأعضاء أو ينتظرون.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -225,7 +232,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Не удалось загрузить файл',
     memberWorking: 'Работает',
     memberQueued: 'В очереди',
-    groupWorking: 'Группа работает…'
+    groupWorking: 'Группа работает…',
+    firstRound: 'Выбраны для первого раунда:', firstRoundCaveat: 'Участники могут пропустить ход или ждать.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -259,7 +267,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Échec du téléversement',
     memberWorking: 'En cours',
     memberQueued: 'En attente',
-    groupWorking: 'Le groupe travaille…'
+    groupWorking: 'Le groupe travaille…',
+    firstRound: 'Sélection au premier tour :', firstRoundCaveat: 'Les membres peuvent passer ou attendre.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -294,7 +303,8 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Hochladen fehlgeschlagen',
     memberWorking: 'Arbeitet',
     memberQueued: 'In der Warteschlange',
-    groupWorking: 'Die Gruppe arbeitet…'
+    groupWorking: 'Die Gruppe arbeitet…',
+    firstRound: 'Für die erste Runde ausgewählt:', firstRoundCaveat: 'Mitglieder können passen oder warten.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -328,6 +338,7 @@ export const CANONICAL_GROUP_LOCALES = {
     uploadFailed: 'Error al subir',
     memberWorking: 'Trabajando',
     memberQueued: 'En cola',
-    groupWorking: 'El grupo está trabajando…'
+    groupWorking: 'El grupo está trabajando…',
+    firstRound: 'Seleccionados para la primera ronda:', firstRoundCaveat: 'Los miembros pueden pasar o esperar.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

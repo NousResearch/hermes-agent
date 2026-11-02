@@ -9,7 +9,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { Textarea } = await import('@/components/ui/textarea')
 
-  return { Textarea, atom: (await import('nanostores')).atom, MessageTextContent: undefined, Streamdown: undefined, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { Textarea, atom: (await import('nanostores')).atom, MessageTextContent: undefined, Streamdown: undefined,
+    host: { requestProfile: request, state: { connectionId: { get: () => 'owner-a' }, profile: { get: () => 'reviewer' }, gateway: { get: () => 'open' } } },
+    useValue: (store: { get: () => unknown }) => store.get(), gatewayActivationEpoch: () => 0, useGatewayActivationEpoch: () => 0,
+    useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

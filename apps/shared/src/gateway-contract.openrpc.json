@@ -1303,6 +1303,24 @@
       }
     },
     {
+      "name": "groups.preview",
+      "summary": "Preview first-round selection without admitting a message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsPreviewParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPreviewResult"
+        }
+      }
+    },
+    {
       "name": "groups.promote",
       "summary": "Continue a replicated room on this gateway at epoch + 1; requires confirm=true.",
       "params": [
@@ -19803,6 +19821,74 @@
         "title": "GroupsPeerRevokeResult",
         "type": "object"
       },
+      "GroupsPreviewParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "text"
+        ],
+        "title": "GroupsPreviewParams",
+        "type": "object"
+      },
+      "GroupsPreviewResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "authority_gateway_id": {
+            "title": "Authority Gateway Id",
+            "type": "string"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewMember"
+            },
+            "title": "Members",
+            "type": "array"
+          }
+        },
+        "required": [
+          "room_id",
+          "authority_gateway_id",
+          "authority_epoch",
+          "revision",
+          "members"
+        ],
+        "title": "GroupsPreviewResult",
+        "type": "object"
+      },
       "GroupsPromoteParams": {
         "additionalProperties": false,
         "properties": {
@@ -28613,6 +28699,37 @@
           }
         },
         "title": "PreviewClosePayload",
+        "type": "object"
+      },
+      "PreviewMember": {
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Name"
+          }
+        },
+        "required": [
+          "member_id",
+          "handle"
+        ],
+        "title": "PreviewMember",
         "type": "object"
       },
       "PreviewOpenPayload": {
@@ -48138,6 +48255,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/GroupsDiscardResult"
+        }
+      }
+    },
+    {
+      "name": "groups.preview",
+      "summary": "Preview first-round selection without admitting a message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsPreviewParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsPreviewResult"
         }
       }
     },

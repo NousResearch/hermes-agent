@@ -25,7 +25,7 @@ _METHODS = (
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
     "groups.attachment.download")
 #: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
-LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard"}
+LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard", "groups.preview"}
 
 _service_lock = threading.Lock()
 _run_store_lock = threading.Lock()
@@ -198,6 +198,13 @@ def _room_method(
 
     def dec(fn):
         def handler(rid, params: dict) -> dict:
+            if name == 'groups.preview':
+                from tui_gateway.transport import current_transport
+                from gateway.owner_identity import host_owner_subject, principal_subject
+                transport = current_transport()
+                identity = getattr(transport, 'auth_identity', None)
+                if not isinstance(identity, dict) or principal_subject(identity) != host_owner_subject():
+                    return _err(rid, 4003, 'permission_denied')
             if (forwarded := owner_call(rid, name, params)) is not None:
                 return forwarded
             args = (rid, params)
@@ -253,6 +260,12 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
             "log_replication", "authority_takeover"],
         "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
+
+
+@_room_method('groups.preview', code=4003)
+def _(rid, params: dict) -> dict:
+    """Local-only rooms have no positive caller/room owner guard; fail closed."""
+    return _err(rid, 4003, 'permission_denied')
 
 
 @_room_method("groups.peer.invite", code=4120, db=True)

@@ -85,7 +85,9 @@ function waitForDashboardPort(
   child,
   timeoutMs = resolvePortAnnounceTimeoutMs(),
   describeOutputTail = () => '',
-  bufferedOutput: () => string = () => ''
+  bufferedOutput: () => string = () => '',
+  // Tests shorten the real-clock grace; production always uses the default.
+  completionGraceMs = SOURCE_COMPLETION_GRACE_MS
 ) {
   return new Promise((resolve, reject) => {
     // Seed the line buffer with any output the spawn-time tail already
@@ -108,7 +110,7 @@ function waitForDashboardPort(
 
     function completionDeadline() {
       return completionInProgress
-        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + SOURCE_COMPLETION_GRACE_MS)
+        ? Math.min(startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS, realNow() + completionGraceMs)
         : null
     }
 

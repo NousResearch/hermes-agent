@@ -1,0 +1,5 @@
+name: ai-usage-meter
+version: 0.1.0
+description: "Live provider quota and tracked-model usage meter for Hermes."
+author: "David Calvin"
+kind: backend

@@ -184,6 +184,21 @@ def _supports_xhigh_effort(model: str) -> bool:
     return _supports_adaptive_thinking(model) and not _model_matches(model, _NO_XHIGH_CLAUDE_SUBSTRINGS)
 
 
+def anthropic_picker_efforts(model: str) -> tuple[str, ...]:
+    """Distinct effort levels the Anthropic adapter sends for ``model``.
+
+    Hermes aliases must not appear as separate native Claude levels:
+    ``minimal`` aliases ``low`` and ``ultra`` aliases ``max``.
+    """
+    if _is_pre_thinking_haiku(model):
+        return ()
+    if not _supports_adaptive_thinking(model):
+        return ("low", "medium", "high", "xhigh")
+    if _supports_xhigh_effort(model):
+        return ("low", "medium", "high", "xhigh", "max")
+    return ("low", "medium", "high", "max")
+
+
 def _accepts_thinking_disable(model: str) -> bool:
     """True when ``model`` accepts an explicit ``thinking: {"type": "disabled"}``. Adaptive Claude
     thinks by default, so "off" only works if the disable is sent; mandatory-thinking families

@@ -1,4 +1,9 @@
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ReasoningEffort } from '@hermes/shared'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isReasoningEffort,
+  REASONING_EFFORTS,
+  type ReasoningEffort
+} from '@hermes/shared'
 
 import { normalize } from '@/lib/text'
 
@@ -66,4 +71,52 @@ export function resolveReasoningEffort(effort: string, fallback: string = DEFAUL
   }
 
   return isReasoningEffort(value) ? value : DEFAULT_REASONING_EFFORT
+}
+
+/** Ordered, validated effort choices for a route. `undefined` means the
+ * capability is unknown and keeps Hermes' full scale; `[]` means no adjustable levels. */
+export function reasoningEffortOptions(supported?: readonly string[]): ReasoningEffort[] {
+  if (supported === undefined) {
+    return [...REASONING_EFFORTS]
+  }
+
+  const allowed = new Set(supported.map(normalize).filter(isReasoningEffort))
+
+  return REASONING_EFFORTS.filter(value => allowed.has(value))
+}
+
+/** Resolve a stored/default effort onto the selected route's real choices.
+ * Prefer the backend-reported wire level, else choose the nearest weaker level. */
+export function resolveSupportedReasoningEffort(
+  effort: string,
+  supported?: readonly string[],
+  wire?: string,
+  fallback: string = DEFAULT_REASONING_EFFORT
+): string {
+  const resolved = resolveReasoningEffort(effort, fallback)
+
+  if (!resolved || supported === undefined) {
+    return resolved
+  }
+
+  const options = reasoningEffortOptions(supported)
+
+  if (options.includes(resolved as ReasoningEffort)) {
+    return resolved
+  }
+
+  const sent = normalize(wire ?? '')
+
+  if (isReasoningEffort(sent) && options.includes(sent)) {
+    return sent
+  }
+
+  if (options.length === 0) {
+    return ''
+  }
+
+  const requestedIndex = REASONING_EFFORTS.indexOf(resolved as ReasoningEffort)
+  const weaker = [...options].reverse().find(value => REASONING_EFFORTS.indexOf(value) < requestedIndex)
+
+  return weaker ?? options[0]
 }

@@ -4,9 +4,8 @@ picker payload. The desktop model picker hides its Thinking toggle from this,
 so a route that can't disable reasoning must be describable here — otherwise
 the UI offers an off switch whose setting the upstream rejects.
 
-The catalog's `supported_efforts` is intentionally absent from the payload:
-the Portal honors levels a route doesn't advertise, so publishing it would
-invite a picker filter that hides working levels.
+OpenRouter's `supported_efforts` is normalized into `reasoning_efforts` for
+the picker. Nous remains unfiltered because its catalog under-reports levels.
 """
 
 import hermes_cli.inventory as inv
@@ -41,23 +40,60 @@ def test_optional_reasoning_route_can_disable(monkeypatch):
     assert rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]["can_disable_reasoning"] is True
 
 
-def test_advertised_efforts_never_reach_the_picker(monkeypatch):
-    """The catalog's level list stays off the wire even when it is published.
-
-    It under-reports what the Portal serves, so forwarding it would let the
-    picker hide levels that work. Only the disable verdict crosses.
-    """
+def test_openrouter_advertised_efforts_reach_picker_in_canonical_order(monkeypatch):
     _patch_catalog(monkeypatch, {
         "deepseek/deepseek-v4-pro": {
             "supports_reasoning": True,
-            "supported_efforts": ["xhigh", "high"],
+            "supported_efforts": ["xhigh", "none", "high", "bogus", "high"],
+            "mandatory": False,
+        },
+    }, provider="openrouter")
+    rows = [{"slug": "openrouter", "models": ["deepseek/deepseek-v4-pro"]}]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
+    assert caps["reasoning_efforts"] == ["high", "xhigh"]
+    assert "supported_efforts" not in caps
+
+
+def test_anthropic_picker_uses_native_effort_scales(monkeypatch):
+    _patch_catalog(monkeypatch, {})
+    rows = [{
+        "slug": "anthropic",
+        "models": ["claude-opus-4.5", "claude-opus-4.6", "claude-opus-4.8", "claude-haiku-4.5", "claude-haiku-5.5"],
+    }]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]
+    assert caps["claude-opus-4.5"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
+    assert caps["claude-opus-4.6"]["reasoning_efforts"] == ["low", "medium", "high", "max"]
+    assert caps["claude-opus-4.8"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert caps["claude-haiku-4.5"] == {"fast": False, "reasoning": False, "reasoning_efforts": []}
+    assert caps["claude-haiku-5.5"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_openai_model_without_none_hides_disable(monkeypatch):
+    _patch_catalog(monkeypatch, {})
+    rows = [{"slug": "openai-codex", "models": ["gpt-6.1-sol"]}]
+    inv._apply_capabilities(rows)
+
+    caps = rows[0]["capabilities"]["gpt-6.1-sol"]
+    assert caps["can_disable_reasoning"] is False
+    assert caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_nous_underreported_efforts_do_not_filter_picker(monkeypatch):
+    _patch_catalog(monkeypatch, {
+        "deepseek/deepseek-v4-pro": {
+            "supports_reasoning": True,
+            "supported_efforts": ["high"],
             "mandatory": False,
         },
     })
     rows = [{"slug": "nous", "models": ["deepseek/deepseek-v4-pro"]}]
     inv._apply_capabilities(rows)
 
-    assert "supported_efforts" not in rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
+    assert "reasoning_efforts" not in rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
 
 
 def test_non_reasoning_route_offers_no_reasoning_controls(monkeypatch):

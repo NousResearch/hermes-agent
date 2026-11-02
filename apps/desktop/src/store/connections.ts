@@ -37,6 +37,7 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
+import { currentUserSessionOpen } from '@/store/session-open-intent'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
@@ -288,7 +289,8 @@ async function restoreConnection(connectionId: string, options: SelectConnection
 async function reconcileStartupProfile(
   connectionId: string,
   kind: string | undefined,
-  freshSessionRequest: number
+  freshSessionRequest: number,
+  userOpenSince: number
 ): Promise<void> {
   if (kind === 'local' || $activeSessionId.get() || $selectedStoredSessionId.get()) {
     return
@@ -332,7 +334,7 @@ async function reconcileStartupProfile(
   )
 
   if (target) {
-    await restoreConnection(connectionId, { profile: target, yieldToOpenedSession: true })
+    await restoreConnection(connectionId, { profile: target, userOpenSince, yieldToOpenedSession: true })
   } else if (
     roster.profiles.some(candidate => candidate.name === profile) &&
     (served === null || served.has(profile))
@@ -346,16 +348,17 @@ async function reconcileStartupProfile(
 async function restorePreferredConnection(
   preferredId: string,
   kind: string | undefined,
-  freshSessionRequest: number
+  freshSessionRequest: number,
+  userOpenSince: number
 ): Promise<void> {
   if ($activeConnectionId.get() !== preferredId) {
-    await restoreConnection(preferredId)
+    await restoreConnection(preferredId, { userOpenSince })
 
     return
   }
 
   const revision = switchRevision
-  await reconcileStartupProfile(preferredId, kind, freshSessionRequest)
+  await reconcileStartupProfile(preferredId, kind, freshSessionRequest, userOpenSince)
 
   // The roster read is a window: a pick that landed meanwhile saved its own
   // source, and the reconcile's own switch already saved this one.
@@ -372,6 +375,7 @@ async function restorePreferredConnection(
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
   const freshSessionRequest = $freshSessionRequest.get()
+  const userOpenSince = currentUserSessionOpen()
 
   const [registry, defaultLoaded] = await Promise.all([
     refreshConnectionsRegistry(),
@@ -391,10 +395,16 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   await waitForInitialConnection()
 
   // The user got there first: a source they picked while boot was settling
-  // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
+  // (statusbar switcher, fleet profile rail), or a chat they opened, is not
+  // drift to "restore" over.
   // The launch preference only decides where a window lands when nobody has
   // said otherwise yet.
-  if (switchRevision > 0 || pendingTarget !== null || $freshSessionRequest.get() !== freshSessionRequest) {
+  if (
+    switchRevision > 0 ||
+    pendingTarget !== null ||
+    $freshSessionRequest.get() !== freshSessionRequest ||
+    currentUserSessionOpen() !== userOpenSince
+  ) {
     return registry
   }
 
@@ -416,7 +426,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     }
 
     if (registry.connections.some(connection => connection.id === connectionId)) {
-      await restoreConnection(connectionId, { profile: defaultRoute.profile })
+      await restoreConnection(connectionId, { profile: defaultRoute.profile, userOpenSince })
     }
 
     return $connectionsRegistry.get() ?? registry
@@ -447,7 +457,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return registry
   }
 
-  await restorePreferredConnection(preferredId, preferred?.kind, freshSessionRequest)
+  await restorePreferredConnection(preferredId, preferred?.kind, freshSessionRequest, userOpenSince)
 
   return $connectionsRegistry.get() ?? registry
 }
@@ -480,14 +490,24 @@ export interface SelectConnectionOptions {
    *  source yet, so a second restore pass — the normal case, because main opens
    *  the local backend before the registry settles — read as user-initiated. */
   restore?: boolean
+  /** The launch restores: the user-open revision (store/session-open-intent)
+   *  when boot began. A chat the person opened since then wins over the
+   *  restore, however early it was opened; a chat selected automatically (the
+   *  cold-start route resume) does not bump it, so the restore still lands. */
+  userOpenSince?: number
   /** The startup profile re-home only: it gives way to a conversation opened
    *  while it dials. Other silent restores keep main's behaviour (the restore
    *  wins), since a session selected during them may itself be automatic. */
   yieldToOpenedSession?: boolean
 }
 
-/** The startup re-home never closes a conversation opened while it dialed. */
+/** A launch restore never closes a conversation the person opened, and the
+ *  startup re-home never closes one opened while it dialed. */
 function restoreYields(options: SelectConnectionOptions, openedSession: string): boolean {
+  if (options.userOpenSince !== undefined && currentUserSessionOpen() !== options.userOpenSince) {
+    return true
+  }
+
   return options.yieldToOpenedSession === true && openSessionKey() !== openedSession
 }
 
@@ -602,10 +622,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
+
   abandonInFlight = () => {
     activation.abort()
     rollbackRehome(rehomed, currentProfile, targetIsActive)
   }
+
   $pendingConnectionId.set(connectionId)
 
   // Runs inside the activation's serialized section, synchronously right

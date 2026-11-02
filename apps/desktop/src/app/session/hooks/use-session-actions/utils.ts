@@ -1,4 +1,3 @@
-import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
@@ -27,6 +26,7 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
+  focusSessionUsage,
   getSessionOwnerHint,
   knownSessionOwner,
   ownerLookupSessionRows,
@@ -44,7 +44,6 @@ import {
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
-  setCurrentUsage,
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
@@ -2325,9 +2324,10 @@ export function applyRuntimeInfo(
   if (foreground) {
     publishRuntimeToComposer(sessionState)
 
-    if (info.usage) {
-      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
-      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
+    if (sessionState.usage) {
+      // Replace, never merge: the backend omits a figure it has no value for (cache hit rate,
+      // t/s, compressions), so a merge would keep the previous session's number on screen.
+      focusSessionUsage(sessionState.usage)
     }
   }
 
@@ -2336,12 +2336,16 @@ export function applyRuntimeInfo(
 
 export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
-  storedSessionId: null | string
+  storedSessionId: null | string,
+  previousStoredSessionId?: null | string
 ) {
-  // Compression count is live runtime state, not part of a durable session row.
-  // Drop the previous session's value immediately while the selected runtime
-  // resumes; the authoritative usage snapshot will repopulate it when present.
-  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // A switch drops the previous session's figures at once; the stored row and the
+  // resume snapshot repopulate what they carry. Re-resuming the session already on
+  // screen keeps its readings: no snapshot can restore its t/s (latency is not stored).
+  if (previousStoredSessionId !== storedSessionId) {
+    focusSessionUsage()
+  }
+
   // Transient: this is a PREVIEW painted while `session.resume` is still in
   // flight. If the resume is abandoned (user starts a new chat before it
   // returns, or the row is switched away), nothing repairs the selection

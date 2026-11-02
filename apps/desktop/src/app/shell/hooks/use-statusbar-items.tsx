@@ -328,14 +328,12 @@ export function useStatusbarItems({
   // MEASURED occupancy once the backend has it (falling back to the estimate
   // only before that), and it is keyed to the session it describes. The global
   // `$currentUsage` is neither — a resumed session reports no context fields,
-  // and the store merges rather than replaces, so the PREVIOUS session's gauge
-  // numbers survive the switch. Mid-turn useContextBreakdown returns null (the
+  // so the gauge would stay empty until its first turn. Mid-turn useContextBreakdown returns null (the
   // snapshot is pre-turn), so the streamed usage carries the gauge.
   //
   // An agentless breakdown (no resident agent) knows no window: it carries
   // categories for the popover but zeroed header figures. The header then
-  // stays this session's own streamed reading — never the merged global,
-  // which can still hold the previous session's numbers.
+  // stays this session's own streamed reading.
   const gaugeUsage = useMemo<UsageStats>(() => {
     if (!contextBreakdown) {
       return currentUsage

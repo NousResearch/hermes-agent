@@ -1918,6 +1918,12 @@ export const workspaceCwdForNewSession = (profile?: string): string => {
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
+
+/** Make the status bar show the newly focused session's own usage. A switch replaces, never merges:
+ *  backends omit a figure they have no value for (cache hit rate, t/s, compressions), so a merge
+ *  kept the previous session's numbers on screen. */
+export const focusSessionUsage = (usage?: null | UsageStats) =>
+  $currentUsage.set(usage ?? { calls: 0, input: 0, output: 0, total: 0 })
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
 export const setTileSessionFocusStartedAt = (next: Updater<null | TileSessionFocusStamp>) =>
   updateAtom($tileSessionFocusStartedAt, next)

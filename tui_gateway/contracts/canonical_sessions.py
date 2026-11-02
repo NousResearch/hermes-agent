@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import RootModel
 
 from .base import JsonValue, Params, Result
-from .common import ProfileParams, TranscriptMessage
+from .common import ProfileParams, TranscriptMessage, Usage
 from .connectors_operation import ConnectionRequestPayload
 from .sessions import OpenRequestEntry, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
@@ -132,6 +132,8 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     credential_hint: str | None = None
     # ``session.info``'s session-start notice: ``session.create`` returns the same projection.
     config_warning: str | None = None
+    # The session's own status-bar figures (``session_usage.snapshot_usage``), so a switch never shows the last one's.
+    usage: Usage | None = None
 
 
 class CanonicalSnapshot(Result):

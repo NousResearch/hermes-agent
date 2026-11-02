@@ -103,6 +103,28 @@ def usage_stats(agent) -> dict:
     return stats
 
 
+_STORED_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _stored_stats(row: dict) -> dict:
+    """A session row's cumulative counters in ``usage_stats``' shape. The row's ``input_tokens`` excludes cache
+    reads and writes, so the prompt total adds them back for the cache hit rate."""
+    counts = {key: int(row.get(key) or 0) for key in _STORED_COUNTERS}
+    return {**counts, "prompt_tokens": counts["input_tokens"] + counts["cache_read_tokens"] + counts["cache_write_tokens"],
+            "completion_tokens": counts["output_tokens"], "total_tokens": counts["input_tokens"] + counts["output_tokens"],
+            "api_calls": int(row.get("api_call_count") or 0), "model": row.get("model") or ""}
+
+
+def snapshot_usage(db, session_id, agent) -> dict:
+    """The status-bar usage a resume / ``session.info`` snapshot carries, so a switched-to session shows its own
+    figures before its first turn here. An agent that has called the model answers as its ``session.usage`` frames
+    do; otherwise (no agent since a restart, or one not yet used) the stored row answers. Latency is not stored,
+    so the stored answer has no ``t/s`` or ``◷``."""
+    if agent is not None and getattr(agent, "session_api_calls", 0):
+        return tui_usage(usage_stats(agent))
+    return tui_usage(_stored_stats(db.get_session(session_id) or {}))
+
+
 def carried_compression_count(live, agent=None) -> int:
     """Compactions of this conversation: main's agent counted them on its compressor for the
     session's life. A canonical compress evicts the gateway's agent (a session boundary), so the

@@ -167,6 +167,24 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect($currentUsage.get().compressions).toBeUndefined()
   })
 
+  // Switching to a session whose agent has no rate stats yet: the status bar kept the
+  // previous session's cache hit rate and t/s while its context window updated.
+  it('clears the previous session cache hit rate and t/s when the focused snapshot omits them', () => {
+    setCurrentUsage({ avg_tps: 80, cache_hit_pct: 96, calls: 2, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, context_max: 1000, context_used: 400, input: 0, output: 0, total: 0 } })
+
+    expect($currentUsage.get()).toEqual({
+      calls: 0,
+      compressions: undefined,
+      context_max: 1000,
+      context_used: 400,
+      input: 0,
+      output: 0,
+      total: 0
+    })
+  })
+
   it('does not let a background runtime clear the focused compression count', () => {
     setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
 
@@ -229,6 +247,25 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
     applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
 
     expect($currentUsage.get().compressions).toBeUndefined()
+  })
+
+  // The canonical gateway's resume snapshot carries no usage at all, so the switch itself must drop
+  // the previous session's cache hit rate and t/s.
+  it('clears the previous session cache hit rate and t/s as soon as a cold session switch starts', () => {
+    setCurrentUsage({ avg_tps: 80, cache_hit_pct: 96, calls: 2, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+    applyRuntimeInfo({ cwd: '/next-project' })
+
+    expect($currentUsage.get()).toEqual({ calls: 0, input: 0, output: 0, total: 0 })
+  })
+
+  it('keeps the on-screen session t/s when that same session is re-resumed', () => {
+    setCurrentUsage({ avg_tps: 80, cache_hit_pct: 96, calls: 2, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next', 'session-next')
+
+    expect($currentUsage.get()).toMatchObject({ avg_tps: 80, cache_hit_pct: 96 })
   })
 
   it('releases ownership when the selected session row reports no workspace', () => {

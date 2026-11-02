@@ -1,4 +1,4 @@
-import { mergeUsage, randomUuid } from '@hermes/shared'
+import { randomUuid } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
@@ -70,6 +70,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  focusSessionUsage,
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -546,7 +547,7 @@ export function useSessionActions({
       setSelectedStoredSessionId(null)
       selectedStoredSessionIdRef.current = null
       setMessages([])
-      setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
+      focusSessionUsage()
       setSessionStartedAt(null)
       setTurnStartedAt(null)
       // The composer's model/effort/fast is sticky UI state (persisted in
@@ -1467,6 +1468,7 @@ export function useSessionActions({
           setWorkspaceCwdOwner(storedSessionId)
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(cachedViewState.runtimeStartedAt)
+          focusSessionUsage(cachedViewState.usage)
 
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)
@@ -1511,7 +1513,7 @@ export function useSessionActions({
               }
 
               if (usage) {
-                setCurrentUsage(current => ({ ...mergeUsage(current, usage), compressions: usage.compressions }))
+                focusSessionUsage(usage)
               }
 
               publishDegradedWarmCache()
@@ -1941,6 +1943,7 @@ export function useSessionActions({
       setBusy(false)
       setAwaitingResponse(false)
       clearResumeToasts(options)
+      const previousStoredSessionId = selectedStoredSessionIdRef.current
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       const runtimeStartedAt = Date.now()
@@ -1949,7 +1952,7 @@ export function useSessionActions({
       const stored =
         $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
-      applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
+      applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId, previousStoredSessionId)
 
       if (stored) {
         applyStoredUsage(stored)

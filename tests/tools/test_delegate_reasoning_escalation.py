@@ -48,6 +48,15 @@ def X(kind, cost=0.0):
     return {"kind": kind, "summary": None, "cost": cost, "calls": 1}
 
 
+_RESULT_BY_KIND = {
+    "done": {"completed": True},
+    "max": {"completed": False},
+    "error": {"final_response": "provider rejected the request", "failed": True, "error": "HTTP 400"},
+    "interrupted": {"final_response": "Operation interrupted.", "interrupted": True},
+    "completed_empty": {"final_response": "", "completed": True},
+}
+
+
 class _FakeChild:
     """A child whose outcome is scripted per the reasoning level it actually runs at."""
 
@@ -85,16 +94,7 @@ class _FakeChild:
         if kind == "raise":
             raise RuntimeError("transport exploded")
         result = {"final_response": outcome["summary"] or "", "api_calls": self._calls, "messages": []}
-        if kind == "done":
-            result["completed"] = True
-        elif kind == "max":
-            result["completed"] = False
-        elif kind == "error":
-            result.update(final_response="provider rejected the request", failed=True, error="HTTP 400")
-        elif kind == "interrupted":
-            result.update(final_response="Operation interrupted.", interrupted=True)
-        elif kind == "completed_empty":
-            result.update(final_response="", completed=True)
+        result.update(_RESULT_BY_KIND.get(kind, {}))
         return result
 
     def get_activity_summary(self):
@@ -659,7 +659,6 @@ def test_a_timed_out_worker_is_drained_and_awaited_before_the_retry_starts(monke
 
         def run(**_k):
             released.wait(5)
-            time.sleep(0.05)
             order.append("low exited")
             return {"final_response": "", "interrupted": True, "api_calls": 3, "messages": []}
         child.run_conversation = run

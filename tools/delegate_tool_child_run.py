@@ -1030,8 +1030,9 @@ class _ChildRun:
         chain.record(self.child, entry.get("exit_reason"))  # before the build: a reused child's level changes
         try:
             next_child = _build_retry_child(self.child, self.parent_agent, next_effort, retry_goal)
-        except Exception as exc:
-            logger.warning("Subagent %d reasoning escalation to %s not started: %s", self.task_index, next_effort, exc)
+        except Exception as exc:  # boundary: a failed retry build degrades to "no escalation", never crashes the parent
+            logger.warning("Subagent %d reasoning escalation to %s not started: %s", self.task_index, next_effort, exc,
+                           exc_info=True)
             next_child = None
         if next_child is not None and getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
             _signal_child_stop(next_child, "Async delegation cancelled")

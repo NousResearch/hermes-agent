@@ -19,12 +19,15 @@ desktop-sourced sessions.
 import base64
 import binascii
 import json
+import logging
 import os
 import time
 from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
 
 # Pen results are design-document JSON — schemas, node trees, guideline text.
 # Cap what crosses into model context; the tail is truncated with a note.
@@ -86,7 +89,8 @@ def pen_canvas_tool(
 
     try:
         raw = callback(action, args or {})
-    except Exception as exc:
+    except Exception as exc:  # the desktop bridge is a boundary: report, don't crash the turn
+        logger.debug("pen_canvas bridge call failed", exc_info=True)
         return tool_error(f"Failed to reach the pen canvas: {exc}")
 
     if not raw:
@@ -120,8 +124,8 @@ def pen_canvas_tool(
 PEN_CANVAS_SCHEMA = {
     "name": "pen_canvas",
     "description": (
-        "Design on a pen.dev canvas in the Hermes desktop app — the Canvas tab "
-        "beside this chat. You and the user share one live canvas. "
+        "Design on a live pen.dev canvas beside this chat in Hermes desktop. "
+        "It is the Canvas tab; you and the user share it. "
         "When the user asks to open a canvas, or to design / mock up / "
         "wireframe a screen, page or UI, use this tool, not an inline HTML "
         "preview. "

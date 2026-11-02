@@ -2243,14 +2243,8 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.annotate_preview_tool.annotate_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
-        monkeypatch.setattr(
-            "tools.read_window_tool.read_window_below_tool",
-            lambda **kwargs: '{"ok":true}',
-        )
-        monkeypatch.setattr(
-            "tools.pen_canvas_tool.pen_canvas_tool",
-            lambda **kwargs: '{"ok":true}',
-        )
+        monkeypatch.setattr("tools.read_window_tool.read_window_below_tool", lambda **kwargs: '{"ok":true}')
+        monkeypatch.setattr("tools.pen_canvas_tool.pen_canvas_tool", lambda **kwargs: '{"ok":true}')
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])

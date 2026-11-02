@@ -1040,7 +1040,9 @@ To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` 
 
 `recent_success` holds the **ready** lane only: completed implementation is an input to a review handoff. A deliberate re-queue after a success (drag `done→ready`, `unblock`, re-promotion) lifts this guard. Task comments, including links to existing work, do not affect dispatch eligibility. Use the task lifecycle (`review`, `blocked`, `done`) to represent waiting or completion.
 
-Retry workers receive prior attempts, comments, and the existing workspace. Before retrying, they should inspect and verify existing work against the task’s requested outcome, reuse completed work, continue what remains, and record completion if the full outcome is already satisfied. This guidance reduces repeated work; atomic claims prevent concurrent ownership, and the failure limit bounds unsuccessful automatic attempts.
+Retry workers receive prior attempts, comments, and the existing workspace. Before retrying, they should inspect and verify existing work against the task’s requested outcome, reuse completed work, continue what remains, and record completion if the full outcome is already satisfied. This guidance reduces repeated work; atomic claims prevent concurrent ownership, and failure and protocol-violation limits bound unsuccessful automatic attempts.
+
+A worker that exits without recording a lifecycle transition can be reclaimed and retried even if it already produced an output. Workers must record waiting or completion using the lifecycle tools. Claims prevent concurrent ownership; they do not guarantee that a later retry will avoid repeating an external action.
 
 ### Drag-to-delete and bulk delete (dashboard)
 

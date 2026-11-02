@@ -553,11 +553,29 @@ class _KanbanNotification:
         """Reset the durable failure counters after a successful delivery.
 
         Only writes when the claimed row was actually parked/counting, so a
-        healthy subscription pays nothing.
+        healthy subscription pays nothing. The claimed snapshot is zeroed too:
+        later no-op guards (e.g. the unconditional post-advance clear) must
+        not re-write an already-cleared row.
         """
         if not (self.sub.get("delivery_failures") or self.sub.get("retry_after")):
             return
         await _to_thread_process_service(self.runner._kanban_clear_failures, self.sub, self.board_slug)
+        self.sub["delivery_failures"] = 0
+        self.sub["retry_after"] = None
+
+    async def _clear_failures_bookkeeping(self) -> None:
+        """Clear the failure park, never misclassifying the reset as delivery.
+
+        The reset is bookkeeping, not delivery: a DB error here after a send
+        or wake already landed must not rewind the claim, park the row and
+        schedule a duplicate wake — so it gets its own try/except and a debug
+        log instead of the delivery-failure handler.
+        """
+        try:
+            await self.clear_failures()
+        except Exception as exc:
+            logger.debug("kanban notifier: clearing the failure park for %s on %s failed: %s",
+                         self.task_id, self.platform_str, exc)
 
     async def delivery_failed(self, fmt: str, prefix: tuple, exc: Exception, exc_info: bool) -> None:
         """Count one delivery failure durably and park the subscription on backoff.
@@ -575,7 +593,16 @@ class _KanbanNotification:
             self.runner._kanban_record_failure, self.sub, self.board_slug,
             base_delay=PARK_BACKOFF_INITIAL_SECONDS, cap_delay=PARK_BACKOFF_CAP_SECONDS,
         ))
-        logger.warning(fmt, *prefix, failures, retry_after, exc, exc_info=exc_info)
+        if failures:
+            # Relative delay, not an absolute epoch — log lines are read by
+            # humans correlating later, not by clock arithmetic.
+            tail = f"attempt {failures}, next try in {max(0.0, retry_after - time.time()):.0f}s"
+        else:
+            # record_notify_failure's row-gone shape: the subscription was
+            # unsubscribed/GC'd between the claim and this failure, so
+            # nothing was counted and no retry is scheduled.
+            tail = "subscription row gone; nothing parked"
+        logger.warning(fmt, *prefix, tail, exc, exc_info=exc_info)
 
     async def _wake_failed(self, fmt: str, exc: Exception) -> None:
         await self.delivery_failed(fmt, (self.task_id,), exc, True)
@@ -759,10 +786,10 @@ class _KanbanNotification:
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
                 ))
-                await self.clear_failures()
+                await self._clear_failures_bookkeeping()
             except Exception as exc:
                 await self.delivery_failed(
-                    "kanban notifier: send failed for %s on %s (attempt %d, next try after %.0f): %s",
+                    "kanban notifier: send failed for %s on %s (%s): %s",
                     (self.task_id, self.platform_str), exc, False,
                 )
                 return False
@@ -821,7 +848,7 @@ class _KanbanNotification:
             try:
                 for self.synth, self.wake_diagnostic, self.wake_kinds in wake_payloads:
                     await self.wake()
-                await self.clear_failures()
+                await self._clear_failures_bookkeeping()
             except WakeNotAccepted as exc:
                 from gateway.wake import PERMANENT_REFUSAL_REASONS
                 if getattr(exc, "permanent", False) or exc.reason in PERMANENT_REFUSAL_REASONS:
@@ -829,7 +856,7 @@ class _KanbanNotification:
                     # admission marked permanent — the same classification the watch
                     # notification path applies): count durably and park on backoff.
                     await self.delivery_failed(
-                        "kanban notifier: wake refused for %s on %s (attempt %d, next try after %.0f): %s",
+                        "kanban notifier: wake refused for %s on %s (%s): %s",
                         (self.task_id, self.platform_str), exc, False,
                     )
                     return
@@ -839,16 +866,19 @@ class _KanbanNotification:
                 return
             except Exception as _wk_err:
                 await self._wake_failed(
-                    "kanban notifier: wake-only delivery failed for %s (attempt %d, next try after %.0f): %s" if is_push
-                    else "kanban notifier: wake self-post failed for %s (attempt %d, next try after %.0f): %s",
+                    "kanban notifier: wake-only delivery failed for %s (%s): %s" if is_push
+                    else "kanban notifier: wake self-post failed for %s (%s): %s",
                     _wk_err,
                 )
                 return
 
-        # Delivery complete: advance the cursor (the dedup mechanism).
+        # Delivery complete: advance the cursor (the dedup mechanism). Clear
+        # the park unconditionally: a batch that delivered nothing (silent /
+        # suppressed kinds, pings already checkpointed, wake-only with no wake
+        # kinds) still resolved this claim, so a stale backoff step must not
+        # ride into the next unrelated failure. No-ops on unparked rows.
         await self.advance()
-        if not is_push:
-            await self.clear_failures()
+        await self._clear_failures_bookkeeping()
         # Unsubscribe only on archive; ``done`` is reversible.
         if self.task and self.task.status == "archived":
             await self.unsub()

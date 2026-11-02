@@ -822,6 +822,42 @@ def _board_data_version():
         conn.close()
 
 
+class _BoardWriteObserver:
+    """Reads ``PRAGMA data_version`` from ONE connection held open across the
+    writes under test.
+
+    The counter only reports commits made by OTHER connections to a
+    connection that stays open; a fresh connection per read (the helper above)
+    re-reads the current value and detects nothing, which made the "parked
+    ticks must not write" assertion vacuous (critic t_e323f1ed finding 2)."""
+
+    def __init__(self):
+        self._conn = kbc.connect()
+
+    def data_version(self) -> int:
+        return self._conn.execute("PRAGMA data_version").fetchone()[0]
+
+    def inject_control_write(self, tid: str) -> None:
+        """Positive control: one real commit through a separate connection.
+
+        The value must actually change — SQLite skips the write for a no-op
+        UPDATE like ``SET title = title`` (probed: data_version 2→2), and a
+        skipped write would make the self-check vacuous in turn.
+        """
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET priority = COALESCE(priority, 0) + 1 WHERE id = ?",
+                    (tid,),
+                )
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
 def _backdate_park(tid):
     conn = kbc.connect()
     try:
@@ -877,13 +913,26 @@ def test_permanent_wake_refusal_parks_with_backoff_and_zero_writes_while_parked(
     assert _unseen_terminal_events(tid), "claim must rewind so parked events redeliver later"
     assert row["last_ping_event_id"] > 0, "the sent ping is checkpointed before the wake leg"
 
-    # Parked rows are excluded from claims: no send, no wake attempt, no DB write.
-    version = _board_data_version()
-    for _ in range(3):
-        asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
-    assert adapter.wake_attempts == 1
-    assert len(adapter.sent) == 1
-    assert _board_data_version() == version, "parked ticks must not write to the board"
+    # Parked rows are excluded from claims: no send, no wake attempt, no DB
+    # write. data_version must be read from one observer connection held open
+    # across the three ticks — fresh-connection reads cannot detect another
+    # connection's writes, which made this equality vacuous before.
+    observer = _BoardWriteObserver()
+    try:
+        version = observer.data_version()
+        for _ in range(3):
+            asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+        assert adapter.wake_attempts == 1
+        assert len(adapter.sent) == 1
+        assert observer.data_version() == version, "parked ticks must not write to the board"
+        # Self-check: the equality above is only meaningful if this observer
+        # can see writes at all — prove the counter moves on an injected commit.
+        observer.inject_control_write(tid)
+        assert observer.data_version() != version, (
+            "observer self-check failed: a real write did not move data_version"
+        )
+    finally:
+        observer.close()
     assert _park_row(tid)["delivery_failures"] == 1
 
     # Backoff expiry: exactly one new attempt, count grows, delay doubles, ping
@@ -927,6 +976,43 @@ def test_transient_wake_refusal_keeps_uncounted_immediate_retry(tmp_path, monkey
     assert row["delivery_failures"] == 0, "transient refusals are not counted"
     assert row["retry_after"] is None, "transient refusals never park"
     assert _unseen_terminal_events(tid), "events stay claimed-pending until admission"
+
+
+def test_record_notify_failure_backoff_survives_the_exponent_cap(tmp_path, monkeypatch):
+    """At failures >= 1024 the unclamped exponent 2**(failures-1) overflows
+    float; the clamp keeps the park-write alive so a long-dead destination
+    stays parked at the cap instead of the raised write returning the row to
+    a claim/rewind attempt every tick."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-overflow.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="overflow", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="done once")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET delivery_failures = 1023 WHERE task_id = ?",
+                (tid,),
+            )
+    finally:
+        conn.close()
+
+    conn = kbc.connect()
+    try:
+        before = time.time()
+        failures, retry_after = kbn.record_notify_failure(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            base_delay=5.0, cap_delay=3600.0,
+        )
+        assert failures == 1024
+        # Capped at 1h, not OverflowError — the delay clamps before the exponent does.
+        assert before + 3600.0 <= retry_after <= time.time() + 3600.0
+        row = _park_row(tid)
+        assert row["delivery_failures"] == 1024
+        assert row["retry_after"] == retry_after
+    finally:
+        conn.close()
 
 
 def test_consecutive_send_failures_park_capped_instead_of_dropping(tmp_path, monkeypatch):

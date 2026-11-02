@@ -1106,6 +1106,8 @@ _REBUILD_SPECS = {
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
         " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
+        " delivery_failures INTEGER NOT NULL DEFAULT 0,"
+        " retry_after REAL,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),

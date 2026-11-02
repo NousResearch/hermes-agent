@@ -46,6 +46,7 @@ def homes(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", ask)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.setup.prompt_checklist", checklist)
     monkeypatch.setattr("hermes_cli.plugins_cmd_install.cmd_install", install)
     monkeypatch.setattr(step.subprocess, "run", run)

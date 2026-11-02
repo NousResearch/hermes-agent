@@ -599,7 +599,8 @@ SETUP_SECTIONS = [
 
 def run_setup_wizard(args):
     """Run setup with navigation control scoped to this invocation."""
-    with _setup_navigation_scope():
+    from hermes_cli.setup_import_results import setup_import_results_scope
+    with _setup_navigation_scope(), setup_import_results_scope():
         try:
             return _run_setup_wizard_impl(args)
         except _SetupCancelled:

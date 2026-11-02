@@ -1,0 +1,114 @@
+<!--
+Professional coordination-email template — inline styles only, no <style> block, no external CSS.
+Approved shape for DRAAS/Bharat status + coordination mails (Ranka Udaya Plot 36, Oct 2026):
+the user rejected a plain bulleted draft as "not in a proper format ... has to look a little bit
+more professional". Reproduce this layout, changing only the content.
+
+Rules this template encodes:
+  * 680px fixed-width wrapper table, #f4f5f7 page background, white card, 1px #e3e5e8 border
+  * navy header band #1a3a5c with a white title + light subtitle
+  * numbered sections, each with an UPPERCASE heading and a 1px bottom rule
+  * factual/particular data in a two-column table, label column shaded #f7f8fa + 1px #e3e5e8
+  * anything the recipient must ACT on goes in the amber callout (#fff8e1, 4px #e0a800 left border)
+  * links inline and clickable, never bare
+  * sign-off with name + entity, then a small grey footer carrying the property/reference line
+Everything is draft-only; never send.
+-->
+<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 0;">
+<tr><td align="center">
+<table role="presentation" width="680" cellpadding="0" cellspacing="0" style="width:680px;max-width:680px;background:#ffffff;border:1px solid #e3e5e8;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#222222;">
+
+  <!-- HEADER BAND -->
+  <tr><td style="background:#1a3a5c;padding:18px 28px;">
+    <div style="color:#ffffff;font-size:17px;font-weight:bold;letter-spacing:0.2px;">{{PROJECT}} — {{SUBJECT_SHORT}}</div>
+    <div style="color:#c8d6e5;font-size:12px;padding-top:4px;">{{KIND}} · {{DATE_LONG}}</div>
+  </td></tr>
+
+  <!-- OPENING -->
+  <tr><td style="padding:24px 28px 4px 28px;">
+    <p style="margin:0 0 12px 0;">Dear {{SALUTATION}},</p>
+    <p style="margin:0 0 10px 0;">{{OPENING_STATUS_SENTENCE}}</p>
+    <p style="margin:0;font-size:13px;">
+      <strong>Index</strong>&nbsp;&nbsp;<a href="{{INDEX_URL}}" style="color:#1a5fb4;text-decoration:none;">{{INDEX_URL}}</a><br>
+      <strong>Folder</strong>&nbsp;&nbsp;<a href="{{FOLDER_URL}}" style="color:#1a5fb4;text-decoration:none;">{{FOLDER_URL}}</a>
+    </p>
+  </td></tr>
+
+  <!-- SECTION: PROCESS / NARRATIVE -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#1a3a5c;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e3e5e8;">1. {{SECTION_1_TITLE}}</div>
+    <ol style="margin:12px 0 0 0;padding-left:20px;">
+      <li style="margin-bottom:6px;">{{POINT}}</li>
+      <li style="margin-bottom:6px;">{{POINT}}</li>
+    </ol>
+  </td></tr>
+
+  <!-- SECTION: PEOPLE -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#1a3a5c;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e3e5e8;">2. {{SECTION_2_TITLE}}</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;font-size:13px;">
+      <tr><td style="padding:3px 0;width:46%;"><strong>{{NAME}}</strong></td><td style="padding:3px 0;color:#555555;">{{ROLE}}</td></tr>
+      <tr><td style="padding:3px 0;"><strong>{{NAME}}</strong></td><td style="padding:3px 0;color:#555555;">{{ROLE}}</td></tr>
+    </table>
+    <p style="margin:10px 0 0 0;font-size:13px;color:#444444;">{{NOTE}}</p>
+  </td></tr>
+
+  <!-- SECTION: PARTICULARS TABLE -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#1a3a5c;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e3e5e8;">3. {{SECTION_3_TITLE}}</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:12px;border:1px solid #e3e5e8;border-collapse:collapse;font-size:13px;">
+      <tr>
+        <td style="width:32%;padding:8px 10px;background:#f7f8fa;border:1px solid #e3e5e8;vertical-align:top;color:#444444;">{{LABEL}}</td>
+        <td style="padding:8px 10px;border:1px solid #e3e5e8;vertical-align:top;">{{VALUE}}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 10px;background:#f7f8fa;border:1px solid #e3e5e8;vertical-align:top;color:#444444;">{{LABEL}}</td>
+        <td style="padding:8px 10px;border:1px solid #e3e5e8;vertical-align:top;">{{VALUE_LINE_1}}<br>{{VALUE_LINE_2}}<br>{{VALUE_LINE_3}}</td>
+      </tr>
+    </table>
+  </td></tr>
+
+  <!-- SECTION: LIST -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#1a3a5c;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e3e5e8;">4. {{SECTION_4_TITLE}}</div>
+    <ul style="margin:12px 0 0 0;padding-left:20px;">
+      <li style="margin-bottom:5px;">{{ITEM}}</li>
+    </ul>
+  </td></tr>
+
+  <!-- ACTION CALLOUT — anything the recipient must close before the deadline -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#8a6d00;text-transform:uppercase;padding-bottom:6px;">5. {{SECTION_5_TITLE}}</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fff8e1;border-left:4px solid #e0a800;">
+      <tr><td style="padding:12px 16px;">
+        <ol style="margin:0;padding-left:18px;font-size:13px;color:#5c4a00;">
+          <li style="margin-bottom:5px;">{{ACTION_ITEM_WITH_CLAUSE_REFERENCE}}</li>
+        </ol>
+      </td></tr>
+    </table>
+  </td></tr>
+
+  <!-- SECTION: POINTS FOR A THIRD PARTY -->
+  <tr><td style="padding:22px 28px 0 28px;">
+    <div style="font-size:12px;font-weight:bold;letter-spacing:0.8px;color:#1a3a5c;text-transform:uppercase;padding-bottom:6px;border-bottom:1px solid #e3e5e8;">6. {{SECTION_6_TITLE}}</div>
+    <p style="margin:12px 0 0 0;font-size:13px;">{{BODY}}</p>
+  </td></tr>
+
+  <!-- SIGN-OFF -->
+  <tr><td style="padding:24px 28px 8px 28px;">
+    <p style="margin:0;">Regards,</p>
+    <p style="margin:10px 0 0 0;font-weight:bold;">{{SENDER_NAME}}</p>
+    <p style="margin:2px 0 0 0;color:#555555;font-size:13px;">{{SENDER_ENTITY}}</p>
+  </td></tr>
+
+  <!-- FOOTER -->
+  <tr><td style="padding:14px 28px 22px 28px;border-top:1px solid #e3e5e8;">
+    <p style="margin:0;font-size:11px;color:#888888;line-height:1.5;">{{PROPERTY_REFERENCE_LINE}}</p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body></html>

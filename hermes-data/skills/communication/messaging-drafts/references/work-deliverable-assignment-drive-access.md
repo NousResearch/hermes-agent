@@ -141,7 +141,7 @@ Filed in: 📁 [Full Drive Path]
 Access has been given to work from here. Coordinate with [person] if needed.
 ```
 
-**Delivery format:** Generate the link with `api.whatsapp.com/send?text={url_encoded_message}` (no phone parameter) and deliver as a clickable URL. The user taps it, selects the group, and sends.
+**Delivery format:** Call the `whatsapp_link` TOOL with the phone parameter **omitted** — it returns `api.whatsapp.com/send?text=…` with no `phone=` so WhatsApp opens the contact/group picker. NEVER hand-encode the URL (hard rule: whatsapp_link is the only sanctioned way to produce WhatsApp deep links; manual construction corrupts encoding on mobile). User pushback precedent (2026-09-29): agent initially said "I can't generate a group link" — wrong; the tool supports omitting phone. When delivering on Telegram, send the `display_link` value. The user taps it, selects the group, and sends.
 
 ### Pitfalls
 
@@ -150,4 +150,4 @@ Access has been given to work from here. Coordinate with [person] if needed.
 - **Empty subfolders.** Some subfolders (Autocad, Revit, Sketchup, Structural) may be empty. Still list the folder so the assignee knows where to find or upload files when they're populated.
 - **Email not in Gmail = not a sent email.** If an address returns 0 Gmail results, the user has never emailed it. It's still the right address; mention to the user that this may be a new/unused Google Workspace account.
 - **Verify email spelling from user's voice vs actual email.** The user said "sgouda at dras.com" but the actual email used in correspondence was sgowda@draas.com. Always cross-check voice-dictated email addresses against actual correspondence or CC headers before using.
-- **WhatsApp group links: no phone, no expiry.** When the user wants a message for a group, generate `api.whatsapp.com/send?text=` WITHOUT phone parameter. Never mention access duration in WhatsApp messages to teammates — just "access has been given".
+- **WhatsApp group links: no phone, no expiry.** When the user wants a message for a group, generate `api.whatsapp.com/send?text=` WITHOUT phone parameter — via the `whatsapp_link` tool (omit phone), never by hand. Never mention access duration in WhatsApp messages to teammates — just "access has been given".

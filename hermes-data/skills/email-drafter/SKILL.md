@@ -1,11 +1,70 @@
 ---
 name: email-drafter
 description: |
-  Drafts new emails or threaded replies for ndr@draas.com using the google_workspace_manager Hermes tool.
-  For replies, finds the Gmail thread, extracts threadId, and sends with --threadId so the reply stays in thread.
-  Supports plain text and HTML. Default account: ndr@draas.com.
-  Use nishantranka@gmail.com only when explicitly asked. Use ndr@ahfl.in only when explicitly asked.
-  Trigger: "email [name]", "reply to [name]'s email", "draft an email to [name]", "send [name] an email"
+  Drafts new/threaded emails for ndr@draas.com. Threaded: In-Reply-To/References + threadId on
+  drafts().create. CREATE: EmailMessage -> base64url raw (payload dict/bytes = 400).
+  Refs: new-email-html-attachment-nonascii.md, forward-existing-sent-mail.md,
+  threaded-reply-all-routing.md, sheet-range-as-html-table-email.md,
+  threaded-reply-recipient-pitfall.md (native reply_draft mis-addresses To when the thread's
+  last message is your own - build raw MIME instead)
+  Escalation & accountability: references/internal-escalation-email-stern-not-offensive.md,
+  references/accountability-and-escalation-emails.md
+  Addresses from GMAIL HEADERS, not the sheet - Anbu SENDS as anbarasan@draas.com. Other mailbox:
+  HERMES_SESSION_USER_ID=<slug>. Bridge: sys.path.insert(0,"/opt/hermes") before tools.gws_auth.
+  Use nishantranka@gmail.com/ndr@ahfl.in only if asked. Reply+verify: references/threaded-reply-and-draft-verification.md Voice dictation: read thread tail first -
+  NDR may be apologising for HIS OWN mail. Never send; draft only.
+---
+
+> ## ⚠️ FORMAT AUTHORITY — read this before writing a single body line
+> **`email-writing` is the ONE skill that decides how every email body looks** (rich formatting,
+> HTML part, bullets/headings, no hard wraps, plain-text only on explicit instruction).
+> Load it first: `skill_view(name='email-writing')`. Build every draft with its renderer
+> `/data/hermes/skills/communication/email-writing/scripts/email_draft.py` (markdown in →
+> multipart draft out). THIS file only supplies Gmail mechanics on top of that standard.
+> A draft created with a hand-written plain-text body is a defect, not a style choice.
+
+> **Voice dictation -> numbered briefing** (incl. reply-all-only-to-<Person> + colleague map): `references/ndr-dictation-to-briefing-email.md`. NO internal attribution: `references/relayed-position-no-internal-attribution.md`. Threaded-reply script: `scripts/create_threaded_reply_draft.py`.
+
+> **NEW email (no thread) + attachment:** see `references/new-email-html-attachment-nonascii.md` —
+> ASCII-only Subject, base64 text parts, byte-verify the attachment, list drafts first to avoid duplicates.
+> RECIPIENT ADDRESSES COME FROM GMAIL HEADERS, NOT THE CONTACTS SHEET: Anbu's sheet address is
+> pm2.blr@draas.com but he SENDS as anbarasan@draas.com — mail him there. Import path for the bridge is
+> `sys.path.insert(0, "/opt/hermes")` before `from tools.gws_auth import build_service`
+> (`/opt/data` raises `ModuleNotFoundError: No module named 'tools'`).
+>
+> **Primary path: native GWS tools** — see `references/native-gws-tools-workflow.md` for the
+> modern `gws_gmail_search` → `gws_gmail_get` → `gws_gmail_reply_draft` workflow. The native tools handle
+> ~80% of email tasks without terminal/python. The legacy `google_workspace_manager` sections below
+> apply to the remaining 20% (attachments, raw MIME, bulk ops).
+
+## Voice-dictation names
+A dictated name is not a fact — resolve it (ladder + garble table: `references/voice-dictation-name-resolution.md`). If it resolves nowhere: build the draft without it and flag it in the final reply (`clarify` is absent in API sessions). Avoid `&` in subjects — it arrives as `&amp;`.
+
+## Template — HTML email structure
+
+NDR prefers HTML-formatted emails (found plain text "not very visually easy to read" and
+"one continuous running text"). Always use `html=True` on draft_create / reply_draft. Build inline-styled HTML:
+
+**Plain text with `*text*` markdown = "one continuous running text" (NDR, 2026-10-03).** Markdown-style emphasis (`*bold*`) in a plain-text email is NOT acceptable for multi-point coordination. Convert to true HTML (`<strong>text</strong>`) before creating the draft. Applies to ALL architect/engineering/project-team emails with 3+ sections.
+
+**Already-sent plain-text fix: reply on the SAME thread** (2026-10-03). When NDR says a sent email is "one continuous running text", create a **reply-all draft on the same thread** with the SAME content reformatted as HTML/CSS. Keep recipients and content identical; change only formatting. Delete any earlier drafts on that thread before recreating.
+
+**Accepted multi-point pattern (validated 2026-10-03, North Star 2nd Floor Modification):**
+- Numbered sections with blue `border-left: 4px solid #2a6496; background: #f5f5f5` header blocks
+- Section title in `<strong style="color:#2a6496;">`
+- Body content with normal `<p>`, sub-items in `<ul><li>`
+- ✅ resolution callout: `<p style="font-weight:bold;color:#060;">✓ resolved ...</p>`
+- Annotation style: `<p style="font-size:12px;color:#888;"><em>Note: ...</em></p>`
+- `<hr style="border:none;border-top:1px solid #ddd;">` between sections
+- Reply-all must include ALL participants from the original thread (To + Cc preserved)
+
+- Blue `<hr>` dividers (`border-top:2px solid #1a73e8`) between sections
+- `<h3>` blue (`#1a73e8`), `<h4>` red (`#cc0000`) for headings
+- Tables with alternating `#f0f4ff` row backgrounds for structured comparisons
+- Font: Calibri/Arial/sans-serif `#333`, clean spacing
+- Inline styles only (Gmail strips `<style>` blocks)
+REPLY-ON-THE-SAME-THREAD DISCIPLINE (user-corrected 2026-09-29): when NDR says "reply on the same thread", "put it back on email", or references a chain he already sent ("we sent a series of emails about X"), the deliverable is a reply-all THREADED draft on the ORIGINAL thread — never a standalone draft. Find the thread first (he often mails these from ndr@drahomes.in, NOT in the vault — locate via a participant's reply in draas). See references/reply-on-same-thread-discipline.md — full search recipe, reply-all recipient rule, sensitive-content flag, build+verify, orphan-draft deletion.
+
 metadata:
   hermes:
     tags: [email, gmail, draft, communication, reply, thread]
@@ -15,6 +74,41 @@ author: ndr@draas.com
 ---
 
 # Email Drafter
+
+> `references/threaded-draft-relayed-attachments.md` — threaded Gmail reply draft (raw
+> API: downloads().attachments() from a DIFFERENT email, EmailMessage with
+> In-Reply-To/References from the original Message-ID, drafts().create with
+> threadId), the transient-404-after-create retry, and metadata-format
+> attachment-count verification via format='full'. Load when a reply draft must
+> carry attachments that came from another message/thread (e.g. Sanjay's docs →
+> reply on Dharmesh's thread).
+> `references/forward-draft-relayed-attachments.md` — FORWARD draft (fresh recipient,
+> no In-Reply-To) carrying attachments relayed from MULTIPLE source emails (latest
+> vendor reply + earlier quote/brochure + original RFP), plus the Gmail 25 MB cap
+> split: attach the small files, put oversized photos/videos in a shared Drive
+> folder and link them in the body. Load when NDR says "forward that email to X"
+> with attachments from several messages.
+> **Forwarding a vendor/counterparty email with a reference pack that EXCEEDS Gmail's 25 MB cap** → `references/oversized-forward-attachment-split.md` — enumerate attachments across the thread, download everything (incl. videos embedded as Drive links — fetch via `drive.files().get_media()`), split into a small attach-set (docs + small photos) + a mirrored Drive folder with role-scoped permissions (doer=writer, cc'd=reader), keep the counterparty's real email body as a quoted block, verify DRAFT label + attachment count. Validated 2026-09-22 (AR Portable Cabin executed-work refs → Sinchana, Cc Neha+Gowri).
+> **Forwarding a colleague's mail because the ORIGINAL went to a WRONG recipient address** → draft To = the correct recipients (resolved from headers/contacts — NEVER the bounced address), Cc = the original sender, with an explicit note that the wrong address was used and that NDR's own reply-all also went there; THREAD onto the original thread (In-Reply-To = original Message-ID + `threadId` in the `drafts().create` body) even though it is a Fwd, and quote the original under a "---------- Forwarded message ----------" block. Verified 2026-09-29 (Prakash's "Ranka Amber/Oasis/Udaya - Required - Estimated Construction Cost" → Anbu `pm2.blr@draas.com` + `anbarasan@draas.com` + Kantesh `kanteshbg@draas.com`, Cc Prakash; the original had gone to dead `kantesh@draas.com`). Keep both of Anbu's live addresses when Prakash used both — only Kantej's was wrong.
+> **Handing a vendor's submissions + quotation to a COLLEAGUE to coordinate** (\"send that email to <colleague> and ask them to take it forward\") → `references/colleague-coordination-handoff-reply.md` — REPLY on the colleague's own thread (not a forward), answer their pending question first, vendor contact block, the reuse-the-existing-mirror-folder check (link it, don't re-upload), the ⚠️ **`permissions().list()` a shared folder BEFORE linking it into any outbound mail** rule (it surfaced three unrelated external vgrofinserv.com reader grants that had to be flagged, not silently shipped), the 4-block colour-coded body, and the `%`-in-body-text / two-body-script patching pitfalls. Validated 2026-09-25 (AR Portable → Gowri, Ranka Udaya site office).
+> **Checking a vendor quotation against OUR render + spec** (\"is anything missing from their quote, highlight the gaps\") → `references/vendor-quotation-gap-analysis.md` — pdftotext the quote, read our own spec section by section, bucket into covered / missing-or-excluded / contradicts-the-design (citing the vendor's OWN T&C lines as evidence), hunt internal contradictions (transport included vs \"extra at actual\"; toilet in the standard spec vs none in our design), then the numbered HTML gap-closure reply ending in our 48-hour commitment. Validated 2026-09-15 (AR Portable `ARPC/PMO/7042-1/26-27`).
+
+> Excluded-participant / non-bridge replies → `messaging-drafts` → `references/thread-reply-exclude-participant-2026-09.md`. Flameback AI portfolio updates → `references/flameback-portfolio-update-emails.md`
+
+> **Unit/asset photo follow-up blasts ("give everyone the cleaned-up photos + share the folder 90/180-day")** → `references/hermitage-2201-followups-2026-09.md` — file the photo set into the project photos tree first, enumerate prior recipients from the consolidation mail, grant reader+expiry BEFORE drafting, draft-only threaded replies (message id ≠ thread id 404 pitfall), share ONLY the images folder. **Inbound share-requests on that folder** (grant 30-day viewer → confirm draft with link → trash the two notification mails; "20201" voice garble; requester address from the notification, NOT contact_resolver) are in the same reference.
+> **Financier / lender onboarding packs — "consolidate docs for each firm/entity"** → `references/entity-wise-financier-document-pack.md`. When an NBFC/bank BD person asks for the standard onboarding bundle (audited financials, company & promoter profile, debt profile, project details, sanction letter) across SEVERAL entities: build ONE parent Drive folder + one subfolder per entity + per-promoter folders, share the tree as `reader` (never attach 30-50 files), verify each source doc's entity attribution before it goes in, and surface gaps (no sanction letter, unaudited firms, ambiguous debt-profile scope) as questions in the email rather than omitting them. Carries the correction that a firm document can sit in the WRONG entity's folder — read the deed's own party list, not its folder. **Also carries:** do-not-link the internal investor/portfolio workbook (scope-wider than the ask) + the two-sided revert when the user says "remove this" (trash the shortcut AND revoke the grants); the My Drive `403 "Increasing the number of parents is not allowed"` → use a `shortcutDetails` shortcut instead of a move; and the follow-up-to-a-DIFFERENT-participant rewrite rules (stale "I am sharing…" sentences, third-person self-reference, `References` = chain + replier's Message-ID). **And the "reply with ONLY what is asked for" rule** — once the pack is on the thread, a later reply to a participant carries ZERO Drive links and no attachments: cut the folder table, the per-entity listings and every sentence describing the pack, keeping just the answer box (`html.count("drive.google.com") == 0` is the proof you did not re-send). Plus the user-supplied financing position to **quote, not infer**: project-wise financing, entities and parent hold **no existing sanctions** (fresh credit is the ask), **APF held for named projects only**.
+
+> **Structural-consultant / architect briefing emails — what we expect from a design partner** → `references/architect-design-partner-briefing.md` — the approved two-phase engagement model (Creative Phase run JOINTLY with the design team incl. joint reference harvesting; Detailing Phase by in-house/local teams with senior partners doing checks and balances), the recipients (Roshini `rnr@draas.com` To, Gowri `gsingh@draas.com` Cc), the 150–250-word cap, and the 2026-09-25 correction that killed the "we hand you references, you generate" framing. Cross-links the Tapovana DNA programme as the sample run to offer.
+> **Handing a published DRA Content artifact to an EXTERNAL reviewer** ("share it with him as well", "give Aamir access please") → `references/content-artifact-external-reviewer-share.md` — grant BEFORE drafting, read the ACL back, and the ⚠️ **sign-in-address rule**: an artifact is viewed through Google sign-in, so the draft must ASK the recipient to confirm their Google account matches the address granted. Validated 2026-09-28 — the architect's contact address was a Yahoo, but his Google sign-in was a gmail.com he had to tell us about; the Yahoo grant was live and useless for sign-in. Grant BOTH when in doubt.
+
+> > **Samudra / ORR forward-purchase mail to Godrej Fund (Saurabh Vashishth)** → `real-estate-financial-modeling` → `references/samudra-orr-forward-purchase.md`. Carries the ⚠️ **two-seats trap** — two spreadsheets on the same 7-acre parcel produce ₹47.85 Cr/acre (purchaser seat) vs ₹128.97 Cr/acre (developer seat), so match the number to the ROLE the recipient is offered, or send bare facts only. Also: the sketch lives as an EMAIL attachment on `google-draas` (not in Drive), the spreadsheets live on `google-gmail`, the cap rate was instructed 9%→8% but never rebuilt, and the prior drafts are gone.
+
+**Drafting from ANOTHER user's mailbox** (user says "reply to the email *I* received" — e.g.
+> Prakash/psingh, Anbu/pm2.blr) → `references/cross-mailbox-thread-resolution.md`. The thread
+> usually also exists in NDR's mailbox with DIFFERENT thread/message IDs; reusing NDR's ID under
+> the user's env prefix 404s "Requested entity was not found". Set `HERMES_SESSION_USER_ID` FIRST,
+> search INSIDE that mailbox, thread against the ORIGINAL inbound mail (not the user's forward of
+> it), then re-check NDR's mailbox has no stray draft.
 
 ## CRITICAL: How to call google_workspace_manager
 
@@ -46,9 +140,72 @@ print(result)
 "
 ```
 
+**The bridge returns a JSON STRING, not a dict (hit 2026-09-23).** `call('draft_create', ...)` returns
+`"{...}"` — calling `result.get('draft_id')` raises `AttributeError: 'str' object has no attribute
+'get'` AFTER the draft was already created. Parse exactly once: `res = json.loads(raw) if isinstance(raw, str) else raw`,
+then read `res['draft_id']`. The draft itself succeeded; only the verification code crashed — fix the
+parse and verify with `drafts().get(id=..., format='full')` (top-level `payload.body.data` walker,
+per the earlier pitfall), do NOT recreate the draft. Same wrapper behaviour is recorded for the
+`whatsapp_link_tool` in personal-task-tracker.
+```
+
+**USER CORRECTION (2026-09-22, Behera appeal reply):** NDR explicitly said **"You need to use
+the GWS client only to create draft and nothing else."** For counsel-legal threads he wants
+drafts made ONLY through the raw GWS client path (`tools.gws_auth.build_service('gmail','v1',
+service_name='google-draas')` + `drafts().create()` with a base64url EmailMessage and explicit
+threadId), NOT through the bridge helpers — he could not see drafts produced via bridge calls
+(the bridge reported phantom success and the drafts did not exist). When he reports "I can't
+see the draft", the authoritative check is `users().drafts().list()` — a draft resource fetched
+by ID can exist while the folder list shows nothing, and a returned draft-ID string alone proves
+nothing. Also: the reply-all Cc set must be taken VERBATIM from the counterparty's latest
+message headers (Suhail's address moved from e.suhail.ahmed@gmail.com to suhail@trialbase.in on
+the 22-Sep-2026 counsel thread), and `drafts().get()` does NOT accept `metadataHeaders` (use
+format='full' and parse payload headers).
+
+**USER CORRECTION (2026-09-23, counsel review email — "too elaborate"):** When NDR asks for a
+reply-all to counsel (Jasleen/VNV) containing feedback on their draft, the email MUST BE SHORT.
+His words: "that email is too elaborate, there's way too much content… it's going to be too
+overbearing for the lawyer to read." Rules that survived his correction:
+- Lead with appreciation of their work; frame ALL feedback as suggestions, never "not filing
+  ready" or questioning counsel's authority ("these are areas we could improve… your professional
+  judgment comes first").
+- Keep it to 3-5 tight sections max (confirmed facts / suggested refinements / stay+relief
+  thoughts / asks) — bullets, no essay paragraphs, no repeated evidence-pack narration.
+- Do NOT re-narrate every fact already shared; link the pack folder once and move on.
+- Confirm facts BEFORE asserting them; if the record contradicts the desired framing (e.g. a
+  condonation claim of total ignorance when RERA emails sit in NDR's own mailbox), flag it to NDR
+  and frame the honest version — do not let a false premise reach counsel.
+- End with specific asks (signatory name, IA drafts, their view on admission/stay/settlement).
+
+**Emergency fallback for phantom-success drafts (2026-09-22):** when a previous run "created"
+a draft that the user cannot see, and the bridge is suspect, create the draft fresh via raw
+Gmail API with the verified message-ID/thread headers (see `references/threaded-reply-raw-api.md`),
+then prove it exists by listing drafts AND reading the draft object back (threadId, To, Cc,
+In-Reply-To) before reporting success.
+
 The bridge mirrors these operations: `call("draft_create", service_name="google-draas", ...)`, `call("draft_reply_create", ...)`, `call("gmail_thread_get", ...)`, etc.
 
 **IMPORTANT — do NOT use `execute_code` for gws bridge calls.** The `execute_code` sandbox lacks the `gws_fetch_token` import needed by the vault credential loader. Gmail/Calendar/Drive operations through the bridge will fail with `ImportError: cannot import name 'gws_fetch_token'`. Always use `terminal` with `/opt/hermes/.venv/bin/python3` instead.
+
+**Pitfall — '&' in heredoc trips backgrounding guard (2026-09-01):** heredocs containing '&' are rejected as backgrounding; write the script to `/tmp/<name>.py` via write_file then run it instead. Same for contact-creation scripts.
+
+**DRA family:** Manish=mdr@draas.com; Dharmesh=dharmesh.ranka@gmail.com. Wind-up map: `references/dra-family-windup-matters.md`
+> **BRDPL / Godrej Venture / BNA recipient map + voice garble fixes (verified 2026-09-24):** `references/bux-ranka-godrej-venture-bna-2026-09.md` — "NSTL"→NSDL dues for Bux-Ranka Developers (BRDPL), "Bucks Ranka"→BRDPL, "Sharaaf"→Amit Saraf, "Saurav Vashisht"→Saurabh Vashishth, "Harish/Bhaksadi"→Haresh Buxani, "Balan Nambisar"→balan+nambisan architects. Forward shape NDR wants: To = Harsimran+Viraj, Cc = Amit/Saurabh/Tina (+ seller group Haresh/Pradeep/Vishwas). NSDL reminders land at ndr@drahomes.in. — carries the asset/owner map, the Step 1 (distribute work) / Step 2 (wind down) close-out framing, the June 2027 timeline, NDR's "too long — shorten it, use HTML bullets, group DRA Projects assets into one block" formatting corrections, the polite counter to Manish's "there is a process" pushback, and the **BCC-the-wives pattern** (Roshni `rnr@draas.com`, Shruti Chhajer `Shrutichhajer@gmail.com`).
+**Draft updates that orphan the thread:** `references/gmail-draft-update-in-place.md` — re-pin via explicit `threadId` in the update body (no delete needed), plus the full `References` chain rule and the `/opt/hermes/.venv/bin/python` + `whatsapp_link_tool` invocation notes. **Also carries the body-text-only edit path** for "change one sentence in the draft you already made" (keep recipients/thread/attachments intact): decode each MIME part and edit the DECODED text (a raw-bytes regex matches only the un-encoded part and half-applies the edit — `text/plain` may be base64 while `text/html` is quoted-printable in the SAME message). **⚠️ THE ONE RULE TO CARRY IN YOUR HEAD: when editing a MIME part in place, strip ONLY `Content-Transfer-Encoding` — NEVER `del part['Content-Type']`.** `set_payload(txt, charset='utf-8')` already encodes exactly once (following it with `encode_quopri` double-encodes → `UnicodeDecodeError: ... byte 0xb4`), and deleting the `Content-Type` header silently DEMOTES an HTML part to `text/plain` so the recipient sees literal markup. **That second failure is the one NDR actually reports: "the email body consists of HTML code rather than rendered HTML. So something is wrong in the way the email was generated."** It is NOT a missing `html=True` flag (that is only the bridge/new-draft pitfall). Detect by printing each text part's declared type *next to* its opening characters (`text/plain | '<div style=...'` = the bug); recover by rebuilding from the pristine snapshot with explicit `MIMEText(txt, 'plain'|'html', 'utf-8')` subtypes, verifying the stored structure is `multipart/mixed → multipart/alternative → text/plain + text/html` with each attachment's decoded byte length unchanged, then deleting the broken draft (validated end-to-end 2026-09-25).
+**Threaded-draft RE-CREATE must preserve Message-ID (confirmed 2026-09-24, Behera counsel reply):** when re-creating a threaded reply draft (delete + `drafts().create` after editing the body), a raw MIME rebuilt WITHOUT the original `Message-ID` header makes Gmail mint a BRAND-NEW threadId — the draft silently drops out of the master conversation (verified: draft landed in thread `1a0d201ef470c633` instead of master `1a07b0f2821d61f6`). Fix: snapshot the ORIGINAL draft's `Message-ID` + full `References` + `In-Reply-To` headers BEFORE editing, then re-create with those headers AND `threadId=<master>` in the create body; verify `drafts().get()` shows the master threadId, not a fresh one. Do NOT attempt in-place `drafts().update(raw=...)` for body edits on a threaded draft unless you re-supply Message-ID — the update path is what drops it.
+
+**Sent-but-unthreaded diagnosis + resend-in-same-thread pattern (confirmed 2026-09-24, Behera counsel reply):** when NDR reports "I sent it but it was not a reply-all in the same thread", diagnose on the SENT copy BEFORE rebuilding: `messages().get(id=<sent id>, format='raw')` and check the raw headers `In-Reply-To` / `References`. If BOTH are None/absent, Gmail had nothing to nest under and minted a brand-new conversation — that is the whole root cause, not a recipient/account issue. **DO NOT edit the threaded draft in place via `drafts().update(raw=...)`** — verified 2026-09-24: the raw-MIME update ORPHANED the draft into a fresh thread (`1a0d30b499c79876`) even though it had been sitting in the master thread, and the resend-note insert failed because the HTML body inside raw MIME is base64-encoded (string-searching raw text for `<p>Dear M` finds nothing). The reliable sequence is: snapshot the draft's To/Cc/In-Reply-To/References headers + download the attachment bytes via `messages().attachments().get()`, DELETE the draft, re-CREATE with the full body (note prepended BEFORE base64), In-Reply-To = anchor's OWN Message-ID, and `threadId=<master>` explicitly in the create body — then VERIFY by `drafts().get()` that the stored threadId equals the master thread (`1a07b0f2821d61f6`) and the attachment part is present with the right size. Fix per NDR's explicit instruction in this case:
+1. Rebuild as a proper reply-all: SAME To/Cc/subject/body/attachment as the sent email (extract the sent message's body+attachment from its raw MIME so the resend is byte-identical where it matters).
+2. PREPEND a highlighted amber HTML box at the very top of the body — "Resending in the same thread… ignore the earlier copy of this email if you receive it separately" — because NDR wants all communication in one thread for tracking.
+3. **CRITICAL: `In-Reply-To` must be the ANCHOR message's OWN Message-ID — never that message's `In-Reply-To` header value.** Verified: setting In-Reply-To to the anchor's In-Reply-To mints a fresh threadId (`1a0d2f1ddaeffbad`); setting it to the anchor's own Message-ID (the message inside the master thread you are replying to) threads correctly. `References` = anchor's full reference chain + anchor's Message-ID appended.
+4. Gmail reports a PROVISIONAL threadId on `drafts().create` — it may differ from the master thread and is NOT the failure signal; the definitive thread is resolved at SEND time from In-Reply-To/References. Verify the stored draft's HEADERS instead, then re-list the master thread to confirm the anchor's Message-ID is in it.
+**Anbu/Oasis:** anbarasan@draas.com in threads (headers win). Reply template: `templates/confirmation-request-email.html`.
+**Millers Road office / India Chai building structural-test briefing (2026-09)** → `references/millers-road-structural-briefing-2026-09.md`
+> **Millers Road office internal-measurements & flow-plan email for the BNA redesign (2026-09-29)** → `references/millers-road-measurements-bna-2026-09.md` — laser-distance quick measurements (floors/lobby/lift core/staircase/1-2 columns) → basic flow plan for the BNA (Balan+Nambisan) architects meeting 30-Sep; recipient map Anbu pm2.blr / Kantesh kanteshbg / Sinchana sgowda; "Makin" = UNRESOLVED, never guessed; Option B fallback (Google Earth floor plate); draft r1820996147210042155 verified; tracker P-354. — property identity (70/3 Millers Rd, DRA Realty lessee), the "Tushar Giri" = tushar patil identity, ACT NDT report results + Drive filing (DRA Realty > Millers Road Office Building > Architectural and Engineering, file id 1vUlNQBGOTmmDTuZ5XHl-g35dNO8lKFMV), the consultant-briefing email structure (context box → plan → results table → highlighted terrace ask), and the pymupdf technique for extracting building photo + facade render out of the Nova Spaces proposal PDF for attachments.
+**DRA–Jiraaf thread / Vishwas follow-up letters WITH the land map (2026-09-21)** → `references/dra-jiraaf-followup-land-numbers-2026-09.md` — the corrected approved-layout survey table from Sinchana's map (SPL own ≈5.46 acc. NDR / 5.67 by row-sum; DRA Realty ≈0.90 with road-relinquishment point; JV ≈0.95; total 7.52), the no-percentage plot-area + built-up-area framing, the avoid-DRA→SPL-contribution-deed rationale, the 6 PM interim-loan call ask, the wrong-Vinay (Vinay T/VNV ≠ TN liaisoning Vinay) and unverifiable-Mark contact corrections, plus the RERA-villa comparable registration numbers (Sobha Gardenia 0043/2018, DAC trio, Palm Beach, Aurum, House of Palisade).
+> **Voice garble + team map (re-verified 2026-09-29 while building the 5–7 PM transaction meeting):** "Giraffe Capital" / "Jiraffe Capital" (NDR voice) = **Jiraaf** — never a separate fund; Vineet Agrawal <vineet@jiraaf.com> is "Vineet". Ranka Oasis structuring/funding team (21-Sep call attendees, use these when NDR dictates the group): Vineet Agrawal <vineet@jiraaf.com>, Prakash M <prakash.m@jiraaf.com> (Jiraaf), **Nishant Prakash <nishantprakash1@gmail.com>** for the transaction group (NOTE: nishantprakash@theyelloweye.com is his OTHER identity from older Yellow Eye meetings — the gmail.com one is what the Oasis transaction calls use), Vishwas Rao <vishwas@vantagepointadvisors.in>. NDR's own name is Nishant Ranka — a dictated "Nishant" in this team means Nishant Prakash, not the user.
+**Scheduling an EXTERNAL professional (Deloitte/tax advisor/consultant) into a brothers' thread** → `references/external-advisor-scheduling-thread.md` — the two-channel split (email to brothers only, WhatsApp to the outsider; never CC him), Amit Jain's verified contacts-sheet details, the "after 1 PM + 3–4 days' notice" constraint, the short HTML draft shape NDR accepted, and the delete-the-superseded-draft rule for each date shift.
+> Bridge str-return + silent-counterparty anchor → references/gws-bridge-str-silent-followups.md
 
 **To search Gmail or read thread content when `google_workspace_manager` is unavailable**, use the raw Gmail API directly from terminal:
 
@@ -121,6 +278,10 @@ call('draft_create', service_name='google-draas',
 
 Lands as `BHARAT H <sales1.blr@draas.com>` with label DRAFT (verify via `drafts().list()`). Before drafting to a lead, look the customer up in **Kelsa Pipeline 10 by name** to address them properly — e.g. `roy.pragyajyoti@gmail.com` resolved to Pragya Joythi (lead #54917102, Hot, assigned to Bharat). The customer's email supplied by the user in chat is authoritative for `To`; create as DRAFT only, never auto-send.
 
+**Bharat → NDR internal approval drafts (Ranka Amber SSA / landowner-doc workflow, validated 2026-09-22):** When Bharat says "draft an email stating the draft is ready and require your approval so I can upload tomorrow" in a project-document context, the recipient is **Nishant Ranka <ndr@draas.com>** (internal approval), NOT the landowners/counterparty — even though the document is ultimately for them. After drafting, the user may correct with "I am not sending this to Iyer" → recipient is internal. Thread it on the existing project thread (e.g. NDR's "Executed Supplementary Sharing Agreement (Signed PDF + Source Document)" message) via `draft_reply_create(message_id=...)`, sender stays `sales1.blr@draas.com` (Bharat's mailbox, same env as the lead-outreach recipe: `HERMES_SESSION_USER_ID=sales1_blr GWS_VAULT_SOCKET=/run/gws-vault/vault.sock`). Confirm the mailbox with `getProfile()` before creating, then verify `drafts().get()` shows labels `['DRAFT']` + correct From/To/threadId.
+
+**"i need only draft now" / "just the draft" (user preference):** When Bharat (or NDR) says this, skip the analysis/verification narrative entirely — create the Gmail draft immediately from the verified thread context already at hand, then confirm in one short line (To / Subject / threaded-on-what / Drafts folder). Long pre-draft recaps of what was cross-checked are not wanted at this stage.
+
 **Plot booking-confirmation emails (congrats + booking-amount receipt + legal pack + receipt-follows-EOD):** full proven workflow in `references/plot-booking-confirmation-email.md` — pull the booking amount from the Kelsa lead notes (never invent it), attach the compressed legal pack via raw Gmail API (bridge has no attachment support), draft-only from the sales mailbox.
 
 **Booking-confirmation / congrats emails — quote the EXACT amount from the lead's notes (2026-08-25):** When Bharat dictates a congrats email ("congratulate him for booking, confirm receipt of the amount transferred"), the authoritative figure is the Kelsa lead's notes, NOT memory or the voice dictation: `list_lead_notes(pipeline_id=10, lead_id=...)` — Bharat logs settlements like "The client has transferred the ₹50,000 booking amount, and the same has been received and confirmed with the client." Quote that exact figure in the draft ("We confirm the receipt of your booking amount of ₹50,000"). If the notes contain no received amount, ask Bharat — never guess or leave a placeholder. Booking-congrats emails follow the dictated structure: congratulations → amount-received confirmation → attached legal docs (per commitment) → receipt follows by stated EOD.
@@ -141,7 +302,7 @@ Lands as `BHARAT H <sales1.blr@draas.com>` with label DRAFT (verify via `drafts(
 **DRA-group / director work always uses `ndr@draas.com`** (user correction 2026-07-13: "No use ndr@draas.com for all work"): even if the user is a director of a DRA-group entity (DRA Aadithya / DRAAPPL, DRA Aadithya South City / DRAAS, Truliv, DRA Homes, etc.) AND is reading the notice in personal Gmail, the draft + Drive filing + Calendar event must all go in `ndr@draas.com`. The personal Gmail is just the inbox where the notice arrived; the work artefacts live in the work account. Confirm work account explicitly when the user says "file this" or "draft this" about a director-of notice and the inbox is personal Gmail.
 
 - **IRDAI original-documents pushback:** When drafting an insurance-related reply where the TPA/insurer demands original medical records or portal re-submission, load `references/irdai-original-documents-guidelines.md` for the specific Master Circular citations and rebuttal language. Add these citations to the email body as a factual paragraph before the escalation ask.
-- **Drug-alternative request to doctors** (drug out of stock, need alternative generic recommendation): load `references/charitra-medical-communication.md` for the correct account (google-draas, NOT ahfl), doctor emails (samdoc_mamc@yahoo.com for Dr. Sameer, anniekbaa@gmail.com for Dr. Annie), active thread, and drug-alternative email pattern. Verify every recipient from thread headers — never guess medical email addresses.
+- **Drug-alternative request to doctors** (drug out of stock, need alternative generic recommendation) OR **Charitra consult-prep / post-review thank-you replies** (send Sameer+Annie updates, prep Q&A after a PET, thank both after a review): load `references/charitra-medical-communication.md` for the correct account (google-draas, NOT ahfl), doctor emails (samdoc_mamc@yahoo.com for Dr. Sameer, anniekbaa@gmail.com for Dr. Annie), Charitra's ACTIVE email (charitrakamath@gmail.com — murjanicharitra@gmail.com is obsolete), the active thread + its branches, the drug-alternative email pattern, the post-review thank-you shape (short + nice, anchor on latest INBOUND message), the plain-English consult Q&A style, the PET necrosis-vs-active differentiation research, the future-therapy shortlist (B7-H3 ADC/CAR-T, utidelone+anlotinib), and the HTML→Drive TMP public-link delivery. Verify every recipient from thread headers — never guess medical email addresses.
 
 - **DEFER** to the `regulatory-complaint-escalation` skill if the email is:
 - A formal complaint to a regulated counterparty (insurer, bank, NBFC, telco)
@@ -154,15 +315,15 @@ The complaint skill produces a structured 5-section email + a Google Doc plan, w
 
 ### For a NEW email
 
-**ALWAYS use the contact lookup tool FIRST — HARD RULE (corrected 2026-07-31).** Any email-address lookup starts with `scripts/find_contact.py` from the `personal-messaging` skill, in the same session, immediately:
+**ALWAYS use the contact lookup tool FIRST — HARD RULE (corrected 2026-07-31).** Any email-address lookup starts with `scripts/find_contact.py` from the `messaging-drafts` → `references/personal-messaging-workflow.md`, in the same session, immediately:
 
 ```bash
-/opt/hermes/.venv/bin/python /data/hermes/skills/productivity/personal-messaging/scripts/find_contact.py "<name or number>"
+/opt/hermes/.venv/bin/python "/data/hermes/skills/communication/messaging-drafts/scripts/find_contact.py" "<name or number>"
 ```
 
 The script queries Google People API AND both DRA contacts sheets in one shot (with automatic vault-socket recovery) and prints labelled phones + emails. If it finds the person, confirm the address with the user before drafting (matches may be ambiguous or outdated). Never guess an email address, never rely on memory alone, never fall back to a raw sheet read.
 
-Only if the tool returns nothing: escalate down the chain (memory spelling cross-check → Gmail thread search → ask the user). Full priority chain lives in the `personal-messaging` skill.
+Only if the tool returns nothing: escalate down the chain (memory spelling cross-check → Gmail thread search → ask the user). Full priority chain lives in the `messaging-drafts` → `references/personal-messaging-workflow.md`.
 
 When a match is found, confirm with user:
 > Found: **Raghu Iyer** — Director, [Company]
@@ -172,7 +333,42 @@ When no match: report clearly and ask for the address — do not invent one.
 
 **Pitfall — contact-sheet address can be stale/dead (2026-08-12):** find_contact.py may return an old address that the person no longer uses (e.g. Anbu/Anbarasan → sheet says anbarasandraass@gmail.com, last used 2017 and defunct; his ACTIVE address is anbarasan@draas.com from Jul–Aug 2026 threads). Before drafting, cross-check the person's most recently used address by searching Gmail (`q=<name>` via `build_service('gmail', 'v1')`, inspect latest To/From). A dead address also fails Drive permission grants with HttpError 400 `invalidSharingRequest` — same fix applies. When you use a non-sheet address, tell the user why (e.g. "the gmail.com address in the sheet is stale — using the active draas.com one").
 
+**HARD RULE — recipient verification before ANY outbound address (user-stated 2026-09-28, after the AJ Architects bounce):** NDR's rule, verbatim in substance: *every* recipient address must be (a) looked up, (b) present in contacts, AND (c) previously used in a sent email that did NOT bounce. If an address bounces, you must go back to the contact lookup and take the address from there — never re-use the bounced one, and never hand-derive a plausible-looking variant. A 550/`Address not found` from Gmail is treated as a dead contact locally; substitute the verified one and TELL the user you swapped it and why.
+
+**AJ Architects (Arvind Jain) — verified addresses, one DEAD (confirmed 2026-09-28):**
+- **Arvind Jain** — `arch_arvind2000@yahoo.co.in` (contacts-sheet row 417, "Arvind Jain Architect"; also arch.arvind2000@gmail.com on the row). Live: his own replies come from it.
+- **Shrinidhi GV** — `shrinidhi.a.j.architects@gmail.com` (contacts-sheet row 4249, org AJ Architects; she is the one who sends sanction files — 21-Sep "ranka northstar @sanction"). THIS is the correct AJ Architects team address.
+- ⚠️ **`arvindsarchitects@gmail.com` is DEAD** — Gmail hard-bounced it 550 5.1.1 "account that you tried to reach does not exist" against the 28-Sep area-statement mail. It is not in the contacts sheet. It was previously attached to a person addressed as **"Sridevi"** — and there IS a Sridevi row (3519, SysN Consultant, +91 99801 20060) with **no email at all**, which is where the invented address came from. Do not put "Sridevi"/arvindsarchitects@gmail.com on any AJ Architects mail; use Shrinidhi GV. If NDR's dictation says "his Sinchana or Srin", it means **Shrinidhi** (transcribed also as "Sriniti"/"Shinchen").
+
 **Pitfall — in-house staff and long-standing partners have NO contacts-sheet row at all (2026-08-25):** find_contact.py (and contact_resolver) return zero matches for internal DRAAS people and frequent external partners — e.g. Sinchana Gowda (sgowda@draas.com, in-house architect/design covering Palya, Serenity Hill View, Oasis) and Arvind Jain (arch_arvind2000@yahoo.co.in, A.J. Architects). These people don't live in the contacts sheet, so "tool returns nothing" must NOT stop the draft. Resolve them from Gmail: `q='"Full Name" OR from:<domain>'` and read From/To/Cc headers across recent threads (`q='sinchana'`, `q='from:arch_arvind2000'`). Headers are the authoritative address for both the To field and Drive permission grants. Only after a Gmail search also fails should you ask the user for the address.
+
+**Core DRAAS land-project team — canonical resolution (validated 2026-08-30 via Gmail headers):**
+- **Prakash Singh** — psingh@draas.com (in-house land/project lead; assignee on Land Proposal pipeline). NOT the same as "Prakash (Asset Properties)" (external broker, no sheet row) nor "Nishant Prakash" (external consultant) — voice dictation "Prakash" alone is ambiguous, resolve by thread context.
+- **Rahul = Vinod Kumar Das** — vkdas@draas.com, +91 99000 93813 (contacts sheet row 4091). Feature in Gmail as `Vinod Kumar Das (Rahul)`; user's voice says just "Rahul". Phone extraction trick: contacts sheet has 3 numbers for him — cross-check which is WhatsApp-active before generating links, else the link opens the wrong chat.
+- **Bhavesh = bhavesh@draas.com** (user says "Bhavesh Bafna" or "Bhavesh Mehta" interchangeably — same person; DRA account has no vault identity, DWD-only; personal Gmail bvbafna@gmail.com seen in NDR sent mail). Handles AHFL / Ranka Stelo approvals docs (2026-09-22).
+- **Anbu = Anbarasan** — TWO live identities: `anbarasan@draas.com` (his From/identity since Sep-2026 threads) AND `pm2.blr@draas.com` (what NDR targets in To/Cc — Aug-2026 Millers Road facade thread Cc, Sep-2026 "Please sign out" To). The sheet's anbarasandraass@gmail.com is defunct. Use `pm2.blr@draas.com` when NDR says "mark Anbu" in a Cc. +91 81500 29900. Voice-garble aliases (verified 2026-09-22, Ranka Stelo approvals handover): "Anbar Hassan" and "Anudha" (= "Anbu da") both resolve to Anbarasan.
+- **Anbu = Anbarasan** — anbarasan@draas.com (ACTIVE; the sheet's anbarasandraass@gmail.com is defunct per 2026-08 pitfall), +91 81500 29900.
+- **Neha = nvaddadi@draas.com (2026-09-22):** DRA in-house creative/render person ("Neha help" on renders, AI content videos). No contacts-sheet row; verified via Gmail headers on the "Request: 2 short videos on how we use AI for content" thread (To: Gowri Singh + Neha). NOT "Neha Ryan"/"Neha Kiran MSD"/"Neha Kewalramani" (external, different people).
+- **Gowri = Gowri Singh <gsingh@draas.com> (2026-09-22):** DRA marketing. Contacts sheet has gowrisingh1341@gmail.com (work) / gowrisingh72@yahoo.com (other); GMAIL HEADERS use gsingh@draas.com — use the header-verified draas.com address when CC'ing. NOT "Gowri Deepak" or "G Raghunath".
+When NDR names just first names ("email Prakash marking Rahul and Anbu"), resolve all three via Gmail headers before drafting — the sheet rows are ambiguous (51 Prakashs, 19 Rahuls).
+
+**AI / content / render team — canonical resolution (validated 2026-09-22 via Gmail headers):**
+- **Neha** — `nvaddadi@draas.com` (renders, AI content videos; NDR addresses her simply as "Neha"). The contacts sheet has NO matching Neha with an email (Neha Kewalramani Federal Bank, Neha Kiran MSD, Neha Ryan are phone-only, unrelated). Pair with Gowri for render/AI-content workstreams.
+- **Gowri = Gowri Singh** — `gsingh@draas.com` (marketing/content; the work identity seen in headers). The contacts-sheet "Gowri Singh" row (row 1156) lists gowrisingh1341@gmail.com (Work) and gowrisingh72@yahoo.com — those are NOT the draas.com work address; headers win.
+- **Sinchana (in-house architect/design)** — `sgowda@draas.com` (also covers Palya, Serenity Hill View, Oasis; her attendance/sign-in mails land at sinchanalgowda16@gmail.com but work identity is sgowda@draas.com from her own sent headers).
+- **Kantesh = Kantesh BG** — `kanteshbg@draas.com` (internal DRA; appears with Anbu + Bharat in "call out the overdue feedback" dictations). Resolve from NDR's OWN sent Kelsa attendance mails — search `q='kantesh'` in google-draas, subject "Please sign in for the day" (verified 2026-09-24). Contacts sheet row 1554 ("Kantesh Dra") has phone +91 95918 01389 but NO email; `contact_resolver` returns nothing usable. ⚠️ **`kantesh@draas.com` is DEAD — hard bounce (Mail Delivery Subsystem failure notice, 28-Sep-2026).** Prakash addresses Kantej as `kantesh@draas.com` (28-Sep estimate-cost mail), so the original AND NDR's reply-all never reached Kantej (worked 2026-09-29: forward rebuilt to `kanteshbg@draas.com` and the swap stated in the draft). Always swap to `kanteshbg@draas.com` and tell the user you swapped it, never reuse the bounced variant.
+
+**Structural consultant & Millers Road refurbishment circle (validated 2026-09-21 via Gmail headers + certificate OCR):**
+- **"Tushar Giri" (NDR dictation) = Tushar Patil** <structure.pune@gmail.com> — Designage Consultants Pvt Ltd, Office 403, 4th Fl Wing-E, Audumber Apartment, Canal Road, Warje, Pune-411062; M.Tech Civil (Structures), Chartered Engineer M-145727-0, +91 90110 76607. There is NO person named "Tushar Giri" in his ecosystem — the dictation is a permanent garble (confirmed June 2026 + Sep 2026). He signs the Ranka Amber structural stability certificates (Drive `20260702_RankaAmber_Structural_Stability_Certificate_Signed_TusharGiri.pdf`).
+- **"Amir" in the Millers Road context = Aamir Khan** <khan.hussain.aamir@gmail.com> (also aamirkhan@icloud.com) — broker/conduit on the Millers Road lease and the Nova Spaces façade proposal. Not to be confused with anyone else named Aamir.
+- **"Anwar Asan" = voice error for "Anbu Asan" = Anbarasan** (pm2.blr@draas.com / anbarasan@draas.com). Do NOT invent an "Anwar" contact unless NDR explicitly names a firm.
+- Millers Road building (70/3 Miller's Road, Vasanth Nagar, leased by DRA Realty): lessors M.Akber Hussain 30%, M.Akther Hussain 30%, Mrs M.Asma Banu 20%, Mrs M.Sara Banu 20% (Kilpauk, Chennai); GPA holder Avoor Mohammed Muzzammil; AH India contacts Atheeq <padirector@ahindia.com>, Akber <akber@ahindia.com>.
+- Full thread context, NDT numbers, draft id and attachment sourcing: `references/millers-road-office-structural-review-2026-09.md`.
+
+**Advisors & professionals — canonical resolution (verified 2026-09-22 via contacts sheet + People API):**
+- **"Nitin Oswal" / "Nitin Ostwal" / "Nitin Osthwal" (NDR voice) = Nitin Osthwal Kalpesh** — "Nitin CA", DRA's official Chartered Accountant, partner/cousin of Saurabh T Jain (TSJ & Associates LLP); +91 80889 79777, Kalpeshnitin@gmail.com, firm ph 080-26705995. Contacts sheet row 2333 (canonical "Nitin Kalpesh", nickname "Nitin CA"); People API shows full name "Nitin Osthwal Kalpesh". His outreach channel is WhatsApp; use him for company + personal financial matters. NOT "Nitin Agarwal" (SNN Builders) or "Niti Narang" (Vikram Hospital).
+
+**Phone-from-signature technique (2026-08-30):** When a team member has no phone in the contacts sheet, regex their OWN sent emails' signature blocks for `(\+?91[\s\-]?[6-9]\d{4}[\s\-]?\d{5}|\b[6-9]\d{9}\b)` over the last 5-8 messages from their address — Prakash Singh's mobile +91 81230 28716 was recovered this way from his signature. Always sanity-check the recovered number against the pattern (valid 10-digit Indian mobile) before putting it in a WhatsApp link.
 
 ### For a REPLY (existing thread)
 
@@ -257,501 +453,21 @@ Present context:
 
 ## 3. Stage 2 — Draft
 
-### Work email tone
-- No greeting, go straight to the point
-- Numbered tasks if there are asks, deadlines in bold if HTML
-- No boilerplate ("Hope you're well", "Dear [name]") unless explicitly asked
-- Subject: `[Project/Entity Name]: [one-line description]`
-
-### Personal / casual tone
-- Warmer, no subject prefix
-- Plain text is fine
-- **Roshni Ranka / "RO":** Always personal tone
-- **Family (kids, spouse, parents):** Always personal tone; same content can go to multiple family members in ONE email using To + CC — do NOT create a separate draft per recipient (user correction 2026-07-13: "I need only one draft email. Why four drafts? This is one email.")
-- **Extended family (brother-in-law, sister, sister-in-law):** Personal tone and family address ("Dear Jai ji") even when the content is business/legal — use warm opening but structured body with numbered items. Sender is ndr@draas.com when the content relates to DRA governance/estate matters (validated 2026-08-27, Ranjeeth/Mamata/Roshni succession petition email). See `references/family-legal-document-sharing.md` for the full pattern.
-
-### School / authority communication tone (polite-cooperative, 2026-08-27)
-Used when emailing teachers, school administrators, or any institutional authority (government offices, regulatory bodies, RERA authorities). The goal is to express a concern or push back politely while remaining cooperative and seeking understanding — NOT confrontational or demanding.
-
-Structure and language principles:
-- **Open with appreciation:** Thank them first — acknowledge their response, accommodation, or effort before raising the question. This sets a collaborative tone.
-- **State the medical/known context factually:** "Ruhaan has an established medical pattern — whenever he contracts a viral infection, it triggers an asthmatic flare-up resulting in a persistent cough. This is a known, recurring issue." Frame it as context-sharing, not excuse-making.
-- **Explain the action taken (and why no doctor visit):** "Following our doctor's standing advice for this known pattern, we have started him on azithromycin without a hospital visit this time. There may be no clinical benefit in taking him to a doctor unless his condition deteriorates."
-- **Acknowledge their requirement/position:** "We fully understand the school's need to maintain proper records."
-- **Express the concern as a question, not an objection:** Frame it as seeking understanding: "We would like to understand the basis for this requirement — is it mandated by IGCSE/board rules, or is it a school policy for record-keeping?" Never say "this is unnecessary" — say "an unnecessary visit would put him under additional strain and risk of infection for a known medical issue."
-- **Offer alternatives proactively:** "We are happy to share a video or any other form of proof. If there is an alternative medium that satisfies your requirement without a medical visit, we would be grateful for your guidance."
-- Close with warmth and cooperation: "We would be grateful for your guidance so we can find the best way forward for Ruhaan."
-
-**Related:**  `references/school-absence-medical-cert-required.md` — full workflow when the school insists on a certificate as SOP (Grade 9+ board requirements, known chronic condition, WhatsApp the family doctor, reply with attached cert + BCC admin).
-**Related:** For a simpler notification-only absence + exam-accommodation email (not challenging a policy, just informing and requesting), see `references/school-absence-exam-accommodation.md`.
-
-**Discovery tip — school Welcome PDFs are the authoritative source for teacher roles:** When emailing a school and unsure who the actual class teachers are (versus who handles attendance), search Gmail for the school's welcome/introductory email at the start of the academic year — `subject:"Welcome" from:<school-domain>`. The attached PDF usually lists class teachers + teaching team explicitly. Run `pdftotext` or `pymupdf` on the attachment to extract the names. Example: Aditi Std 07 SS Welcome PDF showed Neetu Shrivastava + Subath Senan as class teachers, while the person handling the leave note (Ranjitha Tikandar) was not a class teacher at all. This avoids the common trap of assuming the attendance-contact person is a class teacher.
-
-Key distinctions from vendor-feedback tone:
-- ❌ No competitive pressure ("commissioned a parallel test")
-- ❌ No disappointment framing ("we are extremely disappointed")
-- ❌ No consequences set ("this is our last effort")
-- ✅ Positive, cooperative, appreciative throughout
-- ✅ Frame the underlying question as seeking understanding
-- ✅ Offer alternatives before asking for exceptions
-
-### Vendor-feedback / frank escalation tone (user preference, 2026-08-17)
-Used when delivering formal feedback to a vendor/service provider whose product has underperformed. NDR's explicit direction: "as frankly as possible without doing any threats."
-
-Structure:
-1. **State the situation factually** — what was tested, how many calls/transcripts, what methodology (recorded → transcribed → cross-checked against verified data).
-2. **Name the failures concretely** — data errors, latency, missing features. Quote specific numbers (percentages, call counts) so the feedback is undeniable.
-3. **Mention alternatives if they exist** — "we have commissioned a parallel test with another provider. In the very first cut, it was absolutely brilliant — correct accent, facts right, conversation handled naturally." This frames the conversation as competitive, not remedial.
-4. **Express disappointment factually** — "we are extremely disappointed that your product experience is so poor, especially for a team that advertises heavily. Right now it feels half-baked — not even an alpha."
-5. **Set a clear consequence as a fact, not a threat** — "This is our last effort to get a product that meets basic requirements. If this still fails, we will withdraw from this pilot." NEVER say "we may be forced to reconsider" or "we have limited bandwidth" — that's hedging, not frankness. State the consequence plainly.
-6. **Close with an action request** — "kindly do the needful urgently so we can test again." Professional, no anger, just clarity.
-
-Key rules:
-- No threats, no aggression, no rhetorical questions. The evidence does the work.
-- Mentioning another provider is acceptable and adds competitive pressure without threatening language.
-- If the vendor advertises heavily, it's fair to note the gap between marketing and delivered product — this is a factual observation, not a personal attack.
-- Keep attachment evidence (PDF feedback, data sheets) bundled in the email so they can verify every claim.
-
-### One draft, multiple recipients (To + CC)
-When the same content goes to several people, create a single draft with multiple To addresses and CC the rest. Do NOT spawn one draft per recipient.
-
-`google_workspace_manager` supports this directly:
-```
-tool: google_workspace_manager
-input:
-  command: "gmail messages send --to a@example.com,b@example.com --cc c@example.com,d@example.com --subject '...' --body '...'"
-  account_email: "nishantranka@gmail.com"
-```
-
-For HTML: add `--bodyHtml '<p>...</p>'` alongside `--body`. Confirm the full recipient list (To + CC) with the user before drafting.
-
-If using the underlying `gws_skill_bridge` Python module instead (e.g. from a venv script), `draft_create` accepts flat `to=`, `cc=`, `subject=`, `body=` kwargs:
-```python
-from tools.gws_skill_bridge import call
-call("draft_create", service_name="google-gmail",
-     to="rankarivaan@gmail.com,pebblyshark69@gmail.com",
-     cc="rnr@draas.com,Rmurjani@gmail.com,nishantranka@gmail.com",
-     subject="⚽ FIFA World Cup 2026 — Polymarket & Kalshi odds",
-     body=html_body,
-     html=True)   # <-- required when body is HTML; without it the draft is plain-text and your markup is sent as raw literal characters
-```
-The bridge handles MIME multipart and base64 internally — no need to build MIMEMultipart yourself. Use comma-separated addresses (no `Name <addr>` formatting needed; the bridge adds display names from contacts if you pass bare emails).
-
-**Full workflow reference:** `references/drive-to-draft-pipeline.md` — covers finding files on Drive, downloading, categorizing, building the MIME message, and deduplicating. Use it whenever the draft needs multiple Drive-sourced attachments.
-
-**New-draft-from-Gmail-attachments:** `references/gmail-to-drive-to-draft.md` — covers extracting attachments from prior Gmail emails, renaming per NDR naming convention (YYYYMMDD_Entity_Description), uploading to the right Drive folder for archival, then creating a fresh draft to a NEW recipient with those Drive files attached. Use this when the user says "find the floor plans I sent to [person], rename and file them, and send to [new recipient]."
-
-**Repurposing a prior chain to a new recipient** ("send the same briefing + attachments to advocate Y"): `references/repurpose-email-chain.md` — search multi-thread by subject keyword, read all bodies, collect attachments across ALL messages/threads (petition may be on one thread, supporting docs on another), rebuild MIME with raw Gmail API, verify via `drafts().list()`. Session-validated Aug 2026 (succession certificate → Sanjay Sethia).
-
-**Pitfall — `threads().get(format='raw')` is NOT a valid parameter (confirmed 2026-08-02):**
-The Gmail API `threads().get()` only accepts `format` values `['full', 'metadata', 'minimal']` — passing `'raw'` raises `TypeError: Parameter "format" value "raw" is not an allowed value`. This traps you when building a threaded reply draft that needs the latest message's `Message-ID`/`References` headers. The fix is a two-step fetch:
-```python
-t = service.users().threads().get(userId='me', id=THREAD_ID, format='metadata').execute()
-latest_msg_id = t['messages'][-1]['id']
-latest = service.users().messages().get(userId='me', id=latest_msg_id, format='raw').execute()
-raw_bytes = base64.urlsafe_b64decode(latest['raw'].encode('ascii'))
-# then regex Message-ID / References out of the raw text
-```
-`messages().get()` DOES support `format='raw'`; only the thread-level call rejects it.
-
-**Pitfall — raw-regex Message-ID extraction is fragile; use metadataHeaders instead (2026-08-25):** `re.search(rb'Message-ID:\s*(\S+)', raw_bytes)` on the raw MIME once captured garbage (`subject:date:mime-version:from`) instead of the real Message-ID, silently producing a malformed In-Reply-To/References on a threaded draft. Prefer fetching headers directly — no raw decode, no regex:
-
-```python
-latest = service.users().messages().get(userId='me', id=latest_msg_id, format='metadata',
-    metadataHeaders=['Message-ID','References','In-Reply-To']).execute()
-heads = {x['name'].lower(): x['value'] for x in latest['payload']['headers']}
-src_mid = heads.get('message-id','').strip()
-assert src_mid.startswith('<') and src_mid.endswith('>'), f"BAD MID: {src_mid!r}"
-```
-
-**Pitfall — `draft_reply_create`/`draft_create` do NOT support BCC (2026-08-27, Ruhaan school email):**
-Neither operation in `gws_skill_bridge` accepts a `bcc` parameter. If the user wants someone blind-copied, you MUST fall back to the raw Gmail API using `email.message.EmailMessage`:
-
-```python
-from email.message import EmailMessage
-import base64
-from tools.gws_auth import build_service
-
-svc = build_service('gmail', 'v1', service_name='google-draas')
-
-msg = EmailMessage()
-msg.set_content('Email body text here')
-msg['To'] = 'Primary <primary@example.com>'
-msg['Cc'] = 'Cc1 <cc1@example.com>, Cc2 <cc2@example.com>'
-msg['Bcc'] = 'Blind <blind@example.com>'
-msg['Subject'] = 'Re: Original Subject'
-
-raw = base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii')
-draft = svc.users().drafts().create(userId='me', body={
-    'message': {'raw': raw}
-}).execute()
-
-# Verify
-verify = svc.users().drafts().get(userId='me', id=draft['id'], format='full').execute()
-headers = {h['name']: h['value'] for h in verify['message']['payload']['headers']}
-assert 'Bcc' in headers, 'BCC header missing in draft — use raw API, not bridge'
-assert 'DRAFT' in verify['message'].get('labelIds', []), 'Not a draft!'
-```
-
-The Bcc header MUST be set on the `EmailMessage` object before encoding — it will NOT appear in the `drafts().get()` returned headers on Gmail's side (Gmail strips Bcc from API responses for security), but it IS present in the MIME and will be sent correctly. Verify by checking that the draft shows up in the correct mailbox with correct To/Cc visible.
-
-**Pitfall — `draft_reply_create`/`draft_create` do NOT support attachments (2026-07-15):**
-Neither operation in the `gws_skill_bridge` accepts file attachments. The MIMEText-based body construction has no provision for multipart/mixed. If your draft needs a PDF, image, or any file, you MUST fall back to the raw Gmail API:
-
-1. Build a `MIMEMultipart("mixed")` message manually (HTML body part + MIMEBase attachment parts)
-2. Base64-encode the whole message and call `service.users().drafts().create()` directly with `threadId`
-3. Use `tools.gws_auth.build_service("gmail", "v1", service_name=...)` — NOT `gws_skill_bridge._build_service()` (see next pitfall)
-
-See `templates/draft-with-attachments.py` in this skill for the full working recipe.
-
-**Pitfall — Gmail attachment cap is on the ENCODED size, not the raw file (2026-08-25):**
-`draft_create`/`draft_reply_create` build MIME internally — the size that decides
-sendability is the base64url-encoded `raw` field, which is ~16/9 ≈ 1.78× the raw
-PDF (base64 inside MIME ×4/3, then the MIME itself base64url-encoded ×4/3 for the
-API). The Gmail API cap is **35 MB encoded**, so the attachment PDF must be
-≤ ~20 MB — do NOT treat "25 MB" as the raw-file limit, and do NOT trust a
-36 MB → 25 MB /ebook compression as "done" (observed: 36 MB pack → 25.18 MB with
-/ebook → `len(raw)` = 43.3 MB = would FAIL on send).
-
-Always print the encoded size from the build script
-(`print(round(len(raw)/1048576, 1))`) and confirm ≤ 35 MB before declaring the
-draft done. If you already created the draft with an oversized attachment:
-`drafts().delete(userId='me', id=<draft resource id, NOT message id>)`, then
-recreate with the compressed file (same mailbox, verified via drafts().get walk
-of payload.parts for the attachment filename + size).
-
-**Recipe that actually got a 225-page / 36.4 MB compiled pack to 19.2 MB legible (2026-08-25, Ranka Udaya pack):**
-`/ebook` alone only reached 25.2 MB → still 43.3 MB encoded (FAIL). The pass that
-worked combined `/screen` with explicit image downsampling:
-
-```bash
-gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen \
-  -dColorImageDownsampleType=/Bicubic -dColorImageResolution=90 \
-  -dGrayImageDownsampleType=/Bicubic -dGrayImageResolution=115 \
-  -dMonoImageResolution=160 -dNOPAUSE -dBATCH -dQUIET \
-  -sOutputFile=out.pdf in.pdf
-```
-
-19,156,889 bytes (19.2 MB) → `len(raw)` = 32.9 MB → SAFE. Verify legibility before
-attaching: render 2–3 sample pages with `pdftoppm -png -r 100 -f N -l N` and OCR/
-vision-check that text still extracts. 100–130 DPI grayscale keeps scanned deed
-text readable; below ~90 DPI it degrades.
-
-For a 30–40 MB multi-page scanned legal pack, `/ebook` is insufficient — use
-`/screen` with explicit downsampling (observed: 36 MB → 19.2 MB → encoded
-32.9 MB = PASS, 225 pages preserved):
-
-```bash
-gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/screen \
-  -dColorImageDownsampleType=/Bicubic -dColorImageResolution=90 \
-  -dGrayImageDownsampleType=/Bicubic -dGrayImageResolution=115 \
-  -dMonoImageResolution=160 -dNOPAUSE -dBATCH -dQUIET \
-  -sOutputFile=out_email.pdf in.pdf
-pdfinfo out_email.pdf | grep Pages   # must match pdfinfo in.pdf
-```
-
-After aggressive compression, spot-check legibility before attaching:
-`pdftoppm -png -r 100 -f <p> -l <p> out_email.pdf /tmp/p` on 2–3 pages (title +
-a scanned deed page + one mid-pack page) and OCR/vision them — scanned deeds
-degrade fast below ~115 DPI grayscale; if unreadable, raise GrayImageResolution
-and re-verify.
-
-Attach the compressed copy but keep the ORIGINAL customer-facing name in the
-MIME display filename (local file can be `*_email.pdf`, display as e.g.
-`Ranka Udaya - Legal Document Pack.pdf`). Observed (Gunjur Will chain email):
-29 MB 12-page 1990 sale deed → 2.7 MB, 12 pages preserved, sent fine.
-
-**Pitfall — attaching a Google-native file (Sheets/Docs/Slides) requires export FIRST (2026-08-01):**
-A Google-native spreadsheet has no binary payload to attach — `MIMEBase` needs a real file on disk. Export it via the Drive API to xlsx before building the MIME message:
-
-```python
-from googleapiclient.http import MediaIoBaseDownload
-import io
-
-req = drive.files().export(
-    fileId=SHEET_ID,
-    mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-)
-fh = io.BytesIO()
-dl = MediaIoBaseDownload(fh, req)
-done = False
-while not done:
-    status, done = dl.next_chunk()
-open('/tmp/charges.xlsx', 'wb').write(fh.getvalue())
-```
-
-Then attach `/tmp/charges.xlsx` as a MIMEBase part with `Content-Disposition: attachment` and the human-friendly filename (spaces/dashes OK). This is the pattern for "attach this Google Sheet to my reply" requests — the recipient receives a real .xlsx, not a link.
-
-**Pitfall — Gmail 25 MB attachment cap: compress scanned PDFs before MIME build (2026-08-25).** Certified-deed scans routinely exceed the cap (observed: 1990 Doddaballapur sale deed = 29 MB / 12 pages → draft rejected on send). Compress first with `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dNOPAUSE -dBATCH -dQUIET -sOutputFile=out.pdf in.pdf` (29 MB → 2.7 MB on a 12-page scan), then verify `pdfinfo` page count matches the original BEFORE building the MIME message — never attach an un-checked compressed copy. Keep the original Drive file as the source of truth; the compressed copy is for sending only.
-
-**Pitfall — `_build_service` vs `build_service` account resolution (2026-07-15):**
-`gws_skill_bridge._build_service(api, version)` does NOT accept a `service_name` parameter and defaults to `google-draas` (ndr@draas.com). If your thread lives in a different account (e.g. `google-ahfl` for ndr@ahfl.in), the API call for `messages().get()` will return HttpError 404 because the message doesn't exist in the default account.
-
-Fix: import from `tools.gws_auth` directly:
-```python
-from tools.gws_auth import build_service
-service = build_service("gmail", "v1", service_name="google-ahfl")
-```
-Resolve the correct service_name first via `gws_resolve_account(account="ahfl")`. Never use the bridge's internal `_build_service` for cross-account operations.
-
-### Counterparty replied with a NEW email, not a threaded reply (2026-08-13)
-
-Law firms / advocates often reply from a DIFFERENT person's mailbox with a NEW subject and no In-Reply-To (observed 2026-08-12: original went to Sanjay Sethia sanjay@lawsquare.in; reply came from Nishanth Adv nishanth@lawsquare.in — same domain — with subject changed from "Priority: Succession Certificate ..." to "Succession Certificate (Dinesh Ranka)", In-Reply-To: None). When the user says "reply in the same email" after such a reply:
-
-1. Find the LATEST counterparty message by **domain**, not just name: `q='lawsquare.in newer_than:7d'` across ALL accounts (google-draas, google-gmail, google-ahfl). The replier may be a colleague of the original addressee, so a name search for the original recipient misses it.
-2. Check its `In-Reply-To` / `threadId`. If it's a fresh thread (In-Reply-To: None), the correct "same email" is the counterparty's NEW message — reply to THAT message (`draft_reply_create` with that message_id), not the original sent thread. This threads the reply from their side and keeps the rest of the firm on Cc.
-3. Derive To/Cc from the new message: To = its `From`; Cc = its `To` (minus self) + its `Cc` — reproduces Gmail's reply-all for the actual message being answered. Verify the draft (drafts().get: Subject `Re: <their subject>`, In-Reply-To set, DRAFT label, present in drafts().list()).
-
-### Email body claimed attachments ≠ actually attached (2026-08-13)
-
-Before answering "was the petition/documents actually attached to our email?", do NOT trust the body's attachment list. Walk the real MIME parts:
-
-```python
-def walk(payload):
-    if payload.get('filename'):
-        print('ATTACH:', payload['filename'], payload.get('body', {}).get('size'))
-    for p in payload.get('parts', []):
-        walk(p)
-```
-
-Observed: sent email body listed 4 docs ("Draft petition, Death certificate, Family tree, Aadhaar cards") but only 3 were actually attached — the Aadhaar cards were listed yet never attached. When the counterparty says "documents were not attached", report the discrepancy precisely (which attachments exist, which claimed one is missing) so the reply states facts accurately (here: petition WAS attached; only Aadhaar cards missing — so the reply corrected them while confirming we'd send the missing set).
-
-### Threaded reply — last message is from you
-
-When replying in a thread where the **most recent message was sent by you** (the user), the `draft_reply_create` helper defaults its `To` to the `From` of the last message — which is the user themselves. This creates a self-reply draft.
-
-**Fix:** Scan the thread to find the last message FROM the other participant (not the user), and set `To` explicitly:
-```python
-thread = service.users().threads().get(userId='me', id=THREAD_ID, format='metadata').execute()
-reply_to = None
-for msg in reversed(thread['messages']):
-    h = {hdr['name'].lower(): hdr['value'] for hdr in msg['payload']['headers']}
-    frm = h.get('from', '')
-    if 'ndr@' not in frm and 'nishantranka' not in frm:
-        reply_to = frm
-        break
-# Now use reply_to as the To address
-```
-
-### Reply-all — derive recipients from the LATEST message (2026-08-01)
-
-For a "reply all in this thread" request, derive To/Cc from the **most recent message in the thread** (the one you're actually answering), not the thread's first message or the draft helper's default:
-
-```python
-latest = sorted(thread['messages'], key=lambda m: m.get('internalDate', 0))[-1]
-h = {x['name'].lower(): x['value'] for x in latest['payload']['headers']}
-me = 'ndr@draas.com'
-def split(addrs): return [a.strip() for a in (addrs or '').split(',') if a.strip()]
-# Standard Gmail reply-all: original SENDER goes to To; original To (minus me)
-# + original Cc (minus me) go to Cc. Verified 2026-08-11 (Bajaj Life reply:
-# To=Rohit.Sundarka@bajajlife.com, Cc=rnr@draas.com, echamundeshwari@draas.com).
-to = [h['from']] if h.get('from') and me not in h['from'] else [a for a in split(h.get('to','')) if me not in a]
-cc = [a for a in split(h.get('to','')) if me not in a] + [a for a in split(h.get('cc','')) if me not in a]
-cc = [a for a in cc if a not in to]   # don't duplicate the sender between To and Cc
-```
-
-- The latest-message `To` field still contains the user's own address (they were a recipient) — **strip self** from To before drafting.
-- The original sender goes to **To** (that's who you're answering); everyone else from the latest To/Cc (minus self) goes to **Cc** — this matches Gmail's reply-all.
-- Preserve display-name form (`Name <email>`) — don't strip it; it keeps the draft readable in Gmail.
-- Verify the final draft with `drafts().get()`: To/Cc should contain every intended participant exactly once, and no excluded party should appear.
-
-### Reply-all — "everyone from all the email chains" (2026-08-12)
-
-When the user says to include everyone who appeared across the different emails (e.g. "his PA was in earlier emails… make sure everyone who was there in the email chains across the different emails are all added"), deriving from the LATEST message alone is NOT enough — a PA/assistant may have been on older threads but dropped from the most recent message (real case: Millers Road — Atheeq padirector@ahindia.com was Akber's PA/accounts and had to be added even though the latest revert email listed only Akber + Aamir).
-
-1. Search Gmail for ALL threads matching the person/subject keyword (e.g. `q='(from:akber OR to:akber) Millers'`), and collect every To/Cc across every message in every matching thread.
-2. Dedupe by person; keep ONE address per person — prefer the address used in the MOST RECENT thread. People change addresses mid-deal (Aamir: aamirkhan@me.com in Jun–Jul → khan.hussain.aamir@gmail.com in Aug 2026). Do not CC both old and new.
-3. To = the person the user names ("we send it to Akbar"); Cc = everyone else in the union (PA + Aamir).
-4. Reply in the LATEST thread (where the counterparty most recently reverted), with proper In-Reply-To/References.
-5. Contact rule still applies: every address used must be verifiable in the thread history / NDR's contacts — never invent one.
-
-### Voice-transcription disambiguation before drafting (2026-08-17)
-
-NDR dictates drafts by voice; the transcript garbles names and terms. Observed same-session examples:
-- "Aamir" → meant BOTH the lessor **Akber Hussain** (akber@ahindia.com, To) AND advisor **Aamir Khan** (khan.hussain.aamir@gmail.com, Cc) — both were on the thread, and "reply all" resolved the ambiguity
-- "online visa agreement" → lease agreement; "the laser" → the lessor; "ETO" → ETA; "FR" → FAR; "Ajayarchitect" → A.J. Architects / Arvind Jain; "7 above 14 bar 1" → Sy. No. 7/1 & 14/1
-- **Money figures render from lakh/crore phrasing, not the digit garble (2026-08-20):** "one fifty from GB Jat" → ₹1.5 crore; "a thirty" → ₹30 lakh; "twenty five lakh rops" → ₹25,00,000. DRAAS/RSFC deals talk in lakhs/crores, so "one fifty"/"one point five" = ₹1.5 Cr and "a thirty" = ₹30 L. Cross-check against the actual transaction figures (refund amount on the thread) before locking them in.
-- **Entities garble as phonetically-different words (2026-08-20):** "regsorformers collective" → **Red Soul Farmers Collective**; "DRA Realty Private Limited" (user dictation) vs the thread's "DRA Thindulu Land Partners" — when the user names an entity that partially matches the thread scope, flag the difference and offer to broaden (don't silently pick one).
-- **"Bhavish Bhavna" → "Bhavesh Bafna" (2026-08-21):** Voice transcription can garble BOTH first and last names simultaneously. The contact sheet has Bhavesh Bafna (bvbafna@yahoo.co.in / bvbafna@gmail.com) — "Bhavish" is the garbled first name and "Bhavna" is the garbled last name. When both names come out wrong, search the contact sheet by first-name-only substrings ("bhav" → "Bhavesh"), cross-check with Gmail thread history, and surface the candidate to the user rather than guessing.
-- **Recipient "Saurabh VK the CA" / "accounting group where Nitin is part"** resolve via contact sheet entries carrying job-tag suffixes (e.g. `Saurabh CA Ref VK`, `Nitin Osthwal Saurabh CA`) — these exact tags disambiguate the CA from the many other Saurabhs/Nitins. Pull the phone from the tagged entry, not a generic name match.
-
-- **Legal/estate voice garble (2026-08-25):** "debt certificate" → death certificate; "sevdhanapalli" / "SEV Ganapalli" → **Sevaganapalli** (Ranka Oasis village, Hosur Taluk); "Tushas" / "Vishwas" → resolve via find_contact (Vishwas Rao, Vantage Point Advisors, vishwas@vantagepointadvisors.in); "Giraffe Capital" → Jiraaf Capital. When the user names a clause to remove from a deal doc ("profit of 15% to Nishant Prakash"), read the ACTUAL latest doc first — the clause text may differ from the dictation, and verifying the real content before editing is a hard user expectation on deal docs.
-- **Email address merging from voice dictation (2026-08-27, Kanta Ranka TPA query reply):** When the user says something like "Mark Sarthak at admin3.blr@draas.com" during voice dictation, the transcript produces a single concatenated string: "Sarthakadmin3.blr@draas.com". This is NOT a valid email — the name ("Sarthak") merged with the email prefix ("admin3") because the speaker paused in the wrong place. Do NOT use the merged string. Resolve each recipient's actual email from:
-   1. Gmail thread headers (the person was already on the CC of a prior message in the thread)
-   2. The `contact_resolver` tool
-   3. Prior drafts on the same thread
-  In this case, `admin3.blr@draas.com` is the correct email for Sarthak Sharma — never construct a combined form.
-- **Removing a money term from a deal doc — flag the economic side-effect (2026-08-25).** When the user says "remove the ₹2 Cr goodwill / the 15% profit clause" from a term sheet, the headline numbers move (net consideration ₹33.34 Cr → ₹35.34 Cr). State the new headline in your reply so the user can confirm before the doc goes out to a consultant — do not let a clause removal silently change the deal economics.
-
-**Rules when drafting from a voice note:**
-1. Resolve every person/entity name against the ACTUAL thread headers (From/To/Cc of the latest + earlier messages) before choosing recipients — never trust the transcript name alone.
-2. When the spoken name could match two people (Akber vs Aamir Khan), prefer **reply-all to the thread** — it covers both interpretations.
-3. Numbers/technical terms ("7/1 & 14/1", "1.75 FAR", "25% setback relaxation") — render from the deal context in the thread, not the garble.
-4. Before finalizing, surface the uncertain items to the user: "Survey numbers: I rendered 7/1 and 14/1 — correct?" / "The ADTP name came through unclear — I wrote just ADTP." Do NOT silently guess.
-
-### Updating an existing draft's body content
-
-The Gmail API has no direct `draft.update()` endpoint for modifying body text. To update an existing draft, you must **delete and recreate**:
-
-```python
-from tools.gws_auth import build_service
-import base64
-
-service = build_service('gmail', 'v1', service_name='google-draas')
-
-# Step 1: List drafts to find the correct draft resource ID (≠ message ID)
-result = service.users().drafts().list(userId='me').execute()
-target_draft = None
-for d in result.get('drafts', []):
-    msg = service.users().messages().get(userId='me', id=d['message']['id'],
-                                          format='metadata',
-                                          metadataHeaders=['Subject', 'To']).execute()
-    h = {hdr['name']: hdr['value'] for hdr in msg['payload']['headers']}
-    if 'target-subject' in h.get('Subject', '') and 'target@email' in h.get('To', ''):
-        target_draft = d  # d['id'] is the draft resource ID, d['message']['id'] is the message ID
-        break
-
-# Step 2: Delete old draft using draft resource ID (NOT message ID)
-service.users().drafts().delete(userId='me', id=target_draft['id']).execute()
-
-# Step 3: Recreate with updated body
-message = {
-    'raw': base64.urlsafe_b64encode(
-        f"Subject: Re: Original Subject\r\n"
-        f"To: recipient@example.com\r\n"
-        f"MIME-Version: 1.0\r\n"
-        f"Content-Type: text/plain; charset=\"UTF-8\"\r\n"
-        f"\r\n"
-        f"{updated_body_text}".encode('utf-8')
-    ).decode('utf-8')
-}
-created = service.users().drafts().create(userId='me', body={'message': message}).execute()
-```
-
-**Pitfall — draft resource ID vs message ID:** When listing drafts from `users().messages().list(q='in:drafts')`, the returned `id` is the **message ID**, not the draft resource ID. Using it in `drafts().delete()` returns `HttpError 404`. Always use `users().drafts().list()` to get the draft resource ID (`d['id']`). The message ID is at `d['message']['id']`.
-
-**Pitfall — `draft_delete` in `gws_skill_bridge`:** The bridge exposes `draft_delete(draft_id=..., service_name=...)` — if using the bridge, pass the draft resource ID, not the message ID.
-
-### Forwarding emails with recipient exclusions
-
-When the user asks to forward an existing email to a subset of the original recipients (e.g. "forward to Aamir and CC Prasanna, but remove Sangam"):
-
-1. **Fetch the original message** with `format='raw'` to get the full MIME content, thread ID, and Message-ID header.
-
-2. **Build the new message** by writing a **fresh script to `/tmp/` and running via terminal** (do NOT use `execute_code` — the sandbox lacks `gws_fetch_token`):
-   ```python
-   import base64, email.mime.text
-   from tools.gws_auth import build_service
-   service = build_service('gmail', 'v1', service_name='google-draas')
-
-   # Get original message
-   orig = service.users().messages().get(userId='me', id=MESSAGE_ID, format='raw').execute()
-   raw_bytes = base64.urlsafe_b64decode(orig['raw'])
-
-   # Build new MIME message
-   msg = email.mime.text.MIMEText(new_commentary + forwarded_original, 'plain', 'utf-8')
-   msg['To'] = 'Aamir Khan <aamirkhan@icloud.com>'
-   msg['Cc'] = 'Prasanna Swaminathan <prasannaswaminathan91@gmail.com>'
-   msg['Subject'] = 'Re: ' + original_subject  # keep on same thread
-   msg['In-Reply-To'] = original_message_id
-   msg['References'] = original_message_id
-
-   draft_body = {
-       'message': {
-           'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode('ascii'),
-           'threadId': original_thread_id
-       }
-   }
-   service.users().drafts().create(userId='me', body=draft_body).execute()
-   ```
-
-3. **Key rules for forwarding:**
-   - **Use the same thread ID** so Gmail nests it correctly (`threadId` in the draft body)
-   - **Set `In-Reply-To` and `References`** to the original Message-ID — both are required for proper threading
-   - **Exclude unwanted recipients** by simply not including them in the new message's `To`/`Cc` headers. The forwarded email text will reference their names (that's fine) — what matters is who receives the new message
-   - **Write the new message content ABOVE** the forwarded original (not inline reply)
-   - **Include the forwarded email as a "---------- Forwarded message ---------" block** in the body text
-
-4. **Verify the draft** — call `service.users().drafts().get(id=draft_id)` and check:
-   - `To` and `Cc` headers contain only the intended recipients
-   - No excluded recipient email appears in `To` or `Cc`
-   - `threadId` matches the original thread
-   - `In-Reply-To` is set
-
-5. **Pitfall — forward vs reply semantics:** A forward is NOT a reply-all with recipients removed. The user wants a NEW message on the same thread that introduces the original email to a new audience, with their own commentary. The forwarded content is context, not the primary message body.
-
-### Forwarding an OWN sent email as FYI (new audience, no send to originals)
-
-When the user says "forward the email I sent to X to Y & Z, FYI" — the source is the user's OWN sent message, and the point is to give Y/Z visibility into that decision/transaction, NOT to elicit a reply. Steps (validated 2026-08-20, Red Soul Farmers Collective refund):
-1. Locate the original by subject (`q='subject:"..."'`) — report its To/Cc separately from each forwarded copy; users often forward the same mail to multiple people one-by-one, so each forward is its own message with its own Cc.
-2. Fetch the original with `format='raw'`, extract its Message-ID + subject.
-3. Build a fresh `EmailMessage`: From = ndr@draas.com, To = the FYI audience, Subject = `Fwd: <orig subject>`, In-Reply-To + References = the original's Message-ID. Body = short "FYI — please find below the email I sent regarding …" note, then the full "---------- Forwarded message ---------" block (From/Date/Subject/To/Cc + body).
-4. Create as DRAFT only (always), verify recipients + body, then tell the user it's ready in Drafts. Never auto-send.
-Tip: users often ask "who was marked on that email?" first, then "forward it to Y & Z FYI" — run the recipient trace before drafting so you can confirm exactly who the FYI gain should copy and that you're forwarding the RIGHT one (original vs a forward).
-
-### Find email with attachment → download → forward to new recipient (2026-08-21)
-
-When the user says "find the latest email from [person] about [topic] — there's a PDF/presentation attached — send it to [someone else]":
-
-1. **Locate the sender by email domain/address** — search with `q='from:arch_arvind2000@yahoo.co.in'` or the sender's domain. If the user says "AJ Architect" or a short name, resolve it via entity_resolver/contact_resolver first (e.g. "AJ Architect" → A.J. Architects / Arvind Jain, arch_arvind2000@yahoo.co.in).
-2. **Identify the right thread by topic keywords** — scan subject lines for the topic the user named (e.g. "farm home design" → "Proposed farmhouse presentation"). There may be multiple threads from the same sender; pick the LATEST one that matches the topic.
-3. **Check for attachments** — fetch the thread with `format='full'` and walk `payload.parts[].filename` for each message. The attachment may be on a forwarded/resent version (e.g. your Fwd: of their original), not the original sender's message. Check the latest message in the thread first.
-4. **Download the attachment** — use `messages().attachments().get(attachmentId=..., messageId=...)`. Verify with a magic-bytes check: `data[:4] == b'%PDF'` (or the appropriate MIME header for the file type).
-5. **Forward to new recipient** — either:
-   - **Create a fresh email draft** with the PDF as a MIME attachment (via raw Gmail API with `MIMEMultipart("mixed")`), body describing the attachment and asking for feedback. The user's spoken message becomes the email body.
-   - **Forward the original email thread** (see "Forwarding emails with recipient exclusions" above) if the user wants the full context.
-6. **Key difference from the FYI-forward pattern**: the source is a THIRD-PARTY email (not the user's own sent message), and the user wants to share it with a new audience for feedback/review — not as a FYI broadcast. The body should introduce the scheme/design and ask for their opinion.
-
-### SharePoint/OneDrive link extraction from Gmail
-
-When the user needs a sharing link from a vendor's email (e.g. SharePoint invite from Godrej, Microsoft 365 file share), the link lives in the HTML body, NOT the plain-text part. Navigate the MIME `multipart/alternative` structure, decode the `text/html` part, and regex for `sharepoint.com` hrefs. Full recipe in `references/gmail-sharepoint-link-extraction.md`.
-
-### Read-only email forensics: "who was marked / does it have the attachment?"
-
-Recurring for transaction/refund emails (investor transfers, reimbursements). Two read-only checks via `build_service('gmail','v1',service_name='google-draas')`:
-- **Recipient trace**: search by subject, then for EACH message in the result print `From`/`To`/`Cc`/`Date` separately (`format='metadata'`, metadataHeaders=['From','To','Cc','Subject','Date']). Originals and forwards are separate messages — report each. A forward sent to just one person has `Cc: None` even if the original had a Cc list.
-- **Attachment presence/type**: walk `payload.parts[].filename` + `.mimeType` + body `.size` to confirm an email has (e.g.) an `.xlsx` with investor details. Do NOT trust the body prose ("please find attached…") — enumerate the real parts. Fetch with `format='full'` (not 'metadata' — metadata drops parts).
-The email body usually states what the attachment contains ("amount to be returned to each investor + account number, IFSC, branch") — quote that alongside the filename so the user knows it matches their need before you download/parse it.
-
-**Pitfall — `drafts().get(format='full')` returns NO `raw` key (2026-08-20)**
-
-After creating a draft, `service.users().drafts().get(userId='me', id=..., format='full').execute()` gives you `message.payload` but does NOT include `message['raw']` — trying `base64.urlsafe_b64decode(msg['raw'])` raises `KeyError: 'raw'`. To verify the draft BODY text, read it from the payload with the recursive text walker (the same `extract_text(payload)` you use for messages). Headers are verifiable from `payload.headers`; only the body needs the walker. (If you must decode raw MIME, pass `format='raw'` explicitly to `drafts().get()`.)
-
-**Pitfall — `drafts().create()` may assign the WRONG threadId even with correct In-Reply-To/References (2026-08-20).** When building a threaded reply-all draft (ITR follow-up), I set `In-Reply-To` + `References` to the source message's Message-ID correctly, but Gmail auto-assigned `threadId: 1a01de64f31d5b61` while the source thread was `1a0193d4df586045` — a mismatch that would have sent the reply as a disconnected new thread. Fix: pass the source thread's `threadId` EXPLICITLY in the draft body and verify it on the returned resource:
-
-```python
-draft = service.users().drafts().create(userId='me', body={
-    'message': {'raw': raw, 'threadId': source_thread_id}
-}).execute()
-assert draft['message']['threadId'] == source_thread_id
-```
-
-Verify after creation with `drafts().get(id=...)` — the returned `message.threadId` must equal the source thread, not a fresh id. If you already created (and confirmed mismatched) a draft, delete it (`drafts().delete`) and recreate with the explicit `threadId`. This is NOT the same as the SENT-label problem above (that's a malformed-References issue); this is purely the thread-join determination.
-
-**Pitfall — user says "the draft isn't part of the thread, make it reply-all in the same thread" (confirmed 2026-08-27, Ranka Aqua Green NCDRC):** A draft created from scratch (plain `draft_create` / `drafts().create()` with no threadId) with subject `Re: <original>` does NOT join the original conversation — Gmail shows it in Drafts as its own separate thread, even though the subject looks like a reply. The user noticed this and asked to keep it in the same thread. Fix (delete + recreate as a THREADED reply):
-1. `drafts().delete(userId='me', id=<draft resource id>)` — draft resource id from `drafts().list()`, NOT the message id.
-2. Find the LATEST counterparty (non-self) message in the target thread: `threads().get(threadId=..., format='metadata')`, walk `t['messages'][-1]`, check the From header isn't ndr@/nishantranka. Take that message's id.
-3. Fetch `messages().get(userId='me', id=<that id>, format='metadata', metadataHeaders=['Message-ID','References'])`; set `In-Reply-To` = its Message-ID, `References` = existing References + Message-ID (dedupe).
-4. `drafts().create(userId='me', body={'message': {'raw': raw, 'threadId': <source thread id>}})` — **explicit threadId is mandatory** (without it Gmail may spawn a new thread).
-5. Verify: returned `draft['message']['threadId'] == <source thread id>` AND the draft shows under the original thread in Gmail UI. Report the drafts-inbox link. This is the same pattern as "Pitfall — drafts().create() may assign the WRONG threadId", but triggered by the user-visible symptom "this draft is separate from the thread — reply-all it".
-
-### Legal / advocate consultation emails — "in between" structure (NDR preference, validated 2026-08-27)
-
-When NDR asks to email his counsel / advocate about a live matter (call request, strategy discussion, case status), his preferred structure sits between the two failure modes:
-- ❌ **Too basic** — "I've reviewed the IA, let's have a call, tell me a time." Reads dismissive; gives the counsel nothing to prepare on.
-- ❌ **Too detailed** — a multi-part questionnaire with 10+ legal sub-questions and cited case law in every line. Reads like homework; NDR himself called the earlier 5-part version too much and asked for a replacement.
-
-✅ **The "in between" structure that landed (Ranka Aqua Green IA 9783/2026 call request to Harshavardhan Kotla):**
-1. **Open** — one line: reviewed the filing (name the document) + the latest hearing update, want a call to discuss strategy.
-2. **"Our analysis of the current position"** — 2–3 short paragraphs: what the Bench observed (quote the operative direction + next date), what the opposing side's new filing appears to be attempting (1–2 sentences), and any estoppel/annexure claims they raised. Plain account of the state of play — this is what tells the counsel you've done your homework.
-3. **"Our rebuttal stance / key legal points"** — 3–5 labelled bullets, each one argument with the supporting authority inline (e.g. `a) Section 12(1)(b) — maintainability; Brigade Enterprises v. Anil Kumar Virmani (2021)`). One line per argument; no mini-essays. Correct the user's own stated timeline if wrong (user said "filed 10 years after handover" — the 10 years was case PENDENCY 2016–2026, the OC-to-complaint gap was ~2 years; state the corrected figure in the email so the counsel works from accurate facts).
-4. **"Key information we need from you on the call"** — 5–6 numbered concrete questions, each one sentence: strength of our primary argument at the next date, how to counter their estoppel argument, whether res judicata from individual cases is pleadable, probability/advisory opinion, settlement consideration given pendency, strategic-delay advice while the opposing side decides whether individuals step forward.
-5. **Close** — document filed on Drive for reference (one line), ask for a convenient time this week. No boilerplate pleasantries beyond the initial "I hope this email finds you well."
-
-Recipients: derive To/Cc from the latest thread message (reply-all; NDR may have added family members — e.g. Manish/MDR, Dharmesh — into the Cc; preserve whatever recipients are already on the draft/thread).
+**Full detail: `references/stage2-draft-detail.md`** — read it before building any draft. It carries the
+body-construction rules, HTML/formatting preferences (`references/ndr-email-html-preferences.md`,
+`references/ndr-email-format-preferences.md`), attachment handling, threading via MIME headers
+(`references/threaded-reply-raw-api.md`), and the worked per-case examples.
+
+Core invariants that stay inline:
+- A hand-made `payload` 400s with "Missing draft message" — always build `EmailMessage` → base64url `raw`.
+- `POST /gmail/v1/users/me/messages.send` returns 404 on this account — always use the draft workflow.
+- `threadId` in the draft payload body: **bridge** `draft_create` rejects it — thread via MIME headers there. The **raw API** `drafts().create(userId='me', body={'message': {'raw': ..., 'threadId': THREAD}})` DOES accept it, and passing it is the reliable way to pin a reply draft to the master thread (re-confirmed 2026-09-25: In-Reply-To + References + explicit `threadId` → the draft stored under the master threadId, no orphan). Use both belts: correct In-Reply-To/References headers AND explicit threadId.
+- Only `messages.send` is blocked; the draft workflow is the only path.
+- Resolve invitees/CC via `contact_resolver`; never hand-type an @draas.com address.
 
 ## 5. Rules
 
+- **HTML reply with attachment, on the same thread:** use `references/html-reply-with-attachments-threaded.md` + `templates/html-reply-with-attachment.py` (hand-built raw MIME: multipart/mixed → multipart/alternative (text/plain + text/html) → base64 image; In-Reply-To/References + threadId; verify with drafts().get(format='full')). The bundled create-draft-with-attachments.py script is text/plain only — for NDR's styled HTML follow-ups with an attached image, use the template. Verified Oasis 50-cents critical reply, 2026-09-29.
 - Use `tools.gws_auth.build_service("gmail", "v1", service_name=...)` directly (see Pitfalls for account resolution)
 - Build a `MIMEMultipart("mixed")` message with MIMEText (body) + MIMEBase (attachments)
 - Call `service.users().drafts().create()` with the full MIME message
@@ -760,7 +476,9 @@ Recipients: derive To/Cc from the latest thread message (reply-all; NDR may have
 
 **Statutory/corporate form filling (MGT-11 proxy, consent forms, "fill the proxy form", "prepare a form for signature"):** `references/statutory-form-pdf-pipeline.md` — download the template from Gmail, read legacy .doc via `strings` (no LibreOffice on VPS), extract member/shareholder data from the notice PDF, rebuild the filled form as a typed PDF with reportlab, attach to a forward draft via raw Gmail API. Validated 2026-08-13 (DRA Aadithya AGM proxy for Roshni).
 
-**Architect/consultant fee proposal comparison (2026-08-21):** `references/fee-proposal-comparison.md` — workflow for comparing a new/revised fee proposal against the original work order. Covers: finding the latest email, extracting the signed WO PDF from email attachments, comparing rates AND basis (SBUA vs Built-Up Area), identifying double-dipping, assessing justification given actual scope change, and recommending a negotiation position. Validated 2026-08-21 (Ranka North Star — Arvind Jain additional fees).
+**Architect/consultant fee proposal comparison (2026-08-21):** `references/fee-proposal-comparison.md` — workflow for comparing a new/revised fee proposal against the original work order. Covers: finding the latest email, extracting the signed WO PDF from email attachments, comparing rates AND basis (SBUA vs Built-Up Area), identifying double-dipping, assessing justification, recommending a negotiation position.
+
+**Architect fee COUNTER-OFFER reply (2026-09-05):** `references/architect-fee-counter-offer-reply.md` — rejecting a fresh per-sft quote: benchmark vs the architect's own prior harder-scope rate, argue complexity contrast, propose lump sum, anchor deliverables, invite counter. Validated Arvind Jain, Palya row houses.
 - **Google Doc text cleanup (force all text black) before attaching:** `references/google-doc-text-cleanup.md` — Docs API pitfalls: `rgbColor {}` = black not white (default-channel check), `suggestionsViewMode` allowed values, batchUpdate to black, PDF-render verification, confirming the right doc via `lastModifyingUser`
 
 **Threaded reply-all via raw Gmail API** — When the bridge or `google_workspace_manager` tool can't deliver a properly threaded reply-all draft, use the raw API. Full recipe in `references/threaded-reply-raw-api.md`. Key steps: get the most recent message in the thread via `format="raw"`, extract `Message-ID` + `References` headers, build an `EmailMessage` with `In-Reply-To` and `References` set correctly (both required for Gmail nesting), then create the draft via `service.users().drafts().create()`. Always clean header values with `re.sub(r'\s+', ' ', val).strip()` to remove newlines before passing to `EmailMessage.__setitem__`.
@@ -785,6 +503,19 @@ Verify immediately: `verify['message'].get('labelIds', [])` must contain `'DRAFT
 1. `users().drafts().list(userId='me')` — if the draft isn't there, it is NOT in Drafts, full stop.
 2. Search the whole account by subject (`q='subject:"<keyword>"'`) and inspect `labelIds`. If the message is `['SENT']`, the email went out — tell the user it was sent (give time, To, Cc) and do NOT recreate a fresh draft (that creates a duplicate the user then sends twice).
 3. Report plainly: "It's not in Drafts — it's in Sent (sent at HH:MM)." This matches the user's own recollection in most cases ("I might hv sent it").
+
+**Pitfall — a presentation PDF can blow Gmail's 25 MB cap once base64-encoded (confirmed 2026-09-25, Ranka Udaya site office).** Gmail's limit applies to the ENCODED message, and base64 inflates bytes by ~33%. A 18,840,915-byte PDF (= ~25.1 MB encoded) sits right on the line, and the user's own chat upload of it failed outright at a 20 MB cap. Compress with ghostscript before attaching — `/ebook` is far too aggressive (18.8 MB → 735 KB, visibly soft on renders), so use a targeted 150-dpi JPEG down-sample instead:
+
+```bash
+gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.5 -dNOPAUSE -dQUIET -dBATCH \
+   -dDownsampleColorImages=true -dColorImageResolution=150 \
+   -dColorImageDownsampleType=/Bicubic -dJPEGQ=88 \
+   -dAutoFilterColorImages=false -dColorImageFilter=/DCTEncode \
+   -sOutputFile=out.pdf in.pdf
+```
+Result on this deck: **18.84 MB → 2.59 MB**, page count and A4 landscape geometry preserved, renders still crisp at 150 dpi. (`gs -dPDFSETTINGS=/printer` gives 3.03 MB; `/ebook` gives 735 KB.) Always state in your reply to NDR that the attached copy is a compressed derivative and offer to swap in the original if he wants full fidelity.
+
+**When the user's own attachment never reached you, say so and substitute explicitly.** NDR tried to send the "updated render and plan" through chat and hit *"The document is too large or its size could not be verified. Maximum: 20 MB."* — so the file he meant to hand over was never available. Rather than silently attaching something else, pull the same-named file from the thread (`RankaUdaya_Site_office.pdf`, Gowri's 24-Sep message) and flag it: "your upload didn't come through; I attached Gowri's copy — if your updated file differs, send it and I'll swap". Also note the pre-existing files already staged in the working dir from earlier sessions (AR Brochure 2025.pdf, Quote for marketing office.pdf, Ranka_Udaya_Interior_Execution_Specification.pdf) before re-deriving anything.
 
 **Pitfall — `html=True` is required for HTML drafts (user correction 2026-07-13):**
 The `gws_skill_bridge.draft_create` operation defaults to `MIMEText(body, "plain")` if you don't pass `html=True`. The result: the recipient sees your entire HTML document (`<!DOCTYPE html>`, `<table>`, `<tr>`, `<td>`) as raw literal text in the email body. The user said: "you have taken HTML code and stuck it into the email body rather than creating the email body itself as an HTML using HTML so it looks like a nice rendered email." Fix: pass `html=True` to the bridge call, OR if using `google_workspace_manager`, use the `--bodyHtml` flag (not `--body`) for HTML content. Always verify a draft by calling `draft_get` and inspecting the MIME structure (`payload.mimeType` should be `text/html`) before declaring it done.
@@ -835,6 +566,13 @@ assert who == 'ndr@draas.com', f'WRONG MAILBOX: {who}'
 # fix if it fails: prefix the shell command with  HERMES_SESSION_USER_ID=7449813913
 ```
 Gateway tools (`gws_resolve_account`, `execute_code` sandbox, `gws_fetch_token`) use the correct session identity — only raw terminal python can flip. Also verify drafts after creation with `drafts().get()`: From must be Nishant Ranka <ndr@draas.com>.
+
+**Pitfall — the SAME thread exists in two mailboxes with DIFFERENT message IDs (confirmed 2026-09-21, V-Gro Finserv/Prakash):** When a colleague forwards a third party's email to NDR, the thread now exists in BOTH mailboxes with different IDs. Searching under NDR's identity finds NDR's copy; the message ID from that copy returns **404 "Requested entity was not found"** when you then re-run the script with `HERMES_SESSION_USER_ID=<colleague>` to draft from THEIR mailbox. This looks like a broken thread but is simply the wrong copy.
+
+1. Decide the mailbox FIRST (who should send?), set `HERMES_SESSION_USER_ID=<colleague-slug>` on the script, and confirm `users().getProfile()` before any lookup.
+2. Search for the thread FROM THAT MAILBOX (`q='<sender-domain> OR <sender-name>'`) to get the correct local message ID + threadId.
+3. The colleague's forward legitimately has a different threadId than the counterparty's original — reply against the **counterparty's original message** (From = external sender), which is the real thread, and whose ID is valid in the colleague's mailbox.
+4. Do NOT carry a message ID across mailboxes. Always re-resolve inside the target account.
 
 **Pitfall — Gmail attachment download base64 padding:** `messages().attachments().get()` returns the attachment data as a base64url-encoded string whose length may not be a multiple of 4 (e.g. `len(data) % 4 == 1`). `base64.urlsafe_b64decode(data)` raises `binascii.Error: Incorrect padding` in this case. Fix with explicit padding before decode:
 ```python
@@ -889,6 +627,7 @@ When emailing a briefing to a structuring/tax consultant or advisor with a term 
 When the brief references a COLLECTION of competitor/R&D material (RERA summaries, sanction plans, brochures, layout plans — dozens of PDFs), attaching everything blows the 25 MB cap and buries the ask. Pattern that worked:
 
 1. **Grant Drive access BEFORE creating the draft** — `drive.permissions().create(fileId=..., body={'type':'user','role':'writer','emailAddress':...})` to the external partner AND the internal coordinator who gets Cc'd. Verify each call returns `role: writer`. Only share the specific subfolders/sheets the brief references — avoid sharing catch-all parent folders that contain unrelated files (the Palya R&D lived in a mixed Aug-2026 folder; the row-villa subfolder alone was shared).
+1a. **⚠️ ALWAYS `permissions().list()` the folder you are about to link — before it goes into any outbound mail (confirmed 2026-09-25).** If a folder was shared in a prior session, the recipient may ALREADY be on it — read the ACL first and just link it (don't re-upload or re-grant). More importantly, an ACL can carry grants nobody intended: the Ranka Udaya `Container Site Office (Prefab) — AR Portable Cabin Refs` folder (`1mq2pdtX_sXNeZhgjZoTEAyqjsd2v-BVc`) had **three external `vgrofinserv.com` readers** alongside the internal ones. Linking a folder without reading its ACL means shipping a folder whose audience you have not verified, and silently publishing the counterparty's material to whoever else sits on it. Surface any anomalous external grant to NDR and **ask before revoking** — never act unilaterally on someone else's access.
 2. **Write the email as color-coded HTML sections** (project brief / concept anchor / design targets / reference materials / landscape / what-we-need) with the FAR, rate and sq-ft figures highlighted (`<span style="background:#fff3cd;font-weight:bold">`), and every Drive folder/sheet as a clickable link — never bare URLs.
 3. **Attach only single decisive documents if any**; the folder links carry the collection.
 4. **Flag drift between the brief and existing internal models** in your reply to the user (e.g. Palya IRR model still assumed FAR 1.05 @ ₹12k/sf while the brief asked for 1.8 @ ₹15k/sf) — do not silently align the email to the stale model, and warn that the model needs a refresh.
@@ -902,9 +641,17 @@ When the brief references a COLLECTION of competitor/R&D material (RERA summarie
 
 ### WhatsApp vs Email dual-channel pattern (user-defined 2026-08-21):
 When sending project instructions to an employee (Vinod, Prakash, etc.) about approval queries:
-1. **WhatsApp** = short, high-level, ask-only. State the 3-5 questions in brief numbered form. Tell them a detailed email is incoming with full references. Use `personal-messaging` / `whatsapp_link` tool.
+1. **WhatsApp** = short, high-level, ask-only. State the 3-5 questions in brief numbered form. Tell them a detailed email is incoming with full references. Use `messaging-drafts` → `references/personal-messaging-workflow.md` / `whatsapp_link` tool.
 2. **Email** = full detailed brief, with every fact, figure, approval reference, link to all documents (Drive folders/files), and document access instructions. Use HTML with all hyperlinks rendered. CC relevant colleagues.
 The WhatsApp primes the recipient. The email is their working document. Do NOT try to merge the two into one channel.
+
+**Variant — external-meeting follow-up: WhatsApp to the outsider, EMAIL TO THE BROTHERS/TEAM (user correction 2026-09-01, Deloitte M&A partner):** after NDR meets an external professional (consultant, tax/M&A advisor), the standard two-part follow-up is:
+1. **WhatsApp to the external person** — thank-you + share NDR's contact + heads-up that a mail to his brothers/colleagues follows to set up a meeting; date confirmed later when the outsider is next in town. Share contact as **+91 98800 55634 and ndr@drahomes.in** (his SHARING contact — never the draas.com work address). There is no NDR visiting-card image on Drive (PAN cards only) — put the contact in the text; NDR attaches the card photo himself when sending.
+2. **Email to the brothers/team only** — meeting summary: who the person is (credentials/background), the idea discussed with his view, what was asked of him, and the proposed next step (e.g. presentation in office when he's next in Bangalore).
+
+**Comprehension trap (this session's wrong draft — deleted after user correction):** when NDR dictates "I e-mail to that effect, mark to Dharmesh and Manish", the email is **FOR Dharmesh and Manish — primary To recipients**, NOT an email to the external person with them CC'd. "Mark to X and Y" in his voice = the internal distribution list. Do not draft the external-CC variant from a meeting follow-up; check which audience the dictation describes before building To/Cc. If ambiguous, present the channel split (WhatsApp→outsider, email→brothers) for confirmation rather than guessing.
+
+**Variant — "push all the details into both channels" (2026-08-30, guideline-value confirmation):** When NDR says "build the message with all of these details... and just send a link to the PDF in the email AND the WhatsApp messages", the default short-ping split is REVERSED: WhatsApp carries the SAME full detail as the email (exact row/page reference, the figure, the sub-registrar ask, and the PDF link), with the email being the working record. Example: for the Yelahanka guideline-value confirmation he dictated the exact book reference ("row 79, page 6 — 79 Allalasandra Village 26450 → ₹2,645/sqft for R 14/1") and required it in both channels for all three recipients. Follow his explicit instruction over the default split — when he names what goes into the messages, put it in verbatim.
 
 **Sub-case — stale-thread follow-up (email draft + WhatsApp ping, validated 2026-08-28, 18 & Oak DTCP):** When following up on an email that received no reply for 2+ weeks, the dual-channel split is different:
 1. **Email** = reply-all draft on the original thread, with numbered questions asking for a status update (who spoken to, contact details, why each resource can help, current progress).
@@ -922,12 +669,71 @@ When requesting project assets (renders, walkthroughs, master plans) from an arc
    - **Marketing renders** (not what you want here): the polished brochure-ready content already developed separately
    Always clarify which one is being requested; mixing them up leads to wrong deliverables.
 
+**Pitfall — a bridge-created HTML draft stores its body BASE64 inside `multipart/alternative`, so raw-MIME string checks all report False (confirmed 2026-09-25).** After `draft_create(..., html=true)`, fetching `format='raw'` and searching the decoded MIME for `width:100%`, `max-width`, or any body phrase returns **False for everything** — because `Content-Transfer-Encoding: base64` means the HTML is not plain text in the raw payload. Do not conclude the body is missing or mangled. Two reliable verifications:
+  1. **Preferred:** fetch `format='full'` and walk for the `text/html` part, then `base64.urlsafe_b64decode(part['body']['data'])`. Check `width:100% in body`, `'max-width' not in body`, and the expected phrases.
+  2. If hand-splitting the raw MIME: **strip all whitespace before decoding** (`re.sub(r"\s+", "", b64)`), then pad (`+ "=" * (-len(b64) % 4)`). Gmail's line-wrapped base64 fails `b64decode` with `Number of data characters (N) cannot be 1 more than a multiple of 4` when the newlines are left in. Even then, prefer (1) — it is one call and cannot mis-parse.
+  Note the same draft may store `Content-Transfer-Encoding: 7bit` (plain) on one creation and `base64` on the next — do not assume either.
+
+**Pitfall — `%` characters in the body break `%`-formatting (confirmed 2026-09-25).** Real business bodies are full of them: `18% GST`, `95% of the work will be completed at our factory`, `60% advance`, `50–55″`. Building the body with `html = """...""" % (LINK_A, LINK_B)` raises `TypeError: must be real number, not str`. Never reach for `%`-formatting on email bodies — use token placeholders plus `.replace()`:
+
+```python
+html = "...<a href=\"__FOLDER__\">... 18% GST ..."
+html = html.replace("__FOLDER__", FOLDER).replace("__EARTH__", EARTH)
+```
+
+Related trap when the same script builds BOTH a plain-text and an HTML body: a bulk `str.replace()`-style edit of that script can point the `text` closing line's replacement at `html`, leaving `text` un-substituted so the plain-text alternative ships literal `__FOLDER__` tokens while the HTML looks perfect. After any programmatic edit of a two-body build script, grep the two assignment lines and confirm each variable name matches its own body.
+
+**Pitfall — headers read back empty via `messages().get(format='metadata', metadataHeaders=[...])` while the draft is fine (confirmed 2026-09-25).** A freshly bridge-created draft can return `Subject: None`, `To: None`, `Cc: None` from the metadata format even though `format='full'` and `format='raw'` both show the correct headers. Do not treat this as a failed create and do not re-create the draft. Confirm via `format='full'` header parse (or the raw MIME header block) before concluding anything.
+
+**Pitfall — `metadataHeaders` kwarg is NOT accepted by `drafts().get()` (confirmed 2026-09-21):** `drafts().get(userId='me', id=..., format='metadata', metadataHeaders=[...])` raises `TypeError: Got an unexpected keyword argument metadataHeaders`. The `format='metadata'` + `metadataHeaders` combo works on `messages().get()` but NOT on drafts. Read drafts with `format='full'` and parse `payload['headers']` (`{h['name']: h['value'] for h in msg['payload']['headers']}`). When listing drafts to verify Cc/To/threads, this is the reliable pattern.
+
+**Pitfall — the assets for one deal routinely SPAN accounts; searching one finds half the deal (confirmed 2026-09-26, Samudra/Godrej mail):** before drafting a mail that attaches or quotes deal material, sweep BOTH `google-draas` and `google-gmail` (and `google-ahfl` if the deal is group-level). On Samudra, the email thread + the site-sketch attachment lived on `google-draas`, while BOTH valuation spreadsheets lived on `google-gmail` (nishantranka@gmail.com) — a single-account sweep would have produced a draft with no numbers or no sketch. Run the sweeps in parallel: Gmail `messages().list(q=...)` per account AND Drive `files().list(q="name contains '<project>'")` per account, then reconcile.
+
+**Pitfall — the attachment you need is often on an EMAIL, not in Drive.** A filename search of Drive is not evidence the asset is missing. On Samudra, Drive search for `Samudra`/`sketch` returned only unrelated Gunjur/Stella sketches, while the actual sketch was an attachment on a colleague's email (find it via `q='<project> has:attachment'` against the colleague's address, then walk `payload.parts[].filename` for the sender's own filename — the wire name can differ from how anyone refers to it). Enumerate thread attachments before telling the user a document can't be found.
+
+**Verifying a sketch/PDF attachment before you rely on its content** — `vision_analyze` rejects PDFs outright (*"Only real image files are supported for vision analysis"*). Render first, then read:
+
+```bash
+pdftoppm -r 120 -png /tmp/<name>.pdf /tmp/<name>_pg   # -> /tmp/<name>_pg-1.png
+```
+
+then call `vision_analyze` on the PNG. (`pdftotext`/pymupdf are unreliable for CAD-exported sketches — text is often vector outlines, and `fitz` may not be installed.) This is how the Samudra sketch's labels — "EXISTING OUTER RING ROAD", "EXISTING SERVICE ROAD", "EXISTING CANAL", "TOTAL SITE AREA - 7 ACRES" — were confirmed, including the finding that it carries **no dimensions and no survey numbers** (matching the drafter's own "approximate sketch at this stage" note). Never assert what an attached plan shows without reading it.
+
+**Pitfall — a draft from a prior session is very often GONE (confirmed 2026-09-26).** Do not plan a mail around "the draft I made earlier" or offer to "update it". A `drafts().list()` on 2026-09-26 for the Samudra thread returned only an unrelated 2023 Marriott draft — both earlier Samudra drafts (created 09-Sep) had been sent, or cleared, in the interim. Enumerate drafts fresh at the start of the task; if the old one is absent, rebuild from source rather than referencing a draft that no longer exists.
+
+**Pitfall — a draft from a PREVIOUS session may already EXIST for the same request (confirmed 2026-09-21):** the inverse of the missing-draft case. When NDR dictation arrives twice (voice message + repeated instruction, or a parallel/API session ran the same request), the draft can ALREADY be in Drafts with the exact same subject/recipients. Building a fresh one creates a duplicate. ALWAYS `drafts().list(userId='me')` and enumerate subjects FIRST when the request sounds familiar — match by subject keywords and To/Cc set, then verify the existing draft (labels=['DRAFT'], attachment names via payload walk, HTML mimeType) and present it for review instead of recreating. Also check session_search for a parallel session that resolved recipient voice-garble (e.g. the api-* sessions) before re-litigating the same name lookups.
+
+**Pitfall — a draft you created earlier in the SAME session may already be SENT by the time a later turn reports on it (confirmed 2026-09-25).** NDR works fast and sends drafts himself between turns. Mid-session, after creating two drafts, a later `drafts().list()` returned only ONE — the other two had been sent at 18:01 and 18:02. Before repeating "it's sitting in your Drafts folder" in a later turn, **re-verify `drafts().list()` and search the subjects**: if a message now carries `['SENT']`, report it as sent with the time and recipients, and do NOT recreate it. A stale "it's in Drafts" claim sends the user looking for something that is no longer there. (His own sends also answer the "should I send this?" question — check the Sent copy before offering to send.)
+
+**Editing a draft to remove a WRONG recipient (invalid/incorrect Cc or To) without losing HTML body/attachments (2026-09-21, wrong \"Vinay T\" in RERA Cc):** fetch the draft raw (`drafts().get(id=..., format='raw')` → `base64.urlsafe_b64decode`), regex-remove/replace only the offending header line (`re.sub(r'Cc: .*?\\r?\\n', '', raw, count=1)`), re-encode, `drafts().update(userId='me', id=..., body={'id': ..., 'message': {'raw': ...}})`. Much safer than delete+recreate when the body has a large embedded HTML/attachment. Then re-verify with `format='full'` that the header is gone. NEVER keep an unverified person (see Vinay/Mark case below) on a draft's Cc.
+
+**Pitfall — `drafts().get()` body verification: bridge drafts store body at TOP-LEVEL `payload.body.data`, NOT in `parts` (2026-09-01).** After `draft_create` / `draft_reply_create` with `html=False`, the MIME is a bare `text/plain` part — `payload['parts']` is absent and the recursive `get_text(parts...)` walker returns `None`, printing a misleading "(no text)". The text walker must check `payload['body']['data']` at the top level BEFORE recursing into parts:
+
+```python
+def walk(payload, indent=0):
+    body = payload.get('body', {})
+    if body.get('data'):
+        print(base64.urlsafe_b64decode(body['data']).decode('utf-8', 'replace')[:500])
+    for p in payload.get('parts', []):
+        walk(p, indent + 2)
+```
+
+**DRA family canonical addresses — Dharmesh/Manish/Mamta (verified via Gmail headers 2026-09-01, NOT the contacts sheet):**
+- **Dharmesh Ranka** — `dharmesh.ranka1@gmail.com` (active in Sep-2026 threads; contacts sheet row 870 lists ddr@draas.com / dharmesh.ranka1@gmail.com / ddr@drahomes.in — use the gmail.com one seen in headers)
+- **Manish Ranka** — `mdr@draas.com` (active; contacts sheet row 1901 lists mdr@drahomes.in as primary — headers win)
+- **Mamta Rathod** (sister, Chennai) — `mamatadr@gmail.com`
+- **Roshni Ranka** — `rnr@draas.com`
+All four are on the Dinesh Ranka succession / estate threads. Verify via Gmail headers (`q='to:(ddr@draas.com OR dharmesh.ranka1@gmail.com ...)'`) before drafting — the sheet rows carry stale/alternate domains.
+
+**DRA family voice garble map (succession context):** "Hermit"/"Damesh"/"Dharmash" → **Dharmesh**; "Manesh"/"Mantha" → **Manish**; "Mamtha"/"Mantha" → **Mamta Rathod** (sister, signs petition + GPA); "vocala"/"vakalath" → **vakalat**; "GPI" → **GPA**; "Sanjay Setia/Satya" → **Sanjay Sethia** (sanjay@lawsquare.in, Law Square); "Gauravar Bhavan Jain trust" → **Godwad Bhavan Jain Trust** (GBJT — the trust work Sanjay handled). Petition details: 5 petitioners = surviving Class-I heirs of Late Dinesh D Ranka; GPA holder = **Rajendra**; certificate drawn jointly in favour of Petitioners 1-5 (s.370 change validated 2026-09-01). Voice garble for NON-family work: "Anwar Asan" → **Anbu Asan** (Anbarasan); "Tushar Giri" → **tushar patil** (structure.pune@gmail.com).
+**Legal counsel voice-garble (Behera / Mirabilis RERA matter):** "Jastin in Cor" → **Adv. Jasleen Kaur of Smriti Legal** (jasleen@smritilegal.com, +91 9740012005, Unity Building Annexe, Mission Road, Bengaluru; firm inbox info.smritilegal@gmail.com; partners Vinay T vinay@vnv.ca / E Suhail Ahmed suhail@trialbase.in / Pradyumna pradyumnakhg@smritilegal.com). Full case document-map + where each requested instrument lives: `references/behera-rera-doc-supply-2026-09.md`.
+
 ## 5. Rules
 
 - ALWAYS call `google_workspace_manager` as a Hermes tool, never as a shell command
 - ALWAYS include `--threadId` for replies
 - NEVER add boilerplate greetings unless asked
 - ALWAYS confirm contact/thread before drafting
-- NEVER guess email addresses — ALWAYS run the contact lookup tool first (`find_contact.py` from `personal-messaging`, HARD RULE 2026-07-31) for any phone/email lookup
+- NEVER guess email addresses — ALWAYS run the contact lookup tool first (`find_contact.py` from `messaging-drafts` → `references/personal-messaging-workflow.md`, HARD RULE 2026-07-31) for any phone/email lookup
 - NEVER send without showing draft and getting confirmation
 - For vendor-feedback escalation emails: see `messaging-drafts` skill → `references/vendor-feedback-escalation.md` for the full dual-channel workflow (Google Doc → email draft with attachments → WhatsApp group follow-up). The tone guidance in Stage 2 — Draft (Vendor-feedback / frank escalation tone) applies to the email body.

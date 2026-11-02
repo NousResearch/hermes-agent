@@ -1,0 +1,107 @@
+<!--
+  NDR Family Work-Order Email Template — paid design/3D jobs to kids (and similar family engagements).
+  Built from the 914, Embassy Habitat work orders (Ruhaan maker-space WO 10-Oct-2026; Rivaan bathroom WO 12-Oct-2026).
+
+  USAGE NOTES:
+  - To: the kid's own Gmail (Ruhaan pebblyshark69@gmail.com, Rivaan rankarivaan@gmail.com — verify via
+    contact_resolver / prior sent mail, do not guess).
+  - CC: exactly who NDR dictates (usually sibling + Roshini rnr@draas.com) "so they know the job was given".
+  - From: PERSONAL job → nishantranka@gmail.com (vault service google-gmail — resolve via gws_resolve_account,
+    never guess). Company job → google-draas.
+  - Subject uses NDR's literal-asterisk convention: *[Project] — Work Order: [Scope]*
+  - Draft ONLY — NEVER send. NDR reviews in Drafts and taps send himself. Verify by reading the draft back
+    (drafts().get format=raw): To/Cc/Subject + attachment sha256.
+  - Attach plan images via raw MIME with MIMEImage (image/jpeg) — NOT MIMEApplication (yields application/jpeg
+    and Gmail previews worse). Byte-verify sha256 of the embedded part vs the local file.
+  - Money pattern NDR uses: normal fee vs first-job incentive ("normally ₹X, but since this is your first job,
+    I'm paying ₹Y to encourage you"); milestone split marked "(confirm at kickoff)"; separate AI-credit budget
+    (US$X) with "Phase 1 — cheap/light models only" and "Phase 2 — premium tools (GPT Astra or Opus + Higgsfield)
+    only once the design is locked"; FRD-approval gate BEFORE any design work.
+  - VOICE-GARBLE PITFALL: "Mark Pebley / Pebli / Pebbley" in NDR dictation = RUHAAN ("Pebby" = pebblyshark69@gmail.com).
+    Do not hunt for a contact named Mark — it is the son.
+  - Remove the DRA Projects logo signature image on personal emails.
+-->
+<div dir="auto"><div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#222222;max-width:680px">
+
+<p style="margin:0 0 14px 0">Hi [KID NAME],</p>
+
+<p style="margin:0 0 14px 0">As discussed, please find the attached [REFERENCE/IMAGE] for the <b>[PROJECT]</b> [SCOPE]. This is a full work order: read it fully before you start and treat it as the contract. When you accept it, reply confirming, and we will jointly develop the functional requirements (Section 2) at kickoff.</p>
+
+<div style="background:#1d1d1f;border-radius:6px;padding:16px 18px;margin:0 0 18px 0">
+<p style="margin:0;color:#f5a623;font-size:12px;letter-spacing:1.5px;text-transform:uppercase">Work Order &#8212; Summary</p>
+<p style="margin:6px 0 0 0;color:#ffffff;font-size:16px;font-weight:bold">Design &amp; 3D Modelling &#8212; [PROJECT]<br>[SCOPE LINE]</p>
+<p style="margin:8px 0 0 0;color:#cccccc;font-size:13px">Deliverable: a complete design package an interior company can take, quote, build and deliver in working condition &#8212; exactly per our image and exactly per our functionality.</p>
+</div>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">1. Engagement Objective &amp; Tools</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li><b>Objective:</b> [what is being designed, per the attached plan/dimensions].</li>
+<li><b>Model:</b> GPT Astra (or Opus) for design reasoning and the final design work.</li>
+<li><b>3D Modelling:</b> Blender &#8212; full model with real, engineering-grade measurements; then section and elevation views from that model.</li>
+<li><b>Image Generation:</b> light / cheap models for the initial concept renders; Higgsfield for the final, consistent images and the 3D model presentation.</li>
+<li><b>AI throughout:</b> use AI to identify materials, fittings, finishes, construction methodology, hardware, accessories and the material palette.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">2. Functional Requirements (to be jointly refined &#8594; FRD)</h3>
+<p style="margin:0 0 8px 0"><b>This step comes FIRST and requires my approval before you proceed with any design.</b> You must start with the functional requirement &#8212; and get it approved by me:</p>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li><b>What all you want to use it for</b> &#8212; the purpose and the intended use, stated plainly.</li>
+<li><b>What all should be in it</b> &#8212; every fixture, fitting, accessory, storage and utility element, listed.</li>
+<li><b>How it should work for us</b> &#8212; layout logic, movement and access, storage versus access, and ease of maintenance.</li>
+</ul>
+<p style="margin:0 0 6px 0"><b>Nothing moves to design until this functional requirement is approved by me.</b></p>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">3. Deliverables (D1&#8211;D9)</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li><b>D1 &#8212; Functional Requirement Document (FRD):</b> jointly developed with me and <b>approved by me before design starts</b>.</li>
+<li><b>D2 &#8212; 2&#8211;3 design options:</b> covering ALL functional requirements, each with its mood board (materials, finishes, fittings, hardware).</li>
+<li><b>D3 &#8212; Selected design, fully resolved:</b> all walls, all fixtures, layout and dimensions.</li>
+<li><b>D4 &#8212; Complete 3D model (Blender source):</b> real, engineering-grade measurements; I can slice and dice at any place and create a section.</li>
+<li><b>D5 &#8212; Full drawing set:</b> plan, section views, elevation views, wall views and interior renders of the SAME design from different angles &#8212; all dimensioned.</li>
+<li><b>D6 &#8212; Material &amp; finish specification, with the material palette:</b> where each material is specified.</li>
+<li><b>D7 &#8212; Bill of Quantities (BOQ):</b> every element quantified so an interior company can quote directly from it.</li>
+<li><b>D8 &#8212; Engineering drawings:</b> plumbing, drainage, electrical, waterproofing and services briefing &#8212; actionable by a plumber and an electrician.</li>
+<li><b>D9 &#8212; Iteration support:</b> additional drawings promptly on request.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">4. Methodology &amp; Credit Discipline</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li><b>Design credit budget: US$[X].</b> That is the whole budget &#8212; be very selective in how you use it.</li>
+<li><b>Phase 1 &#8212; Light models only:</b> initial renders, concept exploration, iteration. Do NOT start with premium tools, Higgsfield or heavy 3D modelling.</li>
+<li><b>Phase 2 &#8212; Premium tools, only once everything is done and the design is locked:</b> then use GPT Astra or Opus along with Higgsfield to create the 3D model and the Blender model, and then produce all the section views, elevation views and the material palette with the materials specified.</li>
+<li><b>Rule:</b> the final output must capture EVERY functional requirement approved in Section 2 &#8212; nothing silently dropped.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">5. Quality Parameters / Acceptance Criteria</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li>An interior company reviews the package and confirms it is <b>good enough for them to quote and build exactly as per the drawings and exactly as per the functionality</b>.</li>
+<li>All functional requirements are visibly present and consistent across renders, sections and elevations.</li>
+<li>Measurements are accurate and consistent across the plan, elevations, sections and 3D model.</li>
+<li>The BOQ and engineering drawings are actionable by an interior company, a plumber and an electrician.</li>
+<li>Delivered files: Blender source, PDF drawings, PNG renders &#8212; plus any format requested.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">6. Payment</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li><b>Professional fee: &#8377;[AMOUNT]</b>, payable on acceptance of the deliverable package.</li>
+<li>Normally this work would be paid &#8377;[NORMAL]; <b>since this is your first job, I am paying &#8377;[INCENTIVE] &#8212; to encourage you.</b></li>
+<li>Separately, you have <b>US$[X] worth of design credits</b> (Section 4) &#8212; use them selectively.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">7. Timeline &amp; Reviews</h3>
+<ul style="margin:0 0 6px 0;padding-left:20px">
+<li>Timeline to be agreed at kickoff; suggest weekly check-ins with me.</li>
+<li>Sequence: functional requirement approved first, then the design options, then the final package.</li>
+</ul>
+
+<h3 style="font-size:15px;color:#1d1d1f;margin:22px 0 8px 0;border-bottom:2px solid #f5a623;padding-bottom:4px">8. Coordination</h3>
+<ul style="margin:0 0 14px 0;padding-left:20px">
+<li>Point of contact: me (Nishant). [CC NAMES] in copy, so they know this job has been given to you.</li>
+<li>Reply to this mail to accept the work order; any questions, raise them before you start.</li>
+</ul>
+
+<p style="margin:0 0 4px 0">Best,</p>
+<p style="margin:0 0 2px 0"><b>Nishant Ranka</b></p>
+<p style="margin:0;font-size:13px;color:#666666">[PROJECT] &#183; Bengaluru</p>
+
+</div></div>

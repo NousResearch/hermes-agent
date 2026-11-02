@@ -67,4 +67,4 @@ rows = result.get('values', [])
 print(f'Total rows: {len(rows)}')
 ```
 
-**Note:** `GOOGLE_SA_KEY` env var is NOT available in terminal subprocesses. Use `gws_auth.build_service` for sheets as a fallback since the user's OAuth token includes the spreadsheets scope.
+**Note:** `tools.gws_sa` does not exist in this deployment (removed 2026-05-08). Use `gws_auth.build_service` for sheets — the user's OAuth token includes the spreadsheets scope.

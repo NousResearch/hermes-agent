@@ -1,0 +1,63 @@
+<!--
+Confirmation-request email skeleton (NDR pattern, validated 2026-09-15 Ranka Oasis).
+- One color-coded ask box per recipient (owner + checklist), one closure box.
+- Inline CSS ONLY (no <style> block — clients strip it).
+- Pass with html=True to gws_skill_bridge draft_create / draft_reply_create.
+- Fill {{PLACEHOLDERS}}; replace the two ask blocks per recipient; adjust box colors.
+-->
+<html>
+<body style="margin:0; padding:0; background-color:#f6f8fa;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f6f8fa; padding:20px 0;">
+<tr><td align="center">
+<table width="640" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border:1px solid #e5e7eb; border-radius:8px; font-family:Arial, Helvetica, sans-serif; font-size:14px; color:#1f2937; line-height:1.6;">
+
+  <!-- Header / intro -->
+  <tr><td style="padding:24px 28px 8px 28px;">
+    <p style="margin:0 0 12px 0;">Dear {{NAME}},</p>
+    <p style="margin:0 0 12px 0;">{{THANK_YOU_AND_CONTEXT}}</p>
+  </td></tr>
+
+  <!-- Decision / position -->
+  <tr><td style="padding:8px 28px;">
+    <p style="margin:0 0 8px 0; font-weight:bold; font-size:15px;">Our position:</p>
+    {{DECISION_ITEMS each as: <p style="margin:0 0 6px 0;"><span style="font-weight:bold; color:#b45309;">N.</span> TEXT</p>}}
+  </td></tr>
+
+  <!-- ASK 1 (repeat per recipient; change border/background colors) -->
+  <tr><td style="padding:14px 28px 4px 28px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #fcd34d; border-left:5px solid #b45309; border-radius:6px; background-color:#fffbeb;">
+      <tr><td style="padding:16px 18px;">
+        <p style="margin:0 0 10px 0; font-weight:bold; font-size:15px; color:#92400e;">✅ ASK 1 &mdash; {{OWNER}}, {{ROLE}}: CONFIRMATION REQUIRED</p>
+        <p style="margin:0 0 10px 0;">{{LEAD_SENTENCE}} <span style="font-weight:bold;">{{DEADLINE}}</span>:</p>
+        <ol style="margin:0 0 4px 0; padding-left:20px;">
+          <li style="margin-bottom:8px;">{{ASK_ITEM}}</li>
+          <li style="margin-bottom:4px;">{{ASK_ITEM}}</li>
+        </ol>
+      </td></tr>
+    </table>
+  </td></tr>
+
+  <!-- ASK 2 (different owner — different color, e.g. blue #93c5fd/#2563eb/#eff6ff/#1e40af) -->
+
+  <!-- Closure box -->
+  <tr><td style="padding:14px 28px;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #fca5a5; border-left:5px solid #dc2626; border-radius:6px; background-color:#fef2f2;">
+      <tr><td style="padding:14px 18px;">
+        <p style="margin:0 0 6px 0; font-weight:bold; font-size:15px; color:#b91c1c;">⏰ CLOSURE REQUIRED &mdash; {{DEADLINE}}</p>
+        <p style="margin:0 0 6px 0;">I need the above confirmations <span style="font-weight:bold;">{{DEADLINE}}</span>.</p>
+        <p style="margin:0;">{{BLOCKER_FALLBACK — e.g. "If there are blockers, all of you get on a call with me today and explain precisely why, so I can take a call."}}</p>
+      </td></tr>
+    </table>
+  </td></tr>
+
+  <!-- Sign off -->
+  <tr><td style="padding:16px 28px 24px 28px;">
+    <p style="margin:0 0 4px 0;">Regards,</p>
+    <p style="margin:0;"><span style="font-weight:bold;">Nishant Ranka</span></p>
+  </td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

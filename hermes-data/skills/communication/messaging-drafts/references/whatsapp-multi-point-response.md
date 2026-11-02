@@ -163,7 +163,7 @@ Search session history (`session_search`) and existing references for IDs. Commo
 
 ### Step 2 — Download and OCR
 
-Use `delegate_task` with `tools.gws_sa.build_service("drive", "v3", "ndr@draas.com")` to download the PDFs, then:
+Use `delegate_task` with `tools.gws_auth.build_service("drive", "v3")` to download the PDFs (or `tools.gws_dwd_tools` if a file is reachable only under ndr@draas.com's identity — `tools.gws_sa` does not exist, removed 2026-05-08), then:
 - For **scanned PDFs**: OCR with Tesseract (`pytesseract`) after converting PDF pages to images (`pdf2image` or `PyMuPDF`)
 - For **native PDFs** (text-based): extract directly with `PyMuPDF` (`fitz`)
 - For **Google Docs**: export as plain text by setting `mimeType='text/plain'` in `drive.files().export()`
@@ -186,33 +186,17 @@ Present the clause findings in the WhatsApp response structured as:
 - Why it does (or doesn't) apply to the current situation
 - The user's position (e.g. "Clause 5.6 is not triggered because no Premium FAR was purchased")
 
-### Pitfall — GOOGLE_SA_KEY unavailable in terminal subprocesses AND delegate_task subagents
+### Pitfall — `tools.gws_sa` does not exist, and there is no local token file either
 
-The `GOOGLE_SA_KEY` env var is set in the agent's main Python process but is NOT inherited by:
-- `terminal()` subprocesses
-- `delegate_task()` subagent sessions
+Two dead references retired 2026-05-08, both still worth knowing about so you don't reach for them:
+- `tools.gws_sa` — module removed entirely, raises `ModuleNotFoundError`. `GOOGLE_SA_KEY` is n8n-only, never present here.
+- `/data/hermes/google_token.json` — does not exist on this deployment (confirmed 2026-09-19). Do not read a raw token file off disk under any circumstance; credentials live only in the `gws-vault` daemon.
 
-Both environments raise `KeyError: 'GOOGLE_SA_KEY'`. 
+**Fix — use the sanctioned paths:**
+- Acting as the session's own account: `tools.gws_auth.build_service('drive', 'v3')` — works the same inside `terminal()` subprocesses and `delegate_task()` subagents (it routes through the RPC-mediated vault fetch automatically when sandboxed).
+- Acting as ndr@draas.com specifically (impersonation): `tools.gws_dwd_tools` — admin-gated DWD path, returns data only, never a credential.
 
-**Fix — OAuth token fallback:**
-The file at `/data/hermes/google_token.json` contains OAuth credentials for `ndr@draas.com` which support read access to most Drive files. Use this pattern:
-
-```python
-import json
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-with open("/data/hermes/google_token.json") as f:
-    token_data = json.load(f)
-
-creds = Credentials.from_authorized_user_info(token_data, ["https://www.googleapis.com/auth/drive"])
-drive = build("drive", "v3", credentials=creds)
-# Now use drive.files().get(), drive.files().list(), drive.files().export() for reading
-```
-
-**Limitation:** This OAuth token may have restricted write permissions (cannot write to arbitrary folders). For downloading/reading files it works reliably. For writing/uploading, prefer `delegate_task` with `tools.gws_sa` (when the env var is available) or upload to My Drive root first, then ask the user to move the file.
-
-**For JDA research specifically:** Use `delegate_task` with the OAuth fallback pattern and instruction: "authenticate using the OAuth token at /data/hermes/google_token.json". Do NOT try to download via a standalone `terminal()` Python script.
+**For JDA research specifically:** Use `delegate_task` with instruction to call `tools.gws_auth.build_service('drive', 'v3')` (or `tools.gws_dwd_tools` if the file requires ndr@draas.com's identity specifically) — do not reference a local token file path.
 
 ### Pitfall — SSA cannot exceed what is legally sanctioned
 

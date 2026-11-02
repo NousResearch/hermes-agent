@@ -112,6 +112,189 @@ Format:
 3. **Latest substantive update** — bullet points from the last response
 4. **Gap / next step** — what's still pending (e.g. "They said they're working on strategy but haven't shared it yet")
 
+## RERA Karnataka (K-RERA) Complaint Tracing — Special Pattern
+
+Karnataka RERA (K-RERA) cases follow a different email pattern than litigation threads. The complainant files under the CMP/XXXXXXXX/XXXXXXX format, and all communication is **system-generated** from `info.rera@karnataka.gov.in` (or `krera-chairman@karnataka.gov.in` for execution notices) — not from an advocate.
+
+### Key Differences from Litigation Threads
+
+| Feature | Litigation (advocate) | K-RERA Complaint |
+|---------|----------------------|------------------|
+| Emails from | Individual advocates at law firms | `info.rera@karnataka.gov.in` (system auto-generated) |
+| Case format | CMA No. 742/2026, WP 20411/2023 | CMP/200628/0006093 |
+| Attachments | IA applications, affidavits as PDF | Judgement PDF only (others are body-text orders) |
+| Court orders | In attached documents | **Embedded in email body** as plain text |
+| Multiple cases | Separate threads | Multiple complaint numbers heard together (e.g., 5528, 4973, 5887, 6093) |
+| Response | Advocate replies in thread | System email — do NOT reply (stated in every email footer) |
+
+### Trigger Phrases
+
+User says something like:
+- "RERA related emails for client X"
+- "Find RERA notices and court orders for [name]"
+- "Collect all documents for this RERA case"
+- "[name] RERA complaint"
+
+### Stage 1 — Voice-to-Name Resolution
+
+The user's voice transcription often mangles the client name badly. Do NOT search the verbatim spoken name first — resolve it first:
+
+```
+contact_resolver(query="Subya Sachi")  → returns "Sabyasachi Behera"
+```
+
+Known K-RERA mappings encountered:
+| Voice Says | Actual Name |
+|------------|-------------|
+| "Subya Sachi" / "Subha Sachi" | Sabyasachi Behera (sabyasachi.basis@gmail.com) |
+
+Once you have the correct name, search Gmail with the corrected spelling AND the phonetic voice variants (Gmail's search seems to handle some variants independently).
+
+### Stage 2 — Search Gmail by Multiple Axes
+
+K-RERA emails are NOT threaded together into a single thread — each hearing notice/order is its own **separate thread** with a single message. You must find ALL of them:
+
+```python
+from tools.gws_auth import build_service
+gmail = build_service('gmail', 'v1', service_name='google-draas')
+
+# Primary search — complaint number
+results = gmail.users().messages().list(
+    userId='me',
+    q='CMP/200628/0006093',  # the complaint number
+    maxResults=25
+).execute()
+```
+
+**Axes to search** (try all, deduplicate):
+1. Complaint number: `CMP/200628/0006093`
+2. Party name (correct spelling): `Sabyasachi`
+3. Party email domain: `sabyasachi.basis@gmail.com`
+4. Project name: `Mirabilis`
+5. Phone variant: `Subya`, `Sachi`, `Subhya`, etc.
+
+K-RERA sends from two addresses:
+- `info.rera@karnataka.gov.in` — standard hearing notices, orders, compliance requests
+- `krera-chairman@karnataka.gov.in` — execution notices (escalated non-compliance)
+
+### Stage 3 — List All Emails Chronologically
+
+Since each email is its own thread, iterate through all returned messages and order by date:
+
+```python
+for m in msgs.get('messages', []):
+    msg = gmail.users().messages().get(
+        userId='me', id=m['id'],
+        format='metadata',
+        metadataHeaders=['From','Subject','Date']
+    ).execute()
+    hdrs = {h['name']: h['value'] for h in msg['payload']['headers']}
+```
+
+The email **Subject line encodes the document type** — no need to open the body to categorize:
+- `Orders of the Court for Complaint number CMP/...dated DD/MM/YYYY` → hearing outcome
+- `RERA Karnataka : Enquiry on Complaint Application No ... Dated : YYYY-MM-DD Time : HH:MM` → hearing notice
+- `RERA Karnataka : Judgement for complaint no CMP/...` → **judgement PDF attached** (key document)
+- `Submit your Compliance Report for Complaint Number CMP/...` → post-judgement compliance demand
+- `Execution Notice on CMP/...` → escalation to Chairman level
+- `Submit your willingness to refer your Complaint Number ... to Lok-Adalat` → settlement opportunity
+
+### Stage 4 — Extract Court Orders from Email Body
+
+Court orders are in the **email body as plain text**, not in attached PDFs (except the final judgement). Extract with:
+
+```python
+import base64
+
+def get_text(payload):
+    text = ""
+    if isinstance(payload, dict):
+        if payload.get('mimeType') == 'text/plain' and payload.get('body',{}).get('data'):
+            text = base64.urlsafe_b64decode(payload['body']['data'] + '==').decode('utf-8',errors='replace')
+        if 'parts' in payload:
+            for sub in payload['parts']:
+                text += get_text(sub)
+    return text
+
+body = get_text(msg['payload'])
+```
+
+Key fields to extract from each order:
+- **Attendance**: who was present/absent (complainant, respondent, respondent advocate)
+- **Prayer**: what the complainant is asking for (e.g., "execution of sale deed and interest on delay period")
+- **Status**: "Posted for orders", "Final chance given", "Memo of calculations filed"
+- **Financial details**: apartment cost, amount paid (extract exact figures)
+- **Direction**: what the court ordered the respondent to do and by when
+- **Related complaint numbers**: noted in the same order (multiple cases often heard together)
+
+### Stage 5 — Download Judgement PDF
+
+Only the final judgement email has a PDF attachment. Check for attachments:
+
+```python
+def find_attachments(payload, results=None):
+    if results is None:
+        results = []
+    if isinstance(payload, dict):
+        fn = payload.get('filename', '')
+        if fn and payload.get('body', {}).get('attachmentId'):
+            results.append({
+                'filename': fn,
+                'mimeType': payload.get('mimeType', ''),
+                'attachmentId': payload['body']['attachmentId'],
+                'size': payload['body'].get('size', 0),
+            })
+        if 'parts' in payload:
+            for sub in payload['parts']:
+                find_attachments(sub, results)
+    return results
+```
+
+### Stage 6 — Search Drive
+
+The shared Drive folder for K-RERA documents is typically **"RERA Complaints & Orders"**. Search Drive for case-specific files:
+
+```python
+for q in ["Sabyasachi", "6093", "Mirabilis"]:
+    results = drive.files().list(
+        q=f"name contains '{q}' and trashed=false",
+        fields="files(id, name, parents)",
+        pageSize=10
+    ).execute()
+```
+
+Drive naming convention for RERA case files:
+`YYYYMMDD Project Tahsildar/Recovery/Notice PartyName_English/original.pdf`
+- `20260601 Mirabilis KPDL Tahsildar Recovery Notice SabyasachiBehera_English.pdf`
+- `20260601 Mirabilis KPDL Tahsildar Recovery Notice SabyasachiBehera_original.pdf`
+
+### Stage 7 — Report Structure
+
+Present the complete timeline in chronological order. Group by document type:
+
+1. **Case Overview**: complaint number, project, parties, apartment/unit details
+2. **Timeline** — table of date, event, key observation from each order
+3. **Status** — latest order, what was directed, whether complied
+4. **Documents Available** — both from email (judgement PDF) and from Drive (tahsildar notices, etc.)
+5. **Gap / Exposure** — execution notice pending, non-compliance risk, next hearing date
+
+### Pitfalls
+
+### P10. Voice transcription may produce ZERO Gmail results initially
+The user said "Subya Sachi" — searching that exact phrase returned only old unrelated emails (2015-era). The correct spelling "Sabyasachi Behera" returned 20+ RERA-related results. Always resolve the contact name through `contact_resolver` FIRST, then search by the resolved name.
+
+### P11. K-RERA emails are NOT threaded together
+Unlike a litigation thread where all messages share one threadId, K-RERA sends each hearing notice/order as its own singleton thread. You must query all messages matching the complaint number and sort them manually by date. Do not try to follow a single thread.
+
+### P12. Subject lines are very long and contain the hearing date twice
+K-RERA subjects follow a pattern like `Orders of the Court for Complaint number CMP/200628/0006093 dated 30/08/2022` where the date in the subject is the hearing date cited, not the email send date. Always compare the email's own `Date:` header with the subject date — they often differ (e.g., order for 30/08/2022 sent on 05/09/2022). Report the send date, reference the order date.
+
+### P13. Multiple complaint numbers are heard in the same hearing
+Orders frequently cover 3-7 complaint numbers together (e.g., "Complainants in 7738, 5853, 5887 and 6093 are present"). Present all related complaint numbers in your report — the user may not know which others are linked.
+
+### P14. The complainant's own emails (to CRM) are on separate threads
+The complainant may have emailed your CRM team directly about possession delay, sale deed drafts, and registration (often CC'd to NDR). These are on entirely separate threads with subject lines like "Registration B1 203" or "Possession or Handover of Flat B1-203" — search for these too to get the full background story. They pre-date the RERA complaint and show the failed attempts at resolution before the case was filed.
+
 ## Known Participants (CMS IndusLaw — Saveganapalli/Pawan Kumar matter)
 
 | Role | Name | Email |

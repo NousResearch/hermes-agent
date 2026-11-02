@@ -14,7 +14,7 @@ doctor who can provide the certificate without an in-person visit.
 
 ## Step 1 — WhatsApp the doctor
 
-Use the "Personal doctor / known medical professional" tone (see `messaging-links`
+Use the "Personal doctor / known medical professional" tone (see `messaging-drafts` → `references/messaging-links-workflow.md`
 skill → NDR-specific tone patterns). Structure:
 
 - Warm greeting ("Hey doctor, how is it going?")
@@ -123,4 +123,4 @@ present in the MIME and will be delivered correctly.
 - `email-drafter` SKILL.md → "School / authority communication tone" — for
   emails that challenge/query a school policy before the cert is obtained
 - `school-absence-exam-accommodation.md` — simpler notification-only pattern
-- `messaging-links` skill → "Personal doctor / known medical professional" tone
+- `messaging-drafts` → `references/messaging-links-workflow.md` → "Personal doctor / known medical professional" tone

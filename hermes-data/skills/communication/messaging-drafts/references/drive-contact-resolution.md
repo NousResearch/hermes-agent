@@ -58,7 +58,7 @@ results = service.files().list(
 ).execute()
 ```
 
-**SA key vs OAuth for Drive search:**
-- Use `tools.gws_auth.build_service("drive", "v3")` for per-user OAuth (user's own Drive files)
-- Use `tools.gws_sa.build_service("drive", "v3", "ndr@draas.com")` for shared DRA Drive files
-- Both support the same `files().list()` API — the difference is credentials source only
+**Which auth path for Drive search:**
+- Use `tools.gws_auth.build_service("drive", "v3")` for per-user OAuth — this also covers shared DRA Drive files the session user has access to
+- `tools.gws_sa` does not exist (removed 2026-05-08) — never import it
+- Only when a file is reachable *solely* under ndr@draas.com's identity, use `tools.gws_dwd_tools` (admin-gated DWD; returns data only, never a credential)

@@ -165,7 +165,50 @@ updated = result.get("values", [[]])[0]
 print(f"First Name: {updated[0]} | Last Name: {updated[2]} | Phone: {updated[28]}")
 ```
 
-## Name Splitting Pattern
+## Enrichment (not just correction) — family/associated contacts
+
+NDR also asks to *enrich* a contact: "she's Manish's wife, she runs the jewellery
+brand, do a Google research on her and add everything including her Instagram."
+Validated 2026-09-19 on Shruti Chhajer (Ranka), row **3420** — sheet had phones but
+no email. Workflow:
+
+1. **Locate the existing row first** (contact_resolver, or scan the sheet for the
+   surname/phone). Report the row number and what IS present before writing.
+2. **Research the brand/person on the web** before touching the sheet: brand site,
+   LinkedIn, and social handles. Instagram followers/handle are legitimately useful
+   fields for NDR's contacts — put the handle in Notes (there is no dedicated
+   Instagram column).
+3. **Correct the surname against the research, then TELL the user you did.** The
+   sheet read `Chajjer`; brand/LinkedIn sources said `Chhajer`. NDR's reply confirmed
+   the corrected spelling ("Yes correct last name"). Flagging the change is what makes
+   it safe to make.
+4. **Write only the cells you can source** — email from the sent-mail headers, org +
+   title from the brand/website, Notes = brand facts + Instagram handle. Never
+   overwrite an existing phone with a guessed one.
+5. **Verify with a read-back** of the full row and report both numbers intact.
+
+### Pitfall — writing by hardcoded column letter SHIFTED the row (hit 2026-09-19)
+
+A batchUpdate that hardcoded phone/name column letters mis-mapped the columns: a phone
+value landed in the wrong field. It was caught by the read-back and fixed, but the
+lesson is the reference's own warning plus one more step:
+
+- Resolve the column letter **from `headers[index]` in the same run**, never from a
+  remembered letter or the table above.
+- After `batchUpdate`, **read the ENTIRE row back** (`A{row}:AM{row}`) and print every
+  non-empty column with its index — a cell-level check of only the fields you meant to
+  write will not reveal a shift.
+- If a shift is detected, re-write the affected columns and verify again; do not leave
+  a partially wrong row for a later lookup to trip over.
+
+### Dual-source note for family contacts
+
+Shruti's email was recovered from the **sent-mail headers of NDR's own earlier mail**
+(`Shrutichhajer@gmail.com`, seen in the 12:07 sent mail) — not from People API. For
+family members, Gmail headers routinely beat both the sheet and People API. Same rule
+as the skill's main body: headers win.
+
+
 
 DRAAS contacts are often stored with merged first+last names (a Google Contacts export artifact). When a contact shows with no last name:
 

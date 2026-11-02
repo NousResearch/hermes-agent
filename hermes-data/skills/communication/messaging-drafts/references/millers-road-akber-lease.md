@@ -180,9 +180,9 @@ DRA works from **their own base version** (v5 CLEAN), NOT the landowner's marked
 - [ ] Legal team to incorporate final changes and share clean draft for execution
 
 ## Contact for BCC
-- **Aamir Khan** (close associate / family friend)
+- **Aamir Khan** (close associate / family friend / **NDR's Riverstone partner — use `khan.hussain.aamir@gmail.com` for Riverstone-related email (that address appears in the Sep-2026 Riverstone Farm Home thread); use the @me.com addresses only for personal/lease matters**)
   - Email (primary): aamirkhan@me.com
-  - Also: aamirkhan@icloud.com
+  - Also: aamirkhan@icloud.com, khan.hussain.aamir@gmail.com
   - Phone: +919845881652
-  - Role: Managing Partner — Direct LLP, TerraGreens LLP
+  - Role: Managing Partner — Direct LLP, TerraGreens LLP; Riverstone partner
   - Note: Was also listed in 2016 contact list as "Amir Khan S/o Munir Ahmed — 9845881652" (same person)

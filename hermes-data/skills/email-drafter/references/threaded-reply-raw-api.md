@@ -61,7 +61,7 @@ msg_id_header = parsed.get("Message-ID", "").strip()
 references = parsed.get("References", "")
 ```
 
-**Note:** `Message-ID` IS available via `format="metadata"` with `metadataHeaders` — you do NOT need `format="raw"` just for headers. Use `format="raw"` when you need the full MIME body.
+**Note:** `Message-ID` MAY come back EMPTY via `format="metadata"` even when requested in `metadataHeaders` (observed Sep-2026: Google-draas message returned all headers except Message-ID). Do not trust it — if `headers.get("Message-ID")` is empty, fall back to `format="raw"` and parse with `email_parser.message_from_string(raw)` to get the real Message-ID. Threading depends on it, so always verify it's non-empty before building the reply.
 
 ### 3. Create the reply-all draft with proper threading
 
@@ -150,3 +150,29 @@ The email will be created in the **account** the `build_service` was constructed
 - **Threading only works with both In-Reply-To AND References**: Gmail nests replies based on these two headers. The References header should include all ancestor message IDs, with the immediate parent being the last entry.
 - **The `email.message.EmailMessage` `__setitem__` method is strict** about header values: no raw newlines, no trailing whitespace. Always clean headers before passing them.
 - **`format="metadata"` with `metadataHeaders` returns Message-ID**: The Message-ID header IS available via `format="metadata"` when you explicitly request it in `metadataHeaders`. You do NOT need `format="raw"` just for header extraction. Use `format="raw"` only when you need the full MIME body content.
+
+## Non-ASCII subjects in hand-built MIME (en-dash, accents)
+
+Option B (`EmailMessage`) encodes non-ASCII headers correctly by itself. The **hand-built raw
+string** pattern (the one in `templates/html-reply-with-attachment.py`, where you join header
+lines with `\r\n` yourself) does NOT — dropping a raw `–` (U+2013) or any accented character
+into a `Subject:` line produces a mangled subject.
+
+DRAAS subjects regularly carry an en-dash, e.g.
+`OASIS Site – Revised Saucer Drain Design and Section Updates`. Wrap the header in an RFC 2047
+encoded-word — base64 is the safest because the Q-encoding of an already-long subject easily
+blows past the 76-char limit:
+
+```python
+SUBJECT_PLAIN = "Re: OASIS Site \u2013 Revised Saucer Drain Design and Section Updates"
+SUBJECT_ENC   = "=?UTF-8?B?" + base64.b64encode(SUBJECT_PLAIN.encode("utf-8")).decode() + "?="
+head = [..., "Subject: %s" % SUBJECT_ENC, ...]
+```
+
+Do NOT silently "fix" it by substituting a hyphen — that retitles the thread. Verify on the way
+out: `drafts().get(..., format="full")` and confirm `Subject:` decodes back with the en-dash
+intact (Gmail's API returns it decoded, so the check is just `hdrs["Subject"] == SUBJECT_PLAIN`).
+
+The absence of `\r\n`-safe encoding is only a problem for headers. The `text/plain` and
+`text/html` **bodies** in the same raw string are fine as literal UTF-8 because their
+`Content-Type` carries `charset="UTF-8"`.

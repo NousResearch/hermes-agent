@@ -133,7 +133,7 @@ Always run BOTH the literal phrase AND the name alone (`"Krishna"` alone often s
 
 ## What NOT to Do
 
-- **Do not use `gws_sa` for Gmail** — it raises `ValueError` (per `gws-automation` skill PITFALL #2). Use `gws_auth.build_service("gmail", "v1")`.
+- **Do not use `gws_sa`** — the module does not exist (removed 2026-05-08; raises `ModuleNotFoundError`). Use `gws_auth.build_service("gmail", "v1")`.
 - **Do not assume firm phone = person's phone.** Always flag in the user-facing reply.
 - **Do not synthesize a number from name + city + state.** A wrong number is worse than asking the user.
 - **Do not burn a tool call trying `people.people().searchContacts`** if the standard contact-resolver already returned nothing — it means the person is not in the user's Google contacts. The Gmail mining path is the right next step.

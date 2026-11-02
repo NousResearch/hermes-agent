@@ -54,15 +54,23 @@ print(urllib.parse.quote('\uFF0B'))  # MUST print %EF%BC%8B
 
 **Current behaviour (confirmed Jul 2026):** The `whatsapp_link` tool is SAFE to use for messages containing `&`, `%`, `=`, or `+`. It handles the encoding correctly.
 
-**⚠️ Tool-access caveat:** The `whatsapp_link` tool is registered under the "messaging" toolset and may NOT appear in your direct tool list depending on your session configuration. If it's not in your function list, access it via `execute_code`:
+**⚠️ Tool-access caveat:** The `whatsapp_link` tool is registered under the "messaging" toolset and may NOT appear in your direct tool list depending on your session configuration. In that case you do **not** need to hand-encode anything — **call the tool's own handler**, which is the same sanctioned encoder the tool wraps:
+
 ```python
-import sys
-sys.path.insert(0, '/opt/hermes/tools')
-from whatsapp_link_tool import whatsapp_link_tool
-import json
-result = json.loads(whatsapp_link_tool({"phone": "91XXXXXXXXXX", "text": "Message"}))
-# result["url"] contains the wa.me link
+import sys, json
+sys.path.insert(0, '/opt/hermes')                      # so `tools.` resolves
+from tools.whatsapp_link_tool import whatsapp_link_tool
+result = json.loads(whatsapp_link_tool(
+    {"phone": "+919845890316", "text": message, "platform": "telegram"}))
+print(result["url"])            # stdlib-quoted, fullwidth-safe
+print(result.get("split"))      # True => deliver result["parts"] as separate bubbles
+print(result.get("display_link"))  # MarkdownV2-safe inline link for Telegram
 ```
+
+- **Import path — use `from tools.whatsapp_link_tool import ...` with `sys.path.insert(0, '/opt/hermes')`.** The shorter `sys.path.insert(0, '/opt/hermes/tools')` + `from whatsapp_link_tool import ...` is the stale form: it works only from a CWD where the module also resolves as a top-level import, and fails with `ModuleNotFoundError` in a plain session CWD. Verified working 2026-09-21.
+- `platform="telegram"` returns `display_text` (MarkdownV2-escaped) and `display_link` alongside the raw `url`.
+- Reading the handler's source first (`/opt/hermes/tools/whatsapp_link_tool.py`) is a legitimate step when the phone/`text` semantics matter — it documents the encoding contract (fullwidth `&`/`#`, single-encode `%`, ISD-91 auto-prepend for bare 10-digit numbers, and the 4096-unit split budget).
+- **If the module genuinely is not present on disk**, only then fall back to the manual fullwidth recipe in "Correct Approach" — and say so, rather than silently substituting a hand-built URL.
 
 Use `platform="telegram"` to get `display_link` (MarkdownV2-escaped inline link for Telegram delivery).
 

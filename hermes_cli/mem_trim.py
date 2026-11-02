@@ -149,12 +149,13 @@ def trim_memory(
     affecting the caller.
 
     ``collect=False`` drops the forced full ``gc.collect()`` and only asks the allocator to return
-    already-free arenas. Periodic timer lanes pass it: this runs on a fixed cooldown, and a gen2
-    collection over a long-lived gateway heap holds the GIL for 400-600ms, freezing every thread in
-    the process (adapters, SSE streams, API requests) once per cooldown — while the pages it unlocks
-    are re-grown before the next tick. Cycling garbage is left to CPython's own generational
-    collection; the pressure lanes (agent close, large tool result, post-compression) keep the
-    default, where a collection is what makes the trim return anything.
+    already-free pages. Every call site on a busy path of a long-lived process passes it (gateway
+    housekeeping tick, agent close, TUI turn completion, post-compression): a full collection walks
+    the whole shared heap with the GIL held, 250-750 ms on a multi-million-object gateway, freezing
+    every thread (adapters, streams, API requests) while it runs. Most of what those paths free goes
+    by reference counting; cycles are left to CPython's automatic collection and their pages are
+    returned by the next trim. The forced collection stays where it costs no one or memory is the
+    emergency: the idle reaper (only when every session is quiescent), agent-cache pressure eviction.
     """
     enabled, configured_cooldown, log_every_n, info_log_min_delta_mb = _config_settings()
     if not enabled:

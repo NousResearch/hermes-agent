@@ -1,0 +1,18 @@
+name: curo-peptide-research
+title: Curo Peptide Research MCP
+repo: https://github.com/curo-you-peptides/peptide-research-mcp
+sha: b861fbcbe1acc3e467b5f201e10e4eea016635d5
+version: "1.0.0"
+description: "Peptide research for your AI through the Curo MCP server (https://mcp.curo.you): PepBank study findings with a source link for each, plus the Curo peptide catalog with prices, stock and the third-party lab report (COA) for each lot. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no local code. Disclosure: every tool call goes to mcp.curo.you, which counts tool calls per app and day, with no personal data. No tool changes data. build_cart only makes a cart link, and the user checks out and pays on curo.you. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Curo
+tier: community
+category: tools
+docs_url: https://curo.you/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

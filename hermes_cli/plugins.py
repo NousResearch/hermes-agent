@@ -22,7 +22,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 

@@ -17,6 +17,7 @@ from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
 from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginRegistration
+from hermes_cli.plugins_load_guard import _ignore_after_abandoned_load, ignore_registrars_after_abandoned_load
 from hermes_cli.plugins_loader import _serialized_replacement
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
@@ -886,27 +887,6 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         return register_scoped_provider(self, "register_delegation_provider", provider)
 
 
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @_facade().wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            _facade().logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
-
-
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+# Every mutating entry point plugins reach through ``ctx`` during register(), mixins included.
+ignore_registrars_after_abandoned_load(PluginContext)
 

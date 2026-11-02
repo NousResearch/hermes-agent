@@ -9,6 +9,7 @@ import pytest
 from pm.store import extract, flatten_single_dir, tree_digest
 
 
+@pytest.mark.platforms("any")
 def test_metadata_does_not_change_extracted_layout_or_payload_digest(tmp_path: Path):
     archive = tmp_path / "package.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
@@ -62,3 +63,15 @@ def test_metadata_named_directories_links_and_executables_are_hashed(tmp_path: P
     (wrapper / "bin").mkdir()
     flatten_single_dir(tree)
     assert (wrapper / "bin").is_dir()
+
+
+@pytest.mark.platforms("any")
+def test_metadata_named_payload_collision_refuses_before_any_move(tmp_path: Path):
+    tree = tmp_path / "tree"
+    (tree / "pkg/.DS_Store").mkdir(parents=True)
+    for name in ("a", "bin", "m", "z"):
+        (tree / "pkg" / name).write_bytes(b"payload")
+    (tree / ".DS_Store").write_bytes(b"desktop metadata")
+    flatten_single_dir(tree)
+    assert sorted(entry.name for entry in tree.iterdir()) == [".DS_Store", "pkg"]
+    assert len(list((tree / "pkg").iterdir())) == 5

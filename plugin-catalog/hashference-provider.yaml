@@ -4,17 +4,7 @@ repo: https://github.com/0xalank/hermes-hashference-provider
 sha: 82700f5377a46f0e7bd482c907ed04090b6305be
 subdir: hashference-provider
 version: "1.0.0"
-description: >-
-  Hashference as a Hermes model provider (`--provider hashference`, or Hashference in `hermes model`):
-  open and frontier models on one balance, funded by mining, QUAI, Qi or staking. Each model's
-  real limits come from Hashference's catalog: the hosted models accept 98,304 input tokens inside a
-  163,840-token window and cap output at 8,192, so Hermes compresses before an oversized-input
-  refusal; models that cannot call tools are left out of the model list. Disclosure: registers one
-  model provider at import and nothing else (no tools, hooks, commands or threads); chat requests go
-  to https://hashference.com/v1 (or the configured model.base_url) through Hermes' own client with
-  HASHFERENCE_API_KEY, which Hermes reads; the plugin itself sends only an uncredentialed GET of the
-  public catalog (https://hashference.com/v1/models), cached for ten minutes, and reads and writes
-  no files and starts no processes.
+description: "Hashference as a Hermes model provider (`--provider hashference`, or Hashference in `hermes model`): open and frontier models on one balance, funded by mining, QUAI, Qi or staking. Each model's real limits come from Hashference's catalog: the hosted models accept 98,304 input tokens inside a 163,840-token window and cap output at 8,192, so Hermes compresses before an oversized-input refusal; models that cannot call tools are left out of the model list. Disclosure — model provider; chat requests (full prompts) go to https://hashference.com/v1 (or your configured base_url) using HASHFERENCE_API_KEY read by Hermes; the plugin itself only sends an unauthenticated GET of the public model catalog (/v1/models), cached ten minutes."
 maintainer: 0xalank
 tier: community
 category: models

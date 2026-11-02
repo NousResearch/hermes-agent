@@ -269,7 +269,7 @@ class TestStaleBridgeHandshake:
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             assert await adapter.connect() is False  # not adopted; the replacement bridge "died" (mock) → False
 
@@ -293,7 +293,7 @@ class TestStaleBridgeHandshake:
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", mock_client), \
              patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"), \
-             patch("subprocess.Popen") as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.spawn_owned") as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             assert await adapter.connect() is True
 

@@ -513,7 +513,7 @@ def test_external_prefetch_spill_matches_legacy_and_structured_context_digest(
     encoded = structured_result.context.encode("utf-8")
     assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
     assert event["context_byte_length"] == len(encoded)
-    assert event["observations"] is structured_result.observations
+    assert event["observations"] == structured_result.observations
 
 
 def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
@@ -562,7 +562,7 @@ def test_structured_context_merge_and_minimal_operation_event(monkeypatch):
         "context_byte_length",
     }
     assert "result" not in event
-    assert event["observations"] is result.observations
+    assert event["observations"] == result.observations
     assert event["query"] == "question"
     assert event["session_id"] == "session-a"
     assert event["task_id"] == "task-a"
@@ -692,7 +692,7 @@ def test_malformed_observations_are_dropped_but_context_survives(monkeypatch):
 
     assert result.context == "usable context"
     assert [item.payload for item in result.observations] == [{"valid": True}]
-    assert events[0]["observations"] is result.observations
+    assert events[0]["observations"] == result.observations
 
 
 def test_observations_are_bounded_and_recursively_immutable(monkeypatch):
@@ -796,7 +796,8 @@ def test_prefetch_observation_lazily_discovers_consumer_and_delivers_digest(
     assert received["session_id"] == "session"
     assert received["task_id"] == "task"
     assert received["turn_id"] == "turn"
-    assert received["observations"] is result.observations
+    assert received["observations"] == result.observations
+    assert received["observations"] is not result.observations
     assert received["context_sha256"] == hashlib.sha256(encoded).hexdigest()
     assert received["context_byte_length"] == len(encoded)
 
@@ -956,7 +957,7 @@ def test_prefetch_observation_digest_is_preserved_for_consumer(monkeypatch):
     assert name == "memory_prefetch"
     assert event["context_sha256"] == hashlib.sha256(encoded).hexdigest()
     assert event["context_byte_length"] == len(encoded)
-    assert event["observations"] is result.observations
+    assert event["observations"] == result.observations
 
 
 def test_hook_callback_errors_are_isolated(monkeypatch):
@@ -1065,7 +1066,7 @@ def test_memory_prefetch_observer_is_async_and_preserves_operation_envelope(
 
         assert len(events) == 1
         event = events[0]
-        assert event["observations"] is result.observations
+        assert event["observations"] == result.observations
         assert event["session_id"] == "session-a"
         assert event["task_id"] == "task-a"
         assert event["turn_id"] == "turn-a"
@@ -1128,7 +1129,7 @@ def test_operation_observation_count_budget_keeps_ordered_prefix_and_context(
     assert len(warnings) == 1
     assert "dropping remaining observations" in warnings[0].message
     assert len(events) == 1
-    assert events[0]["observations"] is result.observations
+    assert events[0]["observations"] == result.observations
     assert isinstance(events[0]["observations"], tuple)
 
 
@@ -1196,9 +1197,10 @@ def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
     hosted = decode(encode(raw))
     assert hosted._wire_truncated is True
     hosted_prefix_size = 2
+    from tests.agent.test_memory_wire_truncation_provenance import _hosted
     manager = MemoryManager()
     manager.add_provider(
-        StructuredMemoryProvider(name="builtin", result=hosted)
+        _hosted(StructuredMemoryProvider(name="builtin", result=raw))
     )
     manager.add_provider(
         StructuredMemoryProvider(
@@ -1289,7 +1291,7 @@ def test_operation_observation_batch_budget_is_aggregate_across_providers(
     assert len(warnings) == 1
     assert "dropping remaining observations" in warnings[0].message
     assert len(events) == 1
-    assert events[0]["observations"] is result.observations
+    assert events[0]["observations"] == result.observations
     assert isinstance(events[0]["observations"], tuple)
 
 
@@ -1326,7 +1328,7 @@ def test_malformed_observation_keeps_each_provider_context_and_result_tuple(
     assert [item.provider for item in result.observations] == ["external"]
     assert "malformed prefetch observation" in caplog.text
     assert len(events) == 1
-    assert events[0]["observations"] is result.observations
+    assert events[0]["observations"] == result.observations
     assert isinstance(events[0]["observations"], tuple)
 
 

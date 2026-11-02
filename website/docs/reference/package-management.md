@@ -238,6 +238,14 @@ This applies to source and bundle builds alike. Explicit `AR` and `CC` values
 remain authoritative; PM does not change the toolchain of a caller-supplied
 interpreter such as Nix Python. No `CC` default is needed for the current pin.
 
+The pinned Linux Python records `clang`/`clang++` as `CC`/`CXX` and the same
+temporary `llvm-ar` as `AR`. When a recorded compiler is not on `PATH` but its
+GCC equivalent is (`gcc`/`g++`, as on stock Debian, Ubuntu and WSL), PM points
+`CC`/`CXX` and the matching `LDSHARED`/`LDCXXSHARED` at it, keeping flags such
+as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
+`LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
+build fails with a hint to install one (`sudo apt install build-essential`).
+
 Clone the repository and select your branch before preparing dependencies:
 
 ```bash

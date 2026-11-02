@@ -59,7 +59,7 @@ def detect_import_sources() -> list[tuple[ImportSource, Path]]:
     return found
 
 
-def offer_agent_import(hermes_home: Path) -> str:
+def offer_agent_import(hermes_home: Path, from_setup: bool = True) -> str:
     """When another agent's setup is on this computer, offer to import it: pick which (when several),
     install the plugin if it is missing and run its import for each pick. Returns the labels whose
     import changed this home's config.yaml or .env (``""`` when none did). Asks nothing, and so never
@@ -84,7 +84,7 @@ def offer_agent_import(hermes_home: Path) -> str:
     picked = _pick_sources(found)
     if not picked or not _ensure_plugin(hermes_home):
         return ""
-    return ", ".join(s.label for s in picked if _run_import(s, hermes_home))
+    return ", ".join(s.label for s in picked if _run_import(s, hermes_home, from_setup))
 
 
 def _pick_sources(found: list[tuple[ImportSource, Path]]) -> list[ImportSource]:
@@ -134,11 +134,12 @@ def _snapshot(hermes_home: Path) -> tuple[Optional[bytes], ...]:
                  for p in (hermes_home / "config.yaml", hermes_home / ".env"))
 
 
-def _run_import(source: ImportSource, hermes_home: Path) -> bool:
-    """Setup's import step: :func:`_import_child` for *source*; True when the run changed config.yaml
-    or .env, which the setup sections after it read."""
+def _run_import(source: ImportSource, hermes_home: Path, from_setup: bool = True) -> bool:
+    """The offer's import: :func:`_import_child` for *source*; True when the run changed config.yaml
+    or .env, which the setup sections after it read. Bare ``hermes migrate`` runs it as its own
+    command (``from_setup`` False: no setup-only flags such as OpenClaw's ``--migrate-secrets``)."""
     before = _snapshot(hermes_home)
-    _import_child(source, hermes_home)
+    _import_child(source, hermes_home, from_setup=from_setup)
     return _snapshot(hermes_home) != before
 
 
@@ -169,9 +170,11 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
     # (exit 2) before asking anything: update the plugin once and try again.
     if returncode == 2 and _update_plugin(source):
         returncode = subprocess.run(argv, env=env, check=False).returncode  # health: allow HX006 -- same child
-    if returncode:
+    if returncode == 2:
         print_warning(f"The {source.label} import did not run. If the error names an invalid choice or "
                       f"unrecognized arguments, update the plugin first: hermes plugins update {PLUGIN}")
+    elif returncode:
+        print_warning(f"The {source.label} import stopped with errors; see the report above.")
     return returncode
 
 
@@ -195,7 +198,7 @@ def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tu
     if not source_name:
         found = detect_import_sources()
         if found and not is_noninteractive():
-            offer_agent_import(hermes_home)
+            offer_agent_import(hermes_home, from_setup=False)
             return 0
         print_info(("Found: " + ", ".join(s.label for s, _ in found) + ". " if found else
                     "No other agent setup found on this computer. ")

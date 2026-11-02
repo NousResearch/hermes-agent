@@ -15,7 +15,19 @@ const require: NodeJS.Require = createRequire(import.meta.url)
 const desktop: string = path.resolve(import.meta.dirname, '..')
 const repo: string = path.resolve(desktop, '../..')
 
-function request(sequence: number = 65536, token: string = 'ab12cd34ef56ab78'): ChannelBuildRequest {
+// A preview request builds one channel claim: its packages carry the claim's version and the
+// yy.mmdd.hh.mmss quad of its stamp.
+function stampedQuad(stamp: string): string {
+  const [, yy, mmdd, hh, mmss] = /^20(\d{2})(\d{4})T(\d{2})(\d{4})Z$/.exec(stamp)!
+  return [yy, mmdd, hh, mmss].map(Number).join('.')
+}
+
+function request(
+  sequence: number = 65536,
+  token: string = 'ab12cd34ef56ab78',
+  sourceVersion: string = '1.2.3',
+  stamp: string = '20261028T120000Z'
+): ChannelBuildRequest {
   return {
     schema: 1,
     buildId: 'a'.repeat(32),
@@ -23,9 +35,10 @@ function request(sequence: number = 65536, token: string = 'ab12cd34ef56ab78'): 
     sequence,
     repository: 'fixture/project',
     commit: 'b'.repeat(40),
-    sourceVersion: '1.2.3',
-    version: `0.0.${sequence}`,
-    windowsVersion: `0.${Math.floor(sequence / 65536)}.${sequence % 65536}.0`,
+    sourceVersion,
+    releaseTag: `channel.${stamp}-v${sourceVersion}`,
+    version: `${sourceVersion}+channel.${stamp}`,
+    windowsVersion: stampedQuad(stamp),
     identity: {
       token,
       displayName: 'Hermes no-registry-needed',
@@ -81,9 +94,8 @@ test('channel packaging reuses admitted identity and rejects unsupported or unsa
 
   const b: ReturnType<typeof load> = load({
     ...first,
-    ...request(65537),
-    commit: 'c'.repeat(40),
-    sourceVersion: '0.1.0'
+    ...request(65537, undefined, '0.1.0', '20261029T000000Z'),
+    commit: 'c'.repeat(40)
   })
 
   for (const field of [
@@ -257,6 +269,16 @@ test('channel stamps verify the real checkout and retain source version and nati
     assert.equal(built.updateMechanism, 'electron-updater')
     assert.equal(built.baseVersion, build.sourceVersion)
     assert.equal(built.tag, null)
+    // Built as its claim's candidate, the stamp names the claim; it still updates as a channel build.
+    const claimed: InstallStamp = buildStampPayload(
+      resolveStamp({ env: { ...env, HERMES_PAYLOAD_TAG: build.releaseTag }, repoRoot: dir }),
+      { ...env, HERMES_PAYLOAD_TAG: build.releaseTag },
+      'darwin',
+      payload
+    )
+    assert.equal(claimed.tag, build.releaseTag)
+    assert.equal(claimed.source, 'channel-build')
+    assert.deepEqual(claimed.channelBuild, build)
     assert.equal(built.receiverProtocol, 1)
     assert.deepEqual(built.channelBuild, build)
     assert.ok(Object.isFrozen(built.channelBuild?.identity))
@@ -269,44 +291,6 @@ test('channel stamps verify the real checkout and retain source version and nati
     assert.throws((): void => {
       resolveStamp({ env: { ...env, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(request()) }, repoRoot: dir })
     }, /checkout/)
-    delete process.env._HERMES_CHANNEL_REQUEST_JSON
-    process.env.HERMES_PAYLOAD_TAG = 'v0.0.1'
-    delete require.cache[require.resolve('../product-identity.cjs')]
-    const official: ProductIdentity = require('../product-identity.cjs')
-    delete process.env.HERMES_PAYLOAD_TAG
-
-    const receiver: ChannelBuildRequest = {
-      ...build,
-      channel: 'stable',
-      sequence: 1,
-      version: '0.0.1',
-      windowsVersion: '0.0.1.0',
-      releaseTag: 'v0.0.1',
-      receiverCandidate: true,
-      bundleEnv: {},
-      publicBase: 'https://builds.example.test/ci-disposable/1/2',
-      identity: { ...official, token: build.identity.token }
-    }
-
-    const receiverEnv: NodeJS.ProcessEnv = { ...env, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(receiver) }
-
-    const stable: InstallStamp = buildStampPayload(
-      resolveStamp({ env: receiverEnv, repoRoot: dir }),
-      receiverEnv,
-      'darwin',
-      payload
-    )
-
-    assert.equal(stable.channelBuild, undefined)
-    assert.equal(stable.source, 'build')
-    assert.equal(stable.tag, receiver.releaseTag)
-    assert.equal(stable.displayVersion, receiver.version)
-    assert.equal(stable.updateMechanism, 'electron-updater')
-    const packaged: PackagingFacts = load(receiver)
-    assert.deepEqual(packaged.config.mac?.publish, [
-      { provider: 'generic', url: `${receiver.publicBase}/releases/darwin/stable/`, channel: 'stable' }
-    ])
-
     const {
       verifyBundleStamp
     }: {
@@ -315,17 +299,23 @@ test('channel stamps verify the real checkout and retain source version and nati
         options: {
           commit: string
           platform: string
+          tag?: string
           channelRequest: ChannelBuildRequest
         }
       ) => string
     } = await import('../../../tests/install/e2e-assets/bundle-smoke-metadata.mjs')
 
-    assert.equal(
-      verifyBundleStamp(stable, { commit: receiver.commit, platform: 'darwin', channelRequest: receiver }),
-      receiver.version
+    // The smoke admits the claim's stamp only beside its own claim tag.
+    assert.ok(
+      verifyBundleStamp(claimed, {
+        commit: build.commit,
+        platform: 'darwin',
+        tag: build.releaseTag,
+        channelRequest: build
+      })
     )
     assert.throws((): void => {
-      verifyBundleStamp(built, { commit: receiver.commit, platform: 'darwin', channelRequest: receiver })
+      verifyBundleStamp(claimed, { commit: build.commit, platform: 'darwin', tag: 'v1.2.3', channelRequest: build })
     })
     execFileSync(
       process.env.HERMES_PYTHON || 'python3',
@@ -335,17 +325,17 @@ test('channel stamps verify the real checkout and retain source version and nati
 import json, sys
 from scripts.bundles.release_artifacts import stamp_matches
 stamp, request = json.loads(sys.argv[1]), json.loads(sys.argv[2])
-stamp_matches(stamp, '', request['commit'], channel_request=request)
-stamp['channelBuild'] = request
-try:
-    stamp_matches(stamp, '', request['commit'], channel_request=request)
-except ValueError:
-    pass
-else:
-    raise AssertionError('receiver accepted preview updater ownership')
+stamp_matches(stamp, request['releaseTag'], request['commit'], channel_request=request)
+for tag in ('', 'v1.2.3'):
+    try:
+        stamp_matches(stamp, tag, request['commit'], channel_request=request)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('a channel stamp matched a tag that is not its claim')
 `,
-        JSON.stringify(stable),
-        JSON.stringify(receiver)
+        JSON.stringify(claimed),
+        JSON.stringify(build)
       ],
       { cwd: repo }
     )
@@ -418,8 +408,14 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
     )
     const facts: ManifestFacts[] = []
 
-    for (const sequence of [65535, 65536, 65537, 0xffffffff]) {
-      const build: ChannelBuildRequest = request(sequence)
+    // The quad follows the claim stamp across an hour and a day, never the sequence.
+    for (const [sequence, stamp] of [
+      [65535, '20261028T120000Z'],
+      [65536, '20261028T120001Z'],
+      [65537, '20261028T235959Z'],
+      [0xffffffff, '20261029T000000Z']
+    ] as const) {
+      const build: ChannelBuildRequest = request(sequence, undefined, undefined, stamp)
 
       const script: string = `
         const { AppInfo } = require('./node_modules/app-builder-lib/dist/appInfo.js');
@@ -433,7 +429,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
           await config.beforeBuild();
           const metadata = { ...pkg, ...config.extraMetadata };
           const appInfo = new AppInfo({ config, metadata }, null, config.win);
-          if (require('semver').valid(appInfo.version) !== appInfo.version) throw Error('Invalid packager semver');
+          if (!require('semver').valid(appInfo.version)) throw Error('Invalid packager semver');
           const packager = { appInfo, config, metadata, appDir, platformOptions: config.win,
             getResource: async (file) => path.resolve(appDir, file) };
           const target = { packager, options: config.msix,
@@ -468,9 +464,12 @@ package = root / 'Recorder-win-x64.msix'
 with zipfile.ZipFile(package, 'w') as archive:
     archive.writestr('AppxManifest.xml', (root / 'manifest.xml').read_bytes())
     archive.writestr('app/resources/install-stamp.json', json.dumps({
-        'source': 'channel-build', 'channelBuild': request, 'commit': request['commit'], 'tag': None}))
+        'source': 'channel-build', 'channelBuild': request, 'commit': request['commit'],
+        'tag': request['releaseTag']}))
 out = root / 'metadata.json'
-record('windows', 'x64', root, '', request['commit'], out, channel_request=request)
+# The executable's version, as the packaging step records it beside the package.
+(root / 'version-info-x64.json').write_text(json.dumps({'productVersion': request['windowsVersion']}))
+record('windows', 'x64', root, request['releaseTag'], request['commit'], out, channel_request=request)
 manifest = ET.fromstring((root / 'manifest.xml').read_bytes())
 desktop = desktop_application(manifest, request)
 desktop.set('Id', 'WrongDesktop')

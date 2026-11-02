@@ -1,6 +1,6 @@
 name: Stable Release
 # The stable title is what the sequencer and release.py match runs by (stable.claim_run_title).
-run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || startsWith(inputs.tag, 'commit.') && 'Commit' || 'Stable' }} release ${{ inputs.tag }}
+run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || startsWith(inputs.tag, 'commit.') && 'Commit' || startsWith(inputs.tag, 'channel.') && 'Channel' || 'Stable' }} release ${{ inputs.tag }}
 
 # Dispatch on the default branch: workflows and scripts come from main and Actions caches
 # live in main's scope. The claim tag is an input. Admission resolves it to a commit and
@@ -43,7 +43,7 @@ permissions:
 # Commit builds publish nowhere and never share state, so each runs on its own (its claim tag is
 # the group).
 concurrency:
-  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || startsWith(inputs.tag, 'commit.') && inputs.tag || 'stable-release' }}
+  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || (startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && inputs.tag || 'stable-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -55,6 +55,9 @@ jobs:
     permissions:
       contents: write
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    # A channel claim's admission allocates its channel request in R2 (scripts/releases/
+    # channel_claims.py), so it holds the R2 release credentials; every other claim ignores them.
+    environment: release-signing
     outputs:
       claim-tag: ${{ steps.admit.outputs.claim-tag }}
       claim-object: ${{ steps.admit.outputs.claim-object }}
@@ -63,8 +66,8 @@ jobs:
       version: ${{ steps.admit.outputs.version }}
       release-id: ${{ steps.admit.outputs.release-id }}
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
-      # stable | canary | commit: selects the publication jobs (lanes.POLICY_JOBS), never a build or
-      # test job.
+      # stable | canary | commit | channel: selects the publication jobs (lanes.POLICY_JOBS), never
+      # a build or test job.
       policy: ${{ steps.admit.outputs.policy }}
       # The versioned image tag: the claim tag, or a canary tag with its `+` as `-`.
       docker-tag: ${{ steps.admit.outputs.docker-tag }}
@@ -76,9 +79,13 @@ jobs:
       # Whether the policy's publication job also waits for acceptance (every suite green).
       # Always true for a stable release; a canary claim chooses (release.py --[no-]require-green).
       require-green: ${{ steps.admit.outputs.require-green }}
-      # A commit build's baked bundle defaults (its claim's bundleEnv); `{}` for every release.
-      # Each candidate call passes it on and its validate re-checks it against the claim.
+      # A commit or channel build's baked bundle defaults (its claim's bundleEnv); `{}` for every
+      # release. Each candidate call passes it on and its validate re-checks it against the claim.
       bundle-env: ${{ steps.admit.outputs.bundle-env }}
+      # A channel claim's one allocated request (empty for every other claim). Each candidate call
+      # builds exactly it; its validate binds it to the claim through the claim archive's pointer.
+      channel-build: ${{ steps.admit.outputs.channel-build }}
+      channel-request-sha256: ${{ steps.admit.outputs.channel-request-sha256 }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -88,11 +95,19 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
+          # A stable-branded channel's first allocation reads the stable app identity
+          # (apps/desktop/product-identity.cjs).
+          toolchain: ${{ startsWith(inputs.tag, 'channel.') && 'all' || 'python' }}
       - id: admit
         run: python -m scripts.releases.stable admit
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_CLAIM_TAG: ${{ inputs.tag }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
 
   ci:
     name: Full CI pipeline
@@ -196,6 +211,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: darwin-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -220,6 +237,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: darwin-x64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -242,6 +261,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: win32-arm64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -267,6 +288,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: win32-x64
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -294,6 +317,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: win32-bundle
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -320,6 +345,8 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       bundle_env: ${{ needs.admit.outputs.bundle-env }}
+      channel_build: ${{ needs.admit.outputs.channel-build }}
+      channel_request_sha256: ${{ needs.admit.outputs.channel-request-sha256 }}
       release-phase: candidate
       jobs: termux
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
@@ -742,10 +769,61 @@ jobs:
             --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
             --bundle-env-json "$CLAIM_BUNDLE_ENV" --summary-out "$GITHUB_STEP_SUMMARY"
 
+  publish-channel:
+    name: Advance the claim's channel
+    # Channel policy only (lanes.POLICY_JOBS). The claim's packages already sit in its claim archive
+    # (releases/tag/<claim>/); this writes its admitted request's feeds and manifest under
+    # releases/channel-builds/<id>/ and CASes the preview channel head
+    # (scripts/releases/channel_claims.py publish). Never a stable or canary head, feed, Docker tag,
+    # GitHub release or Store. With require-green it waits for every suite; without, for the
+    # accepted candidate.
+    needs: [admit, candidate-manifest, acceptance]
+    if: >-
+      !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-channel']
+      && needs.candidate-manifest.result == 'success'
+      && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: release-signing
+    permissions:
+      contents: read
+    env:
+      RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
+      CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+      CHANNEL_BUILD: ${{ needs.admit.outputs.channel-build }}
+      CHANNEL_REQUEST_SHA256: ${{ needs.admit.outputs.channel-request-sha256 }}
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Promote the accepted candidate to the channel head
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.channel_claims publish
+      - name: Render the builds page from the accepted candidate
+        # Presentation: the channel head already moved.
+        continue-on-error: true
+        env:
+          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          CLAIM_BUNDLE_ENV: ${{ needs.admit.outputs.bundle-env }}
+        run: |
+          python scripts/render-builds-table.py --tag "$RELEASE_CLAIM_TAG" --repo "$GITHUB_REPOSITORY" \
+            --archive "$RELEASE_CLAIM_TAG" --r2-base-url "$CLOUDFLARE_R2_PUBLIC_URL" \
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
+            --bundle-env-json "$CLAIM_BUNDLE_ENV" --summary-out "$GITHUB_STEP_SUMMARY"
+
   publication:
     name: All artifact publication succeeded
     if: always()
-    needs: [admit, acceptance, publish-docker, publish-bundles, publish-canary, publish-commit]
+    needs: [admit, acceptance, publish-docker, publish-bundles, publish-canary, publish-commit, publish-channel]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -754,7 +832,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles publish-canary publish-commit
+      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles publish-canary publish-commit publish-channel
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
@@ -835,7 +913,7 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
-        # Canary and commit pages are rendered by their own publication jobs.
+        # Other build kinds render their pages in their own publication jobs.
         if: needs.admit.outputs.policy == 'stable' && fromJSON(needs.admit.outputs.lanes)['bundles']
         # The builds table is presentation: a render failure warns and the release still
         # publishes (rc.14-v0.21.7 passed every gate, then died here on missing env).

@@ -8,8 +8,12 @@ import sys
 
 import pytest
 
+from hermes_cli.update_channel import release_version, stamped_windows_version
 from scripts.bundles.desktop_prepare import BuildRequest
 from tests.scripts.test_desktop_preparation import _project
+
+# The channel claim a preview request builds: its packages carry the claim's version and quad.
+CLAIM = "channel.20261028T120000Z-v1.2.3"
 
 
 def channel_request(commit: str, sequence: int = 65536) -> dict:
@@ -17,8 +21,8 @@ def channel_request(commit: str, sequence: int = 65536) -> dict:
     return {
         "schema": 1, "buildId": "a" * 32, "channel": "unregistered-preview",
         "sequence": sequence, "repository": "fixture/project", "commit": commit,
-        "sourceVersion": "1.2.3", "version": f"0.0.{sequence}",
-        "windowsVersion": f"0.{sequence // 65536}.{sequence % 65536}.0",
+        "sourceVersion": "1.2.3", "releaseTag": CLAIM, "version": release_version(CLAIM),
+        "windowsVersion": stamped_windows_version(CLAIM),
         "identity": {
             "token": token, "displayName": "Hermes unregistered-preview",
             "appId": f"com.nousresearch.hermes-channel-{token}",
@@ -39,6 +43,17 @@ def test_preparation_preserves_exact_channel_inputs_without_source_version_order
                                   bundle_env={}, channel_request=admitted)
     assert request.version == admitted["version"] != admitted["sourceVersion"]
     assert request.tag is None
+    # The candidate legs pass the claim beside the request; no other tag is accepted.
+    subprocess.run(["git", "tag", CLAIM, commit], cwd=source, check=True)
+    tagged = BuildRequest.create(source, tag=CLAIM, commit=None, variant="bundled",
+                                 work=tmp_path / "work", cache=tmp_path / "cache",
+                                 bundle_env={}, channel_request=admitted)
+    assert tagged.tag == CLAIM and tagged.version == admitted["version"]
+    for other in ("v1.2.3", "channel.20261028T120001Z-v1.2.3"):
+        with pytest.raises(ValueError, match="channel request"):
+            BuildRequest.create(source, tag=other, commit=None, variant="bundled",
+                                work=tmp_path / "work", cache=tmp_path / "cache",
+                                bundle_env={}, channel_request=admitted)
     assert request.bundle_env == admitted["bundleEnv"]
     restored = BuildRequest.from_data(json.loads(json.dumps(request.data())))
     assert restored.channel_request == admitted
@@ -47,6 +62,7 @@ def test_preparation_preserves_exact_channel_inputs_without_source_version_order
     assert request.channel_request["identity"]["cliName"] != "changed"
 
     for changes in ({"sourceVersion": "0.9.0"}, {"commit": "b" * 40}, {"version": "1.2.3"},
+                    {"releaseTag": "v1.2.3"}, {"windowsVersion": "1.2.3.0"},
                     {"sequence": 2**32}, {"identity": {**channel_request(commit)["identity"], "cliName": "../bad"}}):
         invalid = {**channel_request(commit), **changes}
         with pytest.raises(ValueError):
@@ -118,6 +134,14 @@ def test_channel_environment_and_stamp_bind_the_request_not_ambient_oneoff_ident
     assert stamp["channelBuild"] == admitted
     assert stamp["tag"] is None and stamp["branch"] is None
     assert stamp["baseVersion"] == admitted["sourceVersion"]
+    # Built as a candidate, the stamp names the claim; any other payload tag is refused.
+    monkeypatch.setenv("HERMES_PAYLOAD_TAG", CLAIM)
+    assert write_install_stamp.build_stamp(update_mechanism="electron-updater",
+                                           channel_request=admitted)["tag"] == CLAIM
+    monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
+    with pytest.raises(ValueError, match="tag identity"):
+        write_install_stamp.build_stamp(update_mechanism="electron-updater", channel_request=admitted)
+    monkeypatch.delenv("HERMES_PAYLOAD_TAG")
     assert stamp["updateMechanism"] == "electron-updater"
     admitted["bundleEnv"].clear()
     assert stamp["channelBuild"]["bundleEnv"]

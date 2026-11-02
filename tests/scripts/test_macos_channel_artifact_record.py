@@ -17,10 +17,11 @@ from tests.scripts.test_channel_build_versions import channel_request
 def test_macos_record_binds_filename_version_and_provenance(tmp_path, monkeypatch, arch, channel):
     commit = "a" * 40
     request = channel_request(commit, sequence=6) if channel else None
-    tag = None if channel else "v1.2.3"
+    # A channel build's packages are recorded under its claim, like a canary's under its tag.
+    tag = request["releaseTag"] if channel else "v1.2.3"
     version = request["version"] if request else "1.2.3"
     identity = request["identity"]["appId"] if request else "ai.hermes.test"
-    stamp = ({"source": "channel-build", "channelBuild": request, "commit": commit, "tag": None}
+    stamp = ({"source": "channel-build", "channelBuild": request, "commit": commit, "tag": tag}
              if request else {"commit": commit, "tag": tag, "baseVersion": version})
     root = tmp_path / "release"
     app = root / "mac" / "Product.app"

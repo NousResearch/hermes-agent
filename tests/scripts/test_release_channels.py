@@ -16,6 +16,13 @@ import pytest
 
 from scripts.releases import lanes as lane_set
 
+# Every preview request builds one channel claim, whose version and Windows quad it carries.
+CLAIM = "channel.20261028T120000Z-v1.2.3"
+
+
+def claim(version: str) -> str:
+    return f"channel.20261028T120000Z-v{version}"
+
 
 @contextmanager
 def object_server():
@@ -26,6 +33,17 @@ def object_server():
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_HEAD(self):
+            key = urlsplit(self.path).path.removeprefix("/bucket/")
+            with lock:
+                requests.append(("HEAD", key))
+                body = objects.get(key)
+                self.send_response(200 if body is not None else 404)
+                if body is not None:
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("ETag", '"' + hashlib.sha256(body).hexdigest() + '"')
+                self.end_headers()
 
         def do_GET(self):
             parsed = urlsplit(self.path)
@@ -113,8 +131,8 @@ def test_unknown_channel_created_over_http_retains_identity_and_immutable_reques
             reader.resolve("not-registered-in-code")
         record = pub.create("not-registered-in-code")
         assert reader.resolve(record["name"]).manifest is None
-        one = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-a"})
-        two = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-b"})
+        one = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-a"}, release_tag=claim("1.2.3"))
+        two = pub.allocate(record["name"], "a" * 40, "1.2.3", {"HERMES_DATA_DIR_SUFFIX": "-b"}, release_tag=claim("1.2.3"))
         assert one["identity"] == two["identity"] == record["identity"]
         assert one["buildId"] != two["buildId"]
         assert one["sequence"] < two["sequence"]
@@ -149,7 +167,7 @@ def test_stable_branded_channel_reuses_the_published_stable_identity(monkeypatch
         reserved = [key for key in objects if key.startswith("releases/channel-identities/")]
         branded = pub.create("like-stable", "stable")
         assert branded["identity"] == stable["identity"]
-        assert pub.allocate("like-stable", "a" * 40, "1.2.3")["identity"] == stable["identity"]
+        assert pub.allocate("like-stable", "a" * 40, "1.2.3", release_tag=claim("1.2.3"))["identity"] == stable["identity"]
         assert [key for key in objects if key.startswith("releases/channel-identities/")] == reserved
         assert pub.create("like-stable", "stable")["identity"] == stable["identity"]
         with pytest.raises(ChannelError, match="different branding"):
@@ -182,7 +200,7 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
             created = list(pool.map(pub.create, ["race-preview"] * 2))
         assert created[0]["identity"] == created[1]["identity"]
         with ThreadPoolExecutor(max_workers=2) as pool:
-            allocated = list(pool.map(lambda _: pub.allocate("race-preview", "a" * 40, "1.0.0"), range(2)))
+            allocated = list(pool.map(lambda _: pub.allocate("race-preview", "a" * 40, "1.0.0", release_tag=claim("1.0.0")), range(2)))
         one, two = sorted(allocated, key=lambda r: r["sequence"])
         assert one["sequence"] != two["sequence"], "concurrent allocations must be distinct"
         for request in (one, two):
@@ -219,11 +237,11 @@ def test_concurrent_allocations_reverse_completion_retirement_and_readback():
             pub.create("race-preview")
         pub.create("visibility")
         faults["lose_put"] = True
-        lost = pub.allocate("visibility", "b" * 40, "1.0.0")
+        lost = pub.allocate("visibility", "b" * 40, "1.0.0", release_tag=claim("1.0.0"))
         assert pub.request(lost["buildId"]) == lost
         faults["stale_public"] = b"{}"
         with pytest.raises(PublicVisibilityError, match="Committed"):
-            pub.allocate("visibility", "b" * 40, "1.0.0")
+            pub.allocate("visibility", "b" * 40, "1.0.0", release_tag=claim("1.0.0"))
         assert json.loads(objects["releases/channels/visibility.json"])["nextSequence"] > lost["sequence"] + 1
 
 
@@ -244,8 +262,8 @@ def test_list_bootstrap_protected_roles_and_qualification_gate():
         faults["bad_pagination"] = False
         assert pub.reader.resolve("main").manifest is None
         with pytest.raises(ChannelError, match="Protected"):
-            pub.allocate("main", "a" * 40, "1.0.0")
-        request = pub.allocate("first", "a" * 40, "1.0.0")
+            pub.allocate("main", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
+        request = pub.allocate("first", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
         put_build(objects, request)
         with pytest.raises(ChannelError, match="qualification"):
             pub.promote(request["buildId"])
@@ -258,8 +276,8 @@ def test_retirement_race_requires_a_new_explicit_attempt():
     with object_server() as (url, objects, _headers, _requests, faults):
         pub = publisher(url, verify_build=lambda request, manifest: True)
         pub.create("preview")
-        first = pub.allocate("preview", "a" * 40, "1.0.0")
-        second = pub.allocate("preview", "b" * 40, "1.0.0")
+        first = pub.allocate("preview", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
+        second = pub.allocate("preview", "b" * 40, "1.0.0", release_tag=claim("1.0.0"))
         put_build(objects, first)
         put_build(objects, second)
         pub.promote(first["buildId"])
@@ -294,7 +312,7 @@ def test_retire_derives_receiver_kind_from_channel_identity_match():
             pub.create(name)
         # A mainline-like prerelease shares the destination stable identity.
         preview = pub._read("mainline-preview")[0]
-        first = pub.allocate("mainline-preview", "a" * 40, "1.0.0")
+        first = pub.allocate("mainline-preview", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
         put_build(objects, first)
         pub.promote(first["buildId"])
         target = pub._read("stable")[0]
@@ -308,7 +326,7 @@ def test_retire_derives_receiver_kind_from_channel_identity_match():
         assert in_place["receiver"] == {"kind": "in-place"}
         assert pub.reader.resolve("mainline-preview").requested["receiver"] == {"kind": "in-place"}
         # A suffixed channel identity can never match stable's.
-        second = pub.allocate("suffixed-preview", "b" * 40, "1.0.0")
+        second = pub.allocate("suffixed-preview", "b" * 40, "1.0.0", release_tag=claim("1.0.0"))
         put_build(objects, second)
         pub.promote(second["buildId"])
         discontinued = pub.retire("suffixed-preview", "stable", "2.0.0")
@@ -328,7 +346,7 @@ def test_retire_refuses_a_stable_head_without_the_previews_targets():
         pub = publisher(url, verify_build=lambda request, manifest: True)
         pub.create("intel-preview")
         pub.create("stable")
-        build = pub.allocate("intel-preview", "a" * 40, "1.0.0")
+        build = pub.allocate("intel-preview", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
         key = "releases/channel-builds/" + build["buildId"] + "/build.json"
         objects[key] = canonical_json(with_arches(put_build(objects, build), ("x64",)))
         pub.promote(build["buildId"])
@@ -367,7 +385,7 @@ def test_mutable_read_loss_recovery_never_clones_another_allocation():
                           lastAllocation={"buildId": "b" * 32, "sequence": 1})
             store[key] = canonical_json(winner)
         faults["conflict"] = compete
-        request = pub.allocate("nonce-check", "a" * 40, "1.0.0")
+        request = pub.allocate("nonce-check", "a" * 40, "1.0.0", release_tag=claim("1.0.0"))
         assert request["sequence"] == 2
         key = "releases/channel-builds/" + request["buildId"] + "/request.json"
         with pytest.raises(ChannelConflict):
@@ -856,10 +874,10 @@ def test_request_inputs_are_rejected_before_allocating():
         pub.create("validation")
         before = dict(objects)
         with pytest.raises(ValueError):
-            pub.allocate("validation", "a" * 40, "1.0.0", [])
+            pub.allocate("validation", "a" * 40, "1.0.0", [], release_tag=claim("1.0.0"))
         assert objects == before
         with pytest.raises(ChannelError):
-            pub.allocate("validation", "not-a-sha", "1.0.0")
+            pub.allocate("validation", "not-a-sha", "1.0.0", release_tag=claim("1.0.0"))
         assert objects == before
 
 

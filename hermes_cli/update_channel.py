@@ -62,8 +62,13 @@ _CANARY_TAG_RE = re.compile(rf"^canary\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>
 # commit (any pushed commit, not only main's), and its version is ``<core>+commit.<stamp>``. Commit
 # builds publish nowhere and their installs refuse updates (install stamp ``source: commit-build``).
 _COMMIT_TAG_RE = re.compile(rf"^commit\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
+# A channel build's claim tag: ``channel.<YYYYMMDDTHHMMSSZ>-v<pyproject version at the commit>``.
+# The channel name, branding and bundle defaults live in the annotated claim. Desktop packages use the
+# admitted request's identity and the claim's version (<core>+channel.<stamp>); native Windows
+# versions derive from that claim's timestamp, not the channel allocation sequence.
+_CHANNEL_TAG_RE = re.compile(rf"^channel\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
 # Every prefix-kind claim tag that is its own release identity: kind, stamp, core.
-_KIND_TAG_RE = re.compile(rf"^(?P<kind>canary|commit)\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
+_KIND_TAG_RE = re.compile(rf"^(?P<kind>canary|commit|channel)\.(?P<stamp>20\d{{6}}T\d{{6}}Z)-v(?P<core>{_VERSION_CORE})$")
 
 # A stable release tag: v<major>.<minor>.<patch>, no suffix. The major is
 # capped at three digits so the historical CalVer tags (v2026.7.20) can never
@@ -121,8 +126,51 @@ def commit_timestamp(tag: Any) -> str | None:
     return match["stamp"] if match else None
 
 
+def is_channel_tag(tag: Any) -> bool:
+    """True for a canonical channel build claim tag (``channel.<stamp>-vX.Y.Z``)."""
+    if not isinstance(tag, str):
+        return False
+    return bool(_CHANNEL_TAG_RE.fullmatch(tag.strip()))
+
+
+def channel_timestamp(tag: Any) -> str | None:
+    """Return the UTC claim stamp from a canonical channel build tag."""
+    match = _CHANNEL_TAG_RE.fullmatch(tag.strip()) if isinstance(tag, str) else None
+    return match["stamp"] if match else None
+
+
+def claim_stamp(tag: Any) -> str | None:
+    """The UTC stamp of a canary, commit or channel claim tag (its build time), else None."""
+    match = _KIND_TAG_RE.fullmatch(tag.strip()) if isinstance(tag, str) else None
+    return match["stamp"] if match else None
+
+
+def stamped_windows_version(tag: Any) -> str:
+    """The package quad ``yy.mmdd.hh.mmss`` of a stamped claim, from its tag stamp (the same value as
+    scripts/msix-shared.mjs canaryPackageVersionAt). Raises ValueError for any other tag."""
+    from datetime import UTC, datetime
+
+    stamp = claim_stamp(tag)
+    if stamp is None:
+        raise ValueError(f"Not a stamped claim tag: {tag!r}")
+    try:
+        instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        raise ValueError(f"Invalid claim calendar timestamp: {stamp}") from error
+    if instant.strftime("%Y%m%dT%H%M%SZ") != stamp:
+        raise ValueError(f"Invalid claim calendar timestamp: {stamp}")
+    return (f"{instant.year % 100}.{instant.month * 100 + instant.day}.{instant.hour}."
+            f"{instant.minute * 100 + instant.second}")
+
+
+def is_preview_tag(tag: Any) -> bool:
+    """True for a commit or channel build claim: it publishes to no release channel, feed, Docker
+    tag or Store (a channel build moves only its own R2 channel head, through the channel CAS)."""
+    return is_commit_tag(tag) or is_channel_tag(tag)
+
+
 def tag_kind(tag: Any) -> str | None:
-    """``stable``, ``canary`` or ``commit`` for a release identity tag, else None."""
+    """``stable``, ``canary``, ``commit`` or ``channel`` for a release identity tag, else None."""
     if not isinstance(tag, str):
         return None
     value = tag.strip()
@@ -133,7 +181,7 @@ def tag_kind(tag: Any) -> str | None:
 
 
 def tag_core(tag: Any) -> str | None:
-    """The ``X.Y.Z`` a stable, canary or commit tag builds on, else None."""
+    """The ``X.Y.Z`` a stable, canary, commit or channel tag builds on, else None."""
     if not isinstance(tag, str):
         return None
     value = tag.strip()
@@ -144,10 +192,11 @@ def tag_core(tag: Any) -> str | None:
 
 
 def release_version(tag: Any) -> str | None:
-    """The version a release identity tag carries: ``X.Y.Z`` (stable), ``X.Y.Z+canary.<stamp>``
-    or ``X.Y.Z+commit.<stamp>``.
+    """The version a release identity tag carries: ``X.Y.Z`` (stable), ``X.Y.Z+canary.<stamp>``,
+    ``X.Y.Z+commit.<stamp>`` or ``X.Y.Z+channel.<stamp>`` (a channel claim's source version; its
+    packages are versioned by the channel request).
 
-    Never derive it by stripping a leading ``v``: canary and commit tags start with their kind.
+    Never derive it by stripping a leading ``v``: prefix tags start with their kind.
     """
     if not isinstance(tag, str):
         return None
@@ -172,14 +221,26 @@ def canary_tag_for_date(version: str, date_utc: str) -> str:
     return f"canary.{date_utc}-v{core}"
 
 
-def commit_tag_for_date(version: str, date_utc: str) -> str:
-    """Return ``commit.<full UTC timestamp>-v<version>`` for a commit build claim."""
+def claim_tag_for_date(kind: str, version: str, date_utc: str) -> str:
+    """Return ``<kind>.<full UTC timestamp>-v<version>`` for a commit or channel build claim."""
+    if kind not in {"commit", "channel"}:
+        raise ValueError(f"not a stamped build kind: {kind!r}")
     core = version.removeprefix("v")
     if not STABLE_TAG_RE.fullmatch("v" + core):
-        raise ValueError(f"invalid version for a commit build: {version!r}")
+        raise ValueError(f"invalid version for a {kind} build: {version!r}")
     if not re.fullmatch(r"20\d{6}T\d{6}Z", date_utc):
-        raise ValueError(f"invalid commit build UTC timestamp: {date_utc!r}")
-    return f"commit.{date_utc}-v{core}"
+        raise ValueError(f"invalid {kind} build UTC timestamp: {date_utc!r}")
+    return f"{kind}.{date_utc}-v{core}"
+
+
+def commit_tag_for_date(version: str, date_utc: str) -> str:
+    """Return ``commit.<full UTC timestamp>-v<version>`` for a commit build claim."""
+    return claim_tag_for_date("commit", version, date_utc)
+
+
+def channel_tag_for_date(version: str, date_utc: str) -> str:
+    """Return ``channel.<full UTC timestamp>-v<version>`` for a channel build claim."""
+    return claim_tag_for_date("channel", version, date_utc)
 
 
 def install_id(project_root: Optional[Path] = None) -> str:

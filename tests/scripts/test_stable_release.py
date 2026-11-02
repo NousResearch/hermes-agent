@@ -542,8 +542,8 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    # A stable release never runs the canary's or the commit build's publication job.
-    others = {"publish-canary", "publish-commit"}
+    # A stable release never runs a canary's, commit build's or channel build's publication job.
+    others = {"publish-canary", "publish-commit", "publish-channel"}
     off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
            "candidates-termux", "termux-checks", *others}
     required = ["admit", *lane_set.JOB_LANES]

@@ -46,9 +46,10 @@ name: Desktop Bundled Release
 # carry release files. Non-publishing tag builds leave output on the runner.
 # Commit builds stage under releases/commit/<sha>/ and write a run summary.
 # They never publish a release, updater feed, Store submission, or APT channel.
-# Channel claims reuse the native build/smoke legs, with cache save steps skipped.
-# Legacy tagless channel receipts use releases/channel-builds/<id>/; only the
-# trusted publish-channel controller may CAS the channel after all smoke passes.
+# A channel build is a Stable Release candidate of its channel claim: its legs
+# build with the admitted channel request (identity) and stage under the claim's
+# tag archive; Stable Release's publish-channel CASes the channel head.
+# Commit/channel claims skip native cache saves.
 #
 # Payload staging is `hermes pm bundle` on the native runner. There is
 # no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
@@ -111,9 +112,17 @@ on:
         type: boolean
         default: false
       bundle_env:
-        description: "A commit claim's baked bundle defaults (its claim bundleEnv); validate refuses anything else."
+        description: "A commit or channel claim's baked bundle defaults (its claim bundleEnv); validate refuses anything else."
         type: string
         default: '{}'
+      channel_build:
+        description: "A channel claim's admitted request (build ID); stable verify binds it to the claim."
+        type: string
+        default: ''
+      channel_request_sha256:
+        description: "Digest of that request."
+        type: string
+        default: ''
       skip-signed:
         description: 'Stable candidates only: build no signed Windows package (the claim has no windows lane). Needs no Azure signing.'
         type: boolean
@@ -152,29 +161,6 @@ on:
         required: false
         type: string
         default: ''
-      disposable_channel:
-        description: 'Allocate a disposable preview from build_commit; prints a separate build dispatch. No native build in this run.'
-        type: string
-        default: ''
-      disposable_receivers:
-        description: 'Also allocate A/B and official-identity S/T test receivers in the fresh namespace; no releases.'
-        type: boolean
-        default: false
-      disposable_run:
-        description: 'Disposable allocation controller run id; the allocate step derives and overwrites it.'
-        type: string
-        default: ''
-      channel:
-        description: 'Preview channel name; this run allocates the channel and builds build_commit. Trusted default-branch dispatch only.'
-        required: false
-        type: string
-        default: ''
-      branding:
-        description: 'Channel app name, icon and package ID: preview (own app) or stable (the regular Hermes app). Fixed when the channel is first created.'
-        required: false
-        type: choice
-        options: [preview, stable]
-        default: preview
       build_commit:
         description: 'Commit-only build: EXACT full 40-hex SHA already pushed to this repo (workflow_dispatch from the default branch only). Mutually exclusive with tag.'
         required: false
@@ -208,24 +194,16 @@ permissions:
   id-token: write
 
 concurrency:
-  # One dispatch: a disposable run's identity is its channel name, so a
-  # re-dispatch of the same channel serializes instead of racing the namespace.
-  group: desktop-bundled-release-${{ inputs.channel || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}-${{ inputs.jobs }}
+  group: desktop-bundled-release-${{ inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}-${{ inputs.jobs }}
   cancel-in-progress: false
 
 env:
-  # One dispatch: a disposable-mode run leases its namespace by run id alone
-  # (no attempt suffix) so "re-run failed jobs" re-enters the same namespace.
-  R2_DISPOSABLE_RUN: ${{ inputs.disposable_run || (inputs.disposable_channel != '' && github.run_id) || '' }}
   RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
   RELEASE_CLAIM_OBJECT: ${{ inputs.claim-object }}
 
 jobs:
   validate:
     name: Pre-build setup
-    # One dispatch: in disposable mode the allocation steps run first (the
-    # channel pin comes from them), then admission validates the build source.
-    # A failed allocation fails this job and skips everything downstream.
     runs-on: blacksmith-4vcpu-ubuntu-2404
     # Public root is an environment variable, not a repository variable. No
     # secret is injected into admission; downstream jobs consume its outputs.
@@ -249,7 +227,6 @@ jobs:
       tag-object: ${{ steps.admission.outputs.tag-object }}
       payload-version: ${{ steps.admission.outputs.payload-version }}
       release-epoch: ${{ steps.admission.outputs.release-epoch }}
-      receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
       # The archive ref: the attempt ref for stable phases, the payload tag
@@ -266,13 +243,13 @@ jobs:
       termux: ${{ steps.admission.outputs.termux }}
       # Every group selected: the joins that render or summarize a whole build.
       all-jobs: ${{ steps.admission.outputs.all-jobs }}
-      channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
-      channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
-      disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
+      # A channel claim's admitted request; stable verify (admission) binds it to the claim.
+      channel-build: ${{ inputs.release-phase == 'candidate' && inputs.channel_build || '' }}
+      channel-request-sha256: ${{ inputs.release-phase == 'candidate' && inputs.channel_request_sha256 || '' }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ (inputs.build_commit != '' || inputs.channel != '' || inputs.release-phase != '') && github.sha || inputs.tag }}
+          ref: ${{ (inputs.build_commit != '' || inputs.release-phase != '') && github.sha || inputs.tag }}
           # Full checkout, always. Commit admission (require_pushed) needs the
           # full graph AND every pushed branch ref fetched into
           # refs/remotes/origin/* — a depth-1 checkout fetches only github.sha,
@@ -286,10 +263,6 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL: ${{ inputs.channel }}
-          BRANDING: ${{ inputs.branding }}
-          DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
-          DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           UPLOAD_RELEASE: ${{ inputs.upload_release }}
           JOBS: ${{ inputs.jobs }}
@@ -302,47 +275,13 @@ jobs:
         # Runner Python is intentional: the toolchain's upstream may be gone.
         # Same checkout contract the standalone archive job had: the tag ref
         # for tag builds, the dispatch head for commit builds.
-        if: inputs.disposable_run == '' && inputs.disposable_channel == '' && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+        if: inputs.release-phase == '' || inputs.release-phase == 'candidate'
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: python3 -m scripts.ci.archive_inputs
-
-      - name: Set up native identity reader
-        # product_identity() runs apps/desktop/product-identity.cjs: disposable
-        # receivers need it, and so does a stable-branded channel before any
-        # stable release has published a channel record to copy.
-        if: (inputs.disposable_channel != '' && inputs.disposable_receivers) || inputs.branding == 'stable'
-        uses: ./.github/actions/setup-pm
-        with:
-          toolchain: node
-          cache-python: false
-          archive-inputs: false
-      - name: Allocate the channel and build its immutable request
-        id: allocate
-        if: inputs.disposable_channel != '' || inputs.channel != ''
-        env:
-          DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
-          CHANNEL: ${{ inputs.channel }}
-          BRANDING: ${{ inputs.branding }}
-          DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
-          BUILD_COMMIT: ${{ inputs.build_commit }}
-          TAG: ${{ inputs.tag }}
-          RELEASE_PHASE: ${{ inputs.release-phase }}
-          JOBS: ${{ inputs.jobs }}
-          TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
-          UPLOAD_RELEASE: ${{ inputs.upload_release }}
-          BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GH_TOKEN: ${{ github.token }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-        run: python -m scripts.releases.channel_disposable
 
       - name: Validate tag shape, pyproject lockstep, and ancestry on origin/main
         id: admission
@@ -352,8 +291,8 @@ jobs:
           RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ inputs.claim-object }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL_BUILD: ${{ steps.allocate.outputs.channel_build || '' }}
-          CHANNEL_REQUEST_SHA256: ${{ steps.allocate.outputs.channel_request_sha256 || '' }}
+          CHANNEL_BUILD: ${{ inputs.release-phase == 'candidate' && inputs.channel_build || '' }}
+          CHANNEL_REQUEST_SHA256: ${{ inputs.release-phase == 'candidate' && inputs.channel_request_sha256 || '' }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
           JOBS: ${{ inputs.jobs }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -363,19 +302,14 @@ jobs:
           TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "${R2_DISPOSABLE_RUN:-}" ] && [ -z "${CHANNEL_BUILD:-}" ]; then
-            echo '::error::disposable_run requires a pinned channel build'; exit 1
-          fi
           # The one parser for the `jobs` input; every job gates on these outputs.
           python -m scripts.releases.job_groups >> "$GITHUB_OUTPUT"
           printf 'public-root=%s\npublic-base=%s\n' "$CLOUDFLARE_R2_PUBLIC_URL" "$CLOUDFLARE_R2_PUBLIC_URL" >> "$GITHUB_OUTPUT"
           printf 'archive-tag=%s\n' "${RELEASE_CLAIM_TAG:-$RELEASE_TAG}" >> "$GITHUB_OUTPUT"
-          if [ -n "${CHANNEL_BUILD:-}" ]; then
-            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ] || [ "$GITHUB_WORKFLOW_REF" != "$GITHUB_REPOSITORY/.github/workflows/desktop-bundled-release.yml@refs/heads/$DEFAULT_BRANCH" ]; then
-              echo '::error::channel builds require the default-branch dispatch workflow'; exit 1
-            fi
-            python -m scripts.releases.channel_publish admit
-            exit 0
+          # A channel request reaches the legs only in a channel claim's candidate phase, where
+          # `stable verify` binds it to the claim; nothing else may carry one.
+          if [ -n "${CHANNEL_BUILD:-}${CHANNEL_REQUEST_SHA256:-}" ] && [ "$RELEASE_PHASE" != candidate ]; then
+            echo '::error::channel requests reach only a channel claim candidate'; exit 1
           fi
           if [ -n "$BUILD_COMMIT" ]; then
             # Reject mixed inputs before loading code from the checkout.
@@ -394,8 +328,8 @@ jobs:
             python -m scripts.releases.commit_build admit
             exit 0
           fi
-          # A commit claim's bundle defaults arrive in the candidate phase, where `stable verify`
-          # requires them to equal its claim's bundleEnv; nothing else may carry them.
+          # A commit or channel claim's bundle defaults arrive in the candidate phase, where
+          # `stable verify` requires them to equal its claim's bundleEnv; nothing else may carry them.
           if [ -n "${BUNDLE_ENV_JSON:-}" ] && [ "$BUNDLE_ENV_JSON" != '{}' ] && [ "$RELEASE_PHASE" != candidate ]; then
             echo '::error::bundle environment defaults require a commit build'; exit 1
           fi
@@ -428,7 +362,7 @@ jobs:
     if: >-
       needs.validate.outputs.win32-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && inputs.build_commit == '' && inputs.channel == ''
+      && inputs.build_commit == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -449,7 +383,7 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       # The commit identity: a tagless commit build's, or a commit claim's in the candidate phase
       # (commit.<stamp>-vX.Y.Z keeps the Commit<sha7> identity; its tag still versions the packages).
-      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
+      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # Signature outputs are separate from the prepared dependency snapshot.
@@ -485,9 +419,9 @@ jobs:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ needs.validate.outputs.sha }}
-          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-depth: ${{ inputs.build_commit != '' && 1 || 0 }}
           filter: blob:none
-          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+          fetch-tags: ${{ inputs.build_commit == '' }}
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
@@ -525,13 +459,13 @@ jobs:
           args=(--tag "$HERMES_PAYLOAD_TAG")
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
           if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
-          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
           python -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
 
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save
@@ -547,7 +481,7 @@ jobs:
       # ELECTRON_BUILDER_CACHE at packager/builder) and npm's content cache.
       # Commit/channel claims skip saves by tag policy, not by a read-only token.
       - name: Save the bundle-assembly caches
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target.label == 'win32-x64' && inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target.label == 'win32-x64' && inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -571,7 +505,7 @@ jobs:
       # Signing vars the build only warns and ships UNSIGNED binaries, which
       # is right for a fork or a local build and wrong for a release.
       - name: Require Azure signing when publishing
-        if: inputs.skip-signed != true && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+        if: inputs.skip-signed != true && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
         shell: bash
         env:
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
@@ -663,31 +597,13 @@ jobs:
           node apps/desktop/scripts/audit-bundle-arch.mjs \
             --arch="${MATRIX_LABEL##*-}" --root=apps/desktop/release
 
-      - name: Record and stage channel windows packages
-        if: needs.validate.outputs.channel-build != ''
-        shell: bash
-        working-directory: .build/channel-controller
-        env:
-          TARGET: ${{ matrix.target.label }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-        run: |
-          root="$GITHUB_WORKSPACE/apps/desktop/release"
-          python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
-            --root "$root" --commit "$RELEASE_COMMIT" --channel-request "$RUNNER_TEMP/channel-request.json" \
-            --out "$root/metadata-windows-${TARGET##*-}.json"
-          python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
-            --name "$TARGET" --root "$root" --include '*.msix' --include 'metadata-*.json'
-
       - name: Stage Windows packages to R2
         # A channel dispatch carries build_commit as provenance, not as the
         # receipt mode: its packages are staged by the pinned channel request
         # step above, and HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT are both
         # empty here. Without this gate the step falls through to the tag
         # branch and handoff refuses an empty tag.
-        if: needs.validate.outputs.channel-build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+        if: (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
         shell: bash
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -703,8 +619,10 @@ jobs:
         run: |
           args=(--include '*.msix')
           if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; }; then
+            # A channel claim's packages are read against its admitted request (identity, versions).
+            channel=(); if [ -n "${CHANNEL_BUILD:-}" ]; then channel=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" "${channel[@]}" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
@@ -723,7 +641,7 @@ jobs:
     if: >-
       needs.validate.outputs.win32-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && inputs.build_commit == '' && inputs.channel == ''
+      && inputs.build_commit == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -744,7 +662,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && needs.validate.outputs.win32-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel != '')
+      && inputs.build_commit != ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -760,7 +678,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && needs.validate.outputs.win32-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel != '')
+      && inputs.build_commit != ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -786,8 +704,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-x64-release.result == 'success' && needs.build-win32-x64-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-x64-commit.result == 'success' && needs.build-win32-x64-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && needs.build-win32-x64-release.result == 'success' && needs.build-win32-x64-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-win32-x64-commit.result == 'success' && needs.build-win32-x64-release.result == 'skipped') }}
     steps: &native-build-result-steps
       - name: Require exactly the selected native build to succeed
         shell: bash
@@ -813,8 +731,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-arm64-release.result == 'success' && needs.build-win32-arm64-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-arm64-commit.result == 'success' && needs.build-win32-arm64-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && needs.build-win32-arm64-release.result == 'success' && needs.build-win32-arm64-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-win32-arm64-commit.result == 'success' && needs.build-win32-arm64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
@@ -833,7 +751,7 @@ jobs:
     if: >-
       needs.validate.outputs.darwin-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && inputs.build_commit == '' && inputs.channel == ''
+      && inputs.build_commit == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -854,7 +772,7 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       # The commit identity: a tagless commit build's, or a commit claim's in the candidate phase
       # (commit.<stamp>-vX.Y.Z keeps the Commit<sha7> identity; its tag still versions the packages).
-      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
+      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
@@ -875,9 +793,9 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           # Channel/commit builds derive versions from the request/env, not
           # git tags; tag builds need tags for the canary MSIX number.
-          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-depth: ${{ inputs.build_commit != '' && 1 || 0 }}
           filter: blob:none
-          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+          fetch-tags: ${{ inputs.build_commit == '' }}
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
@@ -915,13 +833,13 @@ jobs:
           args=(--tag "$HERMES_PAYLOAD_TAG")
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
           if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
-          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
           python3 -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
 
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save
@@ -934,7 +852,7 @@ jobs:
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
       - name: Require signing credentials when publishing
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -960,7 +878,7 @@ jobs:
         # notarytool takes a FILE PATH for --key; raw .p8 content in argv
         # dies with `Invalid option: ***`. The build step must NOT re-declare
         # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -1036,7 +954,7 @@ jobs:
         # The backstop against a silent unsigned publish: assess the packed
         # app against the real Gatekeeper policy (requires a Developer ID
         # signature AND a stapled notarization ticket to pass offline).
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
         shell: bash
         run: |
           shopt -s nullglob
@@ -1055,7 +973,7 @@ jobs:
       # Only signatures from a build Apple notarized are kept for the next run,
       # and only when this build signed something the restored entry lacked.
       - name: Save verified macOS payload signatures
-        if: ${{ success() && inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && (inputs.upload_release == true || inputs.release-phase == 'candidate') && hashFiles('.cache/mac-payload-signatures/**') != '' && steps.mac-signatures.outputs.cache-matched-key != format('mac-signatures-v1-{0}-{1}', matrix.target.label, hashFiles('.cache/mac-payload-signatures/**')) }}
+        if: ${{ success() && inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && (inputs.upload_release == true || inputs.release-phase == 'candidate') && hashFiles('.cache/mac-payload-signatures/**') != '' && steps.mac-signatures.outputs.cache-matched-key != format('mac-signatures-v1-{0}-{1}', matrix.target.label, hashFiles('.cache/mac-payload-signatures/**')) }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/mac-payload-signatures
@@ -1076,32 +994,16 @@ jobs:
           MATRIX_LABEL="${{ matrix.target.label }}"
           arch="${MATRIX_LABEL##*-}"
           channel="${{ needs.validate.outputs.channel }}"
+          # Preview requests configure electron-builder's neutral latest feed, not the policy name.
+          if [ "$channel" = channel ]; then channel=latest; fi
           f="apps/desktop/release/${channel}-mac.yml"
           test -s "$f"
           mv "$f" "apps/desktop/release/${arch}-${channel}-mac.yml"
 
-      - name: Record and stage channel macos packages
-        if: needs.validate.outputs.channel-build != ''
-        shell: bash
-        working-directory: .build/channel-controller
-        env:
-          TARGET: ${{ matrix.target.label }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-        run: |
-          root="$GITHUB_WORKSPACE/apps/desktop/release"
-          python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-            --root "$root" --commit "$RELEASE_COMMIT" --channel-request "$RUNNER_TEMP/channel-request.json" \
-            --out "$root/metadata-macos-${TARGET##*-}.json"
-          python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
-            --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include 'metadata-*.json'
-
       - name: Stage macOS packages and feed inputs to R2
         # Channel dispatches stage through the pinned request step above; see
         # the Windows leg for the empty-tag fallthrough this gate prevents.
-        if: needs.validate.outputs.channel-build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+        if: (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
         shell: bash
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -1116,8 +1018,10 @@ jobs:
           # Commit claims have no updater; their packager emits no feed yml.
           if [[ "$HERMES_PAYLOAD_TAG" != commit.* ]]; then args+=(--include '*-mac.yml'); fi
           if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
+            # A channel claim's packages are read against its admitted request (identity, versions).
+            channel=(); if [ -n "${CHANNEL_BUILD:-}" ]; then channel=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" "${channel[@]}" \
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
@@ -1137,7 +1041,7 @@ jobs:
     if: >-
       needs.validate.outputs.darwin-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && inputs.build_commit == '' && inputs.channel == ''
+      && inputs.build_commit == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -1158,7 +1062,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && needs.validate.outputs.darwin-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel != '')
+      && inputs.build_commit != ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -1174,7 +1078,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && needs.validate.outputs.darwin-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel != '')
+      && inputs.build_commit != ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -1200,8 +1104,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-arm64-release.result == 'success' && needs.build-darwin-arm64-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-arm64-commit.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && needs.build-darwin-arm64-release.result == 'success' && needs.build-darwin-arm64-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-darwin-arm64-commit.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
   build-darwin-x64:
@@ -1220,8 +1124,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-x64-release.result == 'success' && needs.build-darwin-x64-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-x64-commit.result == 'success' && needs.build-darwin-x64-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && needs.build-darwin-x64-release.result == 'success' && needs.build-darwin-x64-commit.result == 'skipped')
+          || (inputs.build_commit != '' && needs.build-darwin-x64-commit.result == 'success' && needs.build-darwin-x64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
@@ -1332,7 +1236,7 @@ jobs:
       && needs.build-darwin-arm64.result == 'success' && needs.validate.outputs.darwin-arm64 == 'true'
       && (inputs.release-phase != 'candidate' || needs.stage-receipt-darwin-arm64.result == 'success')
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
       && inputs.skip-tests != true
     permissions:
       contents: read
@@ -1349,13 +1253,12 @@ jobs:
       tag: ${{ inputs.tag }}
       # The archive ref the handoff was staged under (attempt ref for stable).
       archive-tag: ${{ needs.validate.outputs.archive-tag }}
-      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      commit-build: ${{ inputs.build_commit != '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   smoke-darwin-x64:
     name: Smoke macOS x64 dmg/zip
@@ -1365,7 +1268,7 @@ jobs:
       && needs.build-darwin-x64.result == 'success' && needs.validate.outputs.darwin-x64 == 'true'
       && (inputs.release-phase != 'candidate' || needs.stage-receipt-darwin-x64.result == 'success')
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
       && inputs.skip-tests != true
     permissions:
       contents: read
@@ -1382,13 +1285,12 @@ jobs:
       tag: ${{ inputs.tag }}
       # The archive ref the handoff was staged under (attempt ref for stable).
       archive-tag: ${{ needs.validate.outputs.archive-tag }}
-      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      commit-build: ${{ inputs.build_commit != '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   # Stable passes windows-smokes-with-bundle: its per-arch calls only build, and
   # the win32-bundle call smokes both staged MSIX beside assembly, so the bundle
@@ -1403,7 +1305,7 @@ jobs:
         || (inputs.windows-smokes-with-bundle == true && needs.validate.outputs.win32-bundle == 'true'
            && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success')))
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
       && inputs.skip-tests != true
       && inputs.skip-signed != true
     permissions:
@@ -1417,13 +1319,12 @@ jobs:
       tag: ${{ inputs.tag }}
       # The archive ref the handoff was staged under (attempt ref for stable).
       archive-tag: ${{ needs.validate.outputs.archive-tag }}
-      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      commit-build: ${{ inputs.build_commit != '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   smoke-win32-arm64:
     name: Smoke Windows arm64 MSIX
@@ -1435,7 +1336,7 @@ jobs:
         || (inputs.windows-smokes-with-bundle == true && needs.validate.outputs.win32-bundle == 'true'
            && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success')))
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
       && inputs.skip-tests != true
       && inputs.skip-signed != true
     permissions:
@@ -1449,13 +1350,12 @@ jobs:
       tag: ${{ inputs.tag }}
       # The archive ref the handoff was staged under (attempt ref for stable).
       archive-tag: ${{ needs.validate.outputs.archive-tag }}
-      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      commit-build: ${{ inputs.build_commit != '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
       controller-sha: ${{ github.sha }}
       public-base: ${{ needs.validate.outputs.public-base }}
       public-root: ${{ needs.validate.outputs.public-root }}
-      disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
   # Assembly never writes a feed, including for canaries.
   # A build leg selected in this same call must succeed. One that is not
@@ -1471,7 +1371,7 @@ jobs:
       && (needs.validate.outputs.win32-x64 != 'true' || needs.build-win32-x64.result == 'success')
       && (needs.validate.outputs.win32-arm64 != 'true' || needs.build-win32-arm64.result == 'success')
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: blacksmith-32vcpu-windows-2025
     environment: release-signing
     cache-mode: read
@@ -1487,7 +1387,7 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       # The commit identity: a tagless commit build's, or a commit claim's in the candidate phase
       # (commit.<stamp>-vX.Y.Z keeps the Commit<sha7> identity; its tag still versions the packages).
-      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
+      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # The paths build-win32-x64 saves its bundle-assembly caches from.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
@@ -1506,8 +1406,7 @@ jobs:
       # job runs it with no checkout at all today — ERR_MODULE_NOT_FOUND.
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # Channel assembly/publishing code stays at the trusted controller.
-          ref: ${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}
+          ref: ${{ needs.validate.outputs.sha }}
           # Only a stable candidate reads git: its MSIX version is the claim tag's
           # tagger time, and its receipt step re-checks claim custody (claim tag
           # object + release-line ancestry). A canary's version is the stamp in its
@@ -1528,7 +1427,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          archive-inputs: ${{ inputs.disposable_run == '' && inputs.disposable_channel == '' }}
+          archive-inputs: true
           cache-python: false
           save-tools-cache: false
           # npm's cache comes from build-win32-x64 below; nothing ever saves
@@ -1555,10 +1454,7 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          if [ -n "${CHANNEL_BUILD:-}" ]; then
-            python -m scripts.releases.handoff fetch --channel-request "$RUNNER_TEMP/channel-request.json" \
-              --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
-          elif [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
+          if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             python -m scripts.releases.handoff fetch --commit-build "$HERMES_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
@@ -1601,16 +1497,14 @@ jobs:
         run: |
           # All modes stop at signed bytes. The separate handoff stages them
           # for smoke; publication must not assemble or sign a second time.
-          if [ -n "${CHANNEL_BUILD:-}" ]; then
-            node scripts/stage-msixbundle.mjs --channel-request "$RUNNER_TEMP/channel-request.json" --variant bundled
-            exit 0
-          fi
           if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
             exit 0
           fi
           args=()
           if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
+          # A channel claim's bundle takes its identity from the admitted request.
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           if [ "$SKIP_SIGNED" != true ]; then
             node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
           fi
@@ -1623,10 +1517,7 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          if [ -n "${CHANNEL_BUILD:-}" ]; then
-            python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
-              --name windows-universal --root apps/desktop/release --include '*.msixbundle'
-          elif [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
+          if [ -n "$HERMES_BUILD_COMMIT" ] && [ -z "$HERMES_PAYLOAD_TAG" ]; then
             python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
@@ -1647,75 +1538,11 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
         run: python -m scripts.releases.stable stage-receipt --receipt win32-bundle
 
-  publish-channel:
-    name: Publish the complete native-smoked channel build
-    needs:
-      [
-        validate,
-        build-darwin-arm64,
-        build-darwin-x64,
-        build-win32-arm64,
-        build-win32-x64,
-        assemble-win32-bundle,
-        smoke-darwin-arm64,
-        smoke-darwin-x64,
-        smoke-win32-arm64,
-        smoke-win32-x64
-      ]
-    if: >-
-      !cancelled() && needs.validate.outputs.channel-build != '' && needs.validate.result == 'success'
-      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
-      && needs.validate.outputs.win32-bundle == 'true'
-      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
-      && needs.build-win32-arm64.result == 'success' && needs.build-win32-x64.result == 'success'
-      && needs.assemble-win32-bundle.result == 'success'
-      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
-      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    environment: release-signing
-    cache-mode: read
-    timeout-minutes: 45
-    permissions:
-      contents: write
-      actions: read
-    env:
-      CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
-      CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_NEEDS: ${{ toJSON(needs) }}
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
-    steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ github.sha }}
-          # require_pushed proves commit-build ancestry from local history;
-          # a shallow clone fails after main advances past the built SHA.
-          fetch-depth: 0
-          filter: blob:none
-      - name: Publish tested disposable receiver without promoting T
-        if: needs.validate.outputs.receiver-candidate == 'true'
-        run: python -m scripts.releases.channel_publish receiver-publish --root "$RUNNER_TEMP/channel-publish"
-      - name: Publish immutable feeds and manifest, then CAS channel head
-        if: needs.validate.outputs.receiver-candidate != 'true'
-        shell: bash
-        run: |
-          python -m scripts.releases.channel_publish publish --root "$RUNNER_TEMP/channel-publish"
-          python scripts/render-builds-table.py --channel-build "$CHANNEL_BUILD" \
-            --channel-request-sha256 "$CHANNEL_REQUEST_SHA256" --repo "$GITHUB_REPOSITORY" \
-            --r2-base-url "$(python -c 'from scripts.releases.r2_scope import channel_public_base; print(channel_public_base())')" \
-            --summary-out "$GITHUB_STEP_SUMMARY"
-
   publish-win32-updater:
     name: Publish the tested Windows canary bundle
     needs: [validate, assemble-win32-bundle, smoke-win32-arm64, smoke-win32-x64]
     if: >-
-      !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
+      !cancelled() && inputs.build_commit == '' && inputs.upload_release == true
       && inputs.release-phase == ''
       && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
       && needs.validate.outputs.win32-bundle == 'true'
@@ -1796,7 +1623,7 @@ jobs:
     name: Publish the macOS updater feed
     needs: [validate, build-darwin-arm64, build-darwin-x64, smoke-darwin-arm64, smoke-darwin-x64]
     if: >-
-      !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
+      !cancelled() && inputs.build_commit == '' && inputs.upload_release == true
       && inputs.release-phase == ''
       && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
@@ -1863,7 +1690,7 @@ jobs:
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate]
-    if: inputs.channel == '' && inputs.disposable_channel == '' && needs.validate.outputs.termux == 'true' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    if: needs.validate.outputs.termux == 'true' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     environment: release-signing
     timeout-minutes: 90
@@ -1873,7 +1700,7 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       # The commit identity: a tagless commit build's, or a commit claim's in the candidate phase
       # (commit.<stamp>-vX.Y.Z keeps the Commit<sha7> identity; its tag still versions the packages).
-      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
+      HERMES_BUILD_COMMIT: ${{ (inputs.build_commit != '' && needs.validate.outputs.sha) || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.validate.outputs.sha) || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
@@ -2280,7 +2107,7 @@ jobs:
     # Failed builds still get a per-tag diagnostic page. The renderer only
     # advances the channel landing page when every prerequisite succeeded.
     if: |
-      always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
+      always() && inputs.build_commit == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.validate.outputs.all-jobs == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -2338,7 +2165,7 @@ jobs:
         termux-deb
       ]
     if: |
-      always() && inputs.build_commit != '' && inputs.channel == '' && inputs.disposable_channel == ''
+      always() && inputs.build_commit != ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.validate.outputs.all-jobs == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404

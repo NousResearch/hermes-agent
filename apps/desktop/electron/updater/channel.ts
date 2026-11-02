@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import { releaseTagVersion } from '../feature-flags'
+import { releaseTagVersion, stampedWindowsVersion } from '../feature-flags'
 
 import {
   type ActiveChannel,
@@ -200,12 +200,15 @@ export class ChannelResolver {
       throw new Error('Channel manifest request binding mismatch')
     }
 
+    // A preview build's release identity is its own channel claim; its packages carry that tag's
+    // version and stamped Windows quad (the sequence orders the channel head only).
     if (
       channel.policy === 'preview' &&
-      (request.version !== `0.0.${request.sequence}` ||
-        request.windowsVersion !== `0.${Math.floor(request.sequence / 65536)}.${request.sequence % 65536}.0`)
+      (!/^channel\./.test(request.releaseTag || '') ||
+        request.version !== releaseTagVersion(request.releaseTag) ||
+        request.windowsVersion !== stampedWindowsVersion(request.releaseTag))
     ) {
-      throw new Error('Channel package version does not match sequence')
+      throw new Error('Channel package version does not match its claim')
     }
 
     this.assertPackages(channel, manifest)
@@ -238,15 +241,14 @@ export class ChannelResolver {
     const request = manifest.request
     const prefixes = [buildPrefix(request.buildId)]
 
-    if (channel.policy !== 'preview') {
-      if (!request.releaseTag || request.version !== releaseTagVersion(request.releaseTag)) {
-        throw new Error('Protected release version mismatch')
-      }
-
-      // The archive prefix is the attempt ref when the request names one; a
-      // bare releaseTag fallback never holds attempt artifacts (fail closed).
-      prefixes.push(`releases/tag/${request.archiveRef ?? request.releaseTag}/`)
+    if (!request.releaseTag || request.version !== releaseTagVersion(request.releaseTag)) {
+      throw new Error('Channel release version mismatch')
     }
+
+    // Every build's packages live in its tag archive: the attempt ref when the request names one
+    // (a bare releaseTag fallback never holds attempt artifacts, so it fails closed), else the
+    // release tag itself (a canary's or channel build's own claim).
+    prefixes.push(`releases/tag/${request.archiveRef ?? request.releaseTag}/`)
 
     for (const entry of manifest.packages) {
       const expectedIdentity = entry.platform === 'darwin' ? request.identity.appId : request.identity.msixAppIdWithOrg

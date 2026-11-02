@@ -164,7 +164,7 @@ def test_a_canary_runs_every_stable_job_with_every_lane_and_differs_only_in_publ
     # Every other build and test job runs: macOS Intel and Termux included, which a default claim
     # leaves out, and install-e2e, which updates released stable tags to the canary commit.
     not_canary = {job for job, policies in lane_set.POLICY_JOBS.items() if "canary" not in policies}
-    assert not_canary == {"publish-bundles", "publish-commit"}
+    assert not_canary == {"publish-bundles", "publish-commit", "publish-channel"}
     assert {job for job, runs in canary.items() if not runs} == not_canary | upgrade
     for opted_out in ("candidates-darwin-x64", "candidates-termux", "termux-checks"):
         assert canary[opted_out] and not lane_set.jobs_to_run(lane_set.DEFAULT)[opted_out], opted_out

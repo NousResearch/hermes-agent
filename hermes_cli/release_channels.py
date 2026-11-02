@@ -102,11 +102,6 @@ def artifact_key(value: object) -> str:
     return key
 
 
-def package_versions(sequence: int) -> tuple[str, str]:
-    _integer(sequence, "sequence", 1, MAX_SEQUENCE)
-    return f"0.0.{sequence}", f"0.{sequence // 65536}.{sequence % 65536}.0"
-
-
 def _integer(value: object, label: str, minimum: int = 1, maximum: int = MAX_SEQUENCE + 1) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         raise ChannelError(f"Invalid {label}")
@@ -145,10 +140,20 @@ def validate_request(value: object, *, repository: str | None = None,
     if "controllerCommit" in request:
         require_commit(request["controllerCommit"])
     _match(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", request.get("sourceVersion"), "source version")
-    versions = package_versions(request.get("sequence"))
+    _integer(request.get("sequence"), "sequence", 1, MAX_SEQUENCE)
     if policy == "preview":
-        if (request.get("version"), request.get("windowsVersion")) != versions:
-            raise ChannelError("Channel package version does not match sequence")
+        # A preview build's release identity is its own channel claim (channel.<stamp>-vX.Y.Z on the
+        # built commit): its packages carry that tag's version and stamped Windows quad, and live in
+        # its tag archive. The sequence orders the channel head only.
+        from hermes_cli.update_channel import is_channel_tag, release_version, stamped_windows_version, tag_core
+
+        tag = request.get("releaseTag")
+        if not is_channel_tag(tag) or tag != tag.strip() or "archiveRef" in request:
+            raise ChannelError("Preview request needs its channel claim tag")
+        if tag_core(tag) != request["sourceVersion"]:
+            raise ChannelError("Channel claim does not name the source version")
+        if (request.get("version"), request.get("windowsVersion")) != (release_version(tag), stamped_windows_version(tag)):
+            raise ChannelError("Channel package version does not match its claim")
     else:
         _match(
             # The retired v<stable>+canary.<stamp> shape stays readable for records already published.
@@ -362,11 +367,12 @@ def validate_manifest(value: object, record: dict, base_url: str) -> dict:
     packages = manifest.get("packages")
     if not isinstance(packages, list) or not packages:
         raise ChannelError("Build manifest has no packages")
-    prefixes = [build_prefix(request["buildId"])]
-    if record["policy"] in {"stable-release", "canary-release"}:
-        # The archive prefix is the attempt ref when the request names one; a
-        # bare releaseTag fallback never holds attempt artifacts (fail closed).
-        prefixes.append(f"releases/tag/{request.get('archiveRef') or request['releaseTag']}/")
+    # Every build's packages live in its tag archive: the attempt ref when the request names one (a
+    # bare releaseTag fallback never holds attempt artifacts, so it fails closed), else the release
+    # tag itself (a canary's or a channel build's own claim). Feeds and metadata may sit beside the
+    # request under the build prefix.
+    prefixes = [build_prefix(request["buildId"]),
+                f"releases/tag/{request.get('archiveRef') or request['releaseTag']}/"]
     seen = set()
     for package in packages:
         if not isinstance(package, dict):

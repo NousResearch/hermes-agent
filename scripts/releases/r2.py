@@ -14,7 +14,7 @@ from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
 
-from scripts.releases.r2_scope import R2Scope
+from scripts.releases.r2_scope import bucket_url, object_url
 
 REGION = "auto"
 SERVICE = "s3"
@@ -324,7 +324,7 @@ def download_object(
     creds: dict[str, str], base: str, bucket: str, key: str, file: Path, now: str,
     *, expected_size: int, expected_sha256: str,
 ) -> None:
-    url = R2Scope.configured().object_url(base, bucket, key)
+    url = object_url(base, bucket, key)
     parsed = urlparse(url)
     def headers(attempt: int) -> dict[str, str]:
         return r2_headers("GET", parsed.netloc, parsed.path, "", EMPTY_SHA,
@@ -451,11 +451,12 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 def channel_for_tag(tag: str) -> str:
     """Return the release channel encoded by a canonical tag.
 
-    A commit build publishes to no channel; asking for its channel is a bug, never ``stable``."""
-    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+    A commit or channel build publishes to no release channel; asking for its channel is a bug,
+    never ``stable``."""
+    from hermes_cli.update_channel import is_canary_tag, is_preview_tag
 
-    if is_commit_tag(tag):
-        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
+    if is_preview_tag(tag):
+        raise ValueError(f"Commit and channel builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
@@ -523,9 +524,7 @@ DEFAULT_PUBLIC_URL = "https://hermes-assets.nousresearch.com"
 
 
 def public_base_url(explicit: str | None = None) -> str:
-    return R2Scope.configured().public_base(
-        explicit or os.environ.get("CLOUDFLARE_R2_PUBLIC_URL") or DEFAULT_PUBLIC_URL
-    )
+    return (explicit or os.environ.get("CLOUDFLARE_R2_PUBLIC_URL") or DEFAULT_PUBLIC_URL).rstrip("/")
 
 
 def public_url_for(base_url: str, key: str) -> str:
@@ -581,7 +580,6 @@ def required_env(name: str) -> str:
 
 def credentials() -> tuple[dict[str, str], str, str]:
     """(creds, base, bucket) from the R2 env vars. No secrets are printed."""
-    R2Scope.configured()  # Fail closed on a malformed disposable lease.
     creds = {
         "access_key_id": required_env("CLOUDFLARE_R2_ACCESS_KEY_ID"),
         "secret_key": required_env("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),
@@ -634,7 +632,7 @@ def put_object(
     if cache_control:
         extra["Cache-Control"] = cache_control
 
-    url = R2Scope.configured().object_url(base, bucket, key)
+    url = object_url(base, bucket, key)
     last_error: Exception | None = None
     response: Response | None = None
     for _ in range(3):
@@ -784,8 +782,6 @@ def list_objects(
     if creds is None:
         creds, base, bucket = credentials()
     assert creds is not None and base is not None and bucket is not None
-    scope = R2Scope.configured()
-    prefix = scope.listing_prefix(prefix)
     keys: list[str] = []
     last_modified: dict[str, int] = {}
     token: str | None = None
@@ -796,7 +792,7 @@ def list_objects(
         if token:
             params["continuation-token"] = token
         query = canonical_query(params)
-        url = f"{scope.bucket_url(base, bucket)}?{query}"
+        url = f"{bucket_url(base, bucket)}?{query}"
         if fetcher is not None:
             response = fetcher(method="GET", url=url, body_hash=EMPTY_SHA)
             if response.status >= 400:
@@ -809,8 +805,7 @@ def list_objects(
         if not parsed["truncated"] or not parsed["nextToken"]:
             break
         token = parsed["nextToken"]
-    return {"keys": [scope.logical_key(key) for key in keys],
-            "lastModified": {scope.logical_key(key): value for key, value in last_modified.items()}}
+    return {"keys": keys, "lastModified": last_modified}
 
 
 def get_object(
@@ -818,7 +813,7 @@ def get_object(
     fetcher: Callable[..., Response] | None = None,
 ) -> str | None:
     """GET one object's body, or None when it does not exist / cannot be read."""
-    url = R2Scope.configured().object_url(base, bucket, key)
+    url = object_url(base, bucket, key)
     response = (
         fetcher(method="GET", url=url, body_hash=EMPTY_SHA)
         if fetcher is not None
@@ -855,6 +850,17 @@ def commit_doomed_keys(keys: list[str], cutoff: str, last_modified: dict[str, fl
         elif key.startswith("releases/commit/") and last_modified.get(key, cutoff_ms) < cutoff_ms:
             doomed.append(key)
     return doomed
+
+
+_CHANNEL_CLAIM_KEY_RE = re.compile(r"^releases/tag/(channel\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+)/")
+
+
+def channel_doomed_keys(keys: list[str], cutoff: str, heads: set[str]) -> list[str]:
+    """Channel claim archives whose stamp date is before ``cutoff`` (YYYYMMDD), except the claims a
+    channel head names (``heads``): an installed channel build updates from its head's archive."""
+    return [key for key in keys if (match := _CHANNEL_CLAIM_KEY_RE.match(key)) is not None
+            and match[2] < cutoff and match[1] not in heads]
+
 
 
 def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
@@ -976,9 +982,20 @@ def prune(
     last_modified = listing["lastModified"]
     now = amz_timestamp()
 
+    # Establish expired preview metadata before treating immutable descriptors as live roots.
+    from .channel_retention import channel_retention_plan
+
+    def read_json(key: str) -> object:
+        text = get_object(creds, base, bucket, key, now, fetcher=fetcher) if key else None
+        try:
+            return json.loads(text) if text is not None else None
+        except ValueError:
+            return None
+
+    heads, expired_metadata = channel_retention_plan(read_json, keys, cutoff_date)
     feed_xml_by_dir: dict[str, list[str]] = {}
     protected: set[str] = set()
-    for key in [k for k in keys if k.endswith(".appinstaller")]:
+    for key in [k for k in keys if k.endswith(".appinstaller") and k not in expired_metadata]:
         dir_key = key[: key.rfind("/")]
         xml = get_object(creds, base, bucket, key, now, fetcher=fetcher)
         if not _feed_bundle_uris(xml):
@@ -1025,6 +1042,8 @@ def prune(
             *canary_doomed_keys(keys, cutoff_date),
             *stale_feed_bundle_keys(keys, feed_xml_by_dir, last_modified, cutoff_ms),
             *commit_doomed_keys(keys, commit_cutoff_date, last_modified, current - commit_window),
+            *channel_doomed_keys(keys, cutoff_date, heads),
+            *expired_metadata,
         ]
         if key not in protected
     ]
@@ -1032,11 +1051,13 @@ def prune(
     if not doomed:
         print(f"OK r2: no canary objects older than {keep_days} days")
         return
-    for key in sorted(doomed):
+    # Requests are the retention evidence for a build: remove them last so an interrupted
+    # deletion can still classify remaining descriptors and archive objects on the next run.
+    for key in sorted(doomed, key=lambda key: (key.endswith("/request.json"), key)):
         if dry_run:
             print(f"(dry-run) would delete r2:{key}")
             continue
-        url = R2Scope.configured().object_url(base, bucket, key)
+        url = object_url(base, bucket, key)
         response = (
             fetcher(method="DELETE", url=url, body_hash=EMPTY_SHA)
             if fetcher is not None

@@ -39,8 +39,6 @@ export interface ChannelBuildRequest {
   commit: string
   controllerCommit?: string
   sourceVersion: string
-  /** Build-only official receiver rehearsal, admitted under a disposable authority. */
-  receiverCandidate?: true
   releaseTag?: string
   version: string
   windowsVersion: string

@@ -292,7 +292,7 @@ def test_the_builds_page_of_a_commit_build_touches_no_release_or_channel(monkeyp
     assert "<code>HERMES_HOME</code>" in page and "Unset" in page
     with pytest.raises(ValueError, match="exact source commit"):
         rbt.render_page(TAG, {}, "https://releases.example")
-    with pytest.raises(ValueError, match="Only a commit build page"):
+    with pytest.raises(ValueError, match="Only a commit or channel build page"):
         rbt.render_page("v1.2.3", {}, "https://releases.example", bundle_env={"HERMES_HOME": None})
     text = summary.read_text(encoding="utf-8")
     assert f"Commit build {TAG}" in text and f"releases/tag/{TAG}/index.html" in text

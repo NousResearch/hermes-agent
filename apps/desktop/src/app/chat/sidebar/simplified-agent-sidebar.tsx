@@ -151,7 +151,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           sessions={pinned.filter(matches)}
         />
         <SimplifiedAgentList
-          sessions={rows}
           renderSessions={agentSessions => (
             <SidebarSessionsSection
               {...shared}
@@ -169,6 +168,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
               sessions={agentSessions}
             />
           )}
+          sessions={rows}
         />
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
         {!loading && rows.length === 0 && (

@@ -115,6 +115,7 @@ export function SimplifiedAgentList({
         if (agent.connectionId !== owner) {
           throw new Error(t.profiles.fleet.gatewayUnreachable(agent.gateway))
         }
+
         await ensureGatewayProfile(agent.profile)
       }
 
@@ -131,7 +132,7 @@ export function SimplifiedAgentList({
     <section aria-label={t.simplifiedAgents.agents} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
       <SidebarPanelLabel>{t.simplifiedAgents.agents}</SidebarPanelLabel>
       {sorted.map((agent, index) => (
-        <div key={agent.id} role="group" aria-label={`${agent.label} · ${agent.gateway}`} className="shrink-0">
+        <div aria-label={`${agent.label} · ${agent.gateway}`} className="shrink-0" key={agent.id} role="group">
           {(index === 0 || sorted[index - 1].connectionId !== agent.connectionId) && (
             <p className="px-2 pt-2 text-xs text-(--ui-text-tertiary)">{agent.gateway}</p>
           )}

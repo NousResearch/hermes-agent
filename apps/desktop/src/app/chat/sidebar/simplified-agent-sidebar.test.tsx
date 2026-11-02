@@ -90,9 +90,11 @@ afterEach(() => {
 it('keeps server-pinned chats reachable and resumes the exact session; New session uses the usual action', () => {
   mount()
   expect(screen.getByText('Pinned plan')).toBeTruthy()
+
   const agentGroup = screen
     .getByRole('button', { name: /Agent settings: default/ })
     .closest('[role=group]') as HTMLElement
+
   expect(within(agentGroup).getByText('Regular chat')).toBeTruthy()
   expect(within(agentGroup).queryByText('Pinned plan')).toBeNull()
   expect(screen.queryByText('Chats', { exact: true })).toBeNull()

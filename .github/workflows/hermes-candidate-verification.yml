@@ -56,8 +56,9 @@ jobs:
           focus_count=$(node - "$file" <<'NODE'
           const fs = require('node:fs');
           const source = fs.readFileSync(process.argv[2], 'utf8');
-          const matches = source.match(/window\\.addEventListener\\(["']focus["']/g) ?? [];
-          process.stdout.write(String(matches.length));
+          const count = source.split('window.addEventListener(').slice(1)
+            .filter((part) => part.startsWith('"focus"') || part.startsWith("'focus'")).length;
+          process.stdout.write(String(count));
           NODE
           )
           echo "verified_asset=$asset"

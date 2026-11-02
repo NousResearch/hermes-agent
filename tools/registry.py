@@ -1,11 +1,13 @@
 """Central registry for all hermes-agent tools: each tool file calls ``registry.register()``
 at import to declare schema, handler, toolset membership and availability check;
 ``model_tools.py`` queries the registry instead of keeping parallel data structures.
-Cycle-safe import chain: this module imports nothing from model_tools or tool files;
+Built-in modules are indexed from source by ``defer_builtin_tools()`` and imported when a
+lookup first needs one of their tools or toolsets. Cycle-safe import chain: this module imports nothing from model_tools or tool files;
 tools/*.py import it at module level; model_tools.py imports both; run_agent/cli import
 model_tools."""
 
 import ast
+import contextvars
 import functools
 import importlib
 import inspect
@@ -81,32 +83,157 @@ def _bound_json_error_result(result: str) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _is_registry_register_call(node: ast.AST) -> bool:
-    """True when *node* is a ``registry.register(...)`` call expression."""
-    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
-        return False
-    func = node.value.func
+def _is_register_func(func: ast.AST) -> bool:
     return (
         isinstance(func, ast.Attribute) and func.attr == "register"
         and isinstance(func.value, ast.Name) and func.value.id == "registry")
 
 
-def _module_registers_tools(module_path: Path) -> bool:
-    """True when the module body (or a module-level ``for``) calls ``registry.register(...)``.
-    Only module-body statements count, so helpers registering inside a function are skipped;
-    a text prefilter avoids ``ast.parse`` for files lacking both words."""
+def _is_registry_register_call(node: ast.AST) -> bool:
+    """True when *node* is a ``registry.register(...)`` call expression."""
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and _is_register_func(node.value.func)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolModuleIndex:
+    """What one built-in tool module registers, read from its source without importing it.
+    ``names``/``toolsets`` are None when some registration is not statically resolvable (the
+    module is then imported for any lookup the index cannot answer)."""
+
+    names: Optional[frozenset[str]]
+    toolsets: Optional[frozenset[str]]
+
+
+_MUTATING_METHODS = frozenset({"update", "setdefault", "pop", "popitem", "clear", "append", "extend", "insert"})
+
+
+def _single_bindings(tree: ast.Module) -> dict[str, ast.AST]:
+    """Module-level names bound once by a plain top-level assignment and never mutated: the only
+    names a registration's ``name``/``toolset`` is resolved through."""
+    stores: dict[str, int] = {}
+    mutated: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, (ast.Subscript, ast.Attribute)) and not isinstance(node.ctx, ast.Load):
+            if isinstance(node.value, ast.Name):
+                mutated.add(node.value.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in _MUTATING_METHODS and isinstance(node.func.value, ast.Name):
+                mutated.add(node.func.value.id)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            mutated.update(node.names)
+    bindings: dict[str, ast.AST] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+            name, value = stmt.targets[0].id, stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+            name, value = stmt.target.id, stmt.value
+        else:
+            continue
+        if stores.get(name) == 1 and name not in mutated:
+            bindings[name] = value
+    return bindings
+
+
+def _follow(node: Optional[ast.AST], env: dict[str, ast.AST], bindings: dict[str, ast.AST]) -> Optional[ast.AST]:
+    """Resolve a Name through the loop variables (*env*, first hop only), then module constants."""
+    for _ in range(8):
+        if not isinstance(node, ast.Name):
+            return node
+        node, env = (env[node.id] if node.id in env else bindings.get(node.id)), {}
+    return None
+
+
+def _static_str(node: Optional[ast.AST], env: dict[str, ast.AST], bindings: dict[str, ast.AST]) -> Optional[str]:
+    """The string *node* evaluates to at import time, or None when that needs running the module."""
+    node = _follow(node, env, bindings)
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if not (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)):
+        return None
+    container = _follow(node.value, env, bindings)
+    if not isinstance(container, ast.Dict) or None in container.keys:  # a ``**spread`` may hold the key
+        return None
+    found = None
+    for key, value in zip(container.keys, container.values):
+        if isinstance(key, ast.Constant) and key.value == node.slice.value:
+            found = value  # a repeated key: the last one wins, as at runtime
+    return _static_str(found, {}, bindings) if found is not None else None
+
+
+def _loop_envs(loop: ast.For, bindings: dict[str, ast.AST]) -> Optional[list[dict[str, ast.AST]]]:
+    """One loop-variable binding per iteration of a module-level ``for`` over a literal table."""
+    items = _follow(loop.iter, {}, bindings)
+    target = loop.target
+    if not isinstance(items, (ast.Tuple, ast.List)):
+        return None
+    if isinstance(target, ast.Name):
+        return [{target.id: elt} for elt in items.elts]
+    if not (isinstance(target, ast.Tuple) and all(isinstance(t, ast.Name) for t in target.elts)):
+        return None
+    envs = []
+    for elt in items.elts:
+        row = _follow(elt, {}, bindings)
+        if not isinstance(row, (ast.Tuple, ast.List)) or len(row.elts) != len(target.elts):
+            return None
+        envs.append({t.id: value for t, value in zip(target.elts, row.elts)})
+    return envs
+
+
+def _static_registration(call: ast.Call, env: dict[str, ast.AST], bindings: dict[str, ast.AST]):
+    """``(name, toolset)`` of one ``registry.register(...)`` call, each None when unresolvable."""
+    if any(kw.arg is None for kw in call.keywords) or any(isinstance(a, ast.Starred) for a in call.args):
+        return None, None
+    kwargs = {kw.arg: kw.value for kw in call.keywords}
+    name = kwargs.get("name", call.args[0] if call.args else None)
+    toolset = kwargs.get("toolset", call.args[1] if len(call.args) > 1 else None)
+    return _static_str(name, env, bindings), _static_str(toolset, env, bindings)
+
+
+def _index_tree(tree: ast.Module) -> Optional[ToolModuleIndex]:
+    """Index of the module-level registrations (a module-level ``for`` over a table counts), or None
+    when the module registers nothing at import. Any other ``registry.register`` reference (inside an
+    ``if``, a function, an alias) makes the index opaque, since it may register more."""
+    bindings = _single_bindings(tree)
+    found: list[tuple[Optional[str], Optional[str]]] = []
+    handled: set[int] = set()  # the ``registry.register`` attribute node of every call indexed below
+    for stmt in tree.body:
+        if _is_registry_register_call(stmt):
+            calls, envs = [stmt.value], [{}]
+        elif isinstance(stmt, ast.For):
+            calls = [s.value for s in stmt.body if _is_registry_register_call(s)]
+            envs = _loop_envs(stmt, bindings) if calls else []
+        else:
+            continue
+        handled.update(id(call.func) for call in calls)
+        if envs is None:
+            found.append((None, None))
+        else:
+            found.extend(_static_registration(call, env, bindings) for env in envs for call in calls)
+    if not handled:
+        return None
+    other_refs = any(
+        isinstance(node, ast.Attribute) and _is_register_func(node) and id(node) not in handled
+        for node in ast.walk(tree))
+    names = {name for name, _ in found}
+    toolsets = {toolset for _, toolset in found}
+    if other_refs or None in names or None in toolsets:
+        return ToolModuleIndex(names=None, toolsets=None)
+    return ToolModuleIndex(names=frozenset(names), toolsets=frozenset(toolsets))
+
+
+def _module_tool_index(module_path: Path) -> Optional[ToolModuleIndex]:
+    """Static registration index of a candidate module, or None when it registers no tools at import.
+    A text prefilter avoids ``ast.parse`` for files lacking both words."""
     try:
         source = module_path.read_text(encoding="utf-8-sig")
         if "registry" not in source or "register" not in source:
-            return False
+            return None
         tree = ast.parse(source, filename=str(module_path))
     except (OSError, SyntaxError):
-        return False
-    # Table-driven modules register several tools from one loop, still at import time.
-    return any(
-        _is_registry_register_call(stmt)
-        or (isinstance(stmt, ast.For) and any(_is_registry_register_call(s) for s in stmt.body))
-        for stmt in tree.body)
+        return None
+    return _index_tree(tree)
 
 
 def _tool_module_candidates(tools_path: Path) -> list[Path]:
@@ -119,8 +246,17 @@ def _tool_module_candidates(tools_path: Path) -> list[Path]:
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
-    """Import built-in self-registering tool modules and return their module names. The
-    per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
+    """Import every built-in self-registering tool module now and return the module names that
+    imported. ``model_tools`` uses :func:`defer_builtin_tools` instead; this is for callers that
+    need the whole built-in registry populated before they read it directly."""
+    return [name for name in defer_builtin_tools(tools_dir) if registry._import_tool_module(name)]
+
+
+def defer_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
+    """Index the built-in self-registering tool modules without importing them; the registry imports
+    a module the first time a lookup needs one of its tools or toolsets. Returns the module names.
+
+    The per-file AST scan costs ~145 ms over ~100 files, so the index is memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
     from agent.safe_worker_policy import safe_worker_enabled
@@ -132,11 +268,18 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
         for module_name in module_names:
             importlib.import_module(module_name)
         return module_names
+    index = _scan_builtin_tool_modules(tools_dir)
+    registry._defer_modules(index)
+    return list(index)
+
+
+def _scan_builtin_tool_modules(tools_dir: Optional[Path]) -> dict[str, ToolModuleIndex]:
+    """``{module name: index}`` for every candidate module that registers at import, in import order."""
     tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
     cache = _load_discovery_cache()
     fresh_cache: dict[str, list] = {}
     cache_dirty = False
-    module_names: list[str] = []
+    modules: dict[str, ToolModuleIndex] = {}
     for path in _tool_module_candidates(tools_path):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
             continue
@@ -152,27 +295,52 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
             stat_key = (st.st_mtime_ns, st.st_size)
         except OSError:
             continue
-        cached = cache.get(abs_path)
-        if isinstance(cached, (list, tuple)) and len(cached) == 3 and tuple(cached[:2]) == stat_key:
-            registers = bool(cached[2])
-        else:
-            registers = _module_registers_tools(path)
+        entry = cache.get(abs_path)
+        index = _cached_index(entry) if _cache_entry_matches(entry, stat_key) else _MISS
+        if index is _MISS:
+            index = _module_tool_index(path)
             cache_dirty = True
-        fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
-        if registers:
-            module_names.append(".".join(("tools", *rel_parts)))
+        fresh_cache[abs_path] = [*stat_key, *_index_cache_fields(index)]
+        if index is not None:
+            modules[".".join(("tools", *rel_parts))] = index
 
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
         _save_discovery_cache(fresh_cache)
-    imported: list[str] = []
-    for mod_name in module_names:
-        try:
-            importlib.import_module(mod_name)
-            imported.append(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-    return imported
+    return modules
+
+
+_MISS = object()
+
+
+def _module_initializing(module: str) -> bool:
+    """True while *module*'s body is still executing (importlib's own in-progress marker)."""
+    return bool(getattr(getattr(sys.modules.get(module), "__spec__", None), "_initializing", False))
+
+
+def _cache_entry_matches(entry: object, stat_key: tuple[int, int]) -> bool:
+    """``[mtime_ns, size, registers, names, toolsets]`` for the file as it is now."""
+    return isinstance(entry, list) and len(entry) == 5 and tuple(entry[:2]) == stat_key
+
+
+def _cached_index(entry: list):
+    """The index a matching cache entry records, or ``_MISS`` when its fields are malformed."""
+    registers, names, toolsets = entry[2:]
+    if not registers:
+        return None
+    if names is None and toolsets is None:
+        return ToolModuleIndex(names=None, toolsets=None)
+    if isinstance(names, list) and isinstance(toolsets, list):
+        return ToolModuleIndex(names=frozenset(map(str, names)), toolsets=frozenset(map(str, toolsets)))
+    return _MISS
+
+
+def _index_cache_fields(index: Optional[ToolModuleIndex]) -> list:
+    if index is None:
+        return [False, [], []]
+    if index.names is None:
+        return [True, None, None]
+    return [True, sorted(index.names), sorted(index.toolsets)]
 
 
 def _discovery_cache_path() -> Optional[Path]:
@@ -409,7 +577,8 @@ def _core_tools_gated_by(fn: Callable) -> set[str]:
         core = frozenset(_HERMES_CORE_TOOLS)
     except Exception:
         return set()
-    return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
+    # Unloaded modules cannot hold *fn*, so this reads what is registered without importing more.
+    return {e.name for e in registry._snapshot_entries(load=False) if e.check_fn is fn and e.name in core}
 
 
 def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
@@ -459,6 +628,84 @@ class ToolRegistry:
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
         self._generation: int = 0
+        # Built-in tool modules indexed by defer_builtin_tools() but not imported yet, with reverse
+        # maps for the lookups that import them. Own lock: imports never run under ``_lock``.
+        self._pending: dict[str, ToolModuleIndex] = {}
+        self._pending_by_name: dict[str, list[str]] = {}
+        self._pending_by_toolset: dict[str, list[str]] = {}
+        self._pending_lock = threading.Lock()
+
+    # ---- Deferred built-in modules ------------------------------------
+
+    def _defer_modules(self, index: dict[str, ToolModuleIndex]) -> None:
+        """Record built-in tool modules to import on first need, skipping any already imported
+        (their bodies have registered)."""
+        with self._pending_lock:
+            for module, entry in index.items():
+                if module in self._pending or (module in sys.modules and not _module_initializing(module)):
+                    continue
+                self._pending[module] = entry
+                for name in entry.names or ():
+                    self._pending_by_name.setdefault(name, []).append(module)
+                for toolset in entry.toolsets or ():
+                    self._pending_by_toolset.setdefault(toolset, []).append(module)
+
+    def _forget_pending(self, module: str) -> None:
+        with self._pending_lock:
+            entry = self._pending.pop(module, None)
+            if entry is None:
+                return
+            for reverse, keys in ((self._pending_by_name, entry.names), (self._pending_by_toolset, entry.toolsets)):
+                for key in keys or ():
+                    remaining = [m for m in reverse.get(key, ()) if m != module]
+                    if remaining:
+                        reverse[key] = remaining
+                    else:
+                        reverse.pop(key, None)
+
+    def _pending_for(self, names=(), toolsets=(), *, opaque: Optional[bool] = None, skip: str = "") -> list[str]:
+        """Pending modules a lookup of *names*/*toolsets* needs, in import order. Opaque modules (no
+        static index) join when *opaque* is True, or by default whenever the index cannot rule them
+        out: any toolset lookup, or a name no pending module indexes and nothing has registered."""
+        with self._pending_lock:
+            needed = {m for name in names for m in self._pending_by_name.get(name, ())}
+            needed.update(m for toolset in toolsets for m in self._pending_by_toolset.get(toolset, ()))
+            if opaque is None:
+                opaque = bool(toolsets) or any(
+                    name not in self._pending_by_name and name not in self._tools for name in names)
+            if opaque:
+                needed.update(m for m, entry in self._pending.items() if entry.names is None)
+        needed.discard(skip)
+        return sorted(needed)
+
+    def _load_pending(self, names=(), toolsets=(), *, opaque: Optional[bool] = None, skip: str = "") -> None:
+        """Import the pending modules a lookup needs. Never call under ``_lock``: a module body
+        registers its tools, and another thread importing that module may be waiting on the lock."""
+        if self._pending:
+            for module in self._pending_for(names, toolsets, opaque=opaque, skip=skip):
+                self._import_tool_module(module)
+
+    def _load_all_pending(self) -> None:
+        if self._pending:
+            with self._pending_lock:
+                modules = sorted(self._pending)
+            for module in modules:
+                self._import_tool_module(module)
+
+    def _import_tool_module(self, module: str) -> bool:
+        """Import one built-in tool module (its body registers its tools) and retire its index entry.
+        Runs in an empty context so import-time values bind the launch profile, as boot-time discovery
+        did, never the served profile whose turn first needed the tool. A failed import is logged and
+        not retried by lookups, as eager discovery made one attempt."""
+        try:
+            contextvars.Context().run(importlib.import_module, module)
+        except Exception as e:  # an optional tool's missing dependency must not break the lookup
+            logger.warning("Could not import tool module %s: %s", module, e, exc_info=True)
+            self._forget_pending(module)
+            return False
+        if not _module_initializing(module):  # still running: a lookup from inside its own body
+            self._forget_pending(module)
+        return True
 
     @staticmethod
     def current_scope_key() -> str:
@@ -497,14 +744,19 @@ class ToolRegistry:
 
     def _snapshot_state(
         self, scope: Optional[str] = None) -> tuple[list[ToolEntry], dict[str, Callable]]:
-        """Return a coherent snapshot of registry entries and toolset checks."""
+        """Return a coherent snapshot of registry entries and toolset checks (registered ones only:
+        whole-registry readers call ``_load_all_pending()`` first)."""
         with self._lock:
             entries = list(self._merged_tools(scope).values())
             checks = dict(self._toolset_checks)
             checks.update({e.toolset: e.check_fn for e in entries if e.check_fn is not None})
             return entries, checks
 
-    def _snapshot_entries(self) -> list[ToolEntry]:
+    def _snapshot_entries(self, *, load: bool = True) -> list[ToolEntry]:
+        """Every entry; ``load=True`` first imports each deferred built-in module, ``load=False``
+        is for callers that already loaded what they read."""
+        if load:
+            self._load_all_pending()
         return self._snapshot_state()[0]
 
     def _toolset_has_exposable_tools(self, toolset: str, entries: list[ToolEntry]) -> bool:
@@ -518,6 +770,7 @@ class ToolRegistry:
 
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
+        self._load_pending((name,))
         with self._lock:
             return self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
 
@@ -536,6 +789,7 @@ class ToolRegistry:
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Local slot state only — no global fallback."""
+        self._load_pending((name,), opaque=False)
         with self._lock:
             return self._slot(scope).get(name)
 
@@ -546,7 +800,16 @@ class ToolRegistry:
         return self._snapshot_entries()
 
     def get_tool_names_for_toolset(self, toolset: str) -> list[str]:
-        return sorted(e.name for e in self._grouped(self._snapshot_entries()).get(toolset, []))
+        self._load_pending(toolsets=(toolset,))
+        return sorted(e.name for e in self._grouped(self._snapshot_entries(load=False)).get(toolset, []))
+
+    def get_entries_for_toolset_prefix(self, prefix: str) -> list[ToolEntry]:
+        """Entries whose toolset starts with *prefix* (``"mcp-"``: every MCP server's tools),
+        importing only the deferred built-in modules that could register one."""
+        with self._pending_lock:
+            toolsets = [toolset for toolset in self._pending_by_toolset if toolset.startswith(prefix)]
+        self._load_pending(toolsets=toolsets, opaque=True)
+        return [e for e in self._snapshot_entries(load=False) if e.toolset.startswith(prefix)]
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
@@ -708,8 +971,12 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
                 f"got {type(params).__name__}")
+        caller_module = self._caller_module()
+        # A plugin or MCP tool named like a deferred built-in must meet it registered (the shadow and
+        # override checks below, and the plugin ledger's restore point); a built-in's own body skips.
+        self._load_pending((name,), opaque=False, skip=caller_module)
         handler_owner = self._plugin_owner_of(handler)
-        caller_owner = self._plugin_namespace_of_module(self._caller_module())
+        caller_owner = self._plugin_namespace_of_module(caller_module)
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
@@ -777,8 +1044,9 @@ class ToolRegistry:
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
         scope = normalize_scope(scope)
+        caller_mod = self._caller_module()
+        self._load_pending((name,), opaque=False)  # else a later lazy import would bring it back
         with self._lock:
-            caller_mod = self._caller_module()
             caller_owner = self._plugin_namespace_of_module(caller_mod)
             caller_scope = self._plugin_scope_of(caller_owner) if caller_owner is not None else None
             if caller_owner is not None and scope is not None and scope != caller_scope:
@@ -829,6 +1097,8 @@ class ToolRegistry:
         """Move process-global registrations into *scope*'s overlay (a single-profile process that
         starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
         scope = normalize_scope(scope)
+        names = list(names)
+        self._load_pending(names, opaque=False)
         with self._lock:
             moved = {name: self._tools.pop(name) for name in names if name in self._tools}
             if moved:
@@ -880,7 +1150,8 @@ class ToolRegistry:
         absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
         result = []
         check_results: dict[Callable, bool] = {}
-        entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
+        self._load_pending(tool_names)
+        entries_by_name = {entry.name: entry for entry in self._snapshot_entries(load=False)}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
@@ -989,7 +1260,8 @@ class ToolRegistry:
 
     def is_toolset_available(self, toolset: str) -> bool:
         """True when a toolset has at least one exposable tool (never raises)."""
-        return self._toolset_has_exposable_tools(toolset, self._snapshot_entries())
+        self._load_pending(toolsets=(toolset,))
+        return self._toolset_has_exposable_tools(toolset, self._snapshot_entries(load=False))
 
 
     def check_toolset_requirements(self) -> dict[str, bool]:
@@ -1012,6 +1284,7 @@ class ToolRegistry:
 
     def get_toolset_requirements(self) -> dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
+        self._load_all_pending()
         entries, toolset_checks = self._snapshot_state()
         result: dict[str, dict] = {}
         for toolset, members in self._grouped(entries).items():

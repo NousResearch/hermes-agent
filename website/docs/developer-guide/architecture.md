@@ -275,9 +275,9 @@ tools/registry.py  (no deps — imported by all tool files)
        ↑
 tools/*.py  (each calls registry.register() at import time)
        ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
+model_tools.py  (imports tools/registry + indexes tool modules for deferred import)
        ↑
 run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.
+Each tool module registers when it is imported, and the registry imports it the first time a lookup needs one of its tools or toolsets (an agent's schema build, a dispatch, a whole-registry read). Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

@@ -1,9 +1,10 @@
 """Thin orchestration layer over the tool registry.
 
-Importing runs tool discovery (each tools/*.py self-registers via
-tools.registry.register()); exposes get_tool_definitions() (toolset-filtered
-schemas sent to the model) and handle_function_call() (dispatch with
-hooks/middleware) plus registry pass-throughs.
+Importing indexes the built-in tool modules (each tools/*.py self-registers via
+tools.registry.register() when the registry first needs it) and runs plugin
+discovery; exposes get_tool_definitions() (toolset-filtered schemas sent to the
+model) and handle_function_call() (dispatch with hooks/middleware) plus registry
+pass-throughs.
 """
 
 import os
@@ -18,7 +19,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
+from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, defer_builtin_tools, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
@@ -145,8 +146,9 @@ def _run_async(coro):
     return _get_tool_loop().run_until_complete(coro)
 
 
-# --- Tool discovery (importing each tools/*.py triggers registry.register) ---
-discover_builtin_tools()
+# --- Tool discovery: index tools/*.py; the registry imports a module (whose body calls
+# registry.register) the first time a lookup needs one of its tools or toolsets ---
+defer_builtin_tools()
 
 # MCP discovery is deliberately NOT run here: it blocks up to 120 s and the
 # gateway lazy-imports this module inside its event loop; each entry point
@@ -164,10 +166,21 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# Backward-compat constants (built once after discovery)
-TOOL_TO_TOOLSET_MAP: dict[str, str] = registry.get_tool_to_toolset_map()
+# Backward-compat constants, built once on first access: a whole-registry snapshot imports
+# every deferred tool module, which a CLI turn never needs.
+_LAZY_CONSTANTS = {
+    "TOOL_TO_TOOLSET_MAP": registry.get_tool_to_toolset_map,
+    "TOOLSET_REQUIREMENTS": registry.get_toolset_requirements,
+}
 
-TOOLSET_REQUIREMENTS: dict[str, dict] = registry.get_toolset_requirements()
+
+def __getattr__(name: str):
+    build = _LAZY_CONSTANTS.get(name)
+    if build is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = globals()[name] = build()
+    return value
+
 
 # Tool names from the last get_tool_definitions() call (execute_code sandbox fallback).
 _last_resolved_tool_names: list[str] = []

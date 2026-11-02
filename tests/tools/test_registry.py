@@ -410,7 +410,7 @@ class TestPackageToolDiscovery:
         with patch("tools.registry.importlib.import_module"):
             discover_builtin_tools(tools_dir)
             with patch(
-                "tools.registry._module_registers_tools",
+                "tools.registry._module_tool_index",
                 side_effect=AssertionError("nested file was re-scanned despite a cache hit"),
             ):
                 imported = discover_builtin_tools(tools_dir)

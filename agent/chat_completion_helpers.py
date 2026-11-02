@@ -34,6 +34,9 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
+# Re-exported: both moved to agent/provider_sse.py; the old import path keeps working.
+from agent.provider_sse import _parse_provider_sse_events, _status_code_from_value
+from agent.stream_max_lifetime import StreamLifetime, resolve_stream_max_lifetime
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -132,15 +135,6 @@ class ProviderStreamError(Exception):
         return text
 
 
-def _status_code_from_value(value: Any) -> Optional[int]:
-    if isinstance(value, int) and 100 <= value < 600:
-        return value
-    if not isinstance(value, str):
-        return None
-    match = re.search(r"(?:HTTP_STATUS/)?\b([1-5]\d\d)\b", value, re.IGNORECASE)
-    return int(match.group(1)) if match else None
-
-
 def _status_code_from_payload(payload: Any) -> Optional[int]:
     if not isinstance(payload, dict):
         return None
@@ -164,55 +158,6 @@ def _json_object_from_text(text: str) -> Optional[dict]:
             decoded = json.loads(stripped)
             return decoded if isinstance(decoded, dict) else None
     return None
-
-
-def _parse_provider_sse_events(text: str) -> list[dict]:
-    """Parse provider text that looks like Server-Sent Events."""
-    events: list[dict] = []
-    current = {"event": None, "data": [], "comments": [], "fields": {}}
-
-    def _flush_current():
-        nonlocal current
-        if any(current.values()):
-            status_candidates = list(current["comments"]) + [
-                current["fields"][key]
-                for key in ("status", "status_code", "http_status")
-                if key in current["fields"]
-            ]
-            events.append({
-                "event": current["event"],
-                "data": "\n".join(current["data"]),
-                "comments": list(current["comments"]),
-                "fields": dict(current["fields"]),
-                "status_code": next(
-                    (s for s in map(_status_code_from_value, status_candidates) if s is not None), None),
-            })
-        current = {"event": None, "data": [], "comments": [], "fields": {}}
-
-    for raw_line in (text or "").splitlines():
-        line = raw_line.rstrip("\r")
-        if line == "":
-            _flush_current()
-            continue
-        if line.startswith(":"):
-            current["comments"].append(line[1:].strip())
-            continue
-
-        field, sep, value = line.partition(":")
-        if not sep:
-            current["fields"][field.strip().lower()] = ""
-            continue
-        field = field.strip().lower()
-        value = value.removeprefix(" ")
-        if field == "event":
-            current["event"] = value.strip()
-        elif field == "data":
-            current["data"].append(value)
-        else:
-            current["fields"][field] = value
-
-    _flush_current()
-    return events
 
 
 def _provider_error_body(payload: dict, status_code: Optional[int]) -> dict:
@@ -2536,7 +2481,7 @@ class _BedrockStream:
         self.agent = agent
         self.api_kwargs = api_kwargs
         self.on_first_delta = on_first_delta
-        self.result = {"response": None, "error": None}
+        self.result: dict[str, Any] = {"response": None, "error": None}
         self.first_delta_fired = False
         self.response_started = False
         # Liveness for the boto3 worker: ``for event in event_stream`` has NO read timeout,
@@ -2548,6 +2493,11 @@ class _BedrockStream:
         self.region = api_kwargs.get("__bedrock_region__", "us-east-1")
         # Same patience budget as the OpenAI/Anthropic stale detector.
         self.stale_timeout = _derive_stream_stale_timeout(agent, api_kwargs)
+        # Opt-in ``agent.stream_max_lifetime`` (#80701). The stale check above resets on
+        # every event, so a stream that keeps yielding events but never finishes is never
+        # cut; this clock never resets on event arrival. One instance = one attempt, so a
+        # retry (a new _BedrockStream) gets the whole cap again.
+        self.lifetime = StreamLifetime(resolve_stream_max_lifetime(self.stale_timeout))
 
     def _model(self) -> str:
         return self.api_kwargs.get("modelId", "unknown")
@@ -2669,12 +2619,41 @@ class _BedrockStream:
             f"Bedrock stream produced no events for {int(stale_elapsed)}s (threshold {int(self.stale_timeout)}s) "
             f"— aborting stalled stream so the retry/fallback path can recover.")
 
+    def _on_lifetime(self, elapsed: float) -> None:
+        """Opt-in ``agent.stream_max_lifetime``: the stream opened and kept delivering events,
+        so the stale check can never fire and nothing else bounds the attempt."""
+        agent = self.agent
+        cap = self.lifetime.cap
+        logger.warning("Bedrock stream still running after %.0fs (stream_max_lifetime %.0fs) — "
+            "killing connection. region=%s model=%s", elapsed, cap, self.region, self._model())
+        agent._buffer_diagnostic_status(
+            f"⚠️ Response still streaming after {int(elapsed)}s (stream_max_lifetime {int(cap)}s, "
+            f"model: {self._model()}). Aborting...")
+        # Not a stale kill: the provider WAS responding, so the cross-turn stale breaker must
+        # not count it (a streak of cap kills would refuse the next healthy request). Evicting
+        # the cached client is the same lever the stale path uses: no external cancellation
+        # exists for a botocore EventStream, the daemon worker keeps reading until its socket
+        # errors, and THIS call ends via the error below.
+        try:
+            from agent.bedrock_adapter import invalidate_runtime_client
+            invalidate_runtime_client(self.region)
+        except (ImportError, RuntimeError) as _inval_exc:  # eviction is best-effort: never fail the call for it
+            logger.debug("bedrock: lifetime client eviction failed: %s", _inval_exc)
+        self.last_event = time.time()
+        self.result["error"] = StreamLifetimeExceeded(elapsed, cap)
+
     def _poll(self):
         t = threading.Thread(target=_context_thread_target(self._worker), daemon=True)
         t.start()
         while t.is_alive():
             t.join(timeout=0.3)
             self._raise_if_interrupted("Agent interrupted during Bedrock API call", worker=t)
+            # ``self`` is the attempt identity: one _BedrockStream per attempt, so a retry
+            # starts a fresh clock (and the clock restarts after a kill).
+            lifetime_elapsed = self.lifetime.exceeded(self)
+            if lifetime_elapsed is not None:
+                self._on_lifetime(lifetime_elapsed)
+                break
             stale_elapsed = time.time() - self.last_event
             if stale_elapsed > self.stale_timeout:
                 self._on_stale(stale_elapsed)

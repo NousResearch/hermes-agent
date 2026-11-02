@@ -45,6 +45,12 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
         db.create_session(sid, source=source, model='m', cwd=str(tmp_path), user_id=user_id)
         db.append_message(sid, role='user', content='hi from ' + sid)
         db.end_session(sid, 'ws_orphan_reap')
+    # hermes-mobile installed registers Platform('mobile'): a routeless row with that label still adopts.
+    from gateway.config import Platform
+    Platform._add_pseudo_member('mobile')
+    from hermes_cli.sessions_adopt import adoptable_sessions
+    offered = {row['id'] for row in adoptable_sessions(db.db_path)}
+    assert {'phone-mobile', 'phone-ios'} <= offered and not offered & {'webui-row', 'teams-row', 'curator-row'}
     for i, sid in enumerate(('phone-mobile', 'phone-ios')):
         resumed = await desktop.dispatch({'id': i, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert resumed.get('result', {}).get('session_id') == sid, resumed

@@ -341,7 +341,7 @@ export const jaOverrides = {
       advancedOutput: '出力の制限',
       advancedDelegation: 'サブエージェント',
       advancedDesktop: 'デスクトップと起動',
-      gatewayConnection: 'このウィンドウ',
+      gatewayConnection: 'プライマリゲートウェイ',
       gatewayDevices: '保存済みの接続',
       gatewayManagedUpdates: 'リモート更新',
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',

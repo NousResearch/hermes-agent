@@ -718,7 +718,7 @@ export const en: Translations = {
       advancedOutput: 'Output limits',
       advancedDelegation: 'Subagents',
       advancedDesktop: 'Desktop & startup',
-      gatewayConnection: 'This window',
+      gatewayConnection: 'Primary gateway',
       gatewayDevices: 'Saved connections',
       gatewayManagedUpdates: 'Remote updates',
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',

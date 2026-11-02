@@ -5,6 +5,7 @@ onto server.py's globals (method_ctx.bind_module) and reference them bare."""
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 
 from utils import is_truthy_value
 
@@ -16,7 +17,10 @@ def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     cache-busting extract plus ``idle_compact_after_seconds``/``tail_mode`` (live-TUI-only keys)."""
     from gateway.run import GatewayRunner
     keys = GatewayRunner._extract_cache_busting_config(cfg)
-    picked = {k: v for k, v in keys.items() if k.startswith("compression.") or k == "model.context_length"}
+    picked = {
+        k: v for k, v in keys.items()
+        if k.startswith("compression.") or k in {"model.context_length", "model.context_cap"}
+    }
     compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
     picked.update({f"compression.{k}": compression.get(k) for k in ("idle_compact_after_seconds", "tail_mode")})
     return tuple(sorted(picked.items()))
@@ -83,7 +87,7 @@ _COMPRESSION_INT_KEYS = (
 )
 
 
-def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
+def _apply_live_compression_config(agent: Any, cfg: dict | None, *, context_cap_changed: bool = False) -> None:
     """Update a live session's compressor in place from config.yaml. Every adopted key has UNSET semantics:
     a removed key restores the normalized default (or model-derived value) through the construction
     path's own derivation — acting only on PRESENT keys would leave stale values active forever.
@@ -158,12 +162,20 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         # session showed a pinned ceiling while compressing against a different window (#116467).
         set_config_context_length(agent, new_ctx)
         with contextlib.suppress(Exception):
-            cc.context_length = new_ctx
+            from agent.context_cap import cap_context_length
+
+            cc.context_length = cap_context_length(new_ctx, cfg)
     elif getattr(cc, "_config_context_length", None) is not None:
         # model.context_length removed: drop the override and force re-inference from model metadata on
         # next access (construction's deferred resolution); re-applies the small-context floor too.
         set_config_context_length(agent, None)
         cc._resolved_context_length = None
+    if context_cap_changed and new_ctx is None:
+        # A global cap applies even when this session has no route-specific pin.  Re-resolve
+        # through the shared metadata seam so both lowering AND raising the cap take effect.
+        cc._resolved_context_length = None
+        with contextlib.suppress(Exception):
+            _ = cc.context_length
     cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
         compression.get("threshold_tokens", _default_threshold_tokens_cap())
     )
@@ -187,8 +199,11 @@ def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
     session["config_compression_seen"] = signature
     if signature == seen:
         return
+    previous = dict(seen or ())
+    current = dict(signature)
+    context_cap_changed = previous.get("model.context_cap") != current.get("model.context_cap")
     try:
-        _apply_live_compression_config(agent, cfg)
+        _apply_live_compression_config(agent, cfg, context_cap_changed=context_cap_changed)
     except Exception as e:
         logger.warning("Could not apply live compression config for %s: %s", sid, e)
 

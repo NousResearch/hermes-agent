@@ -129,7 +129,7 @@ model:
   # entra:
   #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
-  # ── Token limits — two settings, easy to confuse ──────────────────────────
+  # ── Token limits — three settings, easy to confuse ─────────────────────────
   #
   # context_length: TOTAL context window (input + output tokens combined).
   #   Controls when Hermes compresses history and validates requests.
@@ -138,6 +138,16 @@ model:
   #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
   #
   # context_length: 131072
+  #
+  # context_cap: GLOBAL working-window ceiling, applied after the window is
+  #   resolved: effective_window = min(resolved_window, context_cap). Use it to
+  #   hold every model, provider, and live session at or below one window.
+  #   A model with a smaller window keeps its smaller value, and an explicit
+  #   context_length pin below the cap still wins. Leave unset (or 0/null)
+  #   to disable the cap. Hot-reloads on a running gateway like
+  #   context_length does.
+  #
+  # context_cap: 350000
   #
   # ollama_num_ctx: Ollama only — the num_ctx sent on every chat request.
   #   Hermes auto-detects the model's window and sends it (Ollama otherwise

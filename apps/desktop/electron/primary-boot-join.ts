@@ -24,7 +24,7 @@ export function primaryBootRequest(profile: unknown, primaryKey: string, inherit
  * the wait still names the profile that gateway does not serve. An explicit
  * caller keeps its own profile and route.
  */
-export async function joinPrimaryBoot<Connection, Route>(
+export async function joinPrimaryBoot<Connection extends object, Route extends { descriptorProfile: null | string }>(
   request: PrimaryBootRequest,
   route: Route,
   deps: {
@@ -32,16 +32,38 @@ export async function joinPrimaryBoot<Connection, Route>(
     resolveRoute: (key: string) => Route
     start: (request: PrimaryBootRequest) => Promise<Connection>
   }
-): Promise<{ connection: Connection; key: string; route: Route }> {
+) {
   const connection = await deps.start(request)
+  const key = request.inheritsPrimary ? deps.primaryKey() : request.key
+  const settled = key === request.key ? route : deps.resolveRoute(key)
 
-  if (!request.inheritsPrimary) {
-    return { connection, key: request.key, route }
-  }
+  return { connection, descriptor: primaryRouteDescriptor(connection, key, settled), key, route: settled }
+}
 
-  const key = deps.primaryKey()
+/**
+ * The descriptor a primary-route caller gets. A shared backend still owes the
+ * caller its profile scope, so renderer-side WebSocket, filesystem and cache
+ * routing target the selected profile. `sharedPrimary` marks the
+ * shared-primary route: pooled backends also carry `profile`, so only this
+ * descriptor gets the flag. The unshared primary carries its own key too: a
+ * profile-less descriptor reads as "default" downstream, which breaks
+ * per-source profile memory (the primary IS "default" only when it actually
+ * booted as default).
+ */
+function primaryRouteDescriptor<Connection extends object>(
+  connection: Connection,
+  key: string,
+  route: { descriptorProfile: null | string }
+) {
+  return route.descriptorProfile
+    ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
+    : { ...connection, profile: key }
+}
 
-  return { connection, key, route: key === request.key ? route : deps.resolveRoute(key) }
+/** Inherited and explicit dials of one name answer different profiles once a
+ *  remote boot re-pins the primary, so they never share a dial claim. */
+export function primaryDialClaimKey(scopeKey: string, inheritsPrimary: boolean): string {
+  return inheritsPrimary ? `${scopeKey}\u0000inherited` : scopeKey
 }
 
 /**
@@ -49,11 +71,11 @@ export async function joinPrimaryBoot<Connection, Route>(
  * one only when its profile was inherited: no caller named it, no --profile
  * launch argument and no per-profile route pins it.
  */
-export function primaryProfileRestorable(launch: {
-  explicitDefaultEntry: boolean
-  inheritsPrimary: boolean
-  launchArgProfile: null | string
-  requestedProfile: string | undefined
-}): boolean {
-  return (!launch.requestedProfile || launch.inheritsPrimary) && !launch.launchArgProfile && !launch.explicitDefaultEntry
+export function primaryProfileRestorable(
+  requestedProfile: string | undefined,
+  inheritsPrimary: boolean,
+  launchArgProfile: null | string,
+  defaultProfileRoute: unknown
+): boolean {
+  return (!requestedProfile || inheritsPrimary) && !launchArgProfile && !defaultProfileRoute
 }

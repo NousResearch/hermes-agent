@@ -106,6 +106,24 @@ export function desktopConnectionRequestInheritsPrimary(
   return !(typeof profile === 'string' && profile.trim()) && !source?.profile
 }
 
+/** The preference IPC the renderer reaches. Main owns each connection's
+ *  last-used profile: windows send one change at a time and import their
+ *  pre-mirror record once, never their whole copy. */
+export function registerDesktopProfilePreferenceIpc(
+  ipc: { handle: (channel: string, listener: (event: unknown, ...args: any[]) => unknown) => void },
+  preferences: ReturnType<typeof createDesktopProfilePreferences>,
+  isKnownConnection: (connectionId: string) => boolean
+) {
+  ipc.handle('hermes:profile:default:get', async () => preferences.getDefault())
+  ipc.handle('hermes:profile:default:set', async (_event, route) => preferences.setDefault(route))
+  ipc.handle('hermes:profile:connections:remember', async (_event, connectionId, profile) =>
+    preferences.rememberConnectionProfile(connectionId, profile, isKnownConnection)
+  )
+  ipc.handle('hermes:profile:connections:import', async (_event, record) =>
+    preferences.importConnectionProfiles(record, isKnownConnection)
+  )
+}
+
 // The legacy profile field records last use. defaultRoute is an explicit,
 // app-wide preference, never changed by switching workspaces in any window.
 export function createDesktopProfilePreferences(

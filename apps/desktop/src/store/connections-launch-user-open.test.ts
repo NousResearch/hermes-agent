@@ -60,7 +60,7 @@ vi.mock('@/store/profile', () => ({
 
 const { _resetConnectionsForTests, initializeConnectionsRegistry } = await import('./connections')
 const { _resetFleetRosterForTests } = await import('./fleet-roster')
-const { noteUserSessionOpen } = await import('./session-open-intent')
+const { _resetUserSessionOpenForTests, noteUserSessionOpen } = await import('./session-open-intent')
 
 const registry: DesktopConnectionsRegistry = {
   connections: [
@@ -88,6 +88,7 @@ beforeEach(() => {
   localStorage.clear()
   _resetConnectionsForTests()
   _resetFleetRosterForTests()
+  _resetUserSessionOpenForTests()
   $connection.set({ connectionId: 'local', mode: 'local', registryScoped: true })
   $activeGatewayProfile.set('default')
   $activeSessionId.set(null)
@@ -138,5 +139,22 @@ describe('launch restore onto the last-used gateway', () => {
     expect($connection.get()?.connectionId).toBe('box')
     expect($selectedStoredSessionId.get()).toBeNull()
     expect(setLastUsed).toHaveBeenCalledWith('box')
+  })
+  it('never closes a chat the person opened before the registry began initializing', async () => {
+    // The connecting overlay lifts at the socket open while config still
+    // loads, so a populated sidebar row can be clicked before boot reaches
+    // initializeConnectionsRegistry.
+    const dial = deferred<void>()
+    openGatewayAgent.mockReturnValueOnce(dial.promise)
+    noteUserSessionOpen()
+    $selectedStoredSessionId.set('early-click')
+
+    const boot = initializeConnectionsRegistry()
+    dial.resolve()
+    await boot
+
+    expect($selectedStoredSessionId.get()).toBe('early-click')
+    expect($connection.get()?.connectionId).toBe('local')
+    expect(setLastUsed).not.toHaveBeenCalled()
   })
 })

@@ -7,6 +7,13 @@ agent:step (each tool-loop turn), agent:end, command:* (wildcard).  agent:* cont
 platform, user_id, chat_id, thread_id ("" outside a thread), chat_type
 ("dm"|"group"|"forum"|""), session_id, message (500 chars); agent:end adds response,
 model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
+
+Platform lifecycle events, emitted in the background so a handler never delays the adapter:
+platform:connected (``reconnect``: False on cold boot, True after an outage),
+platform:fatal (``error_code``, ``error_message``, ``retryable``; ``profile`` for a
+multiplexed secondary), platform:needs_attention (``status_key``, ``attempts``,
+``down_for_seconds``; fired once when a platform has been reconnecting past
+``agent.reconnect_attention_after``).  Every platform:* context carries ``platform``.
 """
 
 import asyncio

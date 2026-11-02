@@ -284,7 +284,7 @@ With auto-routing disabled, private URLs are rejected with
 `security.allow_private_urls: true` (or the legacy `browser.allow_private_urls: true`),
 which hands them to the cloud provider — usually useless, since Browserbase etc.
 can't reach your LAN. Cloud-metadata URLs (`169.254.169.254`,
-`metadata.google.internal`) written in `browser_exec` code or raw CDP params are refused on
+`metadata.google.internal`) written in `browser_exec` code or in a URL a raw CDP call fetches are refused on
 every route, sidecar included; a page that redirects there on its own is not (see
 [Security](../security.md#what-allow_private_urls-covers-and-what-it-doesnt)).
 

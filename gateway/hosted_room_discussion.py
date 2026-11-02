@@ -567,17 +567,21 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
 
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int) -> str:
+    seen_through_seq: int, reply_required: bool = False) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
         f"with {peers or 'no other members'} and the user.", "",
         "New messages in this thread since your last turn (oldest first):"]
-    rules = [
-        "", "Rules for this Discussion:",
+    participation = [
+        "- The user directly addressed you. Reply with your answer, result, or concrete blocker.",
+        '- Do not return "(pass)". If you cannot proceed, explain why and what you need from the user.',
+    ] if reply_required else [
         "- Reply with one conversational message only when you have something new worth adding.",
-        '- If you have nothing new to add, reply with exactly "(pass)".',
+        '- If you have nothing new to add, reply with exactly "(pass)".']
+    rules = [
+        "", "Rules for this Discussion:", *participation,
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
     fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
@@ -596,6 +600,15 @@ def _build_prompt(
     if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
+
+
+def _requires_direct_reply(
+    room: DiscussionRoom, source: _ValidatedEvent | None, member: DiscussionMember, round_index: int,
+) -> bool:
+    # Only the user's initial address requires a reply. A later peer handoff may
+    # legitimately pass after this member has already answered that user.
+    return (round_index == 0 and source is not None and source.kind == "message.user"
+            and member in resolve_mentions((str(source.payload["text"]),), room.members, default_all=False))
 
 
 def _make_task_plan(
@@ -742,7 +755,8 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq)
+                seen_through_seq=seen_through_seq,
+                reply_required=_requires_direct_reply(room, discussion, member, round_index))
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
@@ -896,6 +910,13 @@ def plan_publication(
         event.kind == "message.user" and event.seq > int(task.payload["source_event_seq"])
         and event.payload.get("thread_id") == task.identity.thread_id for event in validated)
     effective_status: TerminalKind = ("cancelled" if newer_same_thread and status != "deferred" else status)
+    source = next((event for event in validated if event.event_id == task.discussion_event_id), None)
+    if (effective_status == "settled" and _requires_direct_reply(room, source, task.member, task.round_index)
+            and is_pass_text(_terminal_text(result, field="text", fallback=""))):
+        # The execution completed, but did not answer the user. Publish that
+        # failure from the durable receipt without replaying any tools or model calls.
+        effective_status = "failed"
+        result = {"error": f"@{task.member.handle} was directly addressed but returned no visible reply."}
     digest = task.identity.task_id.removeprefix("dtask:")
     terminal_event_id = (
         f"ddeferred:{digest}:g{execution_generation}" if effective_status == "deferred" else f"dterminal:{digest}")

@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [powerpoint, pptx, python-pptx, presentation, finance]
-    related_skills: [excel-author, powerpoint]
+    related_skills: [excel-author, microsoft-office]
 ---
 
 # pptx-author
@@ -17,7 +17,7 @@ Produce a .pptx file on disk using `python-pptx`. Use when you need to deliver a
 
 Adapted from Anthropic's `pptx-author` and `pitch-deck` skills in [anthropics/financial-services](https://github.com/anthropics/financial-services). The MCP / Office-JS branches of the originals are dropped — this assumes headless Python.
 
-For the broader, already-shipped PowerPoint authoring skill (slides, speaker notes, embeds, media), see the built-in `powerpoint` skill. This skill is a lighter-weight pattern tuned for model-backed decks (pitch decks, IC memos, earnings notes) where every number must trace to a source workbook.
+For the broader, already-shipped PowerPoint authoring skill (slides, speaker notes, embeds, media), see the built-in `microsoft-office` skill. This skill is a lighter-weight pattern tuned for model-backed decks (pitch decks, IC memos, earnings notes) where every number must trace to a source workbook.
 
 ## Output contract
 
@@ -31,7 +31,7 @@ it). Otherwise, when `hermes` is on PATH, let Hermes build its shared, pinned
 documents environment under the Hermes home (safe to run from several agents
 at once); in a Docker sandbox without Hermes the block builds a venv in the
 sandbox home with the same pinned versions. It is the same block as the
-docx/xlsx/powerpoint/pdf skills. Never `pip install` into the interpreter that
+microsoft-office/pdf skills. Never `pip install` into the interpreter that
 runs Hermes:
 
 ```bash
@@ -41,14 +41,15 @@ else
   PY="$HOME/.cache/hermes-docs-venv/bin/python"
   "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null || (
     # Safe to run from several agents at once: each caller builds a private venv,
-    # a symlink publishes the first finished one atomically, the others delete theirs.
+    # a symlink publishes the first finished one atomically, the others delete theirs;
+    # a published build is replaced and deleted only while it still fails to import.
     mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-docs-venv.XXXXXX)" || exit 1
-    old="$(readlink hermes-docs-venv)"  # an earlier build that no longer imports, if any
+    old="$(readlink hermes-docs-venv)"  # the published build, if any (another agent may have just published it)
     python3 -m venv "$stage" &&
       "$stage/bin/python" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0 &&
       "$stage/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" &&
       if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-docs-venv
-      elif [ "$(readlink hermes-docs-venv)" = "$old" ]; then
+      elif [ "$(readlink hermes-docs-venv)" = "$old" ] && ! "$old/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null; then
         ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-docs-venv &&
           case "$old" in hermes-docs-venv.??????) rm -rf "$old" ;; esac
       fi 2>/dev/null
@@ -195,8 +196,8 @@ A typical banking pitch deck follows this structure. Not prescriptive, but usefu
 ## When NOT to use this skill
 
 - Users in a live PowerPoint session with an Office MCP available — drive their live doc instead.
-- Non-financial slideware (quarterly all-hands, marketing decks) — use the broader `powerpoint` skill.
-- Decks with heavy animation, transitions, or speaker notes — use the broader `powerpoint` skill.
+- Non-financial slideware (quarterly all-hands, marketing decks) — use the broader `microsoft-office` skill.
+- Decks with heavy animation, transitions, or speaker notes — use the broader `microsoft-office` skill.
 
 ## Attribution
 

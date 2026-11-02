@@ -173,21 +173,20 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 
 # An addressed notification whose owner session is not LIVE must not be discarded: a session can end
-# by a route that leaves no live owner (a backend restart / startup_orphan_reap, an explicit close),
-# while a background process it started is still running and ``resume`` brings the very same
-# ``session_key`` back. Park the event for a bounded window -- the owner's own poller claims it on
-# its next pass -- and drop it once past the TTL, so a client that never returns cannot pin memory.
-# Parking keeps the event OUT of ``completion_queue``: a foreign event parked in the queue would keep
-# every live poller's queue non-empty and spin that loop (see the back-off note in
-# ``_notif_handle_event``). Delegations have their own return path (``return_completion_offer``);
-# this is the same idea for the other types.
-#
-# The keepalive paths (idle/TTL reap, LRU cap, WS-orphan reap) keep a session resident while a
-# background process it started can still notify it, so they no longer reach this discard. The end
-# routes above do, and both discard doors park for them: the foreign poller's drain AND the closing
-# session's own shutdown drain (the owner is ``_finalized`` by then, so it no longer proves
-# ownership of its own events). The caps are total AND per owner, so a session that is gone for good
-# cannot spend the whole budget and refuse the next ended session's first completion.
+# (explicit close, a reap, a backend-side teardown) while a ``notify_on_complete`` process or an async
+# delegation it started is still running, and ``resume`` brings the very same ``session_key`` back.
+# Every poller drains one process-wide queue, so whichever drains first used to drop such an event
+# (#118653, #129071). It is parked instead, for a bounded window: the owner's own poller claims it on
+# its first pass after it is live again, through the same ownership gate delivery uses, so no foreign
+# session ever adopts it. Parking keeps the event OUT of ``completion_queue``: a foreign event left in
+# the queue keeps every live poller's ``take_ready`` returning at once and spins those loops.
+# Both doors park: a foreign poller's live drain AND the closing session's own shutdown drain (it is
+# ``_finalized`` by then, so it no longer proves ownership of its own events). The caps are total AND
+# per owner, so a session that is gone for good cannot spend the whole budget.
+# A startup replay (``restored``) delegation is not parked: its row's owner process is dead, so the
+# orphan sweep re-offers it until its owner is back. A live delegation's owner is THIS process, which
+# the sweep skips, so its parked copy is the only one; when the park lets go of it (TTL, cap) the
+# offer is handed back to the durable ledger instead of being dropped.
 _UNOWNED_RETENTION_SECONDS = 600.0
 _UNOWNED_RETAINED_MAX = 16
 _UNOWNED_RETAINED_PER_KEY_MAX = 4
@@ -195,39 +194,89 @@ _unowned_parked: list[tuple[float, dict]] = []
 _unowned_park_lock = threading.Lock()
 
 
+def _parkable(evt: dict) -> bool:
+    return not (evt.get("type") == "async_delegation" and evt.get("restored"))
+
+
+def _release_unparked(events) -> None:
+    """Events the park let go of: a delegation's offer goes back to the durable ledger's re-offer path."""
+    from tools.async_delegation import return_completion_offer
+    for evt in events:
+        if evt.get("type") == "async_delegation":
+            return_completion_offer(evt)
+        logger.debug("Dropping parked %s notification past its retention window (key=%r)",
+                     evt.get("type", "completion"), str(evt.get("session_key") or ""))
+
+
 def _park_unowned_notification(evt: dict) -> bool:
     """Retain an addressed event whose owner session is not live (bounded TTL + caps). False when the
-    park cannot take it -- the caller then drops the event exactly as it did before."""
+    park cannot take it -- the caller then disposes of the event exactly as it did before."""
+    if not _parkable(evt):
+        return False
     now = time.monotonic()
     key = str(evt.get("session_key") or "")
     with _unowned_park_lock:
+        expired = [parked for deadline, parked in _unowned_parked if deadline <= now]
         _unowned_parked[:] = [(deadline, parked) for deadline, parked in _unowned_parked if deadline > now]
-        if len(_unowned_parked) >= _UNOWNED_RETAINED_MAX:
-            return False
-        if key and sum(1 for _deadline, parked in _unowned_parked
-                       if str(parked.get("session_key") or "") == key) >= _UNOWNED_RETAINED_PER_KEY_MAX:
-            return False
-        _unowned_parked.append((now + _UNOWNED_RETENTION_SECONDS, evt))
-        return True
+        admitted = len(_unowned_parked) < _UNOWNED_RETAINED_MAX and not (
+            key and sum(1 for _deadline, parked in _unowned_parked
+                        if str(parked.get("session_key") or "") == key) >= _UNOWNED_RETAINED_PER_KEY_MAX)
+        if admitted:
+            _unowned_parked.append((now + _UNOWNED_RETENTION_SECONDS, evt))
+    _release_unparked(expired)
+    return admitted
 
 
 def _claim_parked_notifications(sid: str, session: dict) -> list:
-    """Parked events this session provably owns, in arrival order; expired ones drop here. Ownership
-    is ``_session_owns_notification_event`` -- the same gate delivery uses -- so a foreign session can
-    never adopt a parked event, and a compression continuation still recognizes its parent's key."""
+    """Parked events this session provably owns, in arrival order; expired ones are released here.
+    Ownership (``_session_owns_notification_event``, which may read the lineage store) is decided on a
+    snapshot outside the lock; an event is claimed only if it is still parked, so exactly one poller
+    takes it."""
+    if not _unowned_parked:
+        return []
     now = time.monotonic()
+    with _unowned_park_lock:
+        snapshot = list(_unowned_parked)
+    mine = {id(parked) for deadline, parked in snapshot
+            if deadline > now and _session_owns_notification_event(sid, session, parked)}
     claimed: list = []
     with _unowned_park_lock:
+        expired = [parked for deadline, parked in _unowned_parked if deadline <= now]
         keep = []
         for deadline, parked in _unowned_parked:
             if deadline <= now:
                 continue
-            if _session_owns_notification_event(sid, session, parked):
-                claimed.append(parked)
-            else:
-                keep.append((deadline, parked))
+            (claimed.append(parked) if id(parked) in mine else keep.append((deadline, parked)))
         _unowned_parked[:] = keep
+    _release_unparked(expired)
     return claimed
+
+
+def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
+    """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it
+    for its owner's return; past the park, a delegation's offer goes back to the ledger (or onto
+    ``deferred`` during a shutdown drain, which requeues it) and anything else drops."""
+    evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
+    origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
+    if _park_unowned_notification(evt):
+        logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
+                     evt_type, origin, key)
+    elif deferred is not None:
+        if is_delegation:
+            deferred.append(evt)
+        else:
+            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
+                         evt_type, origin, key)
+    else:
+        # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
+        # is live (#97202), and keep that retry out of WARNING.
+        restored = is_delegation and bool(evt.get("restored"))
+        (logger.warning if is_delegation and not restored else logger.debug)(
+            "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
+            evt_type, origin, key, sid)
+        if is_delegation:
+            from tools.async_delegation import return_completion_offer
+            return_completion_offer(evt)
 
 
 # A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
@@ -652,7 +701,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
 def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, completions=None, *, owned=False) -> bool:
     """Route one dequeued event: foreign (another live session owns it) → requeued, or onto ``deferred`` during the
     shutdown drain; unowned (addressed but unprovable — never adopt an orphan) → parked for a bounded window so the
-    owner's resume can still claim it (delegation payloads keep their own return path); ours (or ownerless legacy,
+    owner's resume can still claim it (``_notif_unowned_event``); ours (or ownerless legacy,
     kept process-global) → status.update once, then an agent turn if idle. False = the drain must stop (session
     busy). ``owned`` skips the ownership gates for events a caller already drained through
     ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
@@ -666,36 +715,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             time.sleep(0.1)
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
-        origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
-        if is_delegation and deferred is None and not evt.get("restored"):
-            # A live owner's result is not orphan-swept while its process remains alive.
-            queue.put(evt)
-            time.sleep(0.1)
-        elif deferred is None:
-            if not is_delegation and _park_unowned_notification(evt):
-                # The owner is not live *yet*: keep the event for its return instead of letting a
-                # foreign poller's discard pile eat the wake its process is about to deliver.
-                logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
-                             evt_type, origin, key)
-            else:
-                # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
-                # is live (#97202), and keep that retry out of WARNING.
-                restored = is_delegation and bool(evt.get("restored"))
-                (logger.warning if is_delegation and not restored else logger.debug)(
-                    "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
-                    evt_type, origin, key, sid)
-                if is_delegation:
-                    from tools.async_delegation import return_completion_offer
-                    return_completion_offer(evt)
-        elif is_delegation:
-            deferred.append(evt)
-        elif _park_unowned_notification(evt):
-            # The draining session is not the owner (a closing one is ``_finalized`` and no longer owns
-            # its events), and the owner's resume can still claim it -- park on the way out too.
-            logger.debug("Parked unowned %s notification (origin=%r key=%r) during shutdown drain",
-                         evt_type, origin, key)
-        else:
-            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)", evt_type, origin, key)
+        _notif_unowned_event(sid, evt, deferred)
         return True
     if evt_type == "completion" and registry.is_completion_consumed(evt.get("session_id", "")):
         return True
@@ -779,15 +799,29 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
 
 def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, *, owned=False):
-    """One ready snapshot: ownership and UI emission per event, one turn per completion run."""
+    """One ready snapshot: ownership and UI emission per event, one turn per completion run. Events this pass
+    does not route (busy session, or an event whose routing raised) go back to ``deferred`` / the queue."""
     completions = []
+    hand_back = deferred.append if deferred is not None else registry.completion_queue.put
     for index, event in enumerate(events):
         if event.get("type", "completion") != "completion":
             _notif_dispatch_completions(sid, session, completions, registry, deferred)
             completions = []
-        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
+        try:
+            routed = _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions,
+                                         owned=owned)
+        except Exception:
+            # The snapshot is the only in-memory copy of everything after this event: hand it back, and the
+            # failed delegation's offer to the ledger, before the caller logs the failure.
             for remaining in events[index + 1:]:
-                (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
+                hand_back(remaining)
+            _notif_dispatch_completions(sid, session, completions, registry, deferred)
+            from tools.async_delegation import return_completion_offer
+            return_completion_offer(event)
+            raise
+        if not routed:
+            for remaining in events[index + 1:]:
+                hand_back(remaining)
             break
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
@@ -854,15 +888,18 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
             _notif_log_failure("notification dispatch failed", exc)
         finally:
             release_in_flight(ready)
-    # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
-    # events are handed back to the shared queue afterwards.
+    # Drain remaining events after the stop signal so nothing is lost on shutdown: unowned ones park for their
+    # owner's return; foreign ones (and delegations the park refused) go back to the shared queue afterwards, even
+    # when routing one of them raised (#140718).
     deferred: list = []
     ready = take_ready(queue, 0)
     try:
         handle(ready, deferred)
+    except Exception as exc:
+        _notif_log_failure("shutdown notification drain failed", exc)
+    finally:
         for evt in deferred:
             queue.put(evt)
-    finally:
         release_in_flight(ready)
 
 

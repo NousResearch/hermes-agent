@@ -216,7 +216,7 @@ def ensure(name, *, base_env=None, explicit=False, verify=True, progress=None, p
 
 def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None, repair=False,
               project_root: Path | None = None, evict_incompatible_plugins: bool = False,
-              automatic: list[str] | None = None) -> None:
+              automatic: list[str] | None = None, carried: list[str] | None = None) -> None:
     from pm.environments import running_from_selected_environment
 
     if extras and not explicit and not repair and not running_from_selected_environment(
@@ -239,10 +239,11 @@ def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None
     if is_runtime() and not foreign:
         from pm.install import sync_venv as direct
         return direct(extras, explicit=explicit, plugins=plugins, repair=repair,
-                      evict_incompatible_plugins=evict_incompatible_plugins, automatic=automatic)
+                      evict_incompatible_plugins=evict_incompatible_plugins, automatic=automatic, carried=carried)
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
                           "plugins": plugin_inputs.encode(plugins),
-                          "evict_incompatible_plugins": evict_incompatible_plugins, "automatic": automatic},
+                          "evict_incompatible_plugins": evict_incompatible_plugins, "automatic": automatic,
+                          "carried": carried},
              project_root=project_root)
 
 

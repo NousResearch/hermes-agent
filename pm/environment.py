@@ -66,8 +66,10 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
 _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # Streamed uv output keeps only the last 2000 characters. Resolver markers are
 # stitched back if a later verbose flood evicts them; the bytecode marker has
-# to ride the same path or repair/bootstrap never sees the retry signal.
-_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER,)
+# to ride the same path or repair/bootstrap never sees the retry signal, and so
+# does the build marker: a failed native build's traceback runs far past 2000
+# characters, and without it the failure reads as a fetch error, not a verdict.
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
 
 # Retries after purging corrupt cached packages. Each round must name a package
 # not purged before, so this bounds a cache with several damaged entries, never

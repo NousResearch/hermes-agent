@@ -51,10 +51,11 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # an ordinary sync, which builds and validates a fresh generation too.
         repair = repair_marker.is_file() and venv_is_current(project_root=root)
         # An update never fails because of a plugin: misfits are disabled and reported.
-        # The old venv's extras are carried, not asked for: none of them undoes a `--without`.
-        automatic = {"automatic": extras} if not repair and extras and extras != ["all"] else {}
+        # The old venv's extras are carried, not asked for: none of them undoes a `--without`, and
+        # one beyond [all] that no longer builds is left out.
+        carried = {"carried": extras[1:]} if not repair and extras and len(extras) > 1 else {}
         sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
-                  evict_incompatible_plugins=not repair, **automatic)
+                  evict_incompatible_plugins=not repair, **carried)
         collect_superseded_generations(root)
         request["pm_receipt"] = receipt.last_for_update(correlation)
     publish_launchers(root)

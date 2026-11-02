@@ -171,6 +171,16 @@ dependency declaration does not join the shared environment. Its external
 sidecar remains separately owned. See the
 [plugin guide](../developer-guide/plugins/index.md).
 
+The first PM generation that replaces a pre-PM `venv/` or `.venv` also carries
+the extras that venv held (Matrix, FAL, ...), so features that worked keep
+working. Those extras are carried, not requested: if one no longer builds (a
+native package such as Matrix's `python-olm` whose compiler or CMake is
+missing), the update installs everything else, prints which extra it left out,
+and records that beside the install's dependency state, so a later scan of the
+old venv does not carry it again. `hermes pm install --extra NAME` adds it back
+once the build is fixed. An extra you request yourself still fails the install
+when it cannot build.
+
 ### Lazy-install policy
 
 `security.allow_lazy_installs` controls on-demand installation. Already installed

@@ -61,8 +61,12 @@ def _running_under_pytest() -> bool:
 
 
 #: pytest launcher names, matched against each argv token's *basename* so
-#: ``/tmp/pytest-of-dev/...`` paths cannot false-positive.
-_PYTEST_LAUNCHER_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+#: ``/tmp/pytest-of-dev/...`` paths cannot false-positive. ``run_tests_parallel.py``
+#: is the repo's test runner: under its fork server (HERMES_TEST_FORKSERVER) a test
+#: process has no ``python -m pytest`` ancestor, only the runner.
+_PYTEST_LAUNCHER_NAMES = frozenset(
+    {"pytest", "py.test", "pytest.exe", "py.test.exe", "run_tests_parallel.py"}
+)
 
 #: Memoised ancestry answer: the tree above us doesn't change; keep the hot path free.
 _PYTEST_ANCESTOR: Optional[bool] = None

@@ -218,6 +218,14 @@ _SPECS = [
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
         _json_flag(help="Emit JSON output"),
+        _arg("--notify-chat", dest="notify_chat",
+             help="Subscribe this chat to the new card's terminal events (completed/blocked/etc). "
+                  "The in-gateway `kanban` tool auto-subscribes the calling session; a bare "
+                  "CLI/subprocess create has no session channel, so pass the target explicitly "
+                  "here. Requires --notify-platform."),
+        _arg("--notify-platform", dest="notify_platform",
+             help="Platform for --notify-chat (e.g. discord, telegram, slack). Requires --notify-chat."),
+        _arg("--notify-thread", dest="notify_thread", help="Optional thread id for --notify-chat."),
     ], help="Create a new task"),
     _cmd("swarm", [
         _arg("goal", help="Swarm goal / final outcome"),

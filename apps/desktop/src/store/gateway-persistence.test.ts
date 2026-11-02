@@ -196,7 +196,7 @@ it('a dropped probe that fails late leaves the newer cached probe in place', asy
   expect(probeLocalBackend).toHaveBeenCalledTimes(2)
 })
 
-it("a dropped probe's late installed answer leaves its replacement's not-installed verdict cached", async () => {
+it("a dropped probe's late installed answer neither clears its replacement's not-installed verdict nor dials", async () => {
   $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
   let answerFirst: (result: { bootstrapNeeded: boolean }) => void = () => undefined
 
@@ -216,6 +216,27 @@ it("a dropped probe's late installed answer leaves its replacement's not-install
   answerFirst({ bootstrapNeeded: false })
   await vi.advanceTimersByTimeAsync(5 * 60_000)
   expect(probeLocalBackend).toHaveBeenCalledTimes(2)
+  // Nor does it let its own waiting dial reach an install the newer probe found missing.
+  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
+})
+
+it('re-probes a missing This device install every ten minutes, so one installed meanwhile is kept', async () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+
+  const probeLocalBackend = vi
+    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
+    .mockImplementationOnce(async () => ({ bootstrapNeeded: true }))
+    .mockImplementation(async () => ({ bootstrapNeeded: false }))
+
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
+  stop = startPersistentGateways()
+  await vi.advanceTimersByTimeAsync(9 * 60_000)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(1)
+  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
+
+  await vi.advanceTimersByTimeAsync(75_000)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
+  expect(dialedRoutes()).toContainEqual(['local', 'default'])
 })
 
 it('re-checks an installed This device before each redial, so an install removed since is never dialed', async () => {

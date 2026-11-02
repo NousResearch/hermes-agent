@@ -45,6 +45,33 @@ test('only a successful authoritative roster moves the primary, onto a profile t
     { name: 'malformed', listing: {}, want: 'work' },
     { name: 'partial roster', listing: { profiles: [{ name: 'default' }, {}] }, want: 'work' },
     { name: 'failed read', listing: new Error('offline'), want: 'work' },
+    // `/api/profiles` lists installed profiles; `/api/status` names the served ones.
+    {
+      name: 'connection memory parked',
+      listing: { profiles: [{ name: 'default' }, { name: 'lab' }, { name: 'work' }] },
+      status: { gateway_shared_with: ['default'] },
+      remembered: 'lab',
+      want: 'default'
+    },
+    {
+      name: 'inherited profile installed but not served',
+      listing: { profiles: [{ name: 'default' }, { name: 'work' }] },
+      status: { gateway_shared_with: ['default', 'lab'] },
+      want: 'default'
+    },
+    {
+      name: 'served set unknown: installed counts as served',
+      listing: { profiles: [{ name: 'default' }, { name: 'work' }] },
+      status: { gateway_shared_with: null },
+      want: 'work'
+    },
+    {
+      name: 'status read failed: installed counts as served',
+      listing: { profiles: [{ name: 'default' }, { name: 'lab' }] },
+      status: new Error('offline'),
+      remembered: 'lab',
+      want: 'lab'
+    },
     { name: 'explicit route or destination override', allow: false, want: 'work' },
     { name: 'destination override added during probe', destinationChanged: true, want: 'work' },
     { name: 'profile alias', source: 'profile', want: 'work' },
@@ -81,6 +108,11 @@ test('only a successful authoritative roster moves the primary, onto a profile t
           if (row.listing instanceof Error) {throw row.listing}
 
           return row.listing ?? { profiles: [{ name: 'default' }] }
+        },
+        readStatus: async () => {
+          if (row.status instanceof Error) {throw row.status}
+
+          return row.status ?? {}
         },
         onProfileRestored: profile => {
           pin.pin(profile)

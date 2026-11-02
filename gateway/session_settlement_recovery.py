@@ -159,13 +159,13 @@ def gateway_refusal_boundary(captured, outcome):
     return error, {'error': error, 'error_surface': dict(surface)}
 
 
-def _release_media(authority, row):
+def _release_media(authority, admission_id):
     """Terminal media cleanup: its own write txn after publication, never under the stream lock."""
     try:
         from gateway.session_ingress_media import release_admission_media
-        release_admission_media(authority.db, row['admission_id'])
+        release_admission_media(authority.db, admission_id)
     except Exception:
-        logger.exception('Terminal media cleanup failed for admission %s', row['admission_id'])
+        logger.exception('Terminal media cleanup failed for admission %s', admission_id)
 
 
 def commit_and_publish(authority, live, ref, row, response, outcome, captured, settlement):
@@ -336,11 +336,12 @@ def release_media_after_delivery(authority, row):
 
     Each collection can scan the whole transcript; running them one at a time bounds the worker
     threads and pooled read connections they hold however many media turns settle meanwhile.
-    The collector is tracked, so shutdown and profile retirement join it."""
+    The collector is tracked, so shutdown and profile retirement join it. Only the admission id
+    waits: the row can carry inline images and a client's whole conversation history."""
     queue = getattr(authority, '_media_release_queue', None)
     if queue is None:
         queue = authority._media_release_queue = []
-    queue.append(row)
+    queue.append(row['admission_id'])
     task = getattr(authority, '_media_release_task', None)
     if task is None or task.done():
         from gateway.session_runtime_workers import track_mutation

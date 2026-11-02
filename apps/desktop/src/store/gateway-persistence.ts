@@ -2,7 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { liveSecondaryConnectionIds, openGatewayForAgent } from '@/store/gateway'
+import { gatewayRouteState, openGatewayForAgent } from '@/store/gateway'
 import { keepRoute } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
@@ -64,14 +64,14 @@ export function startPersistentGateways(): () => void {
       }
     }
 
-    const live = liveSecondaryConnectionIds()
-
     for (const connectionId of wanted) {
       if (!pins.has(connectionId)) {
         pins.set(connectionId, keepRoute(connectionId, HOME_PROFILE))
       }
 
-      if (!live.has(connectionId)) {
+      // The kept route itself: another profile's open socket on the same
+      // gateway does not carry this one.
+      if (!gatewayRouteState(connectionId, HOME_PROFILE).open) {
         void dial(connectionId).catch(() => undefined)
       }
     }

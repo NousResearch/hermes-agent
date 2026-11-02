@@ -212,6 +212,33 @@ def _take_interrupted_prompt(state: SessionState) -> tuple[bool, str]:
         return True, text
 
 
+def _cumulative_usage_meta(agent: Any) -> Optional[dict]:
+    """Cumulative session metering as an ACP ``_meta.usage`` snapshot.
+
+    ``session_*`` counters are per-agent (a fresh ``AIAgent`` zeroes them), so every snapshot
+    describes this run only. The daemon max-merges cumulative ``usage_update`` snapshots
+    against the terminal ``PromptResponse.usage``, which makes re-emitting them per provider
+    call idempotent and lets a running task's cost show up before the turn ends.
+
+    No ``totalTokens``: Hermes' ``session_input_tokens`` already excludes cached reads, and the
+    daemon re-buckets a snapshot only when a total proves the inclusive
+    ``total == input + output`` shape — which these exclusive buckets would fail, misreading
+    them as a per-call delta.
+    """
+    try:
+        usage = {
+            "inputTokens": int(getattr(agent, "session_input_tokens", 0) or 0),
+            "outputTokens": int(getattr(agent, "session_output_tokens", 0) or 0),
+            "cacheReadTokens": int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+            "cacheWriteTokens": int(getattr(agent, "session_cache_write_tokens", 0) or 0),
+        }
+    except (TypeError, ValueError):
+        return None
+    if not any(usage.values()):
+        return None
+    return {"usage": usage}
+
+
 class ModelRejected(ValueError):
     """``switch_model`` refused the requested model (no provider can serve it)."""
 
@@ -373,11 +400,38 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         except Exception:
             logger.debug("Could not estimate ACP native context usage", exc_info=True)
             used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
-        return UsageUpdate(session_update="usage_update", size=max(size, 0), used=max(used, 0))
+        return UsageUpdate(
+            session_update="usage_update", size=max(size, 0), used=max(used, 0),
+            field_meta=_cumulative_usage_meta(state.agent),
+        )
 
     async def _send_usage_update(self, state: SessionState) -> None:
         if self._conn and (update := self._build_usage_update(state)) is not None:
             await self._send(state.session_id, update, fail_msg="Failed to send ACP usage update for session %s")
+
+    def _usage_flush_step_cb(self, state: SessionState, loop: asyncio.AbstractEventLoop, step_cb: Any) -> Any:
+        """Chain a cumulative-usage flush onto the agent's per-iteration step callback.
+
+        ``step_callback`` fires once per provider call, from the agent's worker thread, after
+        that call's counters land in ``agent.session_*`` — the only per-call chokepoint the
+        adapter already owns. The hop back to the event loop is the same one every other
+        worker-thread notification uses.
+        """
+        if step_cb is None:
+            return None
+        from agent.async_utils import safe_schedule_threadsafe
+
+        def _step(api_call_count: int, prev_tools: Any = None) -> None:
+            try:
+                step_cb(api_call_count, prev_tools)
+            finally:
+                if self._conn:
+                    safe_schedule_threadsafe(
+                        self._send_usage_update(state), loop, logger=logger,
+                        log_message="Failed to schedule ACP usage flush",
+                    )
+
+        return _step
 
     def _provenance_meta(
         self, acp_session_id: str, current_hermes_session_id: str, previous_hermes_session_id: Optional[str] = None
@@ -936,7 +990,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         agent.tool_progress_callback = cbs.tool_progress_cb
         # Thought panes get provider reasoning only — no local status updates, no fake accordion.
         agent.thinking_callback = None
-        agent.reasoning_callback, agent.step_callback = cbs.reasoning_cb, cbs.step_cb
+        agent.reasoning_callback = cbs.reasoning_cb
+        agent.step_callback = self._usage_flush_step_cb(state, loop, cbs.step_cb)
         agent.stream_delta_callback = cbs.stream_delta_cb
         return cbs
 

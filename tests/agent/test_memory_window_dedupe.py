@@ -129,7 +129,9 @@ def test_no_recall_is_left_out_when_a_context_engine_selects_the_request():
     assert "- alpha" in _stamped_block(row_2)
 
 
-def test_a_multimodal_turn_leaves_out_recall_its_window_replays():
+def test_a_multimodal_turn_states_its_recall_whole():
+    """A list turn's block becomes a durable content part: if a compaction later in the turn removed the
+    rows a dedupe relied on, nothing could re-compose it, so its recall is never left to the window."""
     agent = _agent_recalling("- alpha\n- beta\n", "- alpha\n- gamma\n")
     ctx_1, _row = _turn(agent, _QUESTION_1, None)
     history = [*ctx_1.messages, {"role": "assistant", "content": "noted"}]
@@ -138,8 +140,90 @@ def test_a_multimodal_turn_leaves_out_recall_its_window_replays():
     _ctx, row_2 = _turn(agent, [{"type": "text", "text": _QUESTION_2}, image], history)
 
     appended = row_2["content"][-1]["text"]
-    assert "- gamma" in appended
-    assert "- alpha" not in appended
+    assert "- alpha" in appended and "- gamma" in appended
+
+
+def test_recall_left_to_rows_a_later_compaction_removes_is_sent_again():
+    """The stamp left ``- alpha`` to the earlier row; a compaction later in the turn replaces that row
+    with a summary (which reads ``content``, not the sidecar) and keeps the current row. The next
+    request must state ``- alpha`` again; without the compaction the stamp is sent unchanged."""
+    agent = _agent_recalling("- alpha\n", "- alpha\n- gamma\n")
+    ctx_1, _row = _turn(agent, _QUESTION_1, None)
+    ctx_2, row_2 = _turn(agent, _QUESTION_2, [*ctx_1.messages, {"role": "assistant", "content": "noted"}])
+    agent.ephemeral_system_prompt = None
+    agent._copy_reasoning_content_for_api = lambda _s, _t: None
+    agent._should_sanitize_tool_calls = lambda: False
+
+    def current_request(messages):
+        request, _system = build_api_messages(
+            agent, messages, current_turn_user_idx=len(messages) - 1,
+            ext_prefetch_cache=ctx_2.ext_prefetch_cache, plugin_user_context=ctx_2.plugin_user_context,
+            moa_config=None, active_system_prompt="",
+        )
+        return [m for m in request if m["role"] == "user"][-1]["content"]
+
+    stamped = row_2["api_content"]
+    assert "- alpha" not in stamped
+    assert current_request(ctx_2.messages) == stamped  # nothing left the window: the stamp holds
+
+    compacted = [{"role": "user", "content": "[CONTEXT SUMMARY] we discussed the release"},
+                 {"role": "assistant", "content": "ok"}, row_2]
+    sent = current_request(compacted)
+
+    assert "- alpha" in sent and "- gamma" in sent
+    assert row_2["api_content"] == sent  # the live row carries what was sent
+
+
+def test_a_fully_covered_block_comes_back_stamped_after_a_later_compaction():
+    """The window covered the whole block, so the prologue stamped nothing. Once a compaction later in
+    the turn removes the covering row, the recall is sent again and the row is stamped with it, so
+    the next turn replays what this one sent."""
+    agent = _agent_recalling("- alpha\n", "- alpha\n")
+    ctx_1, _row = _turn(agent, _QUESTION_1, None)
+    ctx_2, row_2 = _turn(agent, _QUESTION_2, [*ctx_1.messages, {"role": "assistant", "content": "noted"}])
+    assert "api_content" not in row_2
+    agent.ephemeral_system_prompt = None
+    agent._copy_reasoning_content_for_api = lambda _s, _t: None
+    agent._should_sanitize_tool_calls = lambda: False
+    compacted = [{"role": "user", "content": "[CONTEXT SUMMARY] we discussed the release"},
+                 {"role": "assistant", "content": "ok"}, row_2]
+
+    request, _system = build_api_messages(
+        agent, compacted, current_turn_user_idx=2, ext_prefetch_cache=ctx_2.ext_prefetch_cache,
+        plugin_user_context=ctx_2.plugin_user_context, moa_config=None, active_system_prompt="",
+    )
+
+    sent = [m for m in request if m["role"] == "user"][-1]["content"]
+    assert "- alpha" in sent
+    assert row_2.get("api_content") == sent
+
+
+def test_no_recall_is_left_out_before_a_native_compaction_checkpoint():
+    """The Responses transport prunes the user rows before a native compaction checkpoint to a token
+    budget after the window is read, so the window cannot vouch for them."""
+    agent = _agent_recalling("- alpha\n", "- alpha\n")
+    ctx_1, _row = _turn(agent, _QUESTION_1, None)
+    checkpoint = {"role": "assistant", "content": "noted",
+                  "codex_reasoning_items": [{"type": "compaction", "encrypted_content": "opaque"}]}
+
+    _ctx, row_2 = _turn(agent, _QUESTION_2, [*ctx_1.messages, checkpoint])
+
+    assert "- alpha" in _stamped_block(row_2)
+
+
+def test_the_same_subheading_under_another_parent_is_stamped_again():
+    """``### Allergies`` under ``## Bob`` is not the section the window holds under ``## Alice``."""
+    block = _stamped_block(_two_turns("## Alice\n### Allergies\n- None\n", "## Bob\n### Allergies\n- None\n"))
+
+    assert "## Bob\n### Allergies\n- None" in block
+
+
+def test_a_bullet_whose_continuation_follows_a_blank_line_is_kept_whole():
+    """A blank line between a bullet and its indented continuation does not make the bullet
+    self-contained: dropping it would leave ``status: blocked`` without its subject."""
+    block = _stamped_block(_two_turns("- Project A\n", "- Project A\n\n  - status: blocked\n"))
+
+    assert "- Project A\n\n  - status: blocked" in block
 
 
 def test_a_turn_composed_live_sends_the_bytes_the_prologue_stamps():
@@ -230,7 +314,7 @@ def test_a_bullet_with_continuation_lines_is_stamped_again():
     new one would re-parent its provenance under the earlier row's entry."""
     entry = "- prefers draft PRs\n  (logged 3 Feb, source: builtin)\n"
 
-    assert "(logged 3 Feb, source: builtin)" in _stamped_block(_two_turns(entry, entry))
+    assert entry.rstrip("\n") in _stamped_block(_two_turns(entry, entry))
 
 
 def test_the_same_bullet_under_another_heading_is_stamped_again():

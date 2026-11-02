@@ -121,30 +121,42 @@ class StreamingContextScrubber:
 # ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
 _RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
 
+# A recall line as window dedupe matches it: the chain of column-0 non-bullet lines above it in its block
+# (headings, rules, prose, provider framing), then the line itself.
+RecallKey = tuple[tuple[str, ...], str]
+
+
 def _carries_continuation(lines: list[str], index: int) -> bool:
     """Whether the line at ``index`` has an indented non-blank line directly beneath it."""
     following = lines[index + 1] if index + 1 < len(lines) else ""
     return bool(following.strip()) and following[0].isspace()
 
 
-def _sectioned_lines(lines: list[str]) -> Iterator[tuple[int, tuple[str, str], bool]]:
-    """``(index, (section, line), is_bullet)`` for every column-0 line of ``lines`` that window
-    dedupe can match: each self-contained bullet, and each non-bullet line (heading, rule, prose).
+def _continues_past_blank(lines: list[str], index: int) -> bool:
+    """Whether the next non-blank line after ``index`` is indented: a continuation, even one a blank line
+    separates from its bullet (``- Project A`` / ``""`` / ``  - status: blocked``)."""
+    following = next((line for line in lines[index + 1:] if line.strip()), "")
+    return bool(following) and following[0].isspace()
 
-    The section is the last column-0 non-bullet line above (``""`` at the top): the same scope
-    ``_drop_repeated_recall_lines`` dedupes within, so a line is only ever matched against the same
-    text under the same heading. Indented lines and bullets that carry them are never matched.
+
+def _sectioned_lines(lines: list[str]) -> Iterator[tuple[int, RecallKey, bool]]:
+    """``(index, (sections, line), is_bullet)`` for every column-0 line of ``lines`` that window dedupe
+    can match: each self-contained bullet, and each non-bullet line (heading, rule, prose).
+
+    ``sections`` is every column-0 non-bullet line above, in order, so ``## Alice`` / ``### Allergies``
+    and ``## Bob`` / ``### Allergies`` never share a key, nor do two providers' sections that share a
+    subheading. Indented lines, and bullets that carry them (past blank lines too), are never matched.
     """
-    section = ""
+    sections: tuple[str, ...] = ()
     for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped or line[0].isspace():
             continue
         if not _RECALL_BULLET_RE.match(stripped):
-            yield index, (section, stripped), False
-            section = stripped
-        elif not _carries_continuation(lines, index):
-            yield index, (section, stripped), True
+            yield index, (sections, stripped), False
+            sections = (*sections, stripped)
+        elif not _continues_past_blank(lines, index):
+            yield index, (sections, stripped), True
 
 
 def _replayed_texts(msg: dict[str, Any]) -> list[str]:
@@ -162,8 +174,8 @@ def _replayed_texts(msg: dict[str, Any]) -> list[str]:
     return []
 
 
-def window_recall_lines(messages: Optional[Iterable[Any]]) -> set[tuple[str, str]]:
-    """The recall lines the context window ALREADY replays, as ``(section, line)`` keys.
+def window_recall_lines(messages: Optional[Iterable[Any]]) -> set[RecallKey]:
+    """The recall lines the context window ALREADY replays, as ``_sectioned_lines`` keys.
 
     A composed block is stamped into the user row it accompanied (the ``api_content`` sidecar on
     string content, a durable text part on list content) and replayed verbatim on every later
@@ -172,7 +184,7 @@ def window_recall_lines(messages: Optional[Iterable[Any]]) -> set[tuple[str, str
     stored: rows that compression, a session switch or ``/new`` removed simply stop contributing,
     so there is nothing to invalidate.
     """
-    seen: set[tuple[str, str]] = set()
+    seen: set[RecallKey] = set()
     for msg in messages or ():
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
@@ -183,11 +195,20 @@ def window_recall_lines(messages: Optional[Iterable[Any]]) -> set[tuple[str, str
     return seen
 
 
-def _drop_window_repeated_recall_lines(text: str, already_in_window: set[tuple[str, str]]) -> tuple[str, bool]:
-    """Drop the self-contained bullets an earlier row's block already states under the same section.
+def recall_covered_by_window(raw_context: str, already_in_window: set[RecallKey]) -> frozenset[RecallKey]:
+    """The keys of the bullets ``build_memory_context_block`` leaves out of ``raw_context`` because the
+    window already carries them: what the block relies on the window to keep showing."""
+    if not raw_context or not already_in_window:
+        return frozenset()
+    lines = _drop_repeated_recall_lines(sanitize_context(raw_context)).split("\n")
+    return frozenset(key for _index, key, is_bullet in _sectioned_lines(lines) if is_bullet and key in already_in_window)
+
+
+def _drop_window_repeated_recall_lines(text: str, already_in_window: set[RecallKey]) -> tuple[str, bool]:
+    """Drop the self-contained bullets an earlier row's block already states under the same sections.
 
     Returns the kept text and whether the block is now covered: bullets were dropped and every line
-    left (a heading, a rule) is one the window already carries under the same section. Any line it
+    left (a heading, a rule) is one the window already carries under the same sections. Any line it
     does not carry keeps the block, since it may be the one thing this recall adds: whether a line
     merely frames the facts or states one cannot be told from its shape.
     """
@@ -248,7 +269,7 @@ def _drop_repeated_recall_lines(text: str) -> str:
 
 
 def build_memory_context_block(
-    raw_context: str, *, already_in_window: Optional[set[tuple[str, str]]] = None,
+    raw_context: str, *, already_in_window: Optional[set[RecallKey]] = None,
 ) -> str:
     """Wrap prefetched memory in a fenced block with system note.
 

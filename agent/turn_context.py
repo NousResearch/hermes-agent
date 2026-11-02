@@ -19,7 +19,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
 from agent.iteration_budget import IterationBudget
-from agent.memory_context import build_memory_context_block, window_recall_lines
+from agent.memory_context import (
+    RecallKey, build_memory_context_block, recall_covered_by_window, window_recall_lines,
+)
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.lsp.deferred import forward_to_agent as forward_lsp_verdicts
@@ -112,7 +114,7 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
 
 def compose_multimodal_context_part(
     ext_prefetch_cache: str, plugin_user_context: str,
-    window_recall: Optional[set[tuple[str, str]]] = None,
+    window_recall: Optional[set[RecallKey]] = None,
 ) -> Optional[str]:
     """The ephemeral context of one turn (memory prefetch + ``pre_llm_call``) as one text
     block; ``None`` when nothing is injected. The string sidecar appends it to ``content``;
@@ -128,7 +130,7 @@ def compose_multimodal_context_part(
 
 def compose_user_api_content(
     content: Any, ext_prefetch_cache: str, plugin_user_context: str,
-    window_recall: Optional[set[tuple[str, str]]] = None,
+    window_recall: Optional[set[RecallKey]] = None,
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's string user message.
 
@@ -625,6 +627,8 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
+    # Recall the prologue stamp left to the window; build_api_messages re-stamps if it leaves it.
+    ("_turn_recall_omitted", frozenset()),
 )
 
 
@@ -1000,24 +1004,52 @@ def _memory_turn_start_and_prefetch(
     return ext_prefetch_cache
 
 
-def _replayed_recall(agent: Any, history: list[Any]) -> set[tuple[str, str]]:
+def _replayed_recall(agent: Any, history: list[Any]) -> set[RecallKey]:
     """The recall ``history`` (the rows before this turn) replays, read from its canonical
     replay, the bytes ``build_api_messages`` sends: a row whose replay drops its sidecar (an
     expired confirmation) no longer carries its recall.
 
-    Empty when a context engine selects the request itself: it may leave out the rows that carry
-    earlier recall, so nothing can be assumed to be in the window."""
+    Empty when something after this read may still drop those rows from the request, so nothing can
+    be assumed to be in the window: a context engine that selects the request itself, or a native
+    compaction checkpoint in the history (the Responses transport prunes the user rows before it to
+    a token budget)."""
     from agent.conversation_loop import _engine_overrides_hook
+    from agent.native_compaction import has_compaction_checkpoint
     from agent.replay_cleanup import canonicalize_replay_history
     if _engine_overrides_hook(getattr(agent, "context_compressor", None), "select_context"):
         return set()
+    if any(isinstance(msg, dict) and has_compaction_checkpoint(msg.get("codex_reasoning_items")) for msg in history):
+        return set()
     return window_recall_lines(canonicalize_replay_history(history, now=agent._current_turn_timestamp))
+
+
+def _restamp_if_recall_left(
+    agent: Any, messages: list[Any], current_turn_user_idx: int, ext_prefetch_cache: str,
+    plugin_user_context: str,
+) -> Optional[str]:
+    """The current turn's stamp left out recall the window carried. A compaction later in the turn can
+    remove the rows carrying it while the current row survives, and the summary does not read their
+    sidecars: re-stamp the row against the window as it is now, so the request states that recall
+    again. ``None`` when the stamp still holds. The live dict and a row with a ``_row_id`` are
+    updated; a compacted copy without one keeps its stored sidecar, and the next turn recalls anew."""
+    omitted = getattr(agent, "_turn_recall_omitted", frozenset())
+    if not omitted:
+        return None
+    window = _replayed_recall(agent, messages[:current_turn_user_idx])
+    if omitted <= window:
+        return None
+    _stamp_api_content_sidecar(
+        agent, messages, current_turn_user_idx, ext_prefetch_cache, plugin_user_context,
+        preflight_compressed=False, window_recall=window,
+    )
+    agent._turn_recall_omitted = recall_covered_by_window(ext_prefetch_cache, window)
+    return messages[current_turn_user_idx].get("api_content")
 
 
 def _stamp_api_content_sidecar(
     agent: Any, messages: list[Any], current_turn_user_idx: int, ext_prefetch_cache: str,
     plugin_user_context: str, *, preflight_compressed: bool,
-    window_recall: Optional[set[tuple[str, str]]] = None,
+    window_recall: Optional[set[RecallKey]] = None,
 ) -> None:
     """api_content sidecar — persist what you send: injected context lives only in the
     API copy, so stamp the exact sent bytes on the live dict for replay."""
@@ -1064,7 +1096,7 @@ def _stamp_api_content_sidecar(
 
 def _append_multimodal_context(
     agent: Any, turn_user_msg: dict[str, Any], ext_prefetch_cache: str, plugin_user_context: str,
-    *, preflight_compressed: bool, window_recall: Optional[set[tuple[str, str]]] = None,
+    *, preflight_compressed: bool,
 ) -> None:
     """Multimodal (list) content takes no string sidecar: the turn's context becomes a durable
     text part on the current turn's live list (the gateway must-deliver-note channel, #71998),
@@ -1076,7 +1108,7 @@ def _append_multimodal_context(
     message, so without this a resumed session replays a view the model never saw. Same
     ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
     shape (compaction inserted the raw parts, a flush the text projection)."""
-    _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context, window_recall)
+    _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
     if not append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx):
         return
     from agent.session_persistence import _durable_content, _persist_lock
@@ -1290,17 +1322,21 @@ def build_turn_context(
 
     # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
-        # Read after compaction, from the rows still before this turn: recall they already
-        # replay stays out of this turn's block instead of being paid again on every request.
-        window_recall = _replayed_recall(agent, messages[:current_turn_user_idx])
         if plugin_block_message:
             _withhold_blocked_prompt(agent, messages[current_turn_user_idx], original_user_message)
         elif isinstance(messages[current_turn_user_idx].get("content"), list):
+            # No window dedupe here: the block becomes a durable content part, which a compaction
+            # later in the turn could not re-compose if it removed the rows the dedupe relied on.
             _append_multimodal_context(
                 agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
-                preflight_compressed=compaction.compressed, window_recall=window_recall,
+                preflight_compressed=compaction.compressed,
             )
         elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+            # Read after compaction, from the rows still before this turn: recall they already
+            # replay stays out of this turn's block instead of being paid again on every request.
+            # What was left out is kept so a later compaction this turn can bring it back.
+            window_recall = _replayed_recall(agent, messages[:current_turn_user_idx]) if ext_prefetch_cache else set()
+            agent._turn_recall_omitted = recall_covered_by_window(ext_prefetch_cache, window_recall)
             _stamp_api_content_sidecar(
                 agent, messages, current_turn_user_idx, ext_prefetch_cache,
                 plugin_user_context, preflight_compressed=compaction.compressed,
@@ -1389,6 +1425,12 @@ def build_api_messages(
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
         if msg is current_turn_message and msg.get("role") == "user":
+            # Recall the prologue left to the window may have left it since (a compaction later
+            # in the turn): re-stamp, also when the window covered the whole block and the
+            # prologue stamped nothing.
+            _api_content = _restamp_if_recall_left(
+                agent, messages, current_turn_user_idx, ext_prefetch_cache, plugin_user_context,
+            ) or _api_content
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
@@ -1396,9 +1438,11 @@ def build_api_messages(
             else:
                 # Callers that bypass the prologue stamping: compose live, leaving out the
                 # recall the replayed rows already carry, as the prologue stamp does.
+                _live = api_msg.get("content", "")
                 _composed = compose_user_api_content(
-                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context,
-                    _replayed_recall(agent, messages[:split]),
+                    _live, ext_prefetch_cache, plugin_user_context,
+                    _replayed_recall(agent, messages[:split])
+                    if ext_prefetch_cache and isinstance(_live, str) else None,
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed

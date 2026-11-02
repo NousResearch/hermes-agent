@@ -1,10 +1,10 @@
 name: ctx_checkpoint
 repo: https://github.com/GottZ/ctx
-sha: 98749f3cf929a37d4c4a68512e1cd4db6f4bad6d
+sha: ee8cb2e987aec7b8744118f7de15202a670b4e4b
 subdir: integrations/hermes/plugin/ctx_checkpoint
-version: "0.4.4"
+version: "0.5.0"
 title: ctx checkpoint
-description: "Memory provider that archives the direct user/assistant transcript into a ctx knowledge store before every compaction, deterministically and with no LLM in the path, and hands the resulting block IDs to the compaction summary so the exact wording stays recoverable. Best-effort on any supported Hermes; with compression.checkpoint_required on Hermes 0.21.1+ it uses the fail-closed pre-compress checkpoint contract (#94639) and blocks compaction until the checkpoint is durable. Disclosure — the turns about to be compacted (tool results and system prompts excluded, secrets redacted twice) are written through Hermes' MCP dispatch to the ctx server you configure in mcp_servers; the plugin holds no credentials, makes no other network calls and has no telemetry; it imports the core modules agent.redact, tools.registry and hermes_cli.config."
+description: "Memory provider that archives the direct user/assistant transcript into a ctx knowledge store before every compaction, deterministically and with no LLM in the path, and hands the resulting block IDs to the compaction summary so the exact wording stays recoverable. Set up from the Desktop/Dashboard memory form or `hermes memory setup ctx_checkpoint` (ctx URL and API key, no YAML editing); compaction thresholds stay Hermes' defaults, which suit 1M-token windows. Best-effort on any supported Hermes; with compression.checkpoint_required on Hermes 0.21.1+ it uses the fail-closed pre-compress checkpoint contract (#94639) and blocks compaction until the checkpoint is durable. Disclosure — the turns about to be compacted (tool results and system prompts excluded, secrets redacted twice) are written through Hermes' MCP dispatch to the ctx server you configure in mcp_servers; setup, when you run it, writes memory.ctx_checkpoint and that mcp_servers entry to config.yaml and the API key to .env as CTX_API_KEY; the plugin never writes compaction settings, makes no other network calls and has no telemetry; it imports the core modules agent.redact, tools.registry and hermes_cli.config."
 maintainer: GottZ
 tier: community
 category: memory

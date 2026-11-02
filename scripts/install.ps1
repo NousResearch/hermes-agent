@@ -1541,7 +1541,9 @@ function New-DesktopShortcuts {
         }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
-                $sc.WorkingDirectory = $workDir
+                # Not the exe's folder: the Desktop's children inherit it, and a helper
+                # that outlives the app then blocks the next update's swap (#101789).
+                $sc.WorkingDirectory = $env:USERPROFILE
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()

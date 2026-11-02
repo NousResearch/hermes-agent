@@ -860,6 +860,36 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 `basic` is just one implementation of an extension point. Any plugin can register a password provider: set `supports_password = True` on your `DashboardAuthProvider` subclass and implement `complete_password_login(*, username, password) -> Session` (raise `InvalidCredentialsError` on rejection, `ProviderError` if your backing store is down). The OAuth `start_login` / `complete_login` methods can be left as `NotImplementedError` stubs for a pure-password provider. This is the path for LDAP-bind, a credentials database, or any other non-redirect auth scheme — the framework handles the form, the route, the cookies, and refresh for you.
 
+### Deployment session-token provider (token-only deployments)
+
+The bundled `plugins/dashboard_auth/session_token` plugin makes the **deployment session token** (`HERMES_DASHBOARD_SESSION_TOKEN`) a first-class gated-mode credential. This is the shape secret-managed deployments already provision — a single shared token (nix/agenix hands it over as a decrypted file; the Nix modules set `HERMES_DASHBOARD_SESSION_TOKEN=file:<path>` from `backend.sessionTokenFile`) that Hermes Desktop's remote-gateway **"Session token"** field presents. Without this provider, a non-loopback bind with only a provisioned token hit the fail-closed gate and pushed the operator into basic-auth or OAuth credentials the deployment never asked for.
+
+When the env var is provisioned, the provider registers automatically and `verify_session` constant-time-compares the presented credential against it. Both legs a token-mode client uses run through that seam — the REST `Authorization: Bearer` path and the `/api/ws` `?token=` upgrade credential — so one provisioned token authorizes both. There is **no browser sign-in flow**: `/login` renders a note explaining the credential channel instead of sign-in buttons, and the provider is never offered by the auto-SSO redirect.
+
+:::warning Treat the token like a password
+The provisioned token grants full dashboard access to whoever holds it. Provision it from a secret manager (never a Nix store path), rotate by redeploying the secret — rotation invalidates every saved client copy, which surfaces as "HTTP reachable but the WebSocket fails" in Desktop until the new token is pasted in. There is no per-user identity behind it: for shared or internet-facing deployments prefer the [Nous Research](#default-provider-nous-research) or [self-hosted OIDC](#self-hosted-oidc-provider) provider.
+:::
+
+**Activation and opt-out.** Registering is driven by the credential itself: the provider is a no-op until `HERMES_DASHBOARD_SESSION_TOKEN` is set (env wins; `file:<path>` is read at startup and fails loudly when missing/empty). To keep the token internal-only (loopback SPA use, desktop-spawned backends) while authenticating the gate with basic-auth/OAuth instead, disable the provider:
+
+```yaml
+dashboard:
+  session_token_auth:
+    enabled: false
+```
+
+Verify a token-gated deployment from any machine:
+
+```bash
+curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
+# true
+# ["session-token"]
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $TOKEN" http://<host>:9119/api/auth/me
+# 200
+```
+
 ### Self-hosted OIDC provider
 
 If you run your own identity provider, the bundled `plugins/dashboard_auth/self_hosted` plugin authenticates the dashboard against it using **standard OpenID Connect** — no per-IDP code, no Nous Portal involved. It's verified against and works with any conformant OIDC server:
@@ -896,6 +926,8 @@ dashboard:
 In your IDP, register a **public** application/client with the authorization-code + PKCE (S256) grant and add the dashboard's callback as an allowed redirect URI. The callback is `<dashboard public URL>/auth/callback` (see [Public URL override](#public-url-override) for how the dashboard derives its public URL behind a proxy).
 
 #### What it verifies
+
+Every account that can sign in acts as you, the machine owner. With a self-hosted login provider, restrict the app to your own account in the provider (for example Okta app assignment, Microsoft Entra "Assignment required", or a Google Workspace app limited to you); otherwise anyone your provider admits gets full access, as before.
 
 The provider verifies the OpenID Connect **ID token** (RS256/ES256) against the discovered `jwks_uri`, with the `iss` and `aud` claims pinned to your configured `issuer` and `client_id`. The time claims (`exp`/`nbf`/`iat`) are verified with a 60-second clock-skew leeway (RFC 7519 §4.1.4-4.1.6), so a dashboard host whose clock lags the IDP's doesn't fail login; tune it with `dashboard.oauth.self_hosted.id_token_leeway` in `config.yaml` (any value below `60` tightens it, `0` restores strict verification, and an invalid value fails closed to `0`). Standard OIDC claims map onto the dashboard session:
 
@@ -1162,15 +1194,18 @@ The recipe below uses the username/password path because it's the quickest to st
 cat >> ~/.hermes/.env <<'EOF'
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
 HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
-# Recommended: a stable signing secret so sessions survive restarts.
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
 EOF
+# Recommended: a stable signing secret so sessions survive restarts.
+# This runs openssl, so the secret is unique to you.
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" >> ~/.hermes/.env
 chmod 600 ~/.hermes/.env
 
 # 2. Run the dashboard bound to a reachable address. The non-loopback bind
 #    engages the auth gate; the username/password provider handles login.
 hermes dashboard --no-open --host 0.0.0.0 --port 9119
 ```
+
+An earlier version of this recipe wrote the secret line inside the quoted heredoc, which stores the text `$(openssl rand -base64 32)` instead of a random value. If `grep BASIC_AUTH_SECRET ~/.hermes/.env` shows that text, replace the line with a freshly generated secret and restart the dashboard.
 
 Prefer no plaintext at rest? Use `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` with a scrypt hash instead — see [Username/password provider](#usernamepassword-provider-no-oauth-idp) for the full surface.
 

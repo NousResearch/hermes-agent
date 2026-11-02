@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { hostHas } from '@/lib/host-capabilities'
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 
 type BrowserAudioContext = typeof AudioContext
 
@@ -51,7 +51,7 @@ interface MicRecorderHandle {
  *  insecure context with no mediaDevices: it says HTTPS or a tunnel fixes that. Native Desktop
  *  keeps the plain copy. */
 function unsupportedMicrophone(copy: MicRecorderErrorCopy): string {
-  return isBrowserHostedDesktop() && window.isSecureContext === false
+  return hostHas('webappCopy') && window.isSecureContext === false
     ? copy.microphoneNeedsHttps
     : copy.microphoneUnsupported
 }

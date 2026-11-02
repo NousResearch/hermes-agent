@@ -117,6 +117,7 @@ import {
   startTileBackendIdentityGuard,
   startUnrestoredTileTitleBackfill,
   watchSessionTiles,
+  workspaceTabActions,
   WorkspaceTabMenu
 } from '../chat/session-tile'
 import { AppContextMenu } from '../context-menu/app-context-menu'
@@ -234,6 +235,7 @@ registry.registerMany([
       placement: 'main',
       minWidth: '22vw',
       tabDrag: workspaceTabDrag,
+      tabActions: workspaceTabActions,
       tabWrap: wrapWorkspaceTab,
       uncloseable: true
     },
@@ -597,6 +599,7 @@ const syncWorkspaceTitle = () => {
       placement: 'main',
       minWidth: '22vw',
       tabDrag: workspaceTabDrag,
+      tabActions: workspaceTabActions,
       tabWrap: wrapWorkspaceTab,
       uncloseable: true
     },

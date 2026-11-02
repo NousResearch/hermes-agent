@@ -341,7 +341,7 @@ async def test_imported_chat_resumes_writable_as_cli(tmp_path, monkeypatch):
     opened = await conn.resume(ref, {})
 
     assert len(opened["messages"]) == 4
-    assert not authority.sessions[session_id].superseded
+    assert not authority.sessions[session_id].detached
     authority.authorize(conn.actor, ref, "session:submit")
 
 

@@ -290,6 +290,8 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     if isinstance(saved, dict) and saved.get("delegation_backend"):
         from agent.delegation_backends import adopt_built_backend
         adopt_built_backend(agent, pinned, saved["delegation_backend"])
+    from tools.delegate_tool import adopt_session_delegation_mode
+    adopt_session_delegation_mode(agent)  # the restored delegate_task decides joined vs background from here on
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
     return changed

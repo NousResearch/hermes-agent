@@ -55,6 +55,7 @@ import {
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
+import { createAppRelauncher, relaunchApp } from './app-relaunch'
 import {
   appVersionInfo,
   type AppVersionInfo,
@@ -202,6 +203,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
+  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -230,7 +232,9 @@ import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
+  desktopConnectionRequestInheritsPrimary,
   type DesktopProfileRoute,
+  registerDesktopProfilePreferenceIpc,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch
 } from './desktop-profile'
@@ -271,6 +275,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -331,34 +336,33 @@ import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
-import { applyLaunchProfileOverride } from './launch-profile'
+import { launchBuildIdentity } from './launch-build-identity'
+import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
+  clearLinuxGpuBootMarker,
+  createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
   LINUX_GPU_SILENT_RETRY_GRACE_S,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
+  linuxGpuFallbackReasonForDeath,
   linuxGpuMarkerAfterSuccessfulBoot,
   readLinuxGpuMarker,
   shouldEngageSilentGpuRetryFallback,
   writeLinuxGpuMarker
 } from './linux-gpu-fallback'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import {
-  decideNvidiaEglFallback,
-  nvidiaEglFallbackMarker,
-  nvidiaEglMarkerAfterSuccessfulBoot,
-  parseNvidiaDriverMajor,
-  parseNvidiaDriverVersion,
-  readNvidiaEglMarker,
-  shouldRelaunchForNvidiaGpuDeath,
-  writeNvidiaEglMarker
-} from './linux-nvidia-egl-fallback'
+import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia-egl-fallback'
+import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
+import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { localProfileIsLive } from './local-profile-liveness'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
-import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
+import { resolveDesktopClientVersion } from './local-runtime-version'
+import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -447,13 +451,11 @@ import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-off
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
-import {
-  createPrimaryRemoteConnection,
-  FirstRunSetupResetError,
-  runPrimaryBackendStartup
-} from './primary-backend-startup'
+import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
+import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfileRestorable } from './primary-boot-join'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -479,6 +481,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isNotFoundApiError,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
   type RegistrySessionSource,
@@ -486,6 +489,7 @@ import {
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
+  tagPrimaryAggregateRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -518,6 +522,8 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { collectRegistrySessionSources } from './registry-session-sources'
+import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -544,7 +550,7 @@ import {
 } from './remote-ws-headers'
 import { enableRendererAccessibility } from './renderer-accessibility'
 import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle'
-import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
+import { applyLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
@@ -578,9 +584,11 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
+import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
+import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
@@ -598,6 +606,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
   UPDATE_WAIT_POLL_MS,
@@ -659,6 +668,7 @@ import {
 import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
+import { filenameFromUrl } from './url-filename'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -666,12 +676,7 @@ import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
-import {
-  appliedPrimaryWindowRoute,
-  registrySshPoolScopeByConnectionId,
-  registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
+import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { isAppSized, registerWindowSizing } from './window-growth'
@@ -735,6 +740,44 @@ if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
   const resolvedUserData: string = resolveDesktopUserData(app.getPath('userData'))
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
+}
+
+// Only the lock owner may persist launch recovery markers, adopt a workspace or start a
+// backend, so the lock is taken as soon as userData is final (#131055, #143056).
+// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
+// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
+// so Chromium's own liveness probe keeps refusing every later launch and the
+// app silently exits. Clear a provably-dead owner and retry once; always log
+// when the lock is legitimately lost so the exit is diagnosable.
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) {
+    return true
+  }
+
+  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+
+  if (stalePid !== null) {
+    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+
+    return app.requestSingleInstanceLock()
+  }
+
+  return false
+}
+
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+const relauncher = createAppRelauncher(app)
+
+if (!isPrimaryInstance) {
+  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
+  app.exit(0)
+}
+
+// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// backend and every other child get the real one (the profile scratch dir) back.
+if (process.env.HERMES_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
+  delete process.env.HERMES_DESKTOP_TMPDIR
 }
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
@@ -814,10 +857,12 @@ if (IS_WINDOWS) {
   windowsGpuStackCookieFallbackActive = gpuStackCookieDecision.enable
   windowsGpuStackCookieFallbackSticky = gpuStackCookieDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
-  } catch {
-    void 0
+  if (isPrimaryInstance) {
+    try {
+      writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
+    } catch {
+      void 0
+    }
   }
 
   if (gpuStackCookieDecision.enable && !REMOTE_DISPLAY_REASON) {
@@ -868,18 +913,9 @@ if (
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
-// #40077 / #124255: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid
-// visual ID), killing the GPU process at startup. Route ANGLE through its
-// SwiftShader backend when the breakage is WITNESSED, not assumed: the same
-// point release breaks hosts where NVIDIA drives the display and renders fine
-// on hybrid hosts whose session EGL lands on the iGPU, so a driver-series gate
-// burns 4-9 CPU cores on healthy hosts (#124255). The gate is now behavioral —
-// boot with hardware GL and a marker; a GPU-process death before the first
-// window flips the marker sticky (per app + full driver version) and relaunches
-// once with SwiftShader. Deliberately NOT disableHardwareAcceleration(): on
-// 580.173.02 + Electron 40 that SIGKILLs the renderer (see the closed #40119).
-// Must run before app `ready` — the switch only applies pre-launch. Override
-// with HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+// NVIDIA EGL failures use a build-qualified, lock-owned recovery witness.
+// Healthy launches retain hardware rendering; source rebuilds re-probe old failures.
+// Keep this before app ready because ANGLE switches apply only at startup.
 const NVIDIA_PROC_VERSION = (() => {
   try {
     return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
@@ -891,85 +927,40 @@ const NVIDIA_PROC_VERSION = (() => {
 const NVIDIA_DRIVER_MAJOR = parseNvidiaDriverMajor(NVIDIA_PROC_VERSION)
 const NVIDIA_DRIVER_VERSION = parseNvidiaDriverVersion(NVIDIA_PROC_VERSION)
 
-let nvidiaEglFallbackActive = false
-let nvidiaEglRelaunchAttempted = false
+// Every Linux launch's boot clock, NVIDIA or not; set at the first window reveal.
+const linuxGpuBootWindow = createLinuxGpuBootWindow()
 
-const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
+const nvidiaEglRecovery = createNvidiaEglRecovery({
+  bootWindow: linuxGpuBootWindow,
   driverMajor: NVIDIA_DRIVER_MAJOR,
   driverVersion: NVIDIA_DRIVER_VERSION,
-  marker: readNvidiaEglMarker(app.getPath('userData')),
+  userData: app.getPath('userData'),
   appVersion: app.getVersion(),
+  buildIdentity: launchBuildIdentity({ appVersion: app.getVersion(), installStamp: INSTALL_STAMP }),
   env: process.env,
   platform: process.platform,
   isWsl: IS_WSL,
-  remoteDisplayReason: REMOTE_DISPLAY_REASON
+  remoteDisplayReason: REMOTE_DISPLAY_REASON,
+  primary: isPrimaryInstance,
+  log: message => {
+    console.warn(`[hermes] ${message}`)
+    void app.whenReady().then(() => {
+      rememberLog(message)
+      flushDesktopLogBufferSync()
+    })
+  },
+  relaunch: extraArgs => {
+    // The persisted witness selects ANGLE next launch; argv carries it only when unwritable.
+    relaunchApp(relauncher, { args: [...process.argv.slice(1), ...extraArgs] })
+    void exitAfterBackendShutdown(0)
+  }
 })
 
-nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
-
-// Persist the launch decision before GPU children start: a `booting` marker
-// left behind by a launch that never reached first paint is itself evidence
-// of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
-// against our relaunch handler), and the next launch engages from it.
-if (NVIDIA_DRIVER_MAJOR !== null) {
-  try {
-    writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
-  } catch {
-    void 0
-  }
-}
+const NVIDIA_EGL_FALLBACK = nvidiaEglRecovery.decision
 
 if (NVIDIA_EGL_FALLBACK.enable) {
   app.commandLine.appendSwitch('use-angle', 'swiftshader')
-  console.log(
-    `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
-      'through SwiftShader. Witnessed GPU-process death probe (#40077, #124255); an app or ' +
-      'driver update re-probes hardware GL once. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
-  )
-}
-
-// The behavioral half of the gate: a GPU-process death on a Linux NVIDIA host
-// that booted with hardware GL is the #40077 signature. Catch it before
-// Chromium's "GPU process isn't usable" FATAL abort ends the process, flip the
-// marker sticky, and relaunch once with SwiftShader. `killed` counts (the
-// #40077 GPU process died to Chromium's health-check SIGTERM, exit_code=15).
-if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
-  app.on('child-process-gone', (_event, details) => {
-    if (
-      !shouldRelaunchForNvidiaGpuDeath({
-        details,
-        fallbackActive: nvidiaEglFallbackActive,
-        relaunchAttempted: nvidiaEglRelaunchAttempted
-      })
-    ) {
-      return
-    }
-
-    nvidiaEglRelaunchAttempted = true
-
-    try {
-      writeNvidiaEglMarker(
-        app.getPath('userData'),
-        nvidiaEglFallbackMarker(app.getVersion(), NVIDIA_DRIVER_VERSION ?? String(NVIDIA_DRIVER_MAJOR))
-      )
-    } catch {
-      void 0
-    }
-
-    console.warn(
-      `[hermes] NVIDIA GPU process died (reason=${details?.reason}, exit=${details?.exitCode}); ` +
-        'relaunching once with --use-angle=swiftshader (#40077, #124255)'
-    )
-
-    try {
-      app.relaunch({
-        args: [...process.argv.slice(1), '--use-angle=swiftshader']
-      })
-      void exitAfterBackendShutdown(0)
-    } catch (error) {
-      console.error(`[hermes] NVIDIA SwiftShader relaunch failed: ${error?.message || error}`)
-    }
-  })
+  console.log(`[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE through SwiftShader`)
 }
 
 // #124843: on Mesa/Wayland the Chromium GPU child can fail init
@@ -1001,10 +992,12 @@ if (process.platform === 'linux') {
   linuxGpuFallbackActive = linuxGpuDecision.enable
   linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
 
-  try {
-    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
-  } catch {
-    void 0
+  if (isPrimaryInstance) {
+    try {
+      writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+    } catch {
+      void 0
+    }
   }
 
   if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
@@ -1103,47 +1096,57 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
   }
 
-  writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  if (isPrimaryInstance) {
+    writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  }
 
   // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
   // sandbox signature is tried first (that host's matrix shows --disable-gpu
   // still crashes), then the software ladder — including the relapse after a
   // --no-sandbox boot died again. One death, one bounded relaunch; Windows
   // keeps its breakpoint-signature fast path unchanged.
+  const recoverWindowsGpuSandbox = (details: Electron.Details): void => {
+    if (
+      !shouldRelaunchForGpuSandboxCrash({
+        details,
+        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+        relaunchAttempted: windowsNoSandboxRelaunchAttempted
+      })
+    ) {
+      return
+    }
+
+    windowsNoSandboxRelaunchAttempted = true
+    windowsSandboxFallbackActive = true
+    windowsSandboxFallbackSticky = true
+    windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+    try {
+      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+    } catch {
+      void 0
+    }
+
+    console.warn(
+      `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+    )
+
+    try {
+      relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      void exitAfterBackendShutdown(0)
+    } catch (error) {
+      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+    }
+  }
+
   app.on('child-process-gone', (_event, details) => {
     if (IS_WINDOWS) {
-      if (
-        !shouldRelaunchForGpuSandboxCrash({
-          details,
-          alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
-          relaunchAttempted: windowsNoSandboxRelaunchAttempted
-        })
-      ) {
-        return
-      }
+      recoverWindowsGpuSandbox(details)
 
-      windowsNoSandboxRelaunchAttempted = true
-      windowsSandboxFallbackActive = true
-      windowsSandboxFallbackSticky = true
-      windowsSandboxFallbackReason = 'gpu-breakpoint'
+      return
+    }
 
-      try {
-        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
-      } catch {
-        void 0
-      }
-
-      console.warn(
-        `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
-      )
-
-      try {
-        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-        void exitAfterBackendShutdown(0)
-      } catch (error) {
-        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
-      }
-
+    if (rendererTeardownInProgress() || quitInProgress) {
       return
     }
 
@@ -1155,8 +1158,14 @@ if (IS_WINDOWS || process.platform === 'linux') {
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
       alreadySoftware,
       sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
-      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted,
+      runtimeDeath: linuxGpuBootWindow.afterBootWindow()
     })
+
+    // One event must not schedule both ANGLE and disable-gpu relaunches.
+    if (path !== 'no-sandbox' && nvidiaEglRecovery.gpuDied(details)) {
+      return
+    }
 
     if (path === 'no-sandbox') {
       windowsNoSandboxRelaunchAttempted = true
@@ -1175,7 +1184,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1189,8 +1198,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       linuxGpuFallbackActive = true
       linuxGpuFallbackSticky = true
 
-      const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+      const reason = linuxGpuFallbackReasonForDeath(details?.reason)
 
       try {
         writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
@@ -1203,7 +1211,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(relauncher, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
@@ -1251,42 +1259,6 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 
-// Only the lock-owning destination may adopt a workspace or start a backend.
-// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
-// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
-// so Chromium's own liveness probe keeps refusing every later launch and the
-// app silently exits. Clear a provably-dead owner and retry once; always log
-// when the lock is legitimately lost so the exit is diagnosable.
-function acquireSingleInstanceLock(): boolean {
-  if (app.requestSingleInstanceLock()) {
-    return true
-  }
-
-  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
-
-  if (stalePid !== null) {
-    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
-
-    return app.requestSingleInstanceLock()
-  }
-
-  return false
-}
-
-const isPrimaryInstance: boolean = acquireSingleInstanceLock()
-
-if (!isPrimaryInstance) {
-  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
-  app.exit(0)
-}
-
-// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
-// backend and every other child get the real one (the profile scratch dir) back.
-if (process.env.HERMES_DESKTOP_TMPDIR) {
-  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
-  delete process.env.HERMES_DESKTOP_TMPDIR
-}
-
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
   directoryExists,
@@ -1324,17 +1296,16 @@ let desktopSshPathOverride = ''
     process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = '0'
   }
 
-  for (const planned of planLaunchSwitches(desktopLaunchConfig, process.argv.slice(1))) {
-    if (planned.value === undefined) {
-      app.commandLine.appendSwitch(planned.name)
-    } else {
-      app.commandLine.appendSwitch(planned.name, planned.value)
-    }
+  applyLaunchSwitches(app.commandLine, desktopLaunchConfig, process.argv.slice(1))
+}
 
-    console.log(
-      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
-    )
-  }
+// Linux: a runtime `--no-sandbox` kills renderers on /dev/shm (linux-sandbox-relaunch.ts).
+if (isPrimaryInstance) {
+  // A deliberate restart is no GPU failure: settle both ladders' boot witnesses before it.
+  relaunchIfNoSandboxCameTooLate(relauncher, () => {
+    nvidiaEglRecovery.cleanExit()
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
+  })
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -2744,26 +2715,6 @@ async function advanceBootProgress(phase, message, progress) {
   }
 }
 
-function fileExists(filePath) {
-  try {
-    return fs.statSync(filePath).isFile()
-  } catch {
-    return false
-  }
-}
-
-function isGitCheckout(root: string): boolean {
-  return fs.existsSync(path.join(root, '.git'))
-}
-
-function directoryExists(filePath) {
-  try {
-    return fs.statSync(filePath).isDirectory()
-  } catch {
-    return false
-  }
-}
-
 // --- in-app update mutual exclusion (#50238) -------------------------------
 // The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
@@ -2894,7 +2845,8 @@ async function waitForUpdateToFinish() {
     log: rememberLog,
     dialog,
     shell,
-    openUpdates: sendOpenUpdatesRequested
+    openUpdates: sendOpenUpdatesRequested,
+    closeHoldersAndRetry: releaseHolderRetry({ isWindows: IS_WINDOWS, resolveUpdateRoot, applyUpdates, log: rememberLog })
   })
 
   if (outcome === 'cancelled') {
@@ -2916,7 +2868,7 @@ async function waitForUpdateToFinish() {
       running: INSTALL_STAMP,
       resourcesPath: process.resourcesPath,
       relaunch: extraArgs =>
-        app.relaunch({ args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
+        relaunchApp(relauncher, { args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
       exit: () => void exitAfterBackendShutdown(0),
       log: rememberLog
     })
@@ -3221,13 +3173,6 @@ function getVenvPython(venvRoot) {
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
-function makeDashboardReadyFile() {
-  const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
-
-  return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
-}
-
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
 // install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
@@ -3353,10 +3298,6 @@ function resolveGhBinary() {
   _ghBinaryCache = selected || findOnPath('gh') || 'gh'
 
   return _ghBinaryCache
-}
-
-function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
 }
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
@@ -3723,7 +3664,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         throw new Error(message)
       }
 
-      preflightStateDb({
+      await preflightStateDb({
         python: managed ? null : await findPythonForRoot(root),
         launcher,
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
@@ -5530,17 +5471,6 @@ function extensionForMimeType(mimeType) {
   }
 
   return ''
-}
-
-function filenameFromUrl(rawUrl, fallback = 'image') {
-  try {
-    const parsed = new URL(rawUrl)
-    const base = path.basename(decodeURIComponent(parsed.pathname || ''))
-
-    return base && base.includes('.') ? base : fallback
-  } catch {
-    return fallback
-  }
 }
 
 async function resourceBufferFromUrl(rawUrl) {
@@ -9527,26 +9457,13 @@ function activeSshTerminalTarget(webContentsId?: number) {
   const windowRoute = typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
 
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    const scope = registrySshScopeForWindowRoute(windowRoute, readDesktopConnectionsRegistry())
+    const target = terminalGatewayTarget(
+      { connectionId: windowRoute.connectionId, profile: windowRoute.profile },
+      readDesktopConnectionsRegistry(),
+      sshConnections
+    )
 
-    if (!scope) {
-      return null
-    }
-
-    const state = sshConnections.get(scope)
-
-    if (state && state.ssh) {
-      return { ssh: state.ssh, scope }
-    }
-
-    // The pool's single writer publishes under the per-profile bootstrap key
-    // while stamping the entry with its registry connection id (#97345), so a
-    // composite-key miss must still resolve the live tunnel by that identity
-    // instead of reporting 'pending' forever.
-    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
-    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
-
-    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
+    return typeof target === 'string' && target !== 'pending' ? null : target
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -9586,8 +9503,12 @@ async function ensureTerminalBackend(webContentsId: number) {
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
+  // No window route: follow the primary, like a profile-less hermes:connection.
+  const inheritsPrimary = !windowRoute?.profile
 
-  return backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
+  return backendDialClaims.run(primaryDialClaimKey(backendScopeKey(null, profile), inheritsPrimary), () =>
+    ensureBackend(profile, { inheritsPrimary })
+  )
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that
@@ -10609,9 +10530,10 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
 
 async function ensureBackend(
   profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}
+  opts: { inheritsPrimary?: boolean; passive?: boolean; request?: { method?: string; path?: string } } = {}
 ) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const request = primaryBootRequest(profile, primaryProfileKey(), opts.inheritsPrimary)
+  const key = request.key
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -10624,19 +10546,15 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    const connection = await startHermes(key)
-    setWslBridgeProfileState(key, connection.mode !== 'remote')
+    const joined = await joinPrimaryBoot(request, route, {
+      primaryKey: primaryProfileKey,
+      resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
+      start: boot => startHermes(boot.key, boot.inheritsPrimary)
+    })
 
-    // A shared backend still owes the caller its profile scope, so renderer-side
-    // WebSocket, filesystem, and cache routing target the selected profile.
-    // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag. The
-    // unshared primary carries its own key too: a profile-less descriptor
-    // reads as "default" downstream, which breaks per-source profile memory
-    // (the primary IS "default" only when it actually booted as default).
-    return route.descriptorProfile
-      ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
-      : { ...connection, profile: key }
+    setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
+
+    return joined.descriptor
   }
 
   const existing = backendPool.get(key)
@@ -10703,15 +10621,7 @@ async function ensureRegistryBackend(
     }
 
     if (!resolvedRegistrySshConfig) {
-      resolvedRegistrySshConfig = normalizeSshConfig({
-        mode: 'ssh',
-        host: source.host,
-        user: source.user,
-        port: source.port,
-        keyPath: source.keyPath,
-        remoteHermesPath: source.remoteHermesPath,
-        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-      })
+      resolvedRegistrySshConfig = managedSshConfig(source, profileKey)
     }
 
     return resolvedRegistrySshConfig
@@ -10824,6 +10734,18 @@ async function ensureRegistryBackend(
 
   const key = backendScopeKey(id, profile)
   const existing = backendPool.get(key)
+
+  // One remote `hermes serve` per SSH host: a named profile rides the default backend when it can.
+  const shared = existing ? null : await resolveSharedSshProfileBackend(source, profile, {
+    ensureDefault: (): Promise<any> => ensureRegistryBackend(id, 'default', managedUpdateCorrelation, { passive }),
+    listProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+  })
+
+  if (shared) {
+    setWslBridgeProfileState(shared.profile, false)
+
+    return shared
+  }
 
   if (existing) {
     const connectionPromise = existing.connectionPromise
@@ -11029,20 +10951,6 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
       managedPrimaryRestoreOwners.delete(source.id)
     }
   }
-}
-
-function managedSshConfig(source, profile = '') {
-  const profileKey = String(profile ?? '').trim() || 'default'
-
-  return normalizeSshConfig({
-    mode: 'ssh',
-    host: source.host,
-    user: source.user,
-    port: source.port,
-    keyPath: source.keyPath,
-    remoteHermesPath: source.remoteHermesPath,
-    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-  })
 }
 
 async function captureManagedSshScopes(source) {
@@ -11742,6 +11650,8 @@ async function teardownSshForQuit(): Promise<void> {
 }
 
 async function exitAfterBackendShutdown(code) {
+  nvidiaEglRecovery.cleanExit()
+
   try {
     await backendShutdown.run()
   } catch {
@@ -11750,7 +11660,7 @@ async function exitAfterBackendShutdown(code) {
 
   // app.exit() skips will-quit, and every in-app relaunch lands here.
   killTimedGitChildren()
-  app.exit(code)
+  relauncher.exit(code)
 }
 
 // Returns the profile name whose backend was torn down, or null when the
@@ -11820,7 +11730,7 @@ function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function startHermes(requestedProfile?: string) {
+async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -11886,16 +11796,15 @@ async function startHermes(requestedProfile?: string) {
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. An explicit profile-scoped caller names both.
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
+  const launch = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
     : resolveLaunchProfile(readActiveDesktopProfile)
 
-  // Pin the routing table to the profile this primary actually boots as; a
-  // later hermes:profile:remember must not retarget requests mid-life.
-  primaryProfilePin.pin(primaryProfile)
+  const activeProfile = launch.argvProfile
+  let primaryProfile = launch.routingProfile
 
-  // Legacy path callers without an explicit profile belong to the primary
-  // window backend. Profile-scoped callers still pass their key directly.
+  // Keep routing and native paths on this attempt's effective launch profile.
+  primaryProfilePin.pin(primaryProfile)
   setActiveGatewayProfile(primaryProfile)
 
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
@@ -11904,29 +11813,28 @@ async function startHermes(requestedProfile?: string) {
   let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
-    const connectRemote = async remote => {
-      // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
-      // mint). If a newer attempt started meanwhile (e.g. the user switched
-      // remotes and Apply invalidated this attempt), bail before probing.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
-
-      // Second async boundary: the health probe itself can outlive the
-      // attempt. A late success here must not publish a stale descriptor.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      updateBootProgress({
-        phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
-        progress: 94,
-        running: true,
-        error: null
+    const connectRemote = remote =>
+      connectPrimaryRemote(remote, {
+        profile: primaryProfile,
+        restoreRememberedProfile: () =>
+          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig()),
+        signal: localBackendLifecycle.signal,
+        assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+        advanceBootProgress,
+        waitForRemote: waitForRemoteHermes,
+        readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        readStatus: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }),
+        connectionProfile: desktopProfilePreferences.connectionProfile,
+        // The machine-local preference stays: only this remote does not serve it.
+        onProfileRestored: profile => {
+          rememberLog(`[profile] remote primary does not serve "${primaryProfile}"; booting it as "${profile}"`)
+          primaryProfile = primaryProfilePin.pin(profile)
+          setActiveGatewayProfile(profile)
+        },
+        updateBootProgress,
+        logs: () => hermesLog.slice(-80),
+        windowState: getWindowState
       })
-
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
-    }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
@@ -13799,23 +13707,8 @@ function createWindow() {
       // window is on screen (a STARTING gnome-shell app must not see its entry change).
       notifyLauncherWindowRevealed()
 
-      // #124255: the first revealed window means the GPU survived this boot.
-      // Keep a sticky SwiftShader marker when we launched with the fallback;
-      // otherwise mark the probe healthy so future launches trust hardware GL.
-      if (NVIDIA_DRIVER_MAJOR !== null) {
-        try {
-          writeNvidiaEglMarker(
-            app.getPath('userData'),
-            nvidiaEglMarkerAfterSuccessfulBoot({
-              fallbackActive: nvidiaEglFallbackActive,
-              appVersion: app.getVersion(),
-              driverVersion: NVIDIA_DRIVER_VERSION
-            })
-          )
-        } catch {
-          void 0
-        }
-      }
+      linuxGpuBootWindow.revealed()
+      nvidiaEglRecovery.healthy()
 
       // #38216/#121954: clear the mid-boot marker only after a window is
       // actually usable. Keep sticky `fallback` when we launched with
@@ -14012,7 +13905,7 @@ function createWindow() {
           )
 
           try {
-            app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+            relaunchApp(relauncher, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
             void exitAfterBackendShutdown(0)
           } catch (err) {
             rememberLog(`[renderer] GPU-disable relaunch failed: ${err?.message || err}`)
@@ -14066,7 +13959,7 @@ function createWindow() {
         rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
         try {
-          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
           void exitAfterBackendShutdown(0)
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
@@ -14177,24 +14070,25 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {
-  const route = resolveDesktopConnectionRequest(
-    profile,
-    windowConnectionRoutes.get(event.sender.id),
-    primaryProfileKey()
-  )
+  const source = windowConnectionRoutes.get(event.sender.id) ?? null
+  const route = resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
 
-  return connectDesktopProfileRoute(route, event.sender)
+  // A profile-less request follows the primary even though the route carries its name.
+  return connectDesktopProfileRoute(route, event.sender, desktopConnectionRequestInheritsPrimary(profile, source))
 })
 
-async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents) {
+async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents, inherits = false) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  const scopeKey = backendScopeKey(route.connectionId, route.profile)
+  const inheritsPrimary = !route.connectionId && inherits
+  const scopeKey = primaryDialClaimKey(backendScopeKey(route.connectionId, route.profile), inheritsPrimary)
 
   const connection = await backendDialClaims.run(scopeKey, () =>
-    route.connectionId ? ensureRegistryBackend(route.connectionId, route.profile) : ensureBackend(route.profile)
+    route.connectionId
+      ? ensureRegistryBackend(route.connectionId, route.profile)
+      : ensureBackend(route.profile, { inheritsPrimary })
   )
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
@@ -15714,8 +15608,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
+registerDesktopProfilePreferenceIpc(ipcMain, desktopProfilePreferences, connectionId =>
+  readDesktopConnectionsRegistry().connections.some(connection => connection.id === connectionId)
+)
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
 // Desktop last used WITHOUT tearing down the backend or reloading the window.
@@ -15841,7 +15736,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -15870,9 +15765,9 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
 
     const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
     ])
 
     return assembleSidebarSessionSlices(recents, cron, messaging)
@@ -16012,7 +15907,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
 // returns data (never `undefined`) so a batched caller can compose slices. A
 // specific local profile reads from the local primary; a remote-override profile
 // reads from its remote; 'all' merges every remote into the primary aggregate.
-async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null) {
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null, pinnedConnectionId = null) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
   if (requested !== 'all') {
@@ -16023,7 +15918,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
     return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
   }
 
-  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
@@ -16032,12 +15927,16 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
 // than breaking the sidebar. Connected registry gateways' sessions are spliced
 // in too (#88880) — the unified Sessions list shows EVERY connected gateway's
 // chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null) {
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null, pinned = null) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+
+  if (pinned) {
+    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
+  }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -16093,61 +15992,46 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
-// Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
-// The primary local connection is excluded for the legacy unpinned path — the
-// primary aggregate carries local rows there. A registry-pinned aggregate opts
-// in so forced-local backends remain visible when the legacy primary is remote.
+// Every CONNECTED registry gateway as a session source (see the module); never dials.
 async function pooledRegistrySessionSources(includeLocal = false): Promise<RegistrySessionSource[]> {
   const registry = readDesktopConnectionsRegistry()
-  const sources: RegistrySessionSource[] = []
 
-  for (const connection of registry.connections) {
-    if (connection.kind === 'local' && !includeLocal) {
-      continue
-    }
+  return collectRegistrySessionSources(
+    {
+      connections: registry.connections,
+      pool: backendPool.entries(),
+      scopePrefix: backendScopePrefix,
+      reusedPrimary: connectionId => reusedPrimarySshDescriptor(registry, connectionId),
+      installId: (connectionId, descriptor) => boundedInstallId(probeConnectionInstallId(connectionId, descriptor)),
+      sharedProfiles: sharedSshProfiles
+    },
+    includeLocal
+  )
+}
 
-    const prefix = backendScopePrefix(connection.id)
+// The running primary descriptor when it IS this registry SSH connection: its
+// registry routes reuse it rather than pooling a backend. Never starts one.
+async function reusedPrimarySshDescriptor(registry, connectionId: string) {
+  const pending = connectionId === registry.primary ? backendConnectionState.getPromise() : null
 
-    const pooled = [...backendPool.entries()].filter(
-      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-    )
-
-    if (pooled.length === 0) {
-      continue
-    }
-
-    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
-
-    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
-
-    for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
-      try {
-        // Already-resolved for a connected backend; a still-dialing entry is
-        // skipped via the timeout guard rather than blocking the sidebar.
-        const descriptor = await Promise.race([
-          entry.connectionPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-        ])
-
-        backends.push({
-          descriptor,
-          profileLabel: perProfile ? key.slice(prefix.length) || 'default' : null
-        })
-      } catch {
-        // Dead or still-connecting backend — contributes nothing this refresh.
-      }
-    }
-
-    if (backends.length) {
-      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
-    }
+  if (!pending) {
+    return null
   }
 
-  return sources
+  try {
+    const descriptor = await Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
+    ])
+
+    return descriptor?.mode === 'remote' &&
+      descriptor.remoteKind === 'ssh' &&
+      registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)
+      ? descriptor
+      : null
+  } catch {
+    return null
+  }
 }
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
@@ -16209,13 +16093,6 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
     stopPoolBackend(key),
     sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
   ])
-}
-
-// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
-// Session lookups are a probe ladder: "not on this profile" is a normal rung
-// outcome, not a failure.
-function isNotFoundApiError(error) {
-  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
 }
 
 async function handleHermesApiRequest(request) {
@@ -17227,18 +17104,10 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   flushDesktopLogBufferSync()
 })
 
-// The preload reads this small, sanitized payload synchronously so the renderer
-// can register the local skin before its first theme paint. It stays independent
-// of the selected gateway, which can be an offline remote primary.
-ipcMain.on('hermes:skin:local', event => {
-  // The window route is more specific than the global next-launch preference:
-  // a peer can be booting another profile while that preference changes.
-  event.returnValue = readLocalSkinPayload(
-    HERMES_HOME,
-    windowConnectionRoutes.get(event.sender.id)?.profile,
-    primaryProfileKey()
-  )
-})
+// Pre-paint payloads the preload reads synchronously: the local skin, and this
+// machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
+registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
+registerMachineUiPreferences(HERMES_HOME)
 
 // Renderer error toasts (notifyError): the toast shows the summarized copy,
 // so the caller posts the full error here for desktop.log. Fire-and-forget,
@@ -17280,7 +17149,12 @@ const terminalIpc = registerTerminalIpc({
   activeSshTerminalTarget,
   sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
-  getSshConnectionState: scope => sshConnections.get(scope)
+  getSshConnectionState: scope => sshConnections.get(scope),
+  gatewayTarget: owner => terminalGatewayTarget(owner, readDesktopConnectionsRegistry(), sshConnections),
+  ensureGatewayBackend: owner =>
+    backendDialClaims.run(backendScopeKey(owner.connectionId, owner.profile), () =>
+      ensureRegistryBackend(owner.connectionId, owner.profile)
+    )
 })
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
@@ -17337,12 +17211,11 @@ async function detectRendererSkew() {
   return checkRendererSkew(resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+// Re-resolve the focused window's live Hermes version just before showing the native About
+// panel, so an in-place `hermes update` shows without a restart. macOS only (no-op elsewhere).
 function showAboutPanelFresh(): void {
-  void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+  const scope = windowConnectionRoutes.versionScopeFor(BrowserWindow.getFocusedWindow() ?? mainWindow)
+  void Promise.all([detectRendererSkew(), resolveHermesVersion(scope)]).then(([skew, version]) => {
     const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
     // The product name already identifies canary and commit builds. Never pass
     // through empty/placeholder: the panel would render the bundle's 0.0.0 (#124581).
@@ -17357,10 +17230,17 @@ function showAboutPanelFresh(): void {
 }
 
 ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+  const [skew, version, clientVersion] = await Promise.all([
+    detectRendererSkew(),
+    resolveHermesVersion(scope),
+    resolveDesktopClientVersion(INSTALL_STAMP, resolveUpdateRoot(), HERMES_HOME, app.getVersion())
+  ])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
+    // Both sides, labelled: the backend the active connection runs, and this machine's install.
+    backendVersion: version,
+    clientVersion,
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -17394,11 +17274,10 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
 
 // The About page's "Restart Hermes" button (shown when bundleSwapPending):
 // load the already-swapped bundle without asking the user to quit manually.
-// app.relaunch() re-executes by path, so the fresh process picks up whatever
-// bundle now lives there.
+// The relaunch re-executes by path, so the fresh process loads the bundle now there.
 ipcMain.handle('hermes:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
 
@@ -17941,6 +17820,10 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  if (NVIDIA_DRIVER_MAJOR !== null) {
+    rememberLog(nvidiaEglRecovery.startupMessage)
+  }
+
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes
@@ -18014,6 +17897,15 @@ app.whenReady().then(() => {
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
+  // Before the first profile read: a remembered local profile this HERMES_HOME
+  // no longer has would fail every boot with `Profile '<name>' does not exist`.
+  desktopProfilePreferences.forgetMissingLocalProfiles({
+    globalRemote: globalRemoteActive(),
+    hasRemoteOverride: profileHasRemoteOverride,
+    launchProfile: parseLaunchProfile(process.argv),
+    log: rememberLog,
+    profileExists: profile => localProfileIsLive(HERMES_HOME, profile)
+  })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
   const primaryProfile = primaryProfileKey()
@@ -18273,6 +18165,7 @@ app.on('before-quit', event => {
   // (#55920).
   appQuitting = true
   quitInProgress = true
+  nvidiaEglRecovery.cleanExit()
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()
@@ -18346,13 +18239,8 @@ app.on('before-quit', event => {
   }
 
   // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
-  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
-  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
-    try {
-      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
-    }
+  if (process.platform === 'linux') {
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
   }
 
   // The always-on-top overlay isn't a "real" app window; close it so a stray

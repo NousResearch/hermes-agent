@@ -8,10 +8,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { contributedRoutes } from '@/app/routes'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { $commandPaletteOpen } from '@/store/command-palette'
-import { $activeConnectionId } from '@/store/connections'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
@@ -107,8 +107,12 @@ export function useDesktopMetrics({
   pathname: string
   profile: string
 }): void {
-  const connectionId = useStore($activeConnectionId)
-  const profileKey = normalizeProfileKey(profile)
+  // Both halves from the request scope, which publishes them in one frame: the
+  // connection descriptor lags the profile through a switch, and pairing the
+  // two dialed the old gateway for the new profile (a stray remote backend).
+  const scope = useStore($apiRequestScope)
+  const connectionId = scope.connectionId
+  const profileKey = normalizeProfileKey(scope.profile ?? profile)
 
   // Pinned to the focused (connection, profile): never whichever session tile is focused.
   const request = useMemo(

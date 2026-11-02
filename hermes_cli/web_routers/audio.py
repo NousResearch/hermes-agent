@@ -85,6 +85,50 @@ def _audio_extension_for_mime(mime_type: str) -> str:
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
 
 
+# ── RETAIN-DESKTOP-VOICE ──────────────────────────────────────────────────────────
+# Desktop recordings used to be transcribed and deleted. Keep a copy in the
+# profile audio cache so the voice-note sweeper archives them like any other
+# inbound media. Best-effort: retention must never fail a transcription.
+_MAX_RETAIN_PCM_BYTES = 8 * 1024 * 1024   # ~4 min of 16 kHz s16le mono
+_MIN_RETAIN_SECONDS = 2.0                 # skip dictation blips < this
+
+
+def _retain_desktop_voice(data: bytes, mime_type: str, profile: Optional[str]) -> None:
+    """Keep a POSTed desktop recording on disk (cache/audio), best-effort."""
+    if not data:
+        return
+    try:
+        from gateway.platforms.base import cache_audio_from_bytes
+        with _config_profile_scope(profile):
+            cache_audio_from_bytes(data, _audio_extension_for_mime(mime_type))
+    except Exception as exc:  # noqa: BLE001 - retention is never fatal
+        _log.debug("desktop voice recording not retained: %s", exc)
+
+
+def _retain_stream_voice(chunks: list, sample_rate: int, profile: Optional[str]) -> None:
+    """Keep live-dictation PCM as a WAV in the audio cache (same footing as uploads)."""
+    if not chunks or sample_rate <= 0:
+        return
+    data = b"".join(chunks)
+    if len(data) / (sample_rate * 2) < _MIN_RETAIN_SECONDS:
+        return
+    try:
+        import io
+        import wave
+        from gateway.platforms.base import cache_audio_from_bytes
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(data)
+        with _config_profile_scope(profile):
+            cache_audio_from_bytes(buf.getvalue(), ".wav")
+    except Exception as exc:  # noqa: BLE001 - retention is never fatal
+        _log.debug("dictation audio not retained: %s", exc)
+# ── /RETAIN-DESKTOP-VOICE ─────────────────────────────────────────────────────────
+
+
 @router.post("/api/audio/transcribe")
 async def transcribe_audio_upload(
     payload: AudioTranscriptionRequest, profile: Optional[str] = None
@@ -111,6 +155,8 @@ async def transcribe_audio_upload(
         raise HTTPException(status_code=400, detail="Audio recording is empty")
     if len(audio_bytes) > _MAX_TRANSCRIPTION_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Audio recording is too large")
+
+    _retain_desktop_voice(audio_bytes, mime_type, profile)  # RETAIN-DESKTOP-VOICE
 
     temp_path = ""
     try:
@@ -561,6 +607,9 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
 
     forwarder = asyncio.ensure_future(_forward_partials())
     ended = False
+    rate = 0
+    pcm_parts: list = []   # RETAIN-DESKTOP-VOICE
+    pcm_total = 0          # RETAIN-DESKTOP-VOICE
     try:
         first = json.loads(await ws.receive_text())
         rate = int(first.get("sample_rate") or 0)
@@ -573,6 +622,9 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
                 break
             if message.get("bytes"):
                 session.push_audio(message["bytes"])
+                if pcm_total < _MAX_RETAIN_PCM_BYTES:  # RETAIN-DESKTOP-VOICE
+                    pcm_parts.append(message["bytes"])
+                    pcm_total += len(message["bytes"])
             elif message.get("text") and json.loads(message["text"]).get("eos"):
                 ended = True
                 break
@@ -583,8 +635,11 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
         forwarder.cancel()
         return
     def _finalize():
-        with grant_home_scope(grant), _config_profile_scope(profile):
-            return session.finalize()
+            with grant_home_scope(grant), _config_profile_scope(profile):
+                out = session.finalize()
+                # RETAIN-DESKTOP-VOICE: same home scope as the cache write
+                _retain_stream_voice(pcm_parts, rate, profile)
+                return out
 
     result = await loop.run_in_executor(None, _finalize)
     await asyncio.sleep(0)  # let the last partial flush before the final frame

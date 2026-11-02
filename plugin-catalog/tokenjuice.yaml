@@ -1,0 +1,17 @@
+name: tokenjuice
+repo: https://github.com/vincentkoc/tokenjuice
+sha: 825eaa98214c73174156eea582042e1f8b6fdc9a
+subdir: src/python/tokenjuice_integrations
+description: Compact successful terminal output locally before model consumption.
+maintainer: vincentkoc
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/vincentkoc/tokenjuice/blob/825eaa98214c73174156eea582042e1f8b6fdc9a/src/python/tokenjuice_integrations/README.md
+version: "0.10.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_terminal_output
+  provides_middleware: []
+  requires_env: []

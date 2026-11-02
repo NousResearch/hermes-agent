@@ -1839,6 +1839,7 @@
     "keybinds.actions.composer.voice",
     "keybinds.actions.conversation.scrollPageDown",
     "keybinds.actions.conversation.scrollPageUp",
+    "keybinds.actions.conversation.scrollToEnd",
     "keybinds.actions.hud.snapToPointer",
     "keybinds.actions.keybinds.openPanel",
     "keybinds.actions.nav.agents",

@@ -800,6 +800,7 @@
   "keybinds.actions.composer.voice": ["ja","zh-hant"],
   "keybinds.actions.conversation.scrollPageDown": ["de","es","fr","ja","zh-hant"],
   "keybinds.actions.conversation.scrollPageUp": ["de","es","fr","ja","zh-hant"],
+  "keybinds.actions.conversation.scrollToEnd": ["ja","zh-hant"],
   "keybinds.actions.hud.snapToPointer": ["ar","ja","zh","zh-hant"],
   "keybinds.actions.keybinds.openPanel": ["ja","zh-hant"],
   "keybinds.actions.nav.agents": ["ja","zh-hant"],

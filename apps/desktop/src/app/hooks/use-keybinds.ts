@@ -336,6 +336,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.archive': deps.archiveSelectedSession,
     'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),
     'conversation.scrollPageDown': () => requestThreadPageScroll(1, $focusedStoredSessionId.get()),
+    'conversation.scrollToEnd': () => requestThreadPageScroll('end', $focusedStoredSessionId.get()),
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a
     // project, and not only from a session with a repo. When no repo is in

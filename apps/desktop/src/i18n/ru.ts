@@ -250,6 +250,7 @@ export const ruOverrides = {
       'session.archive': 'В архив текущий сеанс',
       'conversation.scrollPageUp': 'Прокрутить диалог на страницу вверх',
       'conversation.scrollPageDown': 'Прокрутить диалог на страницу вниз',
+      'conversation.scrollToEnd': 'Перейти к последнему сообщению',
       'workspace.newWorktree': 'Новый worktree',
       'workspace.openFolder': 'Открыть папку как проект',
       'composer.focus': 'Сфокусировать композер',

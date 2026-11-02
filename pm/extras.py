@@ -276,6 +276,83 @@ def _installed_in(site_packages: Path, anchor: str) -> bool:
                for entry in parent.glob(f"{leaf}.*"))
 
 
+DECLINED_EXTRAS_FILENAME = "declined-extras.json"
+
+
+def declined_extras_path(project_root: Path | None = None) -> Path:
+    from pm.environments import install_state_dir
+    from pm.paths import repo_root
+
+    return install_state_dir(repo_root() if project_root is None else Path(project_root)) / DECLINED_EXTRAS_FILENAME
+
+
+def declined_extras(project_root: Path | None = None) -> frozenset[str]:
+    """Extras the user dropped with ``hermes pm install --without NAME``.
+
+    Recorded beside the dependency facts, so a carried selection (legacy
+    migration, recorded extras, configured-feature auto-installs) never
+    re-adds one; only an explicit request (``--extra NAME``) opts back in.
+    """
+    import json
+
+    path = declined_extras_path(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return frozenset()
+    except (OSError, ValueError) as exc:
+        # Reading a damaged record as "nothing declined" would re-add what the user removed.
+        from pm.package import InstallError
+
+        raise InstallError("venv", f"cannot read {path}: {exc}", "fix or delete the file, then retry") from exc
+    names = data.get("declined") if isinstance(data, dict) else None
+    return frozenset(_canonical(name) for name in names or () if isinstance(name, str))
+
+
+def record_declined_extras(*, add=(), remove=(), project_root: Path | None = None) -> frozenset[str]:
+    """Update the declined extras; returns the new set. Writes only on change."""
+    import json
+
+    from pm.filesystem import durable_write_bytes
+
+    current = declined_extras(project_root)
+    updated = (current | {_canonical(name) for name in add}) - {_canonical(name) for name in remove}
+    if updated != current:
+        body = json.dumps({"schema": 1, "declined": sorted(updated)}, indent=2) + "\n"
+        durable_write_bytes(declined_extras_path(project_root), body.encode("utf-8"))
+    return frozenset(updated)
+
+
+def _canonical(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def droppable_extras(project_root: Path) -> list[str]:
+    """Declared extras ``--without`` may drop: not ``all`` and nothing ``all`` pulls in.
+
+    The default sync selects ``[all]``, so dropping one of its members would be a no-op.
+    """
+    import re
+    import tomllib
+
+    with (Path(project_root) / "pyproject.toml").open("rb") as f:
+        project = tomllib.load(f).get("project", {})
+    table = project.get("optional-dependencies", {})
+    self_ref = re.compile(rf"^{re.escape(project.get('name', ''))}\[([^\]]+)\]", re.IGNORECASE)
+    kept, pending = {"all"}, ["all"]
+    while pending:
+        for requirement in table.get(pending.pop(), ()):
+            match = self_ref.match(requirement.replace(" ", ""))
+            for member in (match.group(1).split(",") if match else ()):
+                if member not in kept:
+                    kept.add(member)
+                    pending.append(member)
+    return sorted(extra for extra in table if extra not in kept)
+
+
 def legacy_selection(project_root: Path) -> list[str]:
     """The extras PM's first generation selects when it replaces a main-era venv.
 
@@ -290,10 +367,12 @@ def legacy_selection(project_root: Path) -> list[str]:
     trees = [tree for venv in (root / "venv", root / ".venv")
              for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
              if tree.is_dir()]
+    # The old venv is never deleted, so this scan repeats for any data root without facts.
+    refused = declined_extras(root)
     carried = sorted(
         # An umbrella extra shares its anchor with one member; carrying it
         # would install every sibling the user never chose.
-        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
+        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"} and extra not in refused
         # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.
         # Installed first: judging a gate may cost a PM-runtime subprocess.
         if any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)

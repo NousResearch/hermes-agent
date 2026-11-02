@@ -156,6 +156,9 @@ jobs:
           restore-keys: |
             os-test-durations-Windows-X64-
           lookup-only: true
+          # Saved on Windows/macOS; without this the entry's version differs per OS
+          # and a Linux lookup never sees it.
+          enableCrossOsArchive: true
       - name: Pick the Windows ARM64 duration cache
         id: durations-windows-arm64
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -165,6 +168,9 @@ jobs:
           restore-keys: |
             os-test-durations-Windows-ARM64-
           lookup-only: true
+          # Saved on Windows/macOS; without this the entry's version differs per OS
+          # and a Linux lookup never sees it.
+          enableCrossOsArchive: true
       - name: Pick the macOS duration cache
         id: durations-macos
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -174,6 +180,9 @@ jobs:
           restore-keys: |
             os-test-durations-macOS-ARM64-
           lookup-only: true
+          # Saved on Windows/macOS; without this the entry's version differs per OS
+          # and a Linux lookup never sees it.
+          enableCrossOsArchive: true
       - name: Collect the OS duration cache keys
         id: os-durations
         env:

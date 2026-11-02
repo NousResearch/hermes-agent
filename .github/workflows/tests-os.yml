@@ -154,6 +154,7 @@ jobs:
           path: test_durations.json
           key: ${{ steps.durations.outputs.key }}
           fail-on-cache-miss: true
+          enableCrossOsArchive: true
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
@@ -245,6 +246,8 @@ jobs:
         with:
           path: test_durations.json
           key: os-test-durations-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ strategy.job-index }}
+          # Lets ci.yaml's Linux detect job see the entry (see its lookups).
+          enableCrossOsArchive: true
 
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that

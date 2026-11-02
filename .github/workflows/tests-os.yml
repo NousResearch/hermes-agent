@@ -106,6 +106,20 @@ jobs:
             timeout: 60
             slice: 2/2
     steps:
+      # Real-time scanning inspects every file the checkout, the dependency
+      # install and the PowerShell-heavy tests write; these runners are
+      # throwaway VMs, so turn it off before the first step writes anything.
+      # The status line proves whether it took effect.
+      - name: Turn off Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          foreach ($p in @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP)) {
+            try { Add-MpPreference -ExclusionPath $p } catch { Write-Host "Defender exclusion not applied for $p ($($_.Exception.Message))" }
+          }
+          try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host "Could not disable real-time scanning ($($_.Exception.Message))" }
+          try { Write-Host "RealTimeProtectionEnabled: $((Get-MpComputerStatus).RealTimeProtectionEnabled)" } catch { Write-Host "Defender status unavailable" }
+
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:

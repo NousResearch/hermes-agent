@@ -233,20 +233,30 @@ def test_a_timeout_after_api_calls_retries(monkeypatch):
 
 
 def test_the_runtimes_own_budget_warning_is_never_handed_off_as_a_missed_parent_steer(monkeypatch):
-    """The 80% inactivity warning rides the child's steer channel; when the window then elapses, only the parent's
-    own undelivered steer may reach the retry's handoff, never the runtime's warning."""
+    """The inactivity warning rides the child's steer channel; when the window then elapses, only the parent's own
+    undelivered steer may reach the retry's handoff, never the runtime's warning. The warning fires at once and
+    the parent's steer is queued right behind it, so both are pending when the window closes."""
+    from tools import delegate_tool_child_run
     from tools.delegate_tool_registry import steer_subagent
+    warned = []
+    real_warn = delegate_tool_child_run._warn_child_budget
 
-    def low(child, *_):
-        assert steer_subagent(child._subagent_id, "use the v2 API")
-        return T(calls=3)
+    def warn_then_parent_steers(child, idle_seconds, child_timeout):
+        real_warn(child, idle_seconds, child_timeout)
+        if _effort_ran(child) == "low" and not warned:
+            warned.append(list(child._pending_steer))
+            assert steer_subagent(child._subagent_id, "use the v2 API")
 
-    _entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="medium",
+    monkeypatch.setattr(delegate_tool_child_run, "_BUDGET_WARNING_FRACTION", 0.0)
+    monkeypatch.setattr(delegate_tool_child_run, "_warn_child_budget", warn_then_parent_steers)
+    _entry, log, _ = _run_direct(monkeypatch, {"low": T(calls=3), "medium": D()}, effort="low", ceiling="medium",
                                 timeout=0.3)
+    # It fired, and before the parent's steer.
+    assert len(warned) == 1 and len(warned[0]) == 1 and warned[0][0].startswith("[delegation budget warning]")
     assert _efforts(log) == ["low", "medium"]
     handoff = log[1].messages[0]
     assert "[delegation budget warning]" not in handoff
-    assert "use the v2 API" in handoff
+    assert handoff.count("use the v2 API") == 1
 
 
 def test_a_budget_warning_the_turn_finalizer_returned_is_never_handed_off_as_a_parent_steer(monkeypatch):

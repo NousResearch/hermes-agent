@@ -1,0 +1,34 @@
+name: courier-by-autolane
+title: Courier by Autolane
+repo: https://github.com/Autolane/hermes-courier-plugin
+sha: 65027e6025cdf51d25e2ac3223aecfd373ea7925
+description: >-
+  Restaurant pickup delivery in Austin, Texas: the user places a pickup order, and an Autolane
+  vehicle collects it and drives it to them for a flat fee, through Autolane's hosted MCP server
+  (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE; the user links a mobile
+  number with a texted code), with one ordering skill bundled. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/). Disclosure: hosted-only connector with no local code; every
+  tool call goes to Autolane's MCP server at mcp.goautolane.com with store and drop-off addresses,
+  the customer's name and order details, which also reach the user's model provider through the
+  session. reserve_delivery, confirm_delivery, update_delivery and cancel_delivery book, change or
+  cancel a real delivery and take payment; the package marks the server untrusted, but the required
+  sign-in step writes a config.yaml entry that replaces the package's own, trust included, unless
+  the user adds trust: untrusted to it. Hermes stores and refreshes the OAuth tokens. The tool list
+  comes from Autolane's server at run time, so the pinned commit doesn't cover it. Invite-only for
+  now. OAuth must be enabled with
+  `hermes mcp add courier-by-autolane --url https://mcp.goautolane.com/courier-mcp --auth oauth --connect-timeout 300`;
+  the bundled mcp.json alone yields 401.
+maintainer: Autolane
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Autolane/hermes-courier-plugin/blob/65027e6025cdf51d25e2ac3223aecfd373ea7925/README.md
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add courier-by-autolane --url https://mcp.goautolane.com/courier-mcp --auth oauth --connect-timeout 300"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

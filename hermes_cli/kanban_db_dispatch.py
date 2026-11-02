@@ -1691,6 +1691,20 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
     return bool(to) and "from" in data and data["from"] != to
 
 
+def _dispatch_profiles_configured() -> bool:
+    """Whether ``kanban.dispatch_profiles`` is present in the user config.
+
+    Same presence semantics as ``_dispatch_profile_allowlist``: the user
+    layer read without the ``DEFAULT_CONFIG`` merge. An unreadable config
+    counts as present — it must never widen this home's claim scope."""
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+    except Exception:
+        return True
+    return isinstance(kanban, Mapping) and "dispatch_profiles" in kanban
+
+
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the
@@ -1700,10 +1714,22 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     additionally requires the assignee to be listed, fail-closed — so a card
     assigned to ``default`` is only claimable by homes that opted into it.
     Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
+
+    Fail-closed also applies when the allowlist is configured but the
+    profiles module cannot be imported: the gate could not be built, so
+    this home claims nothing instead of silently claiming every assignee.
+    Only an unconfigured allowlist keeps the ``None`` (gate disabled)
+    behaviour.
     """
     try:
         from hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
+        if _dispatch_profiles_configured():
+            _kb._log.warning(
+                "kanban: kanban.dispatch_profiles is configured but "
+                "hermes_cli.profiles could not be imported — this home "
+                "claims no cards until the profiles module is importable")
+            return lambda _name: False
         return None
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
     if allowlist is None:

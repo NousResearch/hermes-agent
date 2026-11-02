@@ -902,6 +902,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             # never also dispatched as chat.
             if await self._consume_prompt_response(event):
                 return
+            if self._is_empty_inbound(event):
+                # No user payload: consume (the transport ACKs a None result) instead of
+                # dispatching a blank turn into authorization/pairing/hooks/the agent.
+                logger.info("relay inbound dropped: no text, media, or context (message_id=%s)",
+                            getattr(event, "message_id", None))
+                return
             await self._localize_inbound_media(event)
         except asyncio.CancelledError:
             # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
@@ -921,6 +927,18 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return None
 
     _SEEN_INBOUND_MAX = 512
+
+    @staticmethod
+    def _is_empty_inbound(event) -> bool:
+        """True for a user-originated event carrying nothing to act on: blank text, no media,
+        no reply or channel context. Internal events and prompt answers never count as empty."""
+        if getattr(event, "internal", False) or getattr(event, "prompt_response", None):
+            return False
+        text = getattr(event, "text", "")
+        if not isinstance(text, str) or text.strip():
+            return False
+        return not any(getattr(event, field, None) for field in (
+            "media_urls", "reply_to_message_id", "reply_to_text", "channel_context"))
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
         """Stable replay identity: (platform, chat, platform message id). The platform

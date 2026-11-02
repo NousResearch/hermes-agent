@@ -50,72 +50,61 @@ def test_a_non_boolean_is_refused_rather_than_written(homes):
     assert not (launch / "config.yaml").exists()
 
 
-def test_a_flip_reaches_only_this_profiles_local_agents(homes, monkeypatch):
+class _StopAfterDaybreak(Exception):
+    pass
+
+
+def _admit_turn(monkeypatch, session):
+    """Run real turn admission (``_prepare_turn_input``, under the session's real profile scope) and stop just
+    after the turn's agent is selected and its Daybreak setting synced."""
+    from tools import approval_context
+    monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: [])
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    for name in ("_apply_pending_model_switch", "_sync_agent_model_with_config", "_sync_agent_compression_with_config",
+                 "_sync_agent_fallback_with_config", "_sync_bot_capabilities"):
+        monkeypatch.setattr(server, name, lambda sid, session: None)
+    monkeypatch.setattr(server, "_adopt_out_of_band_turns", lambda session: None)
+
+    def stop(*args):
+        raise _StopAfterDaybreak()
+    monkeypatch.setattr(server, "_stage_first_contact_onboarding_note", stop)
+    st = server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=False)
+    try:
+        with pytest.raises(_StopAfterDaybreak):
+            server._prepare_turn_input("sid", session, st, "hello", [])
+    finally:
+        server._release_turn_scopes("sid", session, st)
+    assert approval_context.get_current_session_key(default="") == ""
+
+
+@pytest.mark.parametrize(("platform", "expected"), [
+    ("desktop", True), ("tui", True), ("cli", True), ("telegram", False), ("acp", False), (None, False)])
+def test_every_turn_reads_the_switch_for_the_owners_own_surfaces(homes, monkeypatch, platform, expected):
+    """Each turn reads ``agent.daybreak`` from the session's profile once the final agent is selected, so a
+    flip, a build that raced one, or a compute-host child (same turn path) all send the saved value. A plugin
+    session tagged ``telegram`` (or an editor client) built by this backend gets standard requests."""
+    import threading
     _launch, worker = homes
-    launch_agent = SimpleNamespace(daybreak=False, platform="desktop")
-    worker_agent = SimpleNamespace(daybreak=False, platform="tui")
-    bot_agent = SimpleNamespace(daybreak=False, platform="telegram")  # a plugin session in the same profile
-    monkeypatch.setitem(server._sessions, "launch-sid", {"agent": launch_agent, "profile_home": None})
-    monkeypatch.setitem(server._sessions, "worker-sid", {"agent": worker_agent, "profile_home": str(worker)})
-    monkeypatch.setitem(server._sessions, "bot-sid", {"agent": bot_agent, "profile_home": str(worker)})
-    monkeypatch.setitem(server._sessions, "unbuilt-sid", {"agent": None, "profile_home": str(worker)})
-
-    assert _call("config.set", key="daybreak", value=True, profile="code")["result"]["value"] is True
-    assert worker_agent.daybreak is True
-    assert launch_agent.daybreak is False  # another profile's setting
-    assert bot_agent.daybreak is False  # someone else's chat: OpenAI allows no third-party access
-    assert yaml.safe_load((worker / "config.yaml").read_text())["agent"]["daybreak"] is True
-
-    assert _call("config.set", key="daybreak", value=True)["result"]["value"] is True  # launch profile
-    assert launch_agent.daybreak is True
-
-
-def test_only_the_owners_local_surfaces_carry_it():
-    from agent.session_source import DAYBREAK_SOURCES
-    assert DAYBREAK_SOURCES == {"tui", "desktop", "cli"}
-
-
-@pytest.mark.parametrize(("source", "expected"), [(None, True), ("desktop", True), ("telegram", False)])
-def test_new_agents_read_the_switch_only_for_local_surfaces(monkeypatch, source, expected):
-    """``_make_agent`` end to end with a stand-in agent class: the switch is on in config.yaml, and a plugin
-    session tagged ``telegram`` built by this backend still gets standard requests."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_MODEL", raising=False)
-    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
-    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"daybreak": True},
-                                                       "model": {"default": "gpt-6-sol", "provider": "openai-codex"}})
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
-                        lambda requested=None, target_model=None: {
-                            "provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex",
-                            "api_key": "token", "api_mode": "codex_responses", "credential_pool": None})
-    monkeypatch.setattr("run_agent.AIAgent", lambda **kwargs: SimpleNamespace(model=kwargs.get("model")))
-    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda platform=None: ["file"])
-    monkeypatch.setattr(server, "_get_db", lambda: None)
-
-    agent = server._make_agent("sid", "session-key", platform_override=source)
-    assert agent.daybreak is expected
-
-
-def test_an_isolated_turns_reused_child_agent_follows_the_switch(homes, monkeypatch):
-    """With turn isolation the live agent is in the compute-host child, out of reach of the parent's live
-    flip, so each turn the child re-reads the switch from its profile's config.yaml, in both directions."""
-    from tui_gateway.compute_host import ComputeHost
-    _launch, worker = homes
-    child = object.__new__(ComputeHost)
-    child._transport = object()
-    desktop = SimpleNamespace(daybreak=True, platform="desktop")
-    bot = SimpleNamespace(daybreak=False, platform="telegram")
-    monkeypatch.setitem(server._sessions, "desktop-sid", {"agent": desktop, "profile_home": str(worker)})
-    monkeypatch.setitem(server._sessions, "bot-sid", {"agent": bot, "profile_home": str(worker)})
+    agent = SimpleNamespace(daybreak=not expected, platform=platform)
+    session = {"agent": agent, "session_key": "daybreak-key", "profile_home": str(worker),
+               "history": [], "history_lock": threading.Lock()}
     config = worker / "config.yaml"
 
-    config.write_text("agent:\n  daybreak: false\n", encoding="utf-8")
-    child._ensure_server_session(server, {"sid": "desktop-sid", "profile_home": str(worker)})
-    assert desktop.daybreak is False
-
     config.write_text("agent:\n  daybreak: true\n", encoding="utf-8")
-    for sid in ("desktop-sid", "bot-sid"):
-        child._ensure_server_session(server, {"sid": sid, "profile_home": str(worker)})
-    assert desktop.daybreak is True
-    assert bot.daybreak is False
+    _admit_turn(monkeypatch, session)
+    assert agent.daybreak is expected
+
+    config.write_text("agent:\n  daybreak: false\n", encoding="utf-8")  # flipped off between turns
+    _admit_turn(monkeypatch, session)
+    assert agent.daybreak is False
+
+
+def test_the_turn_reads_its_own_profile_not_the_launch_one(homes, monkeypatch):
+    import threading
+    launch, worker = homes
+    (launch / "config.yaml").write_text("agent:\n  daybreak: true\n", encoding="utf-8")
+    (worker / "config.yaml").write_text("agent:\n  daybreak: false\n", encoding="utf-8")
+    agent = SimpleNamespace(daybreak=True, platform="desktop")
+    _admit_turn(monkeypatch, {"agent": agent, "session_key": "worker-key", "profile_home": str(worker),
+                              "history": [], "history_lock": threading.Lock()})
+    assert agent.daybreak is False

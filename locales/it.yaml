@@ -699,7 +699,6 @@ gateway:
     history_unavailable: "⚠️ La cronologia di questa sessione è temporaneamente non disponibile, quindi questo messaggio non è stato elaborato. Chiedi all'operatore di controllare state.db, poi invialo di nuovo quando è di nuovo integro. Usa /reset solo se vuoi davvero iniziare una nuova conversazione."
     no_credentials: "⚠️ Non sono riuscito a connettermi al servizio del modello AI, quindi questo messaggio non è stato elaborato. Usa /login per accedere di nuovo, oppure /model per scegliere un altro modello. Se continua a fallire, esegui `hermes doctor` sull'host."
     cron_session_read_only: "⚠️ Questa chat appartiene a un'attività pianificata ed esegue solo quella, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo."
-    workspace_unavailable: "⚠️ La cartella di lavoro di questa chat non esiste più ({path}), quindi il tuo messaggio non è stato eseguito. Ricrea la cartella o sposta la chat in un'altra (`/worktree new` nella CLI, «Move to project» nell'app desktop), poi invia di nuovo il messaggio."
     launch_credentials_unavailable: "⚠️ Questa chat non può più usare la chiave API con cui è stata avviata{detail}, quindi non può più eseguire nulla. Una chat aperta non passa mai da sola a una chiave diversa, quindi /retry fallisce allo stesso modo. Usa /new per avviare una nuova chat con la tua chiave attuale."
   skills:
     disabled: "La skill **{name}** è installata ma disattivata.\nAttivala con: `hermes skills config`"
@@ -2520,7 +2519,6 @@ cli:
     title_rejected: "Titolo rifiutato: {error}"
     title_empty_untitled: "Il titolo è vuoto dopo la pulizia — sessione avviata senza titolo."
     title_error_untitled: "{error} — sessione avviata senza titolo."
-    cwd_gone: "⚠ La directory di lavoro della sessione non esiste più: {recorded} — resto in {current}"
     cwd_restored: "↻ Directory di lavoro: {path}"
     cwd_enter_failed: "⚠ Impossibile entrare nella directory di lavoro della sessione {path}: {error}"
     yolo_restored: "⚡ Modalità YOLO ripristinata dalla sessione — tutti i comandi auto-approvati. /yolo per disattivarla."

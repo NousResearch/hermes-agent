@@ -1061,42 +1061,37 @@ def policy_for_source(runner, source):
             # Cold recovery must restore the frozen policy before executing, not
             # reinterpret a LOCAL route as a default CLI launch.
             raise RuntimeStoreError('storage_unavailable')
-        return policy
+        return live_workspace(policy)
     return None
 
 
-def workspace_ready(policy) -> bool:
-    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    turn runs in a missing directory."""
-    return Path(policy.cwd).is_dir()
-
-
-def workspace_unavailable_result(policy) -> dict:
-    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
-    and an unchanged resend fails the same way, so the reply names the folder and the way out
-    instead of the generic "something went wrong" apology."""
-    from agent.i18n import t
-    from agent.turn_failure_copy import stamp_failure
-    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
-    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                          "failed": True, "completed": False, "error": text},
-                         "workspace_unavailable", False)
+def live_workspace(policy):
+    """*policy*, or when its working folder was removed (a deleted worktree) a copy that works in the
+    checkout the folder belonged to (``git_probe.nearest_live_cwd``), so the chat carries on and the
+    agent finds out for itself. In memory only: the frozen policy is never rewritten, and a folder
+    that comes back is used again from the next turn."""
+    if policy is None or Path(policy.cwd).is_dir():
+        return policy
+    from dataclasses import replace
+    from tui_gateway.git_probe import nearest_live_cwd
+    cwd = nearest_live_cwd(policy.cwd)
+    terminal = json.loads(policy.terminal_json)
+    if terminal.get('TERMINAL_CWD') == policy.cwd:
+        terminal['TERMINAL_CWD'] = cwd
+    return replace(policy, cwd=cwd, terminal_json=json.dumps(terminal))
 
 
 def refused_turn_result(policy, exc) -> dict | None:
     """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
-    (gone working folder, changed launch key); None for any other refusal."""
+    (changed launch key); None for any other refusal."""
     from agent.error_surface import build_error_surface_from_result
     from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
-    if exc.reason == 'workspace_unavailable':
-        result = workspace_unavailable_result(policy)
-    elif exc.reason == 'launch_credentials_unavailable':
-        text = launch_credentials_copy(exc)
-        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                                "failed": True, "completed": False, "error": text},
-                               "launch_credentials_unavailable", False)
-    else:
+    if exc.reason != 'launch_credentials_unavailable':
         return None
+    text = launch_credentials_copy(exc)
+    result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                            "failed": True, "completed": False, "error": text},
+                           "launch_credentials_unavailable", False)
     # The descriptor makes settlement commit the explanation and its card as the transcript's
     # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
     result["error_surface"] = build_error_surface_from_result(result)
@@ -1108,8 +1103,7 @@ def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
-    if not workspace_ready(policy):
-        raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
+    policy = live_workspace(policy)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)

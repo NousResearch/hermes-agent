@@ -699,7 +699,6 @@ gateway:
     history_unavailable: "⚠️ O histórico desta sessão está temporariamente indisponível, então esta mensagem não foi processada. Peça ao operador para inspecionar o state.db e reenvie quando estiver íntegro. Use /reset apenas se quiser intencionalmente iniciar uma nova conversa."
     no_credentials: "⚠️ Não consegui me conectar ao serviço do modelo de IA, então esta mensagem não foi processada. Use /login para entrar novamente ou /model para escolher outro modelo. Se continuar falhando, execute `hermes doctor` no host."
     cron_session_read_only: "⚠️ Este chat pertence a uma tarefa agendada e só executa essa tarefa, por isso a sua mensagem não foi executada. Inicie um novo chat para enviá-la."
-    workspace_unavailable: "⚠️ A pasta de trabalho deste chat já não existe ({path}), por isso a sua mensagem não foi executada. Recrie a pasta ou mova o chat para outra (`/worktree new` na CLI, «Move to project» na aplicação de ambiente de trabalho) e envie a mensagem novamente."
     launch_credentials_unavailable: "⚠️ Este chat não pode mais usar a chave de API com que foi iniciado{detail}, então nada pode ser executado nele. Um chat aberto nunca muda sozinho para outra chave, então /retry falha da mesma forma. Use /new para começar um novo chat com sua chave atual."
   skills:
     disabled: "A skill **{name}** está instalada, mas desativada.\nAtive-a com: `hermes skills config`"
@@ -2520,7 +2519,6 @@ cli:
     title_rejected: "Título rejeitado: {error}"
     title_empty_untitled: "O título ficou vazio após a limpeza — sessão iniciada sem título."
     title_error_untitled: "{error} — sessão iniciada sem título."
-    cwd_gone: "⚠ O diretório de trabalho da sessão não existe mais: {recorded} — permanecendo em {current}"
     cwd_restored: "↻ Diretório de trabalho: {path}"
     cwd_enter_failed: "⚠ Não foi possível entrar no diretório de trabalho da sessão {path}: {error}"
     yolo_restored: "⚡ Modo YOLO restaurado da sessão — todos os comandos aprovados automaticamente. /yolo para desativar."

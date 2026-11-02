@@ -200,21 +200,3 @@ def test_new_whose_shell_cannot_follow_says_the_session_moved(repo, monkeypatch)
     assert t("cli.session.cwd_enter_failed", path=str(wt), error="denied") in out
     assert t("cli.commands.worktree.tools_in_worktree") in out and cli_mod._active_worktree["path"] == str(wt)
     assert "TERMINAL_CWD" not in os.environ
-
-
-@requires_git
-def test_a_moved_session_gets_its_clean_tree_back_on_resume(repo):
-    """The move freezes the tree as the session's cwd and quit removes a clean tree, so a resume had
-    every turn refused ``workspace_unavailable``. The tree is recorded as a ``--tui -w`` one is, so the
-    resume recreates it at the same path (N8)."""
-    from hermes_cli.tui_worktree_resume import recreate_tui_worktree
-    stub, _client, conn = _gateway_stub()
-    try:
-        _run(stub, "/worktree new kept")
-    finally:
-        conn.close()
-    wt = repo / ".worktrees" / "kept"
-    os.chdir(repo)
-    cli_mod._cleanup_worktree(cli_mod._active_worktree)  # quit: the tree is clean, so it goes
-    assert not wt.exists()
-    assert recreate_tui_worktree(str(wt), "local-s") == str(wt) and wt.is_dir()

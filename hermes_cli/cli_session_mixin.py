@@ -220,7 +220,8 @@ class CLISessionMixin:
         Idempotent; called from every resume path. Both ``os.chdir()`` and ``TERMINAL_CWD``
         are retargeted so the process and the terminal/code-exec tools agree (the local
         terminal backend snapshots cwd on first use, after this). No-op when no cwd was
-        recorded, the directory is gone (dim warning, never a crash), or we're already there.
+        recorded, we're already there, or the directory is gone (a deleted worktree: silently, since
+        the session's turns run in the checkout it belonged to and the agent finds out itself).
         """
         recorded = (session_meta or {}).get("cwd")
         if not recorded:
@@ -230,17 +231,14 @@ class CLISessionMixin:
             current = os.getcwd()
         except OSError:
             current = None
-        if current and os.path.realpath(recorded) == os.path.realpath(current):
+        if not os.path.isdir(recorded) or (current and os.path.realpath(recorded) == os.path.realpath(current)):
             return
-        if not os.path.isdir(recorded):
-            msg = t("cli.session.cwd_gone", recorded=recorded, current=current or ".")
-        else:
-            try:
-                os.chdir(recorded)
-                os.environ["TERMINAL_CWD"] = recorded
-                msg = t("cli.session.cwd_restored", path=recorded)
-            except OSError as e:
-                msg = t("cli.session.cwd_enter_failed", path=recorded, error=e)
+        try:
+            os.chdir(recorded)
+            os.environ["TERMINAL_CWD"] = recorded
+            msg = t("cli.session.cwd_restored", path=recorded)
+        except OSError as e:
+            msg = t("cli.session.cwd_enter_failed", path=recorded, error=e)
         _dim_notice(self, msg, quiet)
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:

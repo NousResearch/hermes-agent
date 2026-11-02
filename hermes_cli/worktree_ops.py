@@ -429,9 +429,6 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
 
     from hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
-    if retain_db is not None:  # a -w tree: a resume may recreate it once quit removed it (N8)
-        from hermes_cli.tui_worktree_resume import record_tui_worktree
-        record_tui_worktree({"path": str(wt_path), "branch": branch_name, "repo_root": repo_root})
     _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
     print(f"  Branch: {branch_name}")
     print(f"  Base:   {base_label}")

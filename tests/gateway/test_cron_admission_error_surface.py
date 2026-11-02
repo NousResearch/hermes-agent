@@ -1,6 +1,7 @@
 """A message typed into a cron session fails with a renderable read-only descriptor (#141348)."""
 import json
 import threading
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,7 @@ async def _typed_turn_in_cron_session(owner, monkeypatch):
         source=source, review=None, event_stream=SimpleNamespace(lock=threading.RLock()), subscribers=())
     adapter = LocalSessionAdapter(owner)
     adapter.register_source(source)
-    adapter.policies[session_id] = SimpleNamespace(source='cron', request_json=json.dumps(
+    adapter.policies[session_id] = SimpleNamespace(source='cron', cwd=os.getcwd(), request_json=json.dumps(
         {'cron_job': {'id': 'job-1'}, 'extra_prompt': '', 'request_id': 'cron:job-1:fire-1'}))
     owner.runner._adapter_for_source = lambda _source: adapter
     monkeypatch.setattr(scheduler, 'run_job', lambda *a, **k: pytest.fail('a typed turn must not run the job'))

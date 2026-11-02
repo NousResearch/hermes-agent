@@ -810,7 +810,6 @@ gateway:
     history_unavailable: "⚠️ L'historique de cette session est temporairement indisponible ; ce message n'a donc pas été traité. Demandez à l'opérateur d'inspecter state.db, puis renvoyez-le une fois le problème réglé. N'utilisez /reset que si vous voulez vraiment démarrer une nouvelle conversation."
     no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `hermes doctor` sur l'hôte."
     cron_session_read_only: "⚠️ Cette conversation appartient à une tâche planifiée et n'exécute que cette tâche ; votre message n'a donc pas été exécuté. Démarrez une nouvelle conversation pour l'envoyer."
-    workspace_unavailable: "⚠️ Le dossier de travail de cette conversation n'existe plus ({path}) ; votre message n'a donc pas été exécuté. Recréez le dossier ou déplacez la conversation vers un autre (`/worktree new` dans la CLI, « Déplacer vers un projet » dans l'application de bureau), puis renvoyez votre message."
     launch_credentials_unavailable: "⚠️ Cette conversation ne peut plus utiliser la clé API avec laquelle elle a été démarrée{detail}, plus rien ne peut donc s'y exécuter. Une conversation ouverte ne passe jamais d'elle-même à une autre clé, donc /retry échoue de la même façon. Utilisez /new pour démarrer une nouvelle conversation avec votre clé actuelle."
   skills:
     disabled: |-
@@ -2798,7 +2797,6 @@ cli:
     title_rejected: "Titre rejeté : {error}"
     title_empty_untitled: "Le titre est vide après nettoyage — session démarrée sans titre."
     title_error_untitled: "{error} — session démarrée sans titre."
-    cwd_gone: "⚠ Le répertoire de travail de la session n'existe plus : {recorded} — on reste dans {current}"
     cwd_restored: "↻ Répertoire de travail : {path}"
     cwd_enter_failed: "⚠ Impossible d'entrer dans le répertoire de travail de la session {path} : {error}"
     yolo_restored: "⚡ Mode YOLO restauré depuis la session — toutes les commandes sont auto-approuvées. /yolo pour le désactiver."

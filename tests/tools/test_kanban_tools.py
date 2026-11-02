@@ -794,8 +794,11 @@ def test_create_in_fenced_worker_redirects_board_with_note(monkeypatch, tmp_path
         {"title": "meant for other", "assignee": "test-worker", "board": "other"}))
     assert out["ok"] is True
     assert out["board"] == "default"
-    assert "other" in out["board_note"]
-    assert "default" in out["board_note"]
+    # Pin the exact card-verbatim wording: a template regression (reworded or
+    # reformatted note) must fail here, not downstream in callers' parsers.
+    assert out["board_note"] == (
+        "explicit board 'other' overridden by worker/delegation pin "
+        "— card landed on default")
     # The card physically landed on the pinned default board, not on ``other``.
     conn = kbc.connect()
     try:

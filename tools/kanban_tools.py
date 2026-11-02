@@ -351,7 +351,7 @@ def _resolved_board_fields(kb, board_arg: Any) -> dict[str, Any]:
     dispatched/delegated contexts to the pinned board (5ec6baa isolation), and
     before this the redirect was silent — a fenced ``kanban_create(board=X)``
     reported plain ``ok:true`` while the card landed elsewhere. Resolution is
-    unchanged: every result carries ``board`` (the resolved slug), plus a
+    unchanged: the create result carries ``board`` (the resolved slug), plus a
     ``board_note`` when explicit board intent was redirected by the fence."""
     resolved = kb.resolved_board_slug(board=board_arg)
     fields: dict[str, Any] = {"board": resolved}

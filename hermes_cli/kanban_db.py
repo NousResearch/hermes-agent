@@ -575,7 +575,9 @@ def resolved_board_slug(board: Optional[str] = None) -> str:
     no slug, so the path itself is returned (it still identifies the board the
     call resolves to). Purely reporting: this never changes resolution — callers
     use it to echo *where a write landed* so a fenced explicit ``board=`` is
-    observable instead of silent (#142435 / #144132)."""
+    observable instead of silent (#142435 / #144132). The value is for display,
+    not round-tripping: under a pin outside the boards layout it is a path, not
+    a slug, so do not feed it back into a ``board=`` argument unconditionally."""
     path = kanban_db_path(board=board)
     try:
         resolved = path.expanduser().resolve()

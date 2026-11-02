@@ -6,7 +6,7 @@ machine stops mid-install (a hosted restart, a power cut), the rename can
 survive while the files read back as NUL bytes. uv then reuses that entry on
 every later sync and fails at install time with "The wheel is invalid", and
 retrying cannot help. These helpers recognise that failure and name the
-packages to purge. Deletion always goes through ``uv cache clean`` (the caller),
+packages to purge. Deletion goes through ``uv cache clean`` (the caller),
 which takes uv's cache lock, so a concurrent sync never loses files mid-read;
 the leftover-archive sweep takes that same lock itself.
 
@@ -19,7 +19,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import sys
 
 from pm.filesystem import is_junction, lock_fd
 
@@ -75,13 +74,6 @@ _HEAD = 65536
 _LOCK_WAIT_SECONDS = 10.0
 _WHEEL_VERSION = re.compile(rb"(?im)^wheel-version[ \t]*:")
 _FILES = (("WHEEL", _WHEEL_VERSION), ("METADATA", None), ("RECORD", None))
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_DIRECTORY = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
-# The sweep works only through directory descriptors (rmtree's dir_fd is 3.11+;
-# the bootstrap runner may be older). Elsewhere it is skipped: the leftovers are
-# harmless, and on Windows uv's pointer files let `uv cache clean` take them anyway.
-_FD_SWEEP = (os.name == "posix" and sys.version_info >= (3, 11) and shutil.rmtree.avoids_symlink_attacks
-             and os.open in os.supports_dir_fd and os.scandir in os.supports_fd)
 
 
 def _stream_damaged(stream, header: re.Pattern | None) -> bool:
@@ -120,25 +112,6 @@ def _damaged(path: Path, header: re.Pattern | None = None) -> bool:
         return True
     except OSError:
         return False
-
-
-def _damaged_at(directory: int, name: str, header: re.Pattern | None) -> bool:
-    """_damaged for *name* inside an open directory descriptor; links are not followed."""
-    try:
-        fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=directory)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    try:
-        # closefd=False: fdopen itself can fail (a directory in the file's place),
-        # and the descriptor must be closed either way.
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            return _stream_damaged(stream, header)
-    except OSError:
-        return False
-    finally:
-        os.close(fd)
 
 
 def _dist_name(info: str) -> str | None:
@@ -191,29 +164,7 @@ def corrupt_cached_packages(cache: Path) -> set[str]:
     return set(corrupt_cache_entries(cache))
 
 
-def _damaged_packages_at(bucket: int) -> set[str]:
-    """corrupt_cache_entries for one bucket, read only through descriptors."""
-    with os.scandir(bucket) as entries:
-        infos = [entry.name for entry in entries
-                 if entry.name.endswith(".dist-info") and entry.is_dir(follow_symlinks=False)]
-    found = set()
-    for info in infos:
-        name = _dist_name(info)
-        if not name:
-            continue
-        try:
-            info_fd = os.open(info, _DIRECTORY, dir_fd=bucket)
-        except OSError:
-            continue
-        try:
-            if any(_damaged_at(info_fd, file, header) for file, header in _FILES):
-                found.add(name)
-        finally:
-            os.close(info_fd)
-    return found
-
-
-def remove_corrupt_entries(cache: Path, names: set[str]) -> bool:
+def remove_corrupt_entries(cache: Path, names: set[str]) -> None:
     """Delete the corrupt archive entries of *names* that ``uv cache clean`` left behind.
 
     Where uv links a wheel to its archive by symlink (Linux, macOS), clean
@@ -221,56 +172,19 @@ def remove_corrupt_entries(cache: Path, names: set[str]) -> bool:
     ``hermes pm doctor`` would keep reporting. ``uv cache prune`` is not an
     option: PM seeds this cache from a bundle copy whose links are real
     directories, and prune treats their archives as unreachable, so the next
-    install fails.
+    install fails. On Windows uv's pointer files let clean take the archive.
 
-    The cache directory is opened once, and ``archive-v0``, the lock, every
-    entry and every file are then reached only relative to that descriptor
-    without following links, so renaming or replacing a path above or inside
-    the cache mid-sweep cannot point a delete anywhere else. The sweep holds
-    uv's own cache lock, so no uv process runs while it deletes, and it only
-    takes entries whose files prove a torn write. Returns False when the
-    sweep did not run (lock busy for _LOCK_WAIT_SECONDS, no descriptor
-    support); the leftovers are harmless, and a later sweep or ``hermes pm
-    doctor --repair`` takes them.
+    Holds uv's own cache lock so no uv process is reading an entry while it is
+    deleted. If uv keeps the lock busy past _LOCK_WAIT_SECONDS the leftovers
+    stay; they are harmless and ``hermes pm doctor --repair`` takes them.
     """
-    if not names:
-        return True
-    if not _FD_SWEEP:
-        return False
-    try:
-        cache_fd = os.open(cache, os.O_RDONLY | os.O_DIRECTORY)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    archive = lock = None
-    try:
-        try:
-            archive = os.open("archive-v0", _DIRECTORY, dir_fd=cache_fd)
-        except FileNotFoundError:
-            return True
-        lock = os.open(".lock", os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o666, dir_fd=cache_fd)
-        if not lock_fd(lock, wait=True, timeout=_LOCK_WAIT_SECONDS):
-            return False
-        with os.scandir(archive) as entries:
-            buckets = [entry.name for entry in entries if entry.is_dir(follow_symlinks=False)]
-        for bucket in buckets:
-            try:
-                bucket_fd = os.open(bucket, _DIRECTORY, dir_fd=archive)
-            except OSError:
-                continue
-            try:
-                doomed = bool(_damaged_packages_at(bucket_fd) & names)
-            except OSError:
-                doomed = False
-            finally:
-                os.close(bucket_fd)
-            if doomed:
-                shutil.rmtree(bucket, dir_fd=archive, ignore_errors=True)
-        return True
-    except OSError:
-        return False
-    finally:
-        for fd in (lock, archive, cache_fd):
-            if fd is not None:
-                os.close(fd)
+    archive = _archive_root(cache)
+    if not names or os.name == "nt" or archive is None:
+        return
+    with open(cache / ".lock", "a+b") as lock:
+        if not lock_fd(lock.fileno(), wait=True, timeout=_LOCK_WAIT_SECONDS):
+            return
+        for package, buckets in corrupt_cache_entries(cache).items():
+            if package in names:
+                for bucket in buckets:
+                    shutil.rmtree(archive / bucket, ignore_errors=True)

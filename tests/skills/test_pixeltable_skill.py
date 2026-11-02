@@ -316,3 +316,30 @@ class TestApiCorrectness:
         assert 'PXT-1429' not in apps
         for path in (SKILL_MD, APPS_REF):
             assert '\u2014' not in path.read_text(), f'{path.name} must not use an em dash'
+
+    def test_pixeltable_0722(self, skill_text: str) -> None:
+        apps = APPS_REF.read_text()
+        assert 'exits 143' in skill_text
+        assert 'pxt db status' in skill_text
+        assert 'pxt service list' in skill_text
+        assert 'DEEPSEEK_BASE_URL' in skill_text
+        assert 'one_row=True' in skill_text
+        assert 'return_scalar' in skill_text
+        assert '## Troubleshooting' in skill_text
+        assert 'asc=False' in skill_text and 'AttributeError' in skill_text
+        assert '__main__' in skill_text
+        assert "pxt.get_table('my_app.products:1')" in skill_text
+        assert 'create_snapshot' in skill_text
+        assert 'version 0' in skill_text
+        assert 'JOB_REFUSED' in apps
+        assert '64 unfinished' in apps
+        assert 'PLAN_BLOCKED' in apps
+        assert 'CONFIRMATION_DECLINED' in apps
+        assert 'DEEPSEEK_BASE_URL' in apps
+        assert 'openai.decisions' in skill_text or 'def decisions' in apps or 'import decisions' in apps
+        assert 'openai>=3.32' in skill_text
+        assert 'fileurl' in apps
+        assert 'Pixeltable home' in apps
+        assert 'literal `limit(1)`' in apps
+        assert 'Only the OpenAI client' not in skill_text
+        assert 'Only the OpenAI client' not in apps

@@ -16,7 +16,7 @@ Multimodal data tables with auto-computed AI columns.
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/pixeltable` |
 | Path | `optional-skills/mlops/pixeltable` |
-| Version | `1.2.0` |
+| Version | `1.3.0` |
 | Author | Pierre Brunelle (@pierrebrunelle), Pixeltable (pixeltable.com) |
 | License | Apache-2.0 |
 | Platforms | linux, macos |
@@ -76,7 +76,7 @@ The first import starts an embedded PostgreSQL. On Linux and macOS it listens on
 
 **Provider keys.** Pixeltable reads them from the process environment or `~/.pixeltable/config.toml` (override the file with `PIXELTABLE_CONFIG`). Putting a key only in `~/.hermes/.env` is not enough unless that process exports it. The `pxt` daemon reads config and the environment once, at startup. After either changes, `pxt daemon restart`, then `pxt service restart NAME` for a running service. Until the restart, commands answer 409.
 
-Common names: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TOGETHER_API_KEY`. Gemini accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY` (or `api_key` under `[gemini]`). An OpenAI-compatible proxy uses `OPENAI_BASE_URL` or `[openai] base_url`. Ollama uses `OLLAMA_HOST` or `[ollama] host`, not `base_url`. Only the OpenAI client reads a base URL from Pixeltable config. Never pass `api_key=` into the call.
+Common names: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TOGETHER_API_KEY`. Gemini accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY` (or `api_key` under `[gemini]`). An OpenAI-compatible proxy uses `OPENAI_BASE_URL` or `[openai] base_url`. DeepSeek uses `DEEPSEEK_BASE_URL` or `[deepseek] base_url`. Ollama uses `OLLAMA_HOST` or `[ollama] host`, not `base_url`. Other providers do not read a Pixeltable base URL. Never pass `api_key=` into the call.
 
 ## How to Run
 
@@ -137,6 +137,8 @@ pxt service list
 | List tables | `pxt.list_tables()` |
 | Get existing table | `t = pxt.get_table('mydir.t')` |
 | Row count | `t.count()` |
+| Read one version | `pxt.get_table('my_app.products:1')` |
+| Named snapshot | `pxt.create_snapshot('my_app.baseline', t, if_exists='ignore')` |
 | Apply an app | `pxt schema update app.py my_app` then `pxt service update app.py my_app -f` |
 | Bind models in a process | `app.TableModel.bind_all('my_app')` |
 
@@ -200,7 +202,7 @@ Public image URLs can be inserted in place of file paths.
 
 ### 2. Video captions (requires OPENAI_API_KEY)
 
-`frame_iterator` yields `frame` and `frame_attrs` (`index`, `time`, `key_frame`, and the other pyav fields). It does not yield `frame_idx` or `pos_msec`. Pass the image column itself as `image_url`. Pixeltable serializes it. The HTTP shape `{'url': ...}` is wrong here.
+`frame_iterator` yields `frame` and `frame_attrs` (`index`, `time`, `key_frame`, and the other pyav fields). It does not yield `frame_idx` or `pos_msec`. Pass the image column itself as `image_url`. Pixeltable serializes it. The API form with a `url` field also works, including a public URL string such as `frames.frame.fileurl`. OpenAI fetches a URL string itself, so that string has to be publicly reachable.
 
 ```python
 import pixeltable as pxt
@@ -293,15 +295,18 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 - **Recompute.** `t.recompute_columns('summary', errors_only=True)`. The column is a positional argument, not `columns=[...]`.
 - **Nullable UDF parameters.** A non-nullable parameter that receives `None` skips the call. The cell is `None` and `errormsg` is empty. Annotate `x: str | None` and handle `None`.
 - **Provider retries.** OpenAI, Anthropic, and Gemini retry rate-limit failures up to 10 times. Other providers retry up to 3 times, paced by `rate_limit` (600 requests a minute when unset). HTTP 429, 503, 408, and 504, plus connection errors and timeouts, are retried, and `Retry-After` is honored. Do not wrap the call in `tenacity` or another client. A cell that still fails is listed by `pxt errors PATH`.
-- **`next:` lines.** Since Pixeltable 0.7.20, a command refused for want of `-f` or `--allow-destructive` exits 3 and ends with `next: <command>  # <what it does>`. Run that command when it does what the user asked. Ask first when it drops data, stops or restarts what others call, or recomputes rows the user did not mention. `pxt errors PATH` prints a `next:` line for each recomputable failed column. A snapshot column never changes, so it names no recompute.
+- **`next:` lines.** Since Pixeltable 0.7.20, a command refused for want of `-f` or `--allow-destructive` exits 3 and ends with `next: <command>  # <what it does>`. Run that command when it does what the user asked. Ask first when it drops data, stops or restarts what others call, or recomputes rows the user did not mention. `pxt errors PATH` prints a `next:` line for each recomputable failed column. A snapshot column never changes, so it names no recompute. A hosted wait stopped with SIGTERM exits 143, and Ctrl-C exits 130 (0.7.22+). Both print a `next:` line (`pxt db status ...` for a database change, `pxt service list ...` for a service) and the change continues in Cloud. Run that line.
 - **Gaps.** When Pixeltable cannot do what the task needs, or you work around it, show the user `pxt feedback --kind gap '<what was needed, what you tried, what happened>'`. That prints a preview and sends nothing. Add `--send` only after they agree. Single quotes keep the shell from running a command or expanding a variable in the text. Use placeholder data. Never put customer names, hosts, paths, or secrets in the text.
 - **First import is slow.** The first `import pixeltable` prepares PostgreSQL. Later imports are faster.
 - **Wrong interpreter.** `python3 -c "import pixeltable"` must succeed in the interpreter you will keep using.
+- **Versions.** `t.history()` lists versions. `pxt.get_table('my_app.products:1')` reads that version and does not take writes. `pxt.create_snapshot('my_app.baseline', t, if_exists='ignore')` stores a named frozen copy. `t.revert()` and `pxt revert` drop the latest version permanently. Revert cannot pass version 0, and it refuses while a snapshot still references the current version. Run `pxt history` first.
 
 | Wrong | Correct |
 |---|---|
 | `openai.vision(...)` | Deprecated since 0.5.18. Use `chat_completions` with `image_url` set to the image column, or `responses` |
-| `{'image_url': {'url': frames.frame}}` | `{'type': 'image_url', 'image_url': frames.frame}` |
+| `{'image_url': {'url': frames.frame}}` | `{'type': 'image_url', 'image_url': frames.frame}`. The API form with `'type': 'image_url'` and a `url` field also works. A URL string must be public |
+| `add_query_route(..., one_row=True)` or `@pxt.query(return_scalar=...)` | Removed in 0.7.22. Shape follows the query. An aggregate without `group_by()`, or a literal `limit(1)`, is one row (no row is a 404). One unnamed expression returns values. `select(text=t.text)` keeps dicts |
+| `openai.decisions(...).choices` | `decisions(input, questions=..., model=...).answers`, in question order. `model` is required. Needs `openai>=3.32` (0.7.22+) |
 | `from pixeltable.iterators import FrameIterator` | `from pixeltable.functions.video import frame_iterator` |
 | `t.col.similarity('query')` | `t.col.similarity(string='query')`. Also `image=`, `audio=`, `video=`, `document=`, `vector=`. `idx=` picks among indexes |
 | `t.col.select()` / `t.col.count()` | Those ColumnRef helpers do not exist. Use `t.select(t.col)...` and `t.count()`. `t.show()` and `t.head()` still exist on the table |
@@ -309,6 +314,12 @@ Cloud sign-in, secrets, and the hosted wait: `references/apps-and-cloud.md`. Ask
 | `chat_completions(..., temperature=0)` | `model_kwargs={'temperature': 0}` |
 | `pxt.Table(...)` or `pxt.connect(...)` | `pxt.create_table(...)` and `pxt.get_table(...)` |
 | `for row in data: model.predict(row)` | A computed column, which runs on insert |
+
+## Troubleshooting
+
+- After API keys or `config.toml` change, run `pxt daemon restart`, then `pxt service restart NAME` for a running service. The daemon reads the environment and config once, at startup.
+- Define `@pxt.udf` and `@pxt.query` in a module that `pxt schema update` imports. A script run as `__main__` is not that module.
+- `order_by` on a Python UDF expression has no SQL translation. Descending (`asc=False`) raises `AttributeError`. Ascending does not sort by that expression. Order by a stored column.
 
 ## Verification
 
@@ -330,5 +341,6 @@ print('Pixeltable verification passed')
 | Need | File |
 |---|---|
 | CLI, Cloud sign-in, secrets, hosted wait, retries, API traps | `references/apps-and-cloud.md` |
+| Versions, snapshots, time travel | `references/apps-and-cloud.md` |
 | Hermes MCP config and tool names | `references/mcp-integration.md` |
 | Notebook recipes (audio, chained summary) | `references/multimodal-pipeline-examples.md` |

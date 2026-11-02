@@ -9,7 +9,7 @@ Shared rules:
 - `similarity` takes `string=`, `image=`, `audio=`, `video=`, `document=`, or `vector=`.
 - Extra provider fields go in `model_kwargs={}`. Anthropic `messages` still needs top-level `max_tokens=`. Whisper `language` is a `model_kwargs` entry, not a top-level argument.
 - Provider calls retry on their own (10 times for OpenAI, Anthropic, and Gemini rate limits; 3 times otherwise). Do not wrap them in another retry loop.
-- `frame_iterator` columns are `frame` and `frame_attrs`. Pass the image column itself as `image_url`. Pixeltable serializes it. Do not wrap the column in a url field.
+- `frame_iterator` columns are `frame` and `frame_attrs`. Pass the image column itself as `image_url`. Pixeltable serializes it. A public URL string, such as the column's `fileurl`, also works.
 - `document_splitter(..., separators='token_limit')` needs `tiktoken`. `separators='sentence'` needs spaCy.
 
 ## 1. Document RAG with Semantic Search

@@ -16,7 +16,7 @@ pxt service update app.py my_app -f
 pxt service list
 ```
 
-- `pxt init` marks the project root. A fresh directory gets `pixeltable.toml`. An existing `pyproject.toml` gets `[[tool.pixeltable.database]]` appended. Nested under another root, it exits 3.
+- `pxt init` marks the project root. A fresh directory gets `pixeltable.toml`. An existing `pyproject.toml` gets `[[tool.pixeltable.database]]` appended. Nested under another root, it exits 3. It also exits 3 for the home directory, a directory above it, or the Pixeltable home (0.7.22+). `pxt db diff` and `pxt db update` refuse those roots too, because the project archive will not include the home directory.
 - `pxt schema update` creates or migrates tables. It does not start HTTP. An additive or no-op schema update does not prompt.
 - `pxt service update` starts or restarts HTTP. It does not create tables. Without a TTY, a pending update exits 3 unless given `-f`.
 - `pxt schema check APP` before the first update. It reads no catalog. It warns when an installed package shadows a project module (`app` is the usual collision). `check` still exits 0. `schema update` and `service update` do not warn, and they import the installed package.
@@ -40,6 +40,10 @@ A failed request ends with its code, as in `[TABLE_NOT_FOUND]`. With `--json` it
 
 Without a TTY, a prompt exits 3 and prints `next: <the same command with -f>  # <what it does>`. With `--json` that refusal is `{"error_code": "CONFIRMATION_REQUIRED", "next": [{"command", "effect"}]}`. `schema update`, `service update`, and `db update` print the refused plan instead of that document. `--json` is also accepted by `pxt usage` and `pxt feedback`.
 
+A person who declines a prompt also exits 3. With `--json` that document is `CONFIRMATION_DECLINED` and has no `next` (0.7.22+). A destructive plan without `--allow-destructive` is `DESTRUCTIVE_SCHEMA_CHANGE` and carries `next`. A plan the database blocks is `PLAN_BLOCKED`, exits 1, and names the command that unblocks it.
+
+A hosted wait stopped with Ctrl-C exits 130. SIGTERM, which a tool timeout sends on Linux and macOS, exits 143 (0.7.22+). Both print a `next:` line and leave the change running in Cloud. A database wait names `pxt db status ...`. A service wait names `pxt service list ...`. Run that line. Off a TTY the wait prints a progress line on stderr when the step changes and at least once a minute. On a terminal the spinner is on stderr.
+
 ## Daemon and config
 
 The first catalog command starts a daemon at `127.0.0.1:22089` unless `PXT_PORT` is set. `pxt daemon status`, `stop`, `start`, `restart`.
@@ -50,7 +54,7 @@ Home is `PIXELTABLE_HOME` (default `~/.pixeltable`). Config file is `PIXELTABLE_
 
 On Linux and macOS the embedded Postgres uses a Unix socket, chosen so it does not collide with TCP 5432. Windows picks a free TCP port. Do not aim users at port 5432.
 
-Provider keys come from the environment or the config file, never from `api_key=` on the call. Gemini accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY`, or `[gemini] api_key`. An OpenAI-compatible proxy is `OPENAI_BASE_URL` or `[openai] base_url`. Ollama is `OLLAMA_HOST` or `[ollama] host`. Other providers do not read a Pixeltable `base_url`.
+Provider keys come from the environment or the config file, never from `api_key=` on the call. Gemini accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY`, or `[gemini] api_key`. An OpenAI-compatible proxy is `OPENAI_BASE_URL` or `[openai] base_url`. DeepSeek is `DEEPSEEK_BASE_URL` or `[deepseek] base_url` (0.7.22+). Ollama is `OLLAMA_HOST` or `[ollama] host`. Other providers do not read a Pixeltable `base_url`.
 
 ## Cloud sign-in, databases, and secrets
 
@@ -70,7 +74,7 @@ pxt service update app.py pxt://org:db -f
 
 Non-secret settings (`vars`, `db_*`, and section values such as `[openai] base_url`) reach a hosted database without an upload. `pxt db diff --json` reports those changes under target `config`. Applying them restarts the database so the pods read the new settings. Size a hosted service on the hosted database entry, after that entry: `[pixeltable.database.services.'<path>']` in `pixeltable.toml`, or `[tool.pixeltable.database.services.'<path>']` in `pyproject.toml`. Fields are `cpu`, `memory_mb`, `workers`, and `file_cache_gb`. The path is `'<directory>/<service name>'`, or the name alone at the database root. `services` on the local entry is an error. `pxt service update` applies the size. A change to a service's `workers` does not restart that service. Any other size field does. A setting left out keeps the current value.
 
-These `pxt db` verbs wait until Cloud finishes the change: `update`, `start`, `stop`, `restart`, `retry`, `build-image`, `delete`. `--no-wait` exists only on those verbs. It returns once Cloud accepts the change. Ctrl-C also stops only the waiting. The change keeps running. After three hours the command exits 2 and the change is still in progress. Follow a timed-out or `--no-wait` call with `pxt db status pxt://org:db`.
+These `pxt db` verbs wait until Cloud finishes the change: `update`, `start`, `stop`, `restart`, `retry`, `build-image`, `delete`. `--no-wait` exists only on those verbs. It returns once Cloud accepts the change. Ctrl-C (exit 130) or SIGTERM (exit 143) also stops only the waiting. The change keeps running, and stderr prints `next: pxt db status pxt://org:db`. Run that line. Off a TTY the wait prints a progress line on stderr when the step changes and at least once a minute. On a terminal the spinner is on stderr. After three hours the command exits 2 and the change is still in progress. Follow a timed-out or `--no-wait` call with `pxt db status pxt://org:db`.
 
 `pxt service update` has no `--no-wait`. On a hosted target it waits for the receipt. `pxt schema update` is separate from that wait flag. A failed hosted update can be retried unchanged with `pxt db retry pxt://org:db` or `pxt service retry pxt://org:db/NAME`, or by running the same `pxt db update` again.
 
@@ -101,13 +105,41 @@ A computed column that calls a provider retries on its own.
 
 Do not add a retry loop, `tenacity`, or a second client around the call.
 
-Only the OpenAI client reads `OPENAI_BASE_URL` / `[openai] base_url`. Pointing `base_url` at Ollama does nothing. Set `OLLAMA_HOST` instead.
+OpenAI reads `OPENAI_BASE_URL` or `[openai] base_url`. DeepSeek reads `DEEPSEEK_BASE_URL` or `[deepseek] base_url` (0.7.22+). Pointing `[openai] base_url` at Ollama does nothing. Set `OLLAMA_HOST` instead.
+
+## Versioning
+
+Every insert, update, delete, and schema change adds a version. `t.history()` lists them. `pxt.get_table('my_app.products:1')` is that version. A version pin is a snapshot, so it does not take new writes. `pxt.create_snapshot('my_app.products_baseline', t, if_exists='ignore')` stores a named frozen copy. Later inserts, updates, and deletes on `t` leave it unchanged. `create_view(..., is_snapshot=True)` is the same as `create_snapshot`. `t.revert()` and `pxt revert` permanently drop the latest version. Run `pxt history` first. Revert cannot pass version 0, and it refuses while a snapshot still references the current version.
+
+## Query routes
+
+`add_query_route` wraps a `@pxt.query` or `pxt.retrieval_udf`. There is no `one_row=` argument (0.7.22+). `@pxt.query(return_scalar=...)` is an unknown argument and raises. The response follows the query:
+
+- Several rows, one unnamed expression (`select(t.text)`): a JSON array of values.
+- Several rows, any other select list: `{"rows": [...]}`.
+- At most one row, from an aggregate without `group_by()` or a literal `limit(1)`: the row, or the value when the expression is unnamed. No row is a 404.
+- `limit(n)` with a parameter stays multi-row even when `n` is 1.
+- Name the column (`select(text=t.text)`) to keep objects instead of bare values.
+- A stored query function keeps the shape it was created with. An older function whose return type is untyped Json stays a list of dicts.
+
+`return_fileresponse=True` requires a single-row query and returns the one media column as a file. It cannot be combined with `background=True`.
+
+`background=True` returns `{"id", "job_url"}`. Poll `job_url`. Status is `pending`, `done`, or `error`. `done` carries `result`. `error` carries `error` and `error_detail`. Each router accepts at most 64 unfinished background jobs on a service instance. A refused submit is HTTP 503, `error_code` `JOB_REFUSED`, and `retryable` true.
+
+A computed column that raises during an insert or update route fails the request and stores nothing. `detail` is `{"error_code", "message", "retryable"}`, plus `retry_after` when set. A `Retry-After` header goes out with every error that has a `retry_after` (0.7.22+). Retry when `retryable` is true. After a schema change, routes still answer 409 until `pxt service update ... -f`.
+
+`pxt.retrieval_udf(..., limit=1)` returns the matching row as a dict, or `None`. A larger `limit` returns a list.
+
+## OpenAI decisions
+
+`from pixeltable.functions.openai import decisions`. `decisions(input, questions=..., model=...)` answers predicate, choice, and score questions (0.7.22+, package `openai>=3.32`). `model` is required. Read `.answers` in question order. Do not read `.choices[0].message.content` on this result.
 
 ## Call shapes that differ from the HTTP APIs
 
 | Wrong | Correct |
 |---|---|
-| `{'image_url': {'url': t.image}}` | `{'type': 'image_url', 'image_url': t.image}` inside `chat_completions`. Pixeltable serializes the image column |
+| `{'image_url': {'url': t.image}}` | `{'type': 'image_url', 'image_url': t.image}` inside `chat_completions`. Pixeltable serializes the image column. The API form `{'type': 'image_url', 'image_url': {'url': t.image}}` also works, as does a public URL string such as `t.image.fileurl`. OpenAI fetches a URL itself |
+| `add_query_route(..., one_row=True)` or `@pxt.query(return_scalar=...)` | Removed in 0.7.22. The response shape follows the query. See Query routes |
 | `openai.vision(...)` | Deprecated since 0.5.18. `chat_completions` or `responses` |
 | `transcriptions(..., language='en')` | The signature is `(audio, *, model, model_kwargs=None)`. Put `language` in `model_kwargs`. The docstring example that passes `language=` is stale |
 | `messages(..., max_tokens=...)` omitted | Anthropic `messages` requires top-level `max_tokens=` |

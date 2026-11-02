@@ -45,6 +45,7 @@ def _probe_root(tmp_path):
     (scripts / "ci").mkdir(parents=True, exist_ok=True)
     real = Path(__file__).resolve().parents[2] / "scripts"
     shutil.copy2(real / "run_tests_parallel.py", scripts)
+    shutil.copy2(real / "run_tests_fork_child.py", scripts)
     # The runner shares the platforms() spec resolver with the CI lane selector.
     shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
     return root
@@ -808,3 +809,79 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
     slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
               for i in range(3)]
     assert sorted(f for s in slices for f in s) == sorted(files)
+
+
+
+_FORK_PROBE = textwrap.dedent("""
+    import atexit, json, os, sys, tempfile
+    from pathlib import Path
+
+    OUT = Path({out!r})
+
+    def test_child_starts_like_a_fresh_pytest_process():
+        atexit.register(lambda: (OUT.parent / ("atexit-" + OUT.name)).write_text("ran"))
+        OUT.write_text(json.dumps({{
+            "own_session": os.getsid(0) == os.getpid(),
+            "tmpdir": os.environ.get("TMPDIR"),
+            "temproot": os.environ.get("PYTEST_DEBUG_TEMPROOT"),
+            "gettempdir": tempfile.gettempdir(),
+            "cwd": os.getcwd(),
+            "path0": sys.path[0],
+            "sys_path": sys.path,
+            "argv0": sys.argv[0],
+            "product_preloaded": sorted(m for m in ("hermes_cli", "agent", "gateway", "tools") if m in sys.modules),
+            "slice_env": os.environ.get("HERMES_TEST_FORKSERVER"),
+        }}))
+
+    def test_failure_is_reported():
+        assert {fail!r} == "no"
+""").lstrip()
+
+
+@pytest.mark.platforms("linux")
+def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, monkeypatch) -> None:
+    """HERMES_TEST_FORKSERVER=1 must hand each file the state a fresh ``python -m pytest`` has."""
+    seen = {}
+    for fork in ("", "1"):
+        probe_dir = tmp_path / f"probe{fork}"
+        probe_dir.mkdir()
+        out = tmp_path / f"facts{fork}.json"
+        (probe_dir / "test_probe_fork.py").write_text(_FORK_PROBE.format(out=str(out), fail="no"), encoding="utf-8")
+        monkeypatch.setenv("HERMES_TEST_FORKSERVER", fork)
+        proc = _run_runner(probe_dir)
+        assert proc.returncode == 0, proc.stdout
+        assert ("fork server: on" in proc.stdout) == bool(fork), proc.stdout
+        facts = json.loads(out.read_text())
+        assert (tmp_path / f"atexit-facts{fork}.json").read_text() == "ran"
+        assert facts["tmpdir"] == facts["temproot"] == facts["gettempdir"], facts
+        # Per-run paths differ between the two runs; compare their shape instead.
+        facts["tmpdir"] = facts["temproot"] = facts["gettempdir"] = "<per-file root>"
+        facts["cwd"] = os.path.relpath(facts["cwd"], tmp_path).replace(os.sep, "/")
+        facts["path0"] = os.path.relpath(facts["path0"], tmp_path).replace(os.sep, "/").replace(f"probe{fork}", "probe")
+        facts["sys_path"] = [p.replace(str(tmp_path), "<tmp>").replace(f"probe{fork}", "probe") for p in facts["sys_path"]]
+        seen[fork] = facts
+    assert seen["1"] == seen[""], seen
+    assert seen["1"]["own_session"] and seen["1"]["product_preloaded"] == []
+    assert seen["1"]["slice_env"] is None  # the runner consumes it; tests never see it
+
+
+@pytest.mark.platforms("linux")
+def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monkeypatch) -> None:
+    """A failing file is red, and a hung file is killed at the per-file timeout, under the fork server."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "test_probe_red.py").write_text(
+        _FORK_PROBE.format(out=str(tmp_path / "f.json"), fail="yes"), encoding="utf-8")
+    (probe_dir / "test_probe_hang.py").write_text(
+        "import time\n\ndef test_hangs():\n    time.sleep(600)\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
+    repo_root = _probe_root(probe_dir.parent)
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"), "--paths", str(probe_dir),
+         "-j", "2", "--file-timeout", "5", "--file-retries", "0"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=120, check=False,
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
+    assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout

@@ -1,14 +1,14 @@
-export type MermaidTheme = 'dark' | 'default'
-
+// Renders are keyed by (theme, code). `theme` is opaque here: the caller's
+// serialised diagram theme, so any palette change misses the cache.
 interface MermaidRenderCacheOptions {
   defer?: (signal?: AbortSignal) => Promise<void>
   maxEntries: number
-  render: (code: string, theme: MermaidTheme) => Promise<string>
+  render: (code: string, theme: string) => Promise<string>
   yieldToMainThread?: () => Promise<void>
 }
 
 interface MermaidRenderCache {
-  render: (code: string, theme: MermaidTheme, signal?: AbortSignal) => Promise<string>
+  render: (code: string, theme: string, signal?: AbortSignal) => Promise<string>
 }
 
 interface PendingRender {
@@ -70,7 +70,7 @@ function yieldTask(): Promise<void> {
 }
 
 // Defer the first uncached render by one frame so the source fallback can
-// paint before the CPU-heavy mermaid runtime is imported and parsed.
+// paint before the diagram renderer's chunk is imported and parsed.
 export function nextPaint(): Promise<void> {
   return new Promise(resolve => {
     if (typeof requestAnimationFrame === 'function') {

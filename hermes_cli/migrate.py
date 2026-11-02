@@ -29,7 +29,7 @@ def cmd_migrate(args: Any) -> int:
 
 # ``hermes migrate <agent>`` flags forwarded to ``hermes import-agent <agent>``, as (dest, flag).
 _AGENT_IMPORT_FLAGS = (("dry_run", "--dry-run"), ("overwrite", "--overwrite"), ("yes", "--yes"),
-                       ("activate_routines", "--activate-routines"))
+                       ("activate_routines", "--activate-routines"), ("migrate_secrets", "--migrate-secrets"))
 
 
 def cmd_migrate_agent(args: Any) -> int:

@@ -60,6 +60,9 @@ def _add_agent_import_parsers(migrate_subparsers) -> None:
         sub.add_argument("--dry-run", action="store_true", help="Preview only")
         sub.add_argument("--overwrite", action="store_true", help="Replace existing items on name conflicts")
         sub.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
+        if source.name == "openclaw":
+            sub.add_argument("--migrate-secrets", action="store_true",
+                             help="Also import OpenClaw's allowlisted API keys and bot tokens")
         if source.name in ("grok-bot", "openbot"):
             sub.add_argument("--activate-routines", action="store_true",
                              help="Create the imported cron jobs running instead of paused")

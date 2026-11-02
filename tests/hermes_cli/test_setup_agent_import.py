@@ -180,7 +180,12 @@ def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flag
         ("import", ["--profile", "default", "import-agent", "grok-bot", "--yes", "--activate-routines",
                     "--source", str(user_home / "export.json"), "--bot", "Scout"], str(hermes_home)),
     ]
+    # Setup imports OpenClaw's secrets (its old step did); `hermes migrate openclaw` only on request.
+    calls.clear()
+    monkeypatch.setattr(step, "_ensure_plugin", lambda home: True)
+    openclaw = parser.parse_args(["migrate", "openclaw", "-y"])
+    assert openclaw.func(openclaw) == 0
+    assert calls[-1][1] == ["--profile", "default", "import-agent", "openclaw", "--yes"]
     # A failed import fails the command, so `hermes migrate x && ...` stops there.
     monkeypatch.setattr(step.subprocess, "run", lambda argv, env, check=False: subprocess.CompletedProcess(argv, 1))
-    monkeypatch.setattr(step, "_ensure_plugin", lambda home: True)
     assert args.func(args) == 1

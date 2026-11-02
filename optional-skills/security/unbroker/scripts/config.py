@@ -36,20 +36,28 @@ VALID = {
     # email_mode:
     #   draft_only   - render drafts; the operator sends + clicks verify links (zero setup)
     #   browser      - the agent sends + opens verify links through the operator's logged-in
-    #                  webmail via browser_* tools (NO password stored; needs a browser the
+    #                  webmail via browser_exec (NO password stored; needs a browser the
     #                  operator's inbox is signed into)
     #   programmatic - CLI sends via SMTP + reads verify links via IMAP (needs EMAIL_* creds)
     #   alias        - AgentMail agent-owned inboxes / per-broker aliases
     "email_mode": {"draft_only", "browser", "programmatic", "alias"},
-    "browser_backend": {"auto", "browserbase", "agent-browser", "camofox"},
+    # browser_backend: local = Hermes's own Chromium via browser_exec; camofox = the `camofox`
+    # catalog plugin. Only browserbase (or auto + key) changes planning (soft-CAPTCHA clearing).
+    "browser_backend": {"auto", "browserbase", "local", "camofox"},
     "tracker_backend": {"local-json", "google-sheets"},
     "encryption": {"none", "age"},
 }
 
 
+# Values written by older installs, renamed when Hermes dropped agent-browser.
+LEGACY_VALUES = {"browser_backend": {"agent-browser": "local"}}
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(storage.read_json(paths.config_path(), {}) or {})
+    for key, renames in LEGACY_VALUES.items():
+        cfg[key] = renames.get(cfg.get(key), cfg.get(key))
     return cfg
 
 

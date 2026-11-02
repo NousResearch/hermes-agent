@@ -23,6 +23,11 @@
  * a post-upgrade auth rejection). The ``WebSocketImpl`` is injectable so the
  * unit tests can drive the handshake without a real socket; in production the
  * caller passes the Node/Electron global ``WebSocket``.
+ *
+ * The boot-time probe of a backend child this app spawned also uses it, with
+ * ``keepWaitingWhile``: a Windows cold start can stall the backend's event
+ * loop for 12-28s after HTTP is up, well past the fixed 10s budget (#96177).
+ * See ``spawnedBackendProbeOptions``.
  */
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
@@ -31,6 +36,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 // window: a frame (gateway.ready) or a still-open socket means success; an
 // early close means the upgrade was accepted but the session was refused.
 const DEFAULT_READY_GRACE_MS = 750
+// Past the base budget, a `keepWaitingWhile` probe re-checks on this cadence.
+const DEFAULT_PROGRESS_CHECK_INTERVAL_MS = 1_000
 
 /**
  * Attempt a live WebSocket connection and classify the outcome.
@@ -44,6 +51,18 @@ function probeGatewayWebSocket<T>(
     WebSocketImpl?: any
     connectTimeoutMs?: number
     readyGraceMs?: number
+    /**
+     * Consulted once `connectTimeoutMs` passes, then every
+     * `progressCheckIntervalMs`: while it returns true the probe keeps
+     * waiting instead of failing, never past `maxConnectWaitMs`. Omitted, the
+     * probe is a single fixed `connectTimeoutMs` deadline. A throwing
+     * callback counts as false (fail closed).
+     */
+    keepWaitingWhile?: () => boolean
+    /** Cadence at which the connect deadline is re-evaluated (default 1s). */
+    progressCheckIntervalMs?: number
+    /** Hard cap on the total wait; defaults to `connectTimeoutMs` (no extension). */
+    maxConnectWaitMs?: number
     /** Extra upgrade-request headers (access-proxy credentials such as
      * Cloudflare Access service tokens). Passed as the non-standard second
      * constructor argument `{ headers }` that Node's (undici) WebSocket —
@@ -58,6 +77,9 @@ function probeGatewayWebSocket<T>(
   const WebSocketImpl = options.WebSocketImpl
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
   const readyGraceMs = options.readyGraceMs ?? DEFAULT_READY_GRACE_MS
+  const progressCheckIntervalMs = options.progressCheckIntervalMs ?? DEFAULT_PROGRESS_CHECK_INTERVAL_MS
+  const keepWaitingWhile = options.keepWaitingWhile
+  const maxConnectWaitMs = options.maxConnectWaitMs ?? connectTimeoutMs
   const headers = options.headers && Object.keys(options.headers).length > 0 ? options.headers : null
 
   if (typeof WebSocketImpl !== 'function') {
@@ -169,12 +191,55 @@ function probeGatewayWebSocket<T>(
     addListener(socket, 'close', onClose)
 
     if (connectTimeoutMs > 0) {
-      connectTimer = setTimeout(() => {
-        finish({
-          ok: false,
-          reason: `Timed out after ${connectTimeoutMs}ms waiting for the WebSocket to open.`
-        })
-      }, connectTimeoutMs)
+      // A healthy gateway upgrades in well under a second, so the base budget
+      // stays short. With `keepWaitingWhile` (a locally spawned backend,
+      // #96177) the base deadline becomes a checkpoint: while the callback
+      // says the backend is still there, re-check on a cadence, never past
+      // `maxConnectWaitMs`. Without it this is the original one-shot timer.
+      const startedAt = Date.now()
+      const hardCapMs = Math.max(connectTimeoutMs, maxConnectWaitMs)
+
+      const shouldKeepWaiting = () => {
+        try {
+          return Boolean(keepWaitingWhile?.())
+        } catch {
+          // A throwing check must never hold the probe open: fail closed.
+          return false
+        }
+      }
+
+      const check = () => {
+        if (settled) {
+          return
+        }
+
+        const elapsedMs = Date.now() - startedAt
+
+        if (!shouldKeepWaiting()) {
+          finish({
+            ok: false,
+            reason:
+              elapsedMs > connectTimeoutMs
+                ? `Timed out after ${elapsedMs}ms waiting for the WebSocket to open (backend stopped after the ${connectTimeoutMs}ms budget).`
+                : `Timed out after ${connectTimeoutMs}ms waiting for the WebSocket to open.`
+          })
+
+          return
+        }
+
+        if (elapsedMs >= hardCapMs) {
+          finish({
+            ok: false,
+            reason: `Timed out after ${elapsedMs}ms waiting for the WebSocket to open (backend still running at the ${hardCapMs}ms cap).`
+          })
+
+          return
+        }
+
+        connectTimer = setTimeout(check, Math.min(progressCheckIntervalMs, hardCapMs - elapsedMs))
+      }
+
+      connectTimer = setTimeout(check, connectTimeoutMs)
     }
   })
 }
@@ -234,4 +299,33 @@ function closeReason(event, fallback) {
   return fallback
 }
 
-export { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READY_GRACE_MS, probeGatewayWebSocket }
+// Boot-time probe policy for a backend child THIS app spawned (#96177). On a
+// Windows cold start the backend answers HTTP, then holds the GIL for 12-28s
+// importing gateway platform modules; the event loop (and so the WS upgrade)
+// is stalled and the process prints nothing until it recovers — the
+// web_server loop heartbeat only logs "event loop stalled" afterwards. So the
+// honest signal is liveness: a live loopback child whose listener accepted
+// the TCP connect but has not answered the upgrade is busy, not refusing (a
+// refusal or auth rejection is an immediate error/close, not a timeout). A
+// dead child still fails at the base budget; a live-but-wedged one fails at
+// the cap, which reuses the port-announcement cold-start budget
+// (DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS, backend-ready.ts). Remote gateways, the
+// "Test remote" button and host-backend attach keep the fixed budget.
+const SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS = 90_000
+
+function spawnedBackendProbeOptions(isChildAlive: () => boolean) {
+  return {
+    connectTimeoutMs: DEFAULT_CONNECT_TIMEOUT_MS,
+    maxConnectWaitMs: SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS,
+    keepWaitingWhile: isChildAlive
+  }
+}
+
+export {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_PROGRESS_CHECK_INTERVAL_MS,
+  DEFAULT_READY_GRACE_MS,
+  probeGatewayWebSocket,
+  SPAWNED_BACKEND_MAX_CONNECT_WAIT_MS,
+  spawnedBackendProbeOptions
+}

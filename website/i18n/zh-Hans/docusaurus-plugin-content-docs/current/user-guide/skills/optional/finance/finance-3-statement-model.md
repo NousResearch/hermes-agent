@@ -442,7 +442,7 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 - **否则**，回退至：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国申报文件
   - 公司投资者关系页面获取新闻稿、业绩演示文稿
-  - `browser_navigate` 访问交互式数据门户
+  - `browser_exec` 访问交互式数据门户
   - 用户提供的数据（当上下文中没有时，明确询问）
 - **绝不捏造数据**。如果某个倍数、前例或申报数字无法溯源，将该单元格标记为 `[UNSOURCED]` 并向用户说明。
 

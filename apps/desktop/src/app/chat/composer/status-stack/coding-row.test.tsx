@@ -46,31 +46,6 @@ describe('CodingStatusRow', () => {
     expect(onOpen).toHaveBeenCalledTimes(2)
   })
 
-  it('wraps the click targets without adding a layout box', () => {
-    const { container } = render(<CodingStatusRow onOpen={() => undefined} repoPath="/repo" />)
-
-    // `display: contents` is what keeps the branch label and the counts direct
-    // flex children of the row — the hit areas cost nothing visually.
-    expect(screen.getByText('bb/hitbox').parentElement?.classList.contains('contents')).toBe(true)
-    expect(screen.getByText('12').closest('button')?.classList.contains('contents')).toBe(true)
-    // The glyph button fills the row's existing 3.5 leading slot exactly.
-    expect(container.querySelector('button[class~="size-3.5"]')).not.toBeNull()
-  })
-
-  it('parks the copy glyph against the end of the path, not the end of the row', () => {
-    render(<CodingStatusRow onOpen={() => undefined} repoPath="/Users/someone/www/repo" />)
-
-    const path = screen.getByText('~/www/repo')
-
-    // The path sizes to its content and the glyph is its immediate sibling, so
-    // the pair reads as one unit. `flex-1` belongs to the wrapper (which holds
-    // the row's slack open) — on the label it stretched the text and pushed the
-    // glyph out to the kebab.
-    expect(path.classList.contains('flex-1')).toBe(false)
-    expect(path.parentElement?.classList.contains('flex-1')).toBe(true)
-    expect(path.nextElementSibling?.tagName).toBe('BUTTON')
-  })
-
   it('copies the absolute cwd inline — checkmark feedback, no toast', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })

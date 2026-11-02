@@ -151,23 +151,40 @@ def refresh_nous_auth_keepalive_once(
     min_access_ttl_seconds: Optional[int] = None, timeout_seconds: Optional[float] = None,
 ) -> bool:
     """Refresh Nous auth once if credentials are configured (pool entry first, then singleton state)."""
-    pool_result = _refresh_selected_pool_entry(
-        min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
-    )
-    if pool_result is not None:
-        return pool_result
-    if not get_provider_auth_state("nous"):
-        return False
-    try:
-        resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
-        logger.debug("Nous auth keepalive: refreshed singleton auth state")
-        return True
-    except Exception as exc:
-        if isinstance(exc, AuthError) and exc.relogin_required:
-            logger.info("Nous auth keepalive requires re-login: %s", exc)
-        else:
-            logger.debug("Nous auth keepalive failed: %s", exc)
-        return False
+    # This runs in a bare daemon thread, so it does not inherit a request's ContextVars. Once a
+    # gateway multiplexes profiles, even the launch profile must bind its own scope before a
+    # credential read; otherwise the fail-closed routing reader warns on every tick.
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+
+    with launch_profile_scope_if_multiplexed():
+        pool_result = _refresh_selected_pool_entry(
+            min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
+        )
+        if pool_result is not None:
+            return pool_result
+        state = get_provider_auth_state("nous")
+        if not state:
+            return False
+        # Mid-life twin of start_nous_auth_keepalive's guard (a guest minted after the thread
+        # started): its tokens are minted on demand, and an inference mint here would put a guest
+        # who only uses connectors through the free-inference challenge every tick.
+        from hermes_cli.anon_auth import is_guest_state
+        if is_guest_state(state):
+            return False
+        try:
+            # Nobody is waiting on a keepalive tick: a free-tier browser challenge is announced to the
+            # desktop (so it can clear before a token is needed) but never waited on here.
+            from hermes_cli.anon_challenge import background_caller
+            with background_caller():
+                resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
+            logger.debug("Nous auth keepalive: refreshed singleton auth state")
+            return True
+        except Exception as exc:
+            if isinstance(exc, AuthError) and exc.relogin_required:
+                logger.info("Nous auth keepalive requires re-login: %s", exc)
+            else:
+                logger.debug("Nous auth keepalive failed: %s", exc)
+            return False
 
 
 def _keepalive_loop(
@@ -193,6 +210,10 @@ def start_nous_auth_keepalive(
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS, timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
     """Start the process-wide Nous auth keepalive thread (idempotent; None when disabled)."""
+    # Free-tier handoff retries run in every long-lived Nous process, guest or not and keepalive or
+    # not: a CLI sign-in in another process may have left a move this one has to finish.
+    from hermes_cli.guest_handoff import start_worker
+    start_worker()
     interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
@@ -226,6 +247,8 @@ def start_nous_auth_keepalive(
 
 def stop_nous_auth_keepalive(timeout: float = 5.0) -> None:
     """Stop the keepalive thread. Intended for graceful shutdown/tests."""
+    from hermes_cli.guest_handoff import stop_worker
+    stop_worker(timeout)
     global _keepalive_thread
     with _keepalive_lock:
         thread = _keepalive_thread

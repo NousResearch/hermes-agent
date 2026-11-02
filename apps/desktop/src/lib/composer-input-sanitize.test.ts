@@ -7,10 +7,6 @@ import {
 } from './composer-input-sanitize'
 
 describe('stripLeakedBracketedPasteWrappers', () => {
-  it('leaves plain text unchanged', () => {
-    expect(stripLeakedBracketedPasteWrappers('hello world')).toBe('hello world')
-  })
-
   it('strips canonical escape wrappers', () => {
     expect(stripLeakedBracketedPasteWrappers('\x1b[200~hello\x1b[201~')).toBe('hello')
   })

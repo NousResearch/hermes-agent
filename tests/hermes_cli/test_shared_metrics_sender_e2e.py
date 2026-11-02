@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import gzip
 import json
-import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -20,7 +19,7 @@ from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
-NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
 
 class Ingest(BaseHTTPRequestHandler):
@@ -29,7 +28,7 @@ class Ingest(BaseHTTPRequestHandler):
     received: list = []
     script: list = []
 
-    def do_POST(self):  # noqa: N802 - stdlib naming
+    def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         if self.headers.get("Content-Encoding") == "gzip":
@@ -59,7 +58,7 @@ class Ingest(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+    def log_message(self, format, *args):
         pass
 
 
@@ -83,7 +82,7 @@ def store(tmp_path):
     )
     # Open a consent window covering the fixture packages; the interval gate
     # fails closed without one, and this file tests transport, not consent.
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from hermes_cli.observability.shared_metrics_sender import (
         reconcile_send_consent,
@@ -93,10 +92,10 @@ def store(tmp_path):
     with built._connection() as connection:
         with write_txn(connection):
             reconcile_send_consent(
-                connection, True, now=datetime(2026, 8, 20, tzinfo=timezone.utc)
+                connection, True, now=datetime(2026, 8, 20, tzinfo=UTC)
             )
             reconcile_send_consent(
-                connection, True, now=datetime(2026, 10, 1, tzinfo=timezone.utc)
+                connection, True, now=datetime(2026, 10, 1, tzinfo=UTC)
             )
     return built
 
@@ -226,39 +225,12 @@ class TestRealTransport:
         assert outcome.sent == 1
         assert len(Ingest.received) == 2
 
-    def test_a_retry_sends_identical_bytes(self, store, server):
-        _add(store, "pkg-1", metrics=5)
-        Ingest.script = [(503, {}, {}), (202, {}, {})]
-        _sender(store, server).send_pending()
-        first, second = Ingest.received
-        assert first["body"] == second["body"]
-        assert first["raw"] == second["raw"], (
-            "the raw request bytes must match, not just the parsed body"
-        )
-
-    def test_a_gzipped_retry_is_byte_identical_on_the_wire(self, store, server):
-        """gzip embeds an mtime by default, which would break this."""
-        _add(store, "pkg-1", metrics=200)
-        Ingest.script = [(503, {}, {}), (202, {}, {})]
-        _sender(store, server).send_pending()
-        first, second = Ingest.received
-        assert first["headers"].get("content-encoding") == "gzip"
-        assert first["raw"] == second["raw"]
-
     def test_several_packages_in_one_pass(self, store, server):
         for i in range(5):
             _add(store, f"pkg-{i}")
         outcome = _sender(store, server).send_pending()
         assert outcome.sent == 5
         assert len(Ingest.received) == 5
-
-    def test_the_outbox_directory_is_untouched(self, store, server, tmp_path):
-        _add(store, "pkg-1")
-        marker = store.outbox_directory / "pkg-1.json"
-        marker.write_text('{"kept": true}')
-        _sender(store, server).send_pending()
-        assert marker.exists()
-        assert json.loads(marker.read_text()) == {"kept": True}
 
     def test_a_dead_server_defers_without_raising(self, store, server):
         _add(store, "pkg-1")

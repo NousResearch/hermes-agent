@@ -37,11 +37,11 @@ def conn(tmp_path: Path):
 
 def _done_parent_with_done_child(conn):
     parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     child_id = kb.create_task(
         conn, title="child", assignee="builder", parents=[parent_id],
     )
-    assert kb.complete_task(conn, child_id)
+    assert kb.complete_task(conn, child_id, result="done")
     return parent_id, child_id
 
 
@@ -59,7 +59,7 @@ def test_reopen_demotes_done_descendants_with_events_and_comments(conn):
     grandchild_id = kb.create_task(
         conn, title="grandchild", assignee="writer", parents=[child_id],
     )
-    assert kb.complete_task(conn, grandchild_id)
+    assert kb.complete_task(conn, grandchild_id, result="done")
 
     _reopen_parent_directly(conn, parent_id)
     result = kb.invalidate_descendants_for_parent_reopen(
@@ -95,7 +95,7 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
     conn, tmp_path, monkeypatch,
 ):
     parent_id = kb.create_task(conn, title="ancestor", assignee="planner")
-    assert kb.complete_task(conn, parent_id)
+    assert kb.complete_task(conn, parent_id, result="done")
     child_id = kb.create_task(
         conn, title="running child", assignee="builder", parents=[parent_id],
     )
@@ -105,7 +105,7 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
 
     kills: list[tuple] = []
 
-    def fake_terminate(pid, claim_lock, **kwargs):
+    def fake_terminate(pid, claim_lock, started_at=None, **kwargs):
         # The audit trail must already be durable when the kill fires:
         # standalone calls commit before terminating.
         side = kbc.connect(tmp_path / "kanban.db")
@@ -114,7 +114,7 @@ def test_running_descendant_event_precedes_termination_via_reclaim_helper(
         finally:
             side.close()
         assert "descendant_invalidated" in kinds
-        kills.append((pid, claim_lock))
+        kills.append((pid, claim_lock, started_at))
         return {"terminated": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)
@@ -180,11 +180,11 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     def build_graph(tag: str):
         with kbc.connect() as c:
             parent = kb.create_task(c, title=f"{tag}-parent", assignee="planner")
-            assert kb.complete_task(c, parent)
+            assert kb.complete_task(c, parent, result="done")
             child = kb.create_task(
                 c, title=f"{tag}-child", assignee="builder", parents=[parent],
             )
-            assert kb.complete_task(c, child)
+            assert kb.complete_task(c, child, result="done")
         return parent, child
 
     dash_parent, dash_child = build_graph("dash")

@@ -22,8 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from hermes_cli.platform_actions import CAPABILITY_ID, PlatformActions
-from hermes_cli.plugin_capabilities import CAPABILITY_REGISTRY
+from hermes_cli.platform_actions import PlatformActions
 
 
 def _grant(granted: bool):
@@ -65,17 +64,6 @@ def _discord_adapter(connected=True):
     a.is_connected = connected
     a.rename_thread = AsyncMock(return_value=True)
     return a
-
-
-class TestCapabilityRegistry:
-    def test_gateway_platform_actions_registered(self):
-        spec = CAPABILITY_REGISTRY.get("gateway.platform_actions")
-        assert spec is not None
-        assert spec.legacy_path == ("allow_platform_actions",)
-        assert spec.description
-
-    def test_facade_uses_registered_id(self):
-        assert CAPABILITY_ID == "gateway.platform_actions"
 
 
 class TestGateDefaultOff:

@@ -11,8 +11,9 @@ scripts/run_tests.sh -j 1 tests/gateway/test_failure_writer_ownership.py
 
 The first argument selects the production checkout, so the same fixture can A/B
 another checkout without editing it. The receipt records its temporary HERMES_HOME.
-Inherited credentials are cleared, tools are disabled, and socket connections are
-restricted to loopback. No live messaging account or paid provider is contacted.
+Inherited credentials are cleared, tools are disabled, lazy installs are off, and socket connections
+(`connect` and `connect_ex`) are restricted to loopback. No live messaging account or
+paid provider is contacted.
 
 ## Fault boundaries and controls
 

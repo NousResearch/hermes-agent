@@ -1,4 +1,4 @@
-const TERMUX_SAFE_PROMPT = '>'
+const TERMUX_SAFE_PROMPT: string = '>'
 
 export function composerPromptText(
   prompt: string,
@@ -19,7 +19,7 @@ export function composerPromptText(
 
     // On very wide panes we can still include profile context. On narrow/mobile
     // panes this burns precious columns and increases wrap/clipping risk.
-    const wideEnoughForProfile = typeof totalCols === 'number' ? totalCols >= 90 : false
+    const wideEnoughForProfile = (totalCols ?? 0) >= 90
 
     if (wideEnoughForProfile && profileName && !['default', 'custom'].includes(profileName)) {
       return `${profileName} ${basePrompt}`

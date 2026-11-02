@@ -1,7 +1,15 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandItemCheck,
+  CommandList
+} from '@/components/ui/command'
 import { controlVariants } from '@/components/ui/control'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
@@ -77,6 +85,12 @@ export function SearchableSelect({
           className={cn(
             controlVariants(),
             'flex items-center justify-between gap-2 whitespace-nowrap',
+            // Width floor: the settings action cell shrink-wraps to content
+            // (flex + justify-self-end), so a blank value collapses `w-full`
+            // to the "Search…" placeholder (~70px) and the popover, which
+            // floors at the trigger width, inherits the squish (#99751).
+            // Same min-width-floor convention as the model-settings selects.
+            'min-w-44',
             !value && 'text-muted-foreground'
           )}
           data-slot="searchable-select-trigger"
@@ -92,22 +106,22 @@ export function SearchableSelect({
           settings grid, so a width pinned to it clipped every IANA row after
           "Africa/A…". The popover keeps its own width and only grows to cover a
           trigger wider than that. */}
-      <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
-        <Command filter={rankSearchOption}>
+      <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width)" variant="menu">
+        <Command filter={rankSearchOption} variant="menu">
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>
             <CommandEmpty>{emptyMessage}</CommandEmpty>
             <CommandGroup>
               {clearLabel && (
                 <CommandItem onSelect={() => handleSelect('')} value={clearLabel}>
-                  <Codicon className={cn('mr-2 size-4', value === '' ? 'opacity-100' : 'opacity-0')} name="check" />
-                  {clearLabel}
+                  <span className="truncate">{clearLabel}</span>
+                  <CommandItemCheck checked={value === ''} />
                 </CommandItem>
               )}
               {options.map(option => (
                 <CommandItem key={option} onSelect={() => handleSelect(option)} value={option}>
-                  <Codicon className={cn('mr-2 size-4', option === value ? 'opacity-100' : 'opacity-0')} name="check" />
-                  {option}
+                  <span className="truncate">{option}</span>
+                  <CommandItemCheck checked={option === value} />
                 </CommandItem>
               ))}
             </CommandGroup>

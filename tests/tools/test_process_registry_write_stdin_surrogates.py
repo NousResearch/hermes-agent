@@ -8,6 +8,7 @@ import pytest
 from tools.process_registry import ProcessRegistry
 
 
+@pytest.mark.platforms("linux")
 def test_write_stdin_pty_surrogateescape_roundtrip(tmp_path):
     registry = ProcessRegistry()
     out = tmp_path / "out.bin"

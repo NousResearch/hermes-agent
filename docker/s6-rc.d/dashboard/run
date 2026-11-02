@@ -24,8 +24,6 @@ esac
 export HOME=/opt/data
 
 cd /opt/data
-# shellcheck disable=SC1091
-. /opt/hermes/.venv/bin/activate
 
 dash_host="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
 dash_port="${HERMES_DASHBOARD_PORT:-9119}"

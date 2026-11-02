@@ -1,0 +1,20 @@
+name: chat-length
+title: "Chat Length"
+version: "1.1.0"
+repo: https://github.com/MadeByBrain/hermes-chat-length
+sha: 1759b26a66c7b4d54703186cc867a5869baa4f12
+description: "Tells the user when a chat is getting too long and hands them a short opener for a fresh chat; the new chat pulls the earlier context itself via session_search, no handover document. Fill level from real provider token counts, measured against Hermes' compaction point by default; notices at 70 % and 90 % (configurable), once each per chat, re-armed after compaction, never in cron, subagent, kanban, batch or webhook runs. Notice in the conversation language, English or German. Disclosure — on the turn that crosses a threshold, pre_llm_call adds a one-turn instruction to that turn's user message (never the system prompt; replayed byte-identical, so prompt caching stays intact); post_api_request stores per-session token counts, model and provider name and which notice fired (no message content) under HERMES_HOME/plugin-data/chat-length/, pruned after 30 days; reads the session title read-only from state.db and the compression settings read-only from config.yaml; no network calls, no tools, no dependencies."
+maintainer: MadeByBrain
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/MadeByBrain/hermes-chat-length/1759b26a66c7b4d54703186cc867a5869baa4f12/docs/banner.png
+docs_url: https://github.com/MadeByBrain/hermes-chat-length#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_api_request
+  provides_middleware: []
+  requires_env: []

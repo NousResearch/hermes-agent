@@ -1,0 +1,32 @@
+name: hermes-lang-cs
+repo: https://github.com/ostravajih/hermes-lang-cs
+sha: 59d0a6c289afb6320a128b95b912f8cc497171e6
+title: Czech (Čeština) Language Pack
+description: >-
+  Czech (Čeština) language pack for Hermes Agent covering all three UI surfaces — core
+  CLI/gateway/platforms (3,509/3,509 keys), the Ink TUI (1,385/1,385) and the Desktop app (5,333 of
+  5,456). Core and TUI keys match the English source of `main` at e82bf01 (2026-10-26) exactly: no
+  key upstream has since removed and no placeholder divergence, checked by flattening both sides.
+  The remaining 123 Desktop keys are the ones whose English value is a function with branching
+  (plural counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`),
+  which the pack format cannot express as one template — they are omitted so they fall back to
+  English instead of rendering a wrong Czech form. Two core strings (`display.verb_connector.search`
+  and `.default`) drop an invisible zero-width space the upstream English catalog carries for
+  spacing; the install scanner rates it HIGH while the visible text is identical. Ships the same
+  text as upstream PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
+  plugin: flat dotted YAML catalogs under locales/, no network, no dependencies. Disclosure — an
+  `__init__.py` whose `register()` is a no-op is included so the Desktop "Install from Git" flow
+  accepts the pack (#138118); registering the pack never changes display.language, the user opts in
+  via `hermes config set display.language cs`. Česká lokalizace rozhraní Hermes Agent.
+maintainer: ostravajih
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/ostravajih/hermes-lang-cs#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

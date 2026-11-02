@@ -20,18 +20,53 @@ from typing import Any, Dict, Optional
 
 from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
 from tools.transcription_common import (
-    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV,
-    OPENAI_MODELS, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
+    DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV, RETIRED_GROQ_MODELS,
+    OPENAI_MODELS, STT_MODEL_CATALOG, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
     _process_error_detail)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.transcription_tools")
 
 
+_LOCAL_LANGUAGE_ALIASES = {
+    "繁體中文": "zh",
+    "繁体中文": "zh",
+    "简体中文": "zh",
+    "簡體中文": "zh",
+}
+_THREE_LETTER_WHISPER_CODES = frozenset({"haw", "yue"})
+
+
+def _normalize_local_stt_language(
+    language: Optional[str], supported_languages: object = None
+) -> Optional[str]:
+    """Return a Whisper language code, or None so the caller can fall back safely."""
+    if not isinstance(language, str) or not language.strip():
+        return None
+    raw = language.strip()
+    folded = raw.casefold().replace("_", "-")
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    code_shape_is_valid = len(candidate) == 2 or candidate in _THREE_LETTER_WHISPER_CODES
+    if not (candidate.isascii() and candidate.isalpha() and code_shape_is_valid):
+        logger.warning("Local STT language %r is not a language code; using fallback", raw)
+        return None
+
+    if isinstance(supported_languages, (list, tuple, set, frozenset)):
+        supported_codes = {str(code).casefold() for code in supported_languages}
+        if candidate not in supported_codes:
+            logger.warning("Local STT language %r is unsupported; using fallback", raw)
+            return None
+    return candidate
+
+
 def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
+    from tools.transcription_whisper_cpp import whisper_cpp_command
+    managed_command = whisper_cpp_command()
+    if managed_command:
+        return managed_command
     whisper_binary = _find_whisper_binary()
     return (f"{shlex.quote(whisper_binary)} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}") if whisper_binary else None
@@ -45,35 +80,37 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper size; cloud-only names (``whisper-1`` …) fall back to the default with a warning."""
     if not model_name:
         return DEFAULT_LOCAL_MODEL
-    if model_name in OPENAI_MODELS | GROQ_MODELS:
+    if model_name in OPENAI_MODELS | GROQ_MODELS | RETIRED_GROQ_MODELS:
         logger.warning(
             "STT model '%s' is a cloud-only name and cannot be used with the local "
             "provider. Falling back to '%s'. Set stt.local.model to a valid "
-            "faster-whisper size (tiny, base, small, medium, large-v3).",
-            model_name, DEFAULT_LOCAL_MODEL)
+            "faster-whisper size (%s).",
+            model_name, DEFAULT_LOCAL_MODEL, ", ".join(STT_MODEL_CATALOG["local"]))
         return DEFAULT_LOCAL_MODEL
     return model_name
 
 
 def _try_lazy_install_stt() -> bool:
-    """Lazy-install faster-whisper and re-check dynamically so it's usable without a restart."""
+    """Install faster-whisper and re-check dynamically so it's usable without a restart.
+
+    ACTION paths only (``_transcribe_local``). Nothing that merely *resolves* or *reports* a
+    provider may call this: the install takes the per-install lock for as long as a full extra-set
+    rebuild, and a status probe must never start one."""
     try:
-        from tools.lazy_deps import ensure
-        # prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit
-        # owns stdin; the install is already gated by security.allow_lazy_installs.
-        # prompt=False: never raise a blocking input() prompt mid-session. See #40490.
-        ensure("stt.faster_whisper", prompt=False)
+        # pm installs are gated by security.allow_lazy_installs; never a blocking
+        # prompt mid-session. See #40490.
+        import pm
+        pm.ensure_import("stt-whisper")
         if _ilu.find_spec("faster_whisper"):
             return True
         logger.warning("faster-whisper was installed but importlib still cannot find it (may require Python restart)")
     except Exception as exc:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
-            "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
+            "When the message names a restart, this process selected its dependency generation at "
+            "boot and a new one cannot take effect in-flight; otherwise the Hermes process user "
+            "may not be able to write to the dependency environment. Run `hermes tools` as the "
+            "Hermes installation owner and select Local Whisper under Speech-to-Text.",
             exc)
     return False
 
@@ -115,9 +152,49 @@ def _should_force_faster_whisper_cpu() -> bool:
     return _sysctl_value("sysctl.proc_translated") == "1" or _sysctl_value("hw.optional.arm64") == "1"
 
 
-def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
+def _get_idle_unload_seconds(local_cfg: dict[str, Any]) -> int:
     """Resolve the idle unload timeout from config; 0 = never (default), negatives clamp to 0."""
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
+
+
+def _hub_cache_miss_error() -> type:
+    """Exception faster-whisper raises for a model missing from the local Hub cache.
+
+    ``huggingface_hub`` is an optional dependency (it arrives with faster-whisper); when it is
+    absent, its ``LocalEntryNotFoundError`` base class ``OSError`` is the closest match.
+    """
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+    except ImportError:
+        return OSError
+    return LocalEntryNotFoundError
+
+
+def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
+    """Use a cached model without contacting the Hub, downloading only on a cache miss."""
+    from faster_whisper import WhisperModel
+
+    kwargs = {"device": device, "compute_type": compute_type}
+    try:
+        return WhisperModel(model_name, local_files_only=True, **kwargs)
+    except (_hub_cache_miss_error(), RuntimeError) as exc:
+        # An interrupted first download leaves a snapshot folder without the weights;
+        # snapshot_download still returns it and ctranslate2 raises "Unable to open file".
+        if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
+            raise
+        logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
+
+    # huggingface_hub surfaces every Hub/network failure as an OSError subclass
+    # (LocalEntryNotFoundError wrapping the ConnectTimeout, HfHubHTTPError). Anything else
+    # (CUDA runtime, invalid model size) is not a download problem and propagates untouched.
+    try:
+        return WhisperModel(model_name, local_files_only=False, **kwargs)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to download faster-whisper model '{model_name}': {exc}. "
+            "If huggingface.co is unreachable, set HF_ENDPOINT to an accessible mirror; "
+            "when using a mirror with hf-xet installed, also set HF_HUB_DISABLE_XET=1."
+        ) from exc
 
 
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
@@ -134,19 +211,18 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-    from faster_whisper import WhisperModel
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
                     "(int8) to avoid native device autodetection crashes")
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        return _create_whisper_model(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning("faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
                        "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.", exc)
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return _create_whisper_model(model_name, device="cpu", compute_type="int8")
 
 
 # Silence-hallucination hardening for local faster-whisper (whisper decodes junk like
@@ -159,14 +235,14 @@ _NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
 _LOGPROB_THRESHOLD_DEFAULT = -1.0
 
 
-def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_local_transcribe_kwargs(stt_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Kwargs for EVERY local faster-whisper ``model.transcribe`` call — single owner of the anti-hallucination hardening."""
     from tools.transcription_tools import _load_stt_config, _resolve_stt_language
     stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
     local_cfg = stt_config.get("local") or {}
     # ``vad: null`` in YAML means "default on".
     vad_enabled = local_cfg.get("vad", True)
-    kwargs: Dict[str, Any] = {
+    kwargs: dict[str, Any] = {
         "beam_size": 5,
         "condition_on_previous_text": False,
         "vad_filter": vad_enabled is None or bool(vad_enabled)}
@@ -188,7 +264,7 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     return kwargs
 
 
-def _confidence_thresholds(local_cfg: Dict[str, Any]) -> tuple[float, float]:
+def _confidence_thresholds(local_cfg: dict[str, Any]) -> tuple[float, float]:
     """Resolve (no_speech_prob, avg_logprob) gate thresholds from config."""
     return (_config_number(local_cfg, "no_speech_prob_threshold", _NO_SPEECH_PROB_THRESHOLD_DEFAULT),
             _config_number(local_cfg, "logprob_threshold", _LOGPROB_THRESHOLD_DEFAULT))
@@ -205,7 +281,7 @@ def _is_hallucinated_segment(segment: Any, no_speech_threshold: float, logprob_t
         return False
 
 
-def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
+def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:
     """Join segment texts, dropping probable silence hallucinations."""
     no_speech_threshold, logprob_threshold = _confidence_thresholds(local_cfg)
     kept: list[str] = []
@@ -221,7 +297,7 @@ def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
 
 def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
     from tools.transcription_tools import _resolve_stt_language
     if prompt:
@@ -230,9 +306,14 @@ def _transcribe_local_command(
     if not command_template:
         return _error_result(f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found")
     # Language: hook override > stt.local.language > stt.language > env > "en".
-    language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
+    configured_language = language or _resolve_stt_language("local")
+    language = _normalize_local_stt_language(configured_language) or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
+        if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+            from tools.transcription_whisper_cpp import ensure_whisper_cpp_models, whisper_cpp_command
+            if command_template == whisper_cpp_command():
+                ensure_whisper_cpp_models(normalized_model)
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:
@@ -248,7 +329,7 @@ def _transcribe_local_command(
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
+            transcript_text = txt_files[0].read_text(encoding="utf-8-sig").strip()
             logger.info("Transcribed %s via local STT command (%s, %d chars)",
                         Path(file_path).name, normalized_model, len(transcript_text))
             return _ok_result(transcript_text, "local_command")

@@ -1,0 +1,14 @@
+name: yantrikdb
+repo: https://github.com/yantrikos/yantrikdb-hermes-plugin
+sha: 7b22578ada5bf68512461cce4765f81633291aa8
+version: "0.27.0"
+description: "Persistent memory for Hermes. Canonicalizes duplicate memories, surfaces contradictions between structured or recognized single-valued claims for review, and returns a why_retrieved reason list with every recall. Embedded by default: no server, no token, no GPU. Optional HTTP backend for HA clusters; pluggable embedders (bundled potion-2M default)."
+maintainer: yantrikos
+tier: community
+category: memory
+docs_url: https://github.com/yantrikos/yantrikdb-hermes-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

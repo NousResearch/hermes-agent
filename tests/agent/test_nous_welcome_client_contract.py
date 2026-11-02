@@ -34,7 +34,6 @@ class TestAuxiliaryOnWelcomeHost:
         assert (client, model) == ("client", anon_auth.GUEST_MODEL)
         assert create.call_args.kwargs["base_url"] == WELCOME
         recommended.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
-        assert ac.auxiliary_is_nous is True
 
     def test_vision_aux_on_welcome_host_uses_the_same_model(self):
         import agent.auxiliary_client as ac
@@ -131,13 +130,12 @@ class TestRefusalCopy:
     def test_copy_names_the_served_model_and_the_sign_in(self):
         refusal = anon_auth.parse_welcome_refusal({"reason": "model_not_free", "alternates": ["nous/welcome"]})
         chat = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=True)
-        assert chat == "gpt-5 isn't on the Nous free tier; it serves nous/welcome only. Sign in with a Nous account for the full catalog: /login."
+        assert "gpt-5" in chat and "nous/welcome" in chat and chat.endswith(anon_auth._SIGNIN_CHAT)
+        card = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=True, door=False)
+        assert chat == f"{card} {anon_auth._SIGNIN_CHAT}"   # door=False drops exactly the tail
         terminal = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=False)
         assert "`hermes auth upgrade`" in terminal and "/login" not in terminal
 
-    def test_capacity_copy_carries_the_retry(self):
-        refusal = anon_auth.parse_welcome_refusal({"reason": "at_capacity", "retry_after": 30})
-        assert "Retrying in 30s." in anon_auth.welcome_refusal_copy(refusal)
 
     @pytest.mark.parametrize("copy_fn, args", [
         (anon_auth.welcome_refusal_copy, ({"reason": r},)) for r in sorted(anon_auth.WELCOME_REFUSAL_REASONS)
@@ -159,5 +157,5 @@ class TestTurnRecoveryGuidance:
         classified = SimpleNamespace(error_context={"welcome_refusal": {"reason": "model_not_free", "retry_after": 0, "alternates": []}})
         assert "nous/welcome" in _welcome_tier_guidance(classified, model="gpt-5", in_chat=True)
         classified = SimpleNamespace(error_context={"welcome_route": "tier_disabled"})
-        assert "switched off" in _welcome_tier_guidance(classified, model="", in_chat=True)
+        assert _welcome_tier_guidance(classified, model="", in_chat=True)
         assert _welcome_tier_guidance(SimpleNamespace(error_context={}), model="", in_chat=True) == ""

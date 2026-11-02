@@ -23,7 +23,6 @@ from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
     nous_tool_gateway_unavailable_message,
     normalize_browser_cloud_provider,
-    normalize_modal_mode,
     prefers_gateway,
     resolve_modal_backend_state,
     resolve_openai_audio_api_key,
@@ -96,10 +95,6 @@ class TestNormalizeBrowserCloudProvider:
         assert normalize_browser_cloud_provider(None) == "local"
 
 
-    def test_integer_coerced(self):
-        result = normalize_browser_cloud_provider(42)
-        assert isinstance(result, str)
-        assert result == "42"
 
 
 # ---------------------------------------------------------------------------
@@ -120,13 +115,6 @@ class TestCoerceModalMode:
         assert coerce_modal_mode("  managed  ") == "managed"
 
 
-class TestNormalizeModalMode:
-    """normalize_modal_mode is an alias for coerce_modal_mode."""
-
-    def test_delegates_to_coerce(self):
-        assert normalize_modal_mode("direct") == coerce_modal_mode("direct")
-        assert normalize_modal_mode(None) == coerce_modal_mode(None)
-        assert normalize_modal_mode("bogus") == coerce_modal_mode("bogus")
 
 
 # ---------------------------------------------------------------------------

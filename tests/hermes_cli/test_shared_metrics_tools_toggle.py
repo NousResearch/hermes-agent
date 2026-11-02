@@ -6,7 +6,6 @@ setup prompt, AND `hermes tools`. These cover the third surface.
 
 from __future__ import annotations
 
-import pytest
 
 from hermes_cli.tools_config import (
     _configure_shared_metrics_interactive,
@@ -31,17 +30,18 @@ class TestState:
 
 
 class TestMenuLabel:
-    def test_off_state(self):
-        assert "off" in _shared_metrics_menu_label({})
 
-    def test_local_only_state(self):
-        label = _shared_metrics_menu_label(_config(enabled=True))
-        assert "collecting locally" in label
-        assert "Nous" not in label
 
     def test_sending_state_names_the_destination(self):
         label = _shared_metrics_menu_label(_config(enabled=True, send=True))
-        assert "sending to Nous" in label
+        assert "(sending to Nous)" in label
+
+    def test_retired_collect_only_answer_is_named_rather_than_read_off(self):
+        label = _shared_metrics_menu_label(_config(enabled=True, send=False))
+        assert "(collecting locally)" in label
+
+    def test_off(self):
+        assert "(off)" in _shared_metrics_menu_label(_config(enabled=False, send=False))
 
 
 class TestToggle:

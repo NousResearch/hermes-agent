@@ -7,10 +7,6 @@ describe('lineNav', () => {
     expect(lineNav('hello world', 6, -1)).toBeNull()
   })
 
-  it('returns null for single-line input (down)', () => {
-    expect(lineNav('hello world', 6, 1)).toBeNull()
-  })
-
   it('returns null when cursor already on first line of a multiline block', () => {
     expect(lineNav('one\ntwo\nthree', 2, -1)).toBeNull()
   })

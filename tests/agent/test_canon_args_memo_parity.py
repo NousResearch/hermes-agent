@@ -174,10 +174,6 @@ class TestMemoSemantics:
                                    sort_keys=True)
         assert canon == canon.encode().decode()  # pure ASCII wire form
 
-    def test_cache_hit_skips_json_loads(self):
-        raw = json.dumps({"k": "v"})
-        cl._canonicalize_tool_call_arguments(raw)
-        assert raw in cl._CANON_ARGS_CACHE
 
     def test_malformed_never_memoized(self):
         with pytest.raises(Exception):

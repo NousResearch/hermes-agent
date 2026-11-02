@@ -1,4 +1,4 @@
-"""Notifier polling stays active when another gateway owns dispatching."""
+"""Notifier polling has an independent gateway config gate."""
 
 import asyncio
 from unittest.mock import MagicMock, patch
@@ -13,6 +13,19 @@ def _make_runner(with_adapter=False):
     runner.adapters = {Platform.TELEGRAM: MagicMock()} if with_adapter else {}
     runner._kanban_sub_fail_counts = {}
     return runner
+
+
+def test_notifier_watcher_skips_when_notifications_disabled():
+    runner = _make_runner(with_adapter=True)
+
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={"kanban": {"notify_in_gateway": False}},
+    ):
+        with patch("hermes_cli.kanban_db.list_boards") as list_boards:
+            asyncio.run(runner._kanban_notifier_watcher())
+
+    list_boards.assert_not_called()
 
 
 def test_notifier_watcher_polls_without_dispatch_ownership():
@@ -33,13 +46,22 @@ def test_notifier_watcher_polls_without_dispatch_ownership():
 
     import hermes_cli.kanban_db as _kb
 
-    with patch.object(
-        _kb, "list_boards",
-        side_effect=lambda *a, **kw: past_gate.append(True) or [],
+    with patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "kanban": {
+                "dispatch_in_gateway": False,
+                "notify_in_gateway": True,
+            }
+        },
     ):
-        with patch("asyncio.sleep", side_effect=fake_sleep):
-            with patch("asyncio.to_thread", side_effect=fake_to_thread):
-                asyncio.run(runner._kanban_notifier_watcher())
+        with patch.object(
+            _kb, "list_boards",
+            side_effect=lambda *a, **kw: past_gate.append(True) or [],
+        ):
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                with patch("asyncio.to_thread", side_effect=fake_to_thread):
+                    asyncio.run(runner._kanban_notifier_watcher())
 
     assert past_gate, (
         "gateways without the dispatch lock must still poll owned subscriptions"

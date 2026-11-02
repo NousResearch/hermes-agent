@@ -59,7 +59,7 @@ Wake payloads are **content-free by contract** — they carry metadata (event ID
 
 ## Bridge
 
-The adapter automatically spawns `raft agent bridge` as a child process, passing the endpoint URL and token. The bridge connects to the Raft server using the configured profile and begins forwarding wake hints. It is terminated when the gateway shuts down.
+The adapter automatically spawns `raft agent bridge` as a child process, passing the endpoint URL and token. The bridge gets Hermes' scrubbed child environment plus `RAFT_PROFILE` and that token, never Hermes' gateway tokens or provider API keys. The bridge connects to the Raft server using the configured profile and begins forwarding wake hints. It is terminated when the gateway shuts down.
 
 ---
 

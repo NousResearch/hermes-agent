@@ -1,0 +1,16 @@
+name: git-tasks
+repo: https://github.com/meviusisback/git-tasks
+sha: 8808b35a1b7f7870b4fc762f4580bb32d611af60
+description: "Multi-repo GitHub issues & PRs in an Orca-style Tasks view for Hermes Desktop. Disclosure — uses your logged-in `gh` CLI and `git` through Hermes Desktop's shell bridge, or a GitHub token you paste in the panel (stored unencrypted in Desktop plugin storage, sent only to api.github.com); scans your configured clone folders for GitHub repos and reads skill names under ~/.hermes; polls the active-session list of every Hermes profile every 10 seconds for status chips; approve, close, reopen, comment and merge act on GitHub from the panel; creates git worktrees and opens Hermes sessions seeded with the issue/PR title and body as fenced untrusted text, and without a shell bridge asks the agent to run the worktree git commands."
+maintainer: meviusisback
+tier: community
+category: desktop
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/meviusisback/git-tasks#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -13,6 +13,7 @@
 import { atom, computed } from 'nanostores'
 
 import { registry } from '@/contrib/registry'
+import { writeJson } from '@/lib/storage'
 
 import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
@@ -54,12 +55,10 @@ function readStored(): Record<string, DesktopTheme> {
   }
 }
 
+// Through the storage choke point (best-effort, like a direct write) so the
+// machine's shared preferences store sees an install (#145213).
 function persist(record: Record<string, DesktopTheme>) {
-  try {
-    window.localStorage.setItem(USER_THEMES_KEY, JSON.stringify(record))
-  } catch {
-    // Best-effort: a restricted storage context shouldn't break theming.
-  }
+  writeJson(USER_THEMES_KEY, record)
 }
 
 /** Reactive map of installed user themes, keyed by slug. */

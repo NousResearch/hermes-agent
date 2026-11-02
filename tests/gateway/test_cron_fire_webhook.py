@@ -372,39 +372,47 @@ async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
     assert seen.get("loop") is not None
 
 
+
+
 @pytest.mark.asyncio
-async def test_fire_without_runner_passes_none_adapters(adapter, monkeypatch):
-    """No gateway runner (standalone/edge case) → fire still works with
-    adapters=None, preserving the historical standalone delivery path."""
-    seen = {}
+async def test_estop_refuses_fire_before_admission_and_lifts_on_resume(adapter, monkeypatch, tmp_path):
+    """`hermes pause` must stop the NAS-driven door too: 503 + Retry-After (NAS redelivers
+    after `hermes resume`) and no ``claim_fire`` — a claim followed by a 503 would leave a
+    claimed job that the retry and the misfire backstop both race for."""
+    from agent import estop
 
-    class _AdapterSpyProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None):
-            seen["job_id"] = job_id
-            seen["adapters"] = adapters
-            return True
-
-    monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
-        lambda: _AdapterSpyProvider(),
-    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    estop._logged_components.clear()
+    provider = _SpyProvider()
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
-    with patch("gateway.run._gateway_runner_ref", lambda: None):
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post("/api/cron/fire",
-                                  headers={"Authorization": "Bearer good"},
-                                  json={"job_id": "no-runner"})
-            assert resp.status == 202
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        estop.engage(reason="runaway fan-out")
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        assert response.status == 503
+        assert response.headers.get("Retry-After") == "60"
+        assert (await response.json())["job_id"] == "abc123"
+        assert provider.claimed == [] and provider.fired == []
+        assert adapter.active_agent_work_count() == 0
 
+        estop.disengage()
+        response = await cli.post(
+            "/api/cron/fire",
+            headers={"Authorization": "Bearer good"},
+            json={"job_id": "abc123"},
+        )
+        assert response.status == 202
         for _ in range(50):
-            if seen:
+            if provider.fired:
                 break
             await asyncio.sleep(0.01)
-
-    assert seen.get("job_id") == "no-runner"
-    assert seen.get("adapters") is None
+    assert provider.claimed == ["abc123"] and provider.fired == ["abc123"]

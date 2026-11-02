@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -5,7 +6,6 @@ import type { ClientSessionState } from '@/app/types'
 import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { clearSessionTodos } from '@/store/todos'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -33,6 +33,33 @@ const complete = (text: string) =>
 const completePreviewed = (text: string) =>
   act(() =>
     stream.handleEvent({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' })
+  )
+
+/** A terminal frame that names the stored rows it settled, as a complete
+ *  `persisted_turn` receipt does in production. */
+const receipt = (finalRowId: number) => ({
+  row_ids: [finalRowId - 1, finalRowId],
+  user_row_id: finalRowId - 1,
+  final_assistant_row_id: finalRowId,
+  complete: true
+})
+
+const completePreviewedWithReceipt = (text: string, finalRowId: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { persisted_turn: receipt(finalRowId), response_previewed: true, text },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
+
+const completeTransformedWithReceipt = (text: string, finalRowId: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { persisted_turn: receipt(finalRowId), response_transformed: true, text },
+      session_id: SID,
+      type: 'message.complete'
+    })
   )
 
 function getState(): ClientSessionState {
@@ -211,6 +238,32 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts[0]).toBe('partial answer continued')
   })
 
+  it('settles a long final with a few dropped streamed characters onto its interim', async () => {
+    mountStream()
+    await start()
+
+    const final = 'This long response contains enough context to identify the same streamed reply. '
+      .repeat(12)
+      .trimEnd()
+
+    const streamed = final.replace('streamed', 'stremed').replace('response', 'respose')
+
+    await interim(streamed)
+    await complete(final)
+
+    expect(assistantMessages()).toEqual([final])
+  })
+
+  it('keeps short near-matching assistant segments distinct', async () => {
+    mountStream()
+    await start()
+
+    await interim('Status: B')
+    await complete('Status: A')
+
+    expect(assistantMessages()).toEqual(['Status: B', 'Status: A'])
+  })
+
   it('settles final onto interim even after message.start reset the boundary flag (#74560)', async () => {
     mountStream()
     await start()
@@ -248,6 +301,42 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toHaveLength(2)
   })
 
+  // The pinned case above has no receipt, so no durable identity to settle on.
+  // With one, a rewritten final after a chained message.start is the SAME
+  // turn's reply: the interim never carried a rowId of its own, and the frame
+  // names the row it settled — settle onto the interim instead of appending a
+  // second bubble for one stored row (#124128).
+  it('settles a rewritten previewed final onto the display-only interim after a chained message.start', async () => {
+    mountStream()
+    await start()
+    await delta('Checking the lease file now.')
+    await interim('Checking the lease file now.')
+    await start()
+    await completePreviewedWithReceipt('The lease file shows a stale lock.', 8)
+
+    const texts = assistantMessages()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('The lease file shows a stale lock.')
+    expect(
+      getState()
+        .messages.filter(m => m.role === 'assistant')
+        .at(-1)?.interim
+    ).toBeFalsy()
+  })
+
+  it('settles a rewritten transformed final onto the display-only interim after a chained message.start', async () => {
+    mountStream()
+    await start()
+    await delta('TOKEN_1 holds the stale lock.')
+    await interim('TOKEN_1 holds the stale lock.')
+    await start()
+    await completeTransformedWithReceipt('example-service.internal holds the stale lock.', 8)
+
+    const texts = assistantMessages()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('example-service.internal holds the stale lock.')
+  })
+
   it('appends a genuinely different final as its own bubble (two real assistant segments)', async () => {
     mountStream()
     await start()
@@ -262,20 +351,6 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toContain('let me check the files')
     expect(texts).toContain('the answer is 42')
     expect(texts).toHaveLength(2)
-  })
-
-  it('settles an identical final completion onto the interim when response_previewed', async () => {
-    mountStream()
-    await start()
-
-    await interim('same reply')
-    await completePreviewed('same reply')
-
-    // With response_previewed, the final text is the same model response
-    // that was published provisionally as an interim — settle onto the
-    // existing interim instead of creating a duplicate. (#65919 review)
-    const texts = assistantMessages()
-    expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
   })
 
   it('settles a prefix-matched final onto the interim when response_previewed', async () => {
@@ -317,12 +392,14 @@ describe('useMessageStream interim text sealing', () => {
     await start()
 
     // No payload at all
-    await act(() => stream.handleEvent({ type: 'message.interim' } as RpcEvent))
+    await act(() => stream.handleEvent({ type: 'message.interim' } as GatewayEvent))
     // Empty text
-    await act(() => stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as RpcEvent))
+    await act(() =>
+      stream.handleEvent({ payload: { text: '' }, session_id: SID, type: 'message.interim' } as GatewayEvent)
+    )
     // Undefined text
     await act(() =>
-      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as RpcEvent)
+      stream.handleEvent({ payload: { text: undefined }, session_id: SID, type: 'message.interim' } as GatewayEvent)
     )
 
     // Turn continues without finalizing or throwing

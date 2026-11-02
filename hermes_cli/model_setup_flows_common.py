@@ -10,11 +10,19 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+from urllib.parse import urlparse
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import clear_model_endpoint_credentials
 
 _HTTP = ("http://", "https://")
+
+
+def _note_setup_failure(failure_class: str) -> None:
+    """Why a flow returns without a pick, for the provider-setup metric (no-op outside a tracked flow)."""
+    from hermes_cli.observability.shared_metrics_setup import note_provider_setup_failure
+
+    note_provider_setup_failure(failure_class)
 
 
 def _say(*lines: str) -> None:
@@ -156,16 +164,45 @@ def _pick_model_or_prompt(model_list, prompt: str, **kwargs):
     return _ask(prompt, cancel_msg=None)
 
 
+def _login_retry_context(args) -> tuple[str, str]:
+    """(retry_command, service_host) for a login helper's failure copy, from the ``ProviderConfig``
+    among its positional args. Nous keeps ``hermes portal``; every other OAuth provider is retried
+    with ``hermes auth add <provider>`` and named by its own portal host (``hermes login`` no longer
+    exists). Falls back to ``hermes model`` when no provider config is in play."""
+    pconfig = next((a for a in args if hasattr(a, "id") and hasattr(a, "portal_base_url")), None)
+    if pconfig is None:
+        return "hermes model", "the sign-in service"
+    provider_id = str(getattr(pconfig, "id", "") or "")
+    host = urlparse(str(getattr(pconfig, "portal_base_url", "") or "")).hostname or "the sign-in service"
+    if provider_id == "nous":
+        return "hermes portal", host
+    return (f"hermes auth add {provider_id}" if provider_id else "hermes model"), host
+
+
 def _run_login(login_fn, *args, **kwargs) -> bool:
-    """Run an OAuth login helper; print the standard failure line and return False
-    on SystemExit / any exception."""
+    """Run an OAuth login helper; print plain failure copy (what happened + retry command) and
+    return False on SystemExit / any exception. The retry command and service host come from the
+    provider config passed to the helper, so a MiniMax failure never says ``hermes portal`` /
+    ``portal.nousresearch.com``. Helpers that print their own copy raise ``SystemExit(1)`` with no
+    message, which stays silent; a SystemExit that carries a message (or a non-cancel code from a
+    helper that printed nothing) gets a one-line explanation so the user is never left with no
+    output."""
+    from hermes_cli.auth_error_copy import sign_in_failure_lines
+    retry_command, service_host = _login_retry_context(args)
     try:
         login_fn(*args, **kwargs)
-    except SystemExit:
-        print("Login cancelled or failed.")
+    except SystemExit as exc:
+        if exc.code in (130, None, 0):
+            print("Sign-in was cancelled.")
+        elif isinstance(exc.code, str) and exc.code.strip():
+            print(f"Sign-in did not complete: {exc.code.strip()}")
+            print(f"Run `{retry_command}` to try again.")
+        else:
+            print(f"Sign-in did not complete; run `{retry_command}` to try again.")
         return False
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        for line in sign_in_failure_lines(exc, service_host=service_host, retry_command=retry_command):
+            print(line)
         return False
     return True
 
@@ -192,21 +229,24 @@ def _oauth_gate(logged_in: bool, name: str, login_fn, *login_args, fresh_name: s
 
 
 def _models_dev_merged(provider_id: str, curated) -> list:
-    """models.dev agentic models for *provider_id* plus curated ids not yet listed
-    (case-insensitive). Empty list when models.dev has nothing / is unavailable."""
+    """Curated ids first (our agentic picks lead, and models.dev lag can't hide new ones), then
+    models.dev agentic models not yet listed (case-insensitive; models.dev's spelling wins since
+    it comes from the provider). Live-first providers keep
+    models.dev order ahead of curated, matching ``_profile_live_catalog``. Empty list when
+    models.dev has nothing / is unavailable."""
+    from hermes_cli.models_catalog_static import _LIVE_FIRST_PICKER_PROVIDERS
     mdev_models: list = []
     with contextlib.suppress(Exception):
         from agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models(provider_id)
     if not mdev_models:
         return []
-    seen = {m.lower() for m in mdev_models}
-    merged = list(mdev_models)
-    for m in curated:
-        if m.lower() not in seen:
-            merged.append(m)
-            seen.add(m.lower())
-    return merged
+    primary, secondary = (mdev_models, curated) if provider_id in _LIVE_FIRST_PICKER_PROVIDERS else (curated, mdev_models)
+    canonical = {m.lower(): m for m in mdev_models}
+    merged: dict = {}
+    for m in [*primary, *secondary]:
+        merged.setdefault(m.lower(), canonical.get(m.lower(), m))
+    return list(merged.values())
 
 
 def _show_curated(model_list) -> None:

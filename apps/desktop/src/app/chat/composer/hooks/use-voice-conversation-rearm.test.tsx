@@ -1,13 +1,16 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
+import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { useVoiceConversation } from './use-voice-conversation'
 
 const mocks = vi.hoisted(() => {
   let deferStreamStart = false
+  let deferFallbackPlayback = false
   let onSilence: null | (() => void) = null
+  let resolveFallbackPlayback: null | ((played: boolean) => void) = null
   let resolveStreamStart: null | (() => void) = null
   let resolveSpeech: null | ((outcome: 'done' | 'fallback') => void) = null
   let streamAvailable = true
@@ -19,6 +22,12 @@ const mocks = vi.hoisted(() => {
 
   const playSpeechText = vi.fn(() => {
     stopVoicePlayback()
+
+    if (deferFallbackPlayback) {
+      return new Promise<boolean>(resolve => {
+        resolveFallbackPlayback = resolve
+      })
+    }
 
     return Promise.resolve(true)
   })
@@ -39,16 +48,26 @@ const mocks = vi.hoisted(() => {
       resolveStreamStart?.()
       resolveStreamStart = null
     },
+    consumePendingResponse: vi.fn(),
+    deferFallbackPlayback() {
+      deferFallbackPlayback = true
+    },
     deferStreamStart() {
       deferStreamStart = true
     },
     finishSpeech(outcome: 'done' | 'fallback') {
       resolveSpeech?.(outcome)
     },
+    finishFallbackPlayback() {
+      resolveFallbackPlayback?.(true)
+      resolveFallbackPlayback = null
+    },
     handle,
     playSpeechText,
     resetSpeechMocks() {
+      deferFallbackPlayback = false
       deferStreamStart = false
+      resolveFallbackPlayback = null
       resolveStreamStart = null
       resolveSpeech = null
       streamAvailable = true
@@ -134,7 +153,7 @@ function renderRearmConversation(responseId: string, responseText: string) {
     ({ enabled }) =>
       useVoiceConversation({
         busy: false,
-        consumePendingResponse: vi.fn(),
+        consumePendingResponse: mocks.consumePendingResponse,
         enabled,
         onSubmit: async () => {
           response = { id: responseId, pending: false, text: responseText }
@@ -144,6 +163,38 @@ function renderRearmConversation(responseId: string, responseText: string) {
       }),
     { initialProps: { enabled: false } }
   )
+}
+
+function renderIncrementalFallbackConversation() {
+  let response: null | { id: string; pending: boolean; text: string } = null
+  const pendingResponse = vi.fn(() => response)
+
+  const hook = renderHook(
+    ({ enabled }) =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled,
+        onSubmit: async () => {
+          response = { id: 'reply-edge', pending: true, text: 'The first sentence is ready. ' }
+        },
+        onTranscribeAudio: async () => 'Hello',
+        pendingResponse
+      }),
+    { initialProps: { enabled: false } }
+  )
+
+  return {
+    pendingResponse,
+    finishResponse() {
+      response = {
+        id: 'reply-edge',
+        pending: false,
+        text: 'The first sentence is ready. The second sentence is ready.'
+      }
+    },
+    hook
+  }
 }
 
 async function beginReply(hook: ReturnType<typeof renderRearmConversation>) {
@@ -156,7 +207,15 @@ async function beginReply(hook: ReturnType<typeof renderRearmConversation>) {
 }
 
 describe('useVoiceConversation playback rearm', () => {
+  beforeEach(() => {
+    // These tests exercise the TTS playback paths, which the read-aloud
+    // toggle gates in useVoiceConversation (#44263); opt in like the app
+    // does when replies are spoken.
+    $autoSpeakReplies.set(true)
+  })
+
   afterEach(() => {
+    $autoSpeakReplies.set(false)
     cleanup()
     vi.clearAllMocks()
     mocks.resetSpeechMocks()
@@ -188,7 +247,8 @@ describe('useVoiceConversation playback rearm', () => {
     })
 
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(hook.result.current.status).toBe('listening')
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
   })
 
   it('honors Stop while streaming playback is still preparing', async () => {
@@ -203,9 +263,13 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // The reply is silenced, but the conversation stays live and re-listens.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('does not start fallback playback after Stop during stream discovery', async () => {
@@ -221,12 +285,16 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.continueStreamStart()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // No fallback playback, but the loop re-arms the mic instead of wedging.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.playSpeechText).not.toHaveBeenCalled()
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
+    expect(hook.result.current.status).toBe('listening')
   })
 
-  it('does not re-arm after an external Stop during streaming playback', async () => {
+  it('re-arms and consumes the pending response after an external Stop during streaming playback', async () => {
     const hook = renderRearmConversation('reply-stopped', 'Playing now')
 
     await beginReply(hook)
@@ -237,8 +305,11 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.finishSpeech('done')
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
+    expect(hook.result.current.status).toBe('listening')
   })
 
   it('re-arms the microphone after normal fallback playback completes', async () => {
@@ -249,10 +320,121 @@ describe('useVoiceConversation playback rearm', () => {
 
     await waitFor(() =>
       expect(mocks.playSpeechText).toHaveBeenCalledWith('Fallback reply', {
-        source: 'voice-conversation'
+        source: 'voice-conversation',
+        syncOnly: true
       })
     )
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(hook.result.current.status).toBe('listening')
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+  })
+
+  it('speaks completed fallback sentences before the response finishes', async () => {
+    mocks.useFallbackSpeech()
+    const { finishResponse, hook } = renderIncrementalFallbackConversation()
+
+    await beginReply(hook)
+
+    await waitFor(() =>
+      expect(mocks.playSpeechText).toHaveBeenCalledWith('The first sentence is ready.', {
+        source: 'voice-conversation',
+        syncOnly: true
+      })
+    )
+    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
+
+    finishResponse()
+
+    await waitFor(() =>
+      expect(mocks.playSpeechText).toHaveBeenCalledWith('The second sentence is ready.', {
+        source: 'voice-conversation',
+        syncOnly: true
+      })
+    )
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    // status flips to 'listening' only after start() resolves — poll for it.
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+  })
+
+  it('stops polling the pending fallback reply once the hook unmounts', async () => {
+    mocks.useFallbackSpeech()
+    mocks.deferFallbackPlayback()
+    const { hook, pendingResponse } = renderIncrementalFallbackConversation()
+
+    await beginReply(hook)
+    await waitFor(() => expect(mocks.playSpeechText).toHaveBeenCalledTimes(1))
+
+    hook.unmount()
+    const pollsAtUnmount = pendingResponse.mock.calls.length
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 400))
+    })
+
+    expect(pendingResponse.mock.calls.length).toBe(pollsAtUnmount)
+  })
+
+  it('does not play the next fallback sentence after Stop, and re-arms the mic', async () => {
+    mocks.useFallbackSpeech()
+    mocks.deferFallbackPlayback()
+    const { finishResponse, hook } = renderIncrementalFallbackConversation()
+
+    await beginReply(hook)
+    await waitFor(() => expect(mocks.playSpeechText).toHaveBeenCalledTimes(1))
+    finishResponse()
+
+    mocks.stopVoicePlayback()
+    await act(async () => {
+      mocks.finishFallbackPlayback()
+    })
+
+    // Stop silences the reply, not the conversation (#108301): the next
+    // fallback sentence must not play, but the mic re-arms and listens.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
+  })
+
+  it('speaks a sealed interim bubble while a tool is still running', async () => {
+    mocks.useFallbackSpeech()
+
+    let releaseSubmit: () => void = () => {}
+    let response: null | { id: string; pending: boolean; text: string } = null
+
+    const hook = renderHook(
+      ({ busy, enabled }) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse: vi.fn(),
+          enabled,
+          onSubmit: async () => {
+            await new Promise<void>(resolve => {
+              releaseSubmit = resolve
+            })
+            // Interim bubble sealed (trimmed, no trailing space); tool running.
+            response = { id: 'reply-edge', pending: false, text: 'I will check the file for you now.' }
+          },
+          onTranscribeAudio: async () => 'Hello',
+          pendingResponse: () => response
+        }),
+      { initialProps: { busy: false, enabled: false } }
+    )
+
+    hook.rerender({ busy: false, enabled: true })
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      mocks.triggerSilence()
+    })
+    hook.rerender({ busy: true, enabled: true })
+    await act(async () => {
+      releaseSubmit()
+    })
+
+    await waitFor(() =>
+      expect(mocks.playSpeechText).toHaveBeenCalledWith('I will check the file for you now.', {
+        source: 'voice-conversation',
+        syncOnly: true
+      })
+    )
+    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 })

@@ -88,6 +88,16 @@ function Harness({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // PageUp/PageDown: no text-editing purpose in the single-line editor —
+    // swallow the default so the browser cannot scroll the nearest ancestor
+    // (which breaks the desktop pane layout, #49978). The routed transcript
+    // page-scroll lives in the global keybind, not here.
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault()
+
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -271,5 +281,38 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(editor.textContent).toBe('draft while reconnecting')
     expect(onDrain).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  // #49978 — the browser's default for PageUp/PageDown in a focused
+  // contentEditable scrolls the nearest scrollable ancestor, which breaks the
+  // desktop pane layout (sidebar squeezed out, content shifted left). The
+  // editor must swallow the default for both keys.
+  it('prevents the browser default for PageUp and PageDown keydowns in the editor', async () => {
+    const { getByTestId } = render(
+      <Harness onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={vi.fn()} />
+    )
+
+    const editor = getByTestId('editor')
+
+    for (const key of ['PageUp', 'PageDown']) {
+      // React's synthetic handlers run on the root, so a native listener on
+      // the editor sees the event BEFORE React's — capture the native event
+      // and read its defaultPrevented flag after the dispatch (the flag is
+      // mutable on the same native event React handled).
+      let event: KeyboardEvent | undefined
+
+      await act(async () => {
+        editor.addEventListener(
+          'keydown',
+          e => {
+            event = e
+          },
+          { once: true, capture: true }
+        )
+        fireEvent.keyDown(editor, { key })
+      })
+
+      expect(event?.defaultPrevented, `keydown ${key} must be default-prevented`).toBe(true)
+    }
   })
 })

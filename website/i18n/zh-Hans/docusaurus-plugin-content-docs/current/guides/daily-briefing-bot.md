@@ -26,7 +26,7 @@ description: "构建一个自动化每日简报机器人，研究主题、汇总
 
 开始之前，请确保：
 
-- **已安装 Hermes Agent** — 参见[安装指南](/getting-started/installation)
+- **已安装 Hermes Agent** — 参见[安装指南](../getting-started/installation.md)
 - **Gateway 正在运行** — gateway 守护进程负责处理 cron 执行：
   ```bash
   hermes gateway install   # Install as a user service
@@ -35,7 +35,7 @@ description: "构建一个自动化每日简报机器人，研究主题、汇总
   hermes gateway           # Run in foreground
   ```
 - **Firecrawl API 密钥** — 在环境变量中设置 `FIRECRAWL_API_KEY` 以启用网页搜索
-- **已配置消息推送**（可选但推荐）— 已设置 [Telegram](/user-guide/messaging/telegram) 或 Discord 并配置了 home channel
+- **已配置消息推送**（可选但推荐）— 已设置 [Telegram](../user-guide/messaging/telegram.md) 或 Discord 并配置了 home channel
 
 :::tip 没有消息推送？没关系
 你仍然可以使用 `deliver: "local"` 跟随本教程。简报将保存至 `~/.hermes/cron/output/`，你可以随时查阅。
@@ -167,7 +167,7 @@ Format as a clean briefing with section headers and emoji. End with today's date
 Collect all results and combine them into a single clean briefing with section headers, emoji formatting, and source links. Add today's date as a header."
 ```
 
-每个子 agent 独立并行搜索，然后主 agent 将所有内容合并为一份精美的简报。详见[委托文档](/user-guide/features/delegation)了解其工作原理。
+每个子 agent 独立并行搜索，然后主 agent 将所有内容合并为一份精美的简报。详见[委托文档](../user-guide/features/delegation.md)了解其工作原理。
 
 ### 仅工作日调度
 
@@ -188,7 +188,7 @@ Collect all results and combine them into a single clean briefing with section h
 
 ### 通过 Memory 添加个人上下文
 
-如果你启用了 [memory（记忆）](/user-guide/features/memory)，可以存储跨会话持久保留的偏好设置。但请记住 — cron 任务在全新会话中运行，不保留对话记忆。若要添加个人上下文，请直接将其写入 prompt：
+如果你启用了 [memory（记忆）](../user-guide/features/memory.md)，可以存储跨会话持久保留的偏好设置。但请记住 — cron 任务在全新会话中运行，不保留对话记忆。若要添加个人上下文，请直接将其写入 prompt：
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.
@@ -257,11 +257,11 @@ sudo hermes gateway install --system
 
 你已经构建了一个可运行的每日简报机器人。以下是一些可以继续探索的方向：
 
-- **[定时任务（Cron）](/user-guide/features/cron)** — 调度格式、重复限制和推送选项的完整参考
-- **[委托](/user-guide/features/delegation)** — 深入了解并行子 agent 工作流
-- **[消息推送平台](/user-guide/messaging)** — 设置 Telegram、Discord 或其他推送目标
-- **[Memory](/user-guide/features/memory)** — 跨会话的持久上下文
-- **[技巧与最佳实践](/guides/tips)** — 更多 prompt 工程建议
+- **[定时任务（Cron）](../user-guide/features/cron.md)** — 调度格式、重复限制和推送选项的完整参考
+- **[委托](../user-guide/features/delegation.md)** — 深入了解并行子 agent 工作流
+- **[消息推送平台](../user-guide/messaging/index.md)** — 设置 Telegram、Discord 或其他推送目标
+- **[Memory](../user-guide/features/memory.md)** — 跨会话的持久上下文
+- **[技巧与最佳实践](./tips.md)** — 更多 prompt 工程建议
 
 :::tip 还能调度什么？
 简报机器人的模式适用于任何场景：竞争对手监控、GitHub 仓库摘要、天气预报、投资组合追踪、服务器健康检查，甚至每日笑话。只要你能用 prompt 描述它，就能调度它。

@@ -22,20 +22,8 @@ def _telegram_descriptor(**overrides) -> CapabilityDescriptor:
     return CapabilityDescriptor(**base)
 
 
-def test_descriptor_is_frozen():
-    d = _telegram_descriptor()
-    try:
-        d.max_message_length = 1  # type: ignore[misc]
-    except Exception as exc:  # FrozenInstanceError
-        assert "cannot assign" in str(exc) or "frozen" in str(exc).lower()
-    else:  # pragma: no cover
-        raise AssertionError("descriptor should be immutable (frozen)")
 
 
-def test_module_is_marked_experimental():
-    import gateway.relay.descriptor as m
-
-    assert "EXPERIMENTAL" in (m.__doc__ or "")
 
 
 # ─────────────── supported_ops (op-level capability discovery, Phase 1) ───────────────

@@ -15,7 +15,7 @@ Passive recon of subdomains, SSL certs, WHOIS, and DNS.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/domain-intel` |
-| Path | `optional-skills/research\domain-intel` |
+| Path | `optional-skills/research/domain-intel` |
 | Version | `1.0.0` |
 | Author | FurkanL0, Hermes Agent |
 | License | MIT |

@@ -44,10 +44,6 @@ def _clean_approval_env(monkeypatch):
         approval_context, "_get_approval_mode",
         lambda: "manual",
     )
-    monkeypatch.setattr(
-        "tools.tirith_security.check_command_security",
-        lambda _command: {"action": "allow", "findings": [], "summary": ""},
-    )
     approval_module._session_approved.clear()
     approval_module._permanent_approved.clear()
     approval_module._pending.clear()
@@ -230,15 +226,15 @@ class TestExecuteCodeGuardCliDenialBreakerParity:
 class TestGatewayRunImportDoesNotSetExecAsk:
     def test_importing_gateway_run_does_not_set_exec_ask(self, tmp_path):
         """Incidental imports must not poison CLI ask-mode process-wide."""
-        script = r"""
+        script = rf"""
 import os, sys
 os.environ.pop("HERMES_EXEC_ASK", None)
-sys.path.insert(0, %r)
+sys.path.insert(0, {str(REPO_ROOT)!r})
 # Avoid starting the gateway; only import the module for _gateway_runner_ref
 # style side imports.
 import gateway.run  # noqa: F401
 print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
-""" % (str(REPO_ROOT),)
+"""
         hermes_home = tmp_path / "import-test-home"
         proc = subprocess.run(
             [sys.executable, "-c", script],
@@ -250,6 +246,7 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
                 "HERMES_HOME": str(hermes_home),
             },
             timeout=60,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "EXEC_ASK=None" in proc.stdout, proc.stdout + proc.stderr

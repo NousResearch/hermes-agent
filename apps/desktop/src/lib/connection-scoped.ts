@@ -172,8 +172,7 @@ export function connectionScopedAtom<T>(
  *
  * Called whenever the window's connection descriptor is published. A null
  * descriptor is an ordinary disconnect/reconnect state — not evidence the
- * user selected another backend — so it keeps the current scope (the same
- * contract as syncCronModelImpactConnection).
+ * user selected another backend — so it keeps the current scope.
  */
 export function rescopeConnectionScopedStores(connection: ConnectionScopeDescriptor | null | undefined): void {
   if (!connection) {

@@ -24,7 +24,8 @@
       "Removable unit is the person profile: /find/person/{first}-{last}-{22charID} (opaque mixed-case ID). Also /find/name/{first}-{last} and /find/name/{first}-{last}/in/{ST}.",
       "NO 404s for plausible patterns: an empty search returns a soft-200 page with 'similar' fuzzy rows. The real 'not found' signal is the ABSENCE of an exact-match block in the results heading, NOT an HTTP error. Do not record not_found off a 404 here; read the heading.",
       "No anti-bot gating on search/result/phone/address pages (web_extract reads them fine). Site self-brands as 'ActualPeopleSearch' in FAQ text.",
-      "Search tabs: /?tab=phone /?tab=email /?tab=address. Directories: /lastnames/{surname} /firstnames/{first} /people/{state-name}/{city-name} /people/zip/{zip} /people/areacode/{code}."
+      "Search tabs: /?tab=phone /?tab=email /?tab=address. Directories: /lastnames/{surname} /firstnames/{first} /people/{state-name}/{city-name} /people/zip/{zip} /people/areacode/{code}.",
+      "Reverse-phone page is static HTML readable by web_extract; the DASHED variant /phone/{areacode}-{prefix}-{line} also resolves (verified live 2026-10-26, alongside the recorded {digits10} form)."
     ]
   },
   "optout": {
@@ -45,6 +46,6 @@
     "est_processing_days": 3,
     "reappearance_risk": "medium"
   },
-  "last_verified": "2026-06-30",
+  "last_verified": "2026-10-26",
   "source": "BADBOOL"
 }

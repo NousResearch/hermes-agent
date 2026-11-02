@@ -5,7 +5,7 @@ description: "Runbook, go-live checklist, and operator worksheet for the Microso
 
 # Operate the Teams Meeting Pipeline
 
-Use this guide after you have already enabled the feature from [Teams Meetings](/user-guide/messaging/teams-meetings).
+Use this guide after you have already enabled the feature from [Teams Meetings](../user-guide/messaging/teams-meetings.md).
 
 This page covers:
 - operator CLI flows
@@ -291,5 +291,5 @@ Use this before changing the deployment:
 
 ## Related Docs
 
-- [Teams Meetings setup](/user-guide/messaging/teams-meetings)
-- [Microsoft Teams bot setup](/user-guide/messaging/teams)
+- [Teams Meetings setup](../user-guide/messaging/teams-meetings.md)
+- [Microsoft Teams bot setup](../user-guide/messaging/teams.md)

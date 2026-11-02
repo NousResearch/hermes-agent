@@ -241,3 +241,43 @@ async def test_fatal_handler_outer_timeout_still_queues_platform(monkeypatch, tm
         await asyncio.wait({operation}, timeout=0.2)
 
 
+
+
+@pytest.mark.asyncio
+async def test_stay_alive_policy_keeps_gateway_up_on_stranded_retryable_fatal(tmp_path):
+    """on_all_adapters_down='stay_alive' (the desktop launcher's mode): a retryable fatal
+    on the LAST adapter must not produce the exit-with-failure verdict — no service manager
+    will revive the process, so exiting only severs the UI's websockets and drops in-flight
+    assistant messages (#118080). The platform has no config entry here, so the reconnection
+    queue cannot take it and the stranded check is reached with empty _failed_platforms."""
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions", on_all_adapters_down="stay_alive")
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("email_imap_fetch_failed", "IMAP read timeout", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    runner.stop.assert_not_awaited()
+    assert runner._exit_with_failure is False
+
+
+@pytest.mark.asyncio
+async def test_default_exit_policy_keeps_service_restart_verdict_on_stranded_retryable_fatal(tmp_path):
+    """Without the stay_alive policy (service-managed deployments), the stranded retryable
+    fatal still exits with the failure verdict so the service manager restarts the gateway
+    — the pre-#118080 contract is unchanged."""
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions")
+    runner = GatewayRunner(config)
+    adapter = _RuntimeRetryableAdapter()
+    adapter._set_fatal_error("email_imap_fetch_failed", "IMAP read timeout", retryable=True)
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.delivery_router.adapters = runner.adapters
+    runner.stop = AsyncMock()
+
+    await runner._handle_adapter_fatal_error(adapter)
+
+    runner.stop.assert_awaited()
+    assert runner._exit_with_failure is True

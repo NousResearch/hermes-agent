@@ -42,7 +42,7 @@ def loop_agent():
 
 
 def _length_response(content: str, prompt_tokens: int):
-    from tests.run_agent.test_run_agent import _mock_assistant_msg
+    from tests.agent.test_run_agent import _mock_assistant_msg
     return SimpleNamespace(
         id="resp",
         model="test/model",

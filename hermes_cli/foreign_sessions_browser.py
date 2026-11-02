@@ -5,7 +5,7 @@ import re
 import socket
 from pathlib import Path
 
-from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _walk
+from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _parser, _walk
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 
@@ -33,7 +33,7 @@ def _parse(candidate):
     _, _, source, path, size = candidate
     if size > MAX_LOG_BYTES:
         raise ValueError("This log exceeds the 32 MB preview and import limit")
-    parsed = _SOURCES[source][3](path)
+    parsed = _parser(source)(path)
     if not parsed["turns"]:
         raise ValueError("This session has no readable conversation messages")
     return parsed

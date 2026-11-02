@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Wire shapes the desktop knows how to speak. Anything else → relay.
 #   openai-multipart : POST {base_url}/audio/transcriptions (multipart, Bearer)
-#   xai-stt          : POST {base_url}/stt (multipart, Bearer, format=true)
+#   xai-stt          : POST {base_url}/stt (multipart, Bearer, model, format=true)
 #   elevenlabs-stt   : POST {base_url}/speech-to-text (multipart, xi-api-key)
 #   openai-speech    : POST {base_url}/audio/speech (JSON, Bearer) → audio bytes
 #   elevenlabs-tts   : POST {base_url}/text-to-speech/{voice_id} (JSON, xi-api-key)
@@ -46,23 +46,38 @@ def _client_direct_enabled() -> bool:
     return True
 
 
-def _relay(reason: str) -> Dict[str, Any]:
+def _relay(reason: str) -> dict[str, Any]:
     """A relay verdict that tells the client WHY, without secrets."""
     return {"mode": "relay", "reason": reason}
 
 
-def _section(config: Any, provider: str) -> Dict[str, Any]:
+def _section(config: Any, provider: str) -> dict[str, Any]:
     """The provider's own sub-dict of an STT/TTS config, shape-guarded."""
     section = config.get(provider) if isinstance(config, dict) else None
     return section if isinstance(section, dict) else {}
 
 
-def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> Dict[str, Any]:
+def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, **extra: Any) -> dict[str, Any]:
     return {"mode": "direct", "wire": wire, "provider": provider, "base_url": base_url,
             "api_key": api_key, "model": model, **extra}
 
 
-def _deepinfra_model(section: Dict[str, Any], kind: str) -> Optional[str]:
+def stt_hallucination_filter() -> dict[str, Any]:
+    """The Whisper-silence hallucination contract the relay path applies
+    (``transcribe_recording`` → ``is_whisper_hallucination``), shipped to the
+    client so a client-direct transcription agrees with a relayed one instead
+    of submitting "thank you" on silence as a real turn."""
+    from tools.voice_mode_transcript import WHISPER_HALLUCINATIONS
+
+    return {
+        "phrases": sorted(WHISPER_HALLUCINATIONS),
+        # Python's _HALLUCINATION_REPEAT_RE (IGNORECASE) for repetitive filler
+        # like "OK. OK. OK." — a JS regex source, so a single backslash.
+        "repeat_regex": "^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\s])+$",
+    }
+
+
+def _deepinfra_model(section: dict[str, Any], kind: str) -> Optional[str]:
     """Configured model, else the first catalog model of ``kind`` (stt/tts)."""
     from hermes_cli.models import deepinfra_model_ids
     return section.get("model") or next(iter(deepinfra_model_ids(kind)), None)
@@ -71,13 +86,13 @@ def _deepinfra_model(section: Dict[str, Any], kind: str) -> Optional[str]:
 # ── STT ──
 # provider -> (env var, default-model attr on transcription_common, base_url).
 # ``base_url`` is a transcription_common attr name or a literal URL.
-_STT_KEYED: Dict[str, tuple[str, str, str]] = {
+_STT_KEYED: dict[str, tuple[str, str, str]] = {
     "groq": ("GROQ_API_KEY", "DEFAULT_GROQ_STT_MODEL", "GROQ_BASE_URL"),
     "mistral": ("MISTRAL_API_KEY", "DEFAULT_MISTRAL_STT_MODEL", "https://api.mistral.ai/v1"),
 }
 
 
-def _resolve_stt_client_config() -> Dict[str, Any]:
+def _resolve_stt_client_config() -> dict[str, Any]:
     from tools import transcription_common as tc
     from tools import transcription_tools as tt
 
@@ -95,12 +110,18 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     language = tt._resolve_stt_language(
         provider, stt_config, extra_keys=("language_code",) if provider == "elevenlabs" else ())
     section = _section(stt_config, provider)
+    # Same deadline the gateway's own transcription client applies
+    # (``stt.openai.timeout``; riders such as groq/deepinfra inherit it), so a
+    # slow endpoint fails the Desktop's direct request instead of hanging it.
+    timeout_s = tc._config_number(_section(stt_config, "openai"), "timeout", 60.0)
 
-    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language)
+    def direct(wire: str, base_url: Any, api_key: str, model: Any) -> dict[str, Any]:
+        return _direct(wire, provider, base_url, api_key, model, language=language, timeout_s=timeout_s,
+                       hallucination_filter=stt_hallucination_filter())
 
     def env_base_url(env_var: str, default: str) -> str:
-        return str(section.get("base_url") or tt.get_env_value(env_var) or default).strip().rstrip("/")
+        from hermes_cli.config import get_env_value
+        return str(section.get("base_url") or get_env_value(env_var) or default).strip().rstrip("/")
 
     if provider in _STT_KEYED:
         env_var, default_model, base = _STT_KEYED[provider]
@@ -120,10 +141,12 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     if provider == "xai":
         # API key only: an xAI OAuth bearer refreshes server-side mid-session and
         # would strand the client on the first 401.
-        api_key = str(tt.get_env_value("XAI_API_KEY") or "").strip()
+        from hermes_cli.config import get_env_value
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
         if not api_key:
             return _relay("xai oauth (server-managed) or no credentials")
-        return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key, None)
+        return direct(STT_WIRE_XAI, env_base_url("XAI_STT_BASE_URL", tc.XAI_STT_BASE_URL), api_key,
+                      tc.normalize_xai_stt_model(section.get("model")))
     if provider == "elevenlabs":
         api_key = tt._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
@@ -143,7 +166,7 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
 
 
 # ── TTS ──
-def _resolve_tts_client_config() -> Dict[str, Any]:
+def _resolve_tts_client_config() -> dict[str, Any]:
     from tools import tts_tool as tts
     from tools import tts_tool_openai, tts_tool_providers
 
@@ -151,6 +174,10 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
     provider = tts._get_provider(tts_config)
     if provider not in tts.BUILTIN_TTS_PROVIDERS:
         return _relay("command/plugin provider")
+    # The desktop's client-direct sentence cutter honours the same tts.streaming.min_len as
+    # the gateway/CLI chunkers, so a short CJK opener is spoken alone on every surface.
+    from tools.tts_streaming import SentenceChunker
+    min_len = SentenceChunker.from_config(tts_config).min_len
 
     if provider == "openai":
         # Covers the direct-key, custom-base_url, and Nous-managed selections.
@@ -172,7 +199,9 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         except (TypeError, ValueError):
             speed = 1.0
         return _direct(TTS_WIRE_OPENAI, "openai", base_url, api_key, model,
-                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed)
+                       voice=oai.get("voice") or tts_tool_openai.DEFAULT_OPENAI_VOICE, speed=speed,
+                       extra_body=tts_tool_openai._openai_extra_body(oai),
+                       min_len=min_len)
     if provider == "elevenlabs":
         api_key = tts._resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs")
         if not api_key:
@@ -181,7 +210,8 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         return _direct(TTS_WIRE_ELEVENLABS, "elevenlabs",
                        str(el.get("base_url") or "https://api.elevenlabs.io/v1").rstrip("/"),
                        api_key, el.get("model_id") or tts_tool_providers.DEFAULT_ELEVENLABS_MODEL_ID,
-                       voice=el.get("voice_id") or tts_tool_providers.DEFAULT_ELEVENLABS_VOICE_ID, speed=None)
+                       voice=el.get("voice_id") or tts_tool_providers.DEFAULT_ELEVENLABS_VOICE_ID, speed=None,
+                       min_len=min_len)
     if provider == "deepinfra":
         api_key = tts._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
         if not api_key:
@@ -192,27 +222,34 @@ def _resolve_tts_client_config() -> Dict[str, Any]:
         if not model:
             return _relay("no deepinfra tts model")
         return _direct(TTS_WIRE_OPENAI, "deepinfra", deepinfra_base_url(di), api_key, model,
-                       voice=di.get("voice") or "af_bella", speed=None)
+                       voice=di.get("voice") or "af_bella", speed=None, min_len=min_len)
     # edge / minimax / xai / mistral / gemini / neutts / kittentts / piper: server-host-only
     # engines or wire shapes the desktop doesn't speak yet; the relay path serves them.
     return _relay(f"provider {provider!r} has no client wire")
 
 
-def resolve_client_voice_config() -> Dict[str, Any]:
+def resolve_client_voice_config() -> dict[str, Any]:
     """Resolve both directions for the CURRENT profile scope.
 
     Callers scope the profile via ``hermes_constants.set_hermes_home_override``
     (the web server's ``_config_profile_scope``) before calling — identical to
     how ``/api/audio/transcribe`` scopes ``transcribe_recording``.
     """
+    out: dict[str, Any] = {}
     if not _client_direct_enabled():
-        disabled = _relay("voice.client_direct disabled")
-        return {"stt": disabled, "tts": disabled}
-    out: Dict[str, Any] = {}
-    for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):
-        try:
-            out[key] = resolver()
-        except Exception:
-            logger.exception("client voice-config %s resolution failed", key.upper())
-            out[key] = _relay("resolution error")
+        out = {"stt": _relay("voice.client_direct disabled"), "tts": _relay("voice.client_direct disabled")}
+    else:
+        for key, resolver in (("stt", _resolve_stt_client_config), ("tts", _resolve_tts_client_config)):
+            try:
+                out[key] = resolver()
+            except Exception:
+                logger.exception("client voice-config %s resolution failed", key.upper())
+                out[key] = _relay("resolution error")
+    # Live dictation always goes through the host's /api/audio/transcribe-stream socket (keys stay
+    # server-side), independent of client_direct; the verdict above remains the blob fallback.
+    from tools.transcription_streaming import streaming_available
+    try:
+        out["stt"]["streaming"] = streaming_available()
+    except Exception:
+        logger.debug("live STT capability probe failed", exc_info=True)
     return out

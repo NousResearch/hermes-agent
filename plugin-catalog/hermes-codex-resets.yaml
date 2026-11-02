@@ -1,0 +1,24 @@
+name: hermes-codex-resets
+repo: https://github.com/sxuff/hermes-codex-resets
+sha: 008f4fe2549bedd5a09ef0ce9615594ea388ffed
+version: "0.1.0"
+title: Codex Resets
+description: Know the moment OpenAI resets your Codex usage limits. A status-bar chip counts the time since the last reset; when a new one lands, a small card rises out of it (chip-only while you type), with a history page of every reset. Disclosure — polls the public codex-resets.com API every 60 s and loads fonts from Google Fonts; sends nothing about you or your sessions.
+maintainer: sxuff
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/sxuff/hermes-codex-resets#readme
+image: https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/card.png
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/reset.png
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/banked.png
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/watch.png
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/typing.png
+  - https://raw.githubusercontent.com/sxuff/hermes-codex-resets/008f4fe2549bedd5a09ef0ce9615594ea388ffed/artifacts/history.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

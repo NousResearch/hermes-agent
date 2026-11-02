@@ -36,7 +36,7 @@ def hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     # get_hermes_home() prefers the context-local override over the env
     # var, so a set_hermes_home_override() leaked by ANY earlier test in
-    # this xdist worker would silently point the goals DB at a dead tmp
+    # this process would silently point the goals DB at a dead tmp
     # dir and make resume enqueue nothing (CI-only flake). Pin the
     # override to THIS home so the fixture is immune to leaks.
     from hermes_constants import (

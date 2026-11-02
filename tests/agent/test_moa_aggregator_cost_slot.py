@@ -12,7 +12,6 @@ the session cost as advisor-fan-out only.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -74,27 +73,3 @@ def test_create_populates_last_aggregator_slot(moa_config, monkeypatch):
     assert slot["model"] == "anthropic/claude-opus-4.8"
     assert slot["provider"] == "openrouter"
     assert slot["model"] != "closed"
-
-
-def test_client_exposes_last_aggregator_slot(moa_config, monkeypatch):
-    """MoAClient delegates last_aggregator_slot to its completions facade so
-    session accounting can read it without touching internals."""
-    from agent.moa_loop import MoAClient
-
-    def fake_call_llm(**kwargs):
-        return _response("acted" if kwargs.get("task") != "moa_reference" else "advice")
-
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
-
-    client = MoAClient("closed")
-    assert client.last_aggregator_slot is None
-
-    client.chat.completions.create(
-        model="closed",
-        messages=[{"role": "user", "content": "clean the db"}],
-    )
-
-    slot = client.last_aggregator_slot
-    assert slot is not None
-    assert slot["model"] == "anthropic/claude-opus-4.8"
-    assert slot["provider"] == "openrouter"

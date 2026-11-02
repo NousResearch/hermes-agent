@@ -20,6 +20,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.waiting import wait_until
+
 
 class TestCachedFetchApiModels:
     def _entry(self, models, age_seconds, fp="fp"):
@@ -359,7 +361,10 @@ class TestSalvageFollowups:
             )
             assert done.wait(timeout=5), "background refresh did not complete"
         assert saved["custom:https://gw.example.com/v1#fp"]["models"] == ["refreshed"]
-        assert "custom:https://gw.example.com/v1#fp" not in mod._swr_refresh_inflight
+        # The save fires before the worker's finally drops the inflight key (and the cache lock
+        # release sits between them): wait for the dedupe slot instead of racing the thread.
+        wait_until(lambda: "custom:https://gw.example.com/v1#fp" not in mod._swr_refresh_inflight,
+                   what="SWR inflight key released")
 
     def test_corrupt_at_field_degrades_to_live_fetch_instead_of_raising(self):
         """provider_models_cache.json is user-editable; a corrupted 'at' must

@@ -1,4 +1,10 @@
-export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+// A cold backend boot (plugin discovery + route mounting at web_server import
+// time) can take 45-60s on slower hardware. A 45s deadline makes first-boot
+// readiness a coin flip: every lost race tears down a healthy-but-slow backend
+// and re-drives boot, which cascades into minutes of "not connected" and
+// orphaned python processes (#63454). The poll returns the moment the backend
+// responds, so fast machines see no change; 180s is deliberately generous.
+export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 180_000
 export const DEFAULT_BACKEND_READY_POLL_MS = 500
 // A cold backend can stall its event loop for tens of seconds while Windows
 // scans and byte-compiles the gateway import tree. At the default 15s socket
@@ -33,6 +39,19 @@ export interface HermesReadyOptions {
    * two very different meanings of a 401 (see `waitForHermesReady`).
    */
   probeIsCredentialed?: boolean
+  /**
+   * The caller has proof the backend already bound its socket: a spawn-ledger
+   * record is only written after bind, and an attached backend answered once.
+   * A refused connection then means the process is gone, not still starting,
+   * so fail at once instead of polling a dead port for the whole budget.
+   * Remote/SSH callers leave this off: a tunnel that is still coming up
+   * refuses legitimately.
+   */
+  alreadyBound?: boolean
+}
+
+export function isConnectionRefusedError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'ECONNREFUSED'
 }
 
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
@@ -283,6 +302,10 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
       // through the same credentials.
       if (probeIsCredentialed && isAuthRejectionError(error)) {
         throw makeReauthRequiredError(error instanceof Error ? error.message : String(error))
+      }
+
+      if (options.alreadyBound && isConnectionRefusedError(error)) {
+        throw new Error(`Hermes backend did not become ready: ${(error as Error).message}`)
       }
 
       // An explicitly missing route means the backend predates /api/health.

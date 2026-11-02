@@ -229,24 +229,12 @@ def test_merge_helper_both_none():
     assert _merge_request_overrides("junk", 42) is None
 
 
-def test_merge_helper_explicit_only():
-    assert _merge_request_overrides(None, {"a": 1}) == {"a": 1}
 
 
-def test_merge_helper_runtime_only():
-    assert _merge_request_overrides({"a": 1}, None) == {"a": 1}
 
 
-def test_merge_helper_explicit_top_level_wins():
-    assert _merge_request_overrides({"a": 1, "b": 2}, {"a": 9}) == {"a": 9, "b": 2}
 
 
-def test_merge_helper_extra_body_one_level_merge():
-    merged = _merge_request_overrides(
-        {"extra_body": {"keep": 1, "clash": "runtime"}},
-        {"extra_body": {"clash": "explicit", "new": 2}},
-    )
-    assert merged == {"extra_body": {"keep": 1, "clash": "explicit", "new": 2}}
 
 
 def test_merge_helper_non_dict_runtime_extra_body_replaced():

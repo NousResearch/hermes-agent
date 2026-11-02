@@ -155,7 +155,7 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
         assert session.get("agent") is None
         assert "profile session store unavailable" in str(session.get("agent_error"))
         assert any(
-            evt == "error" and "agent init failed" in str((payload or {}).get("message"))
+            evt == "error" and "could not start the assistant" in str((payload or {}).get("message"))
             for evt, _s, payload in events
         )
         # And nothing bled into the launch store.

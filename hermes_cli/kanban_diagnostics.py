@@ -112,6 +112,18 @@ def _latest_event_ts(events: Iterable[Any], kinds: set[str]) -> int:
     return max([0, *(_event_ts(ev) for ev in events if _event_kind(ev) in kinds)])
 
 
+def _latest_gave_up_is_terminal_provider(events: Iterable[Any]) -> bool:
+    """True when the most recent breaker trip was a terminal provider error (credential
+    revoked, model gone) and nothing has resumed the task since."""
+    for ev in reversed(list(events)):
+        kind = _event_kind(ev)
+        if kind == "gave_up":
+            return bool(_parse_payload(ev).get("terminal_provider"))
+        if kind in {"unblocked", "promoted", "completed", "claimed"}:
+            return False
+    return False
+
+
 def _cli_hint(label: str, command: str, *, suggested: bool = False) -> DiagnosticAction:
     return DiagnosticAction(kind="cli_hint", label=label, payload={"command": command},
                             suggested=suggested)
@@ -369,8 +381,12 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     threshold = _positive_int(_failure_threshold(cfg), 3)
     failure_limit = _positive_int(cfg.get("failure_limit"), threshold)
     failures = _first_field(task, "consecutive_failures", "spawn_failures", 0)
-    if failures is None or failures < threshold:
+    # A terminal provider error (credential revoked, model gone) blocks the card after ONE
+    # attempt, below any threshold; it still needs an operator, so diagnose it now.
+    terminal_trip = _latest_gave_up_is_terminal_provider(events)
+    if not terminal_trip and (failures is None or failures < threshold):
         return []
+    failures = failures or 0
     last_err = _first_field(task, "last_failure_error", "last_spawn_error")
     assignee = _task_field(task, "assignee")
 
@@ -397,7 +413,15 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     severity = "critical" if failures >= threshold * 2 else "error"
     err_snippet = _error_snippet(last_err)
     outcome_label = _OUTCOME_LABELS.get(most_recent_outcome or "", "failure")
-    if err_snippet:
+    if terminal_trip:
+        title = "Provider rejected this profile's credential or model — blocked after one attempt"
+        detail = (
+            f"The worker's provider call failed with an error a retry cannot fix (revoked or invalid "
+            f"API key, model not found), so the dispatcher blocked the task instead of spending the "
+            f"{failure_limit}-attempt retry budget on it. Full last error:\n\n{err_snippet}\n\n"
+            f"Fix the assignee profile's provider credentials/model, then unblock the task."
+        )
+    elif err_snippet:
         title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
         detail = (
             f"This task has failed {failures} times in a row (most recent: {outcome_label}). Full "
@@ -530,6 +554,40 @@ def _rule_review_dependency_deadlock(task, events, runs, now, cfg) -> list[Diagn
         actions=actions,
         first_seen_at=blocked_at, last_seen_at=blocked_at, count=len(child_ids),
         data={"blocked_parent_id": task_id, "waiting_child_ids": child_ids, "block_reason": reason},
+    )]
+
+
+def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``running`` card with a direct parent that is not ``done``/``archived``:
+    the dependency gate is not holding it (the parent reopened mid-run, or the
+    edge predates the running-child refusal) and ``kanban_complete`` will be
+    refused until the parents finish. Graph-aware; mutates nothing."""
+    if _task_field(task, "status") != "running":
+        return []
+    graph = cfg.get("_graph")
+    if not isinstance(graph, dict):
+        return []
+    open_parents = [
+        parent for parent in (graph.get("parents") or [])
+        if isinstance(parent, dict) and parent.get("id")
+        and parent.get("status") not in ("done", "archived")
+    ]
+    if not open_parents:
+        return []
+    task_id = str(_task_field(task, "id") or "")
+    parent_ids = [str(parent["id"]) for parent in open_parents]
+    seen_at = int(_task_field(task, "started_at", default=0) or 0) or now
+    return [Diagnostic(
+        kind="running_with_open_parents", severity="warning",
+        title=f"Running while {len(parent_ids)} parent(s) are not done",
+        detail="This card is running concurrently with a parent it declares a dependency on, so the "
+               "parent's work is not serialised ahead of it and completion will be refused until every "
+               "parent is done or archived. Finish the parent, or unlink the edge if it was never meant "
+               "to gate this run.",
+        actions=[_cli_hint("Unlink the parent that should not gate this run",
+                           f"hermes kanban unlink {parent_ids[0]} {task_id}")],
+        first_seen_at=seen_at, last_seen_at=now, count=len(parent_ids),
+        data={"open_parents": [{"id": p["id"], "status": p.get("status")} for p in open_parents]},
     )]
 
 
@@ -678,6 +736,77 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``running`` card whose claim expired >= cfg["stale_running_grace_seconds"]
+    (default 1h) ago with no live recorded worker.
+
+    Nothing in the dispatcher is going to free this card — its reclaim paths can decline a
+    card whose owner receipt never resolved, and until they could not, the failure was
+    invisible: an operator saw only the cards queued behind the profile's worker cap. So the
+    jam itself is the signal. Silent in every shape that can still progress: a live claim
+    (the owner is still working), a heartbeat inside the dispatcher's max-stale window, a
+    foreign host's lock (its pids say nothing here), or a live recorded worker. Read-only.
+    """
+    grace_seconds = float(cfg.get("stale_running_grace_seconds", 60 * 60))
+    if _task_field(task, "status") != "running":
+        return []
+    from hermes_cli import kanban_db as kb
+    expires = kb._to_epoch(_task_field(task, "claim_expires", None))
+    if expires is None or (now - expires) < grace_seconds:
+        return []
+    lock = str(_task_field(task, "claim_lock", "") or "")
+    if not lock.startswith(kb._host_prefix()):
+        return []
+    hb = kb._to_epoch(_task_field(task, "last_heartbeat_at", None))
+    if hb is not None and (now - hb) <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
+        return []
+
+    from hermes_cli.kanban_db_dispatch import _worker_alive
+    recorded = [(_task_field(task, "worker_pid", None),
+                 _task_field(task, "worker_started_at", None))]
+    # Only this attempt's pids speak for it: an earlier run's worker that is still alive
+    # (or whose number was reused) says nothing about whether the current run is executing.
+    run_id = _task_field(task, "current_run_id", None)
+    for ev in events:
+        if run_id is not None and _task_field(ev, "run_id", None) != run_id:
+            continue
+        if _event_kind(ev) in {"spawned", "worker_bound"}:
+            payload = _parse_payload(ev)
+            recorded.append((payload.get("pid"), payload.get("started_at")))
+    pids = sorted({int(pid) for pid, _ in recorded if pid})
+    if any(_worker_alive(int(pid), started_at) for pid, started_at in recorded if pid):
+        return []
+
+    expired_seconds = now - expires
+    age_str = (f"{expired_seconds / 3600:.1f}h" if expired_seconds >= 3600
+               else f"{int(expired_seconds / 60)}m")
+    # Escalate with age: <2x grace warning, 2x-6x error, >6x critical.
+    if expired_seconds >= grace_seconds * 6:
+        severity = "critical"
+    elif expired_seconds >= grace_seconds * 2:
+        severity = "error"
+    else:
+        severity = "warning"
+
+    task_id = str(_task_field(task, "id") or "")
+    return [Diagnostic(
+        kind="stale_running", severity=severity,
+        title=f"Running {age_str} past its expired claim with no live worker",
+        detail=f"Nothing is executing this card and nothing has reclaimed it: the claim expired "
+               f"{age_str} ago, no heartbeat arrived inside the last hour, and no pid recorded for "
+               f"the run ({', '.join(str(p) for p in pids) or 'none'}) is alive. The dispatcher "
+               f"declines a reclaim when the run's owner receipt never resolved, so the card can "
+               f"hold its profile's worker slot indefinitely while every card queued behind it "
+               f"stays deferred. Check the card's log, then reclaim it.",
+        actions=[DiagnosticAction(kind="reclaim", label="Reclaim the dead claim", suggested=True),
+                 _cli_hint("Reclaim from the CLI", f"hermes kanban reclaim {task_id}")],
+        first_seen_at=expires, last_seen_at=expires, count=1,
+        data={"claim_expires": expires, "expired_seconds": int(expired_seconds),
+              "recorded_pids": pids, "last_heartbeat_at": hb,
+              "grace_seconds": int(grace_seconds)},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -686,9 +815,11 @@ _RULES: list[RuleFn] = [
     _rule_repeated_failures,
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
+    _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_stale_running,
 ]
 
 
@@ -703,6 +834,10 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    # The dispatcher reclaims an expired claim on its own next tick, so a card
+    # still `running` an hour past its expiry means every reclaim path declined
+    # it. Same hour the heartbeat backstop uses.
+    "stale_running_grace_seconds": 60 * 60,
 }
 
 
@@ -773,22 +908,3 @@ def compute_task_diagnostics(
     severity_idx = {s: i for i, s in enumerate(SEVERITY_ORDER)}
     out.sort(key=lambda d: (-severity_idx.get(d.severity, -1), -(d.last_seen_at or 0)))
     return out
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-DIAGNOSTIC_KINDS = (
-    "hallucinated_cards",
-    "triage_aux_unavailable",
-    "prose_phantom_refs",
-    "repeated_failures",
-    "repeated_crashes",
-    "review_dependency_deadlock",
-    "stuck_in_blocked",
-    "block_unblock_cycling",
-    "stranded_in_ready",
-)
-# ---- END PLUGIN-COMPAT ----

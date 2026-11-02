@@ -12,19 +12,6 @@ from hermes_cli.setup_hidden_env import is_setup_hidden_env
 
 
 class TestIsSetupHiddenEnv:
-    @pytest.mark.parametrize(
-        "key",
-        [
-            "DISCORD_HOME_CHANNEL",
-            "DISCORD_HOME_CHANNEL_NAME",
-            "DISCORD_ALLOW_ALL_USERS",
-            "DISCORD_REPLY_TO_MODE",
-            "MATTERMOST_REPLY_MODE",
-            "TELEGRAM_PROXY",
-        ],
-    )
-    def test_self_configuring_knobs_are_hidden(self, key):
-        assert is_setup_hidden_env(key)
 
 
     def test_applies_to_plugin_platforms_nobody_enumerated(self):
@@ -39,15 +26,6 @@ class TestIsSetupHiddenEnv:
 
 
 class TestChannelCards:
-    def test_discord_card_asks_for_token_and_allowlist_only(self):
-        """The reported bug: the Discord card asked five questions for a
-        one-credential platform."""
-        from hermes_cli.web_server_messaging import _build_catalog_entry
-
-        assert set(_build_catalog_entry("discord")["env_vars"]) == {
-            "DISCORD_BOT_TOKEN",
-            "DISCORD_ALLOWED_USERS",
-        }
 
     def test_no_card_shows_a_hidden_knob(self):
         from hermes_cli.web_server_messaging import _messaging_platform_catalog

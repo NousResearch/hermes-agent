@@ -1,3 +1,4 @@
+import type { ProfileScope } from '@/hermes'
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
@@ -27,6 +28,22 @@ export interface SessionOwnerRoute {
 export type SessionProfileRoute = SessionOwnerRoute
 
 export type SessionOwnerScope = undefined | null | string | SessionOwnerRoute
+
+/** REST scope for a session owner. Undefined when the owner is unknown. */
+export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileScope {
+  if (!owner) {
+    return undefined
+  }
+
+  if (typeof owner === 'string') {
+    return owner
+  }
+
+  return {
+    connectionId: owner.connectionId,
+    profile: owner.targetProfile ?? owner.profile
+  }
+}
 
 /** Exact owner reconstructed from a CONNECTION-TAGGED session row (the
  *  Electron unified-list splice tags foreign registry rows; an optimistic row

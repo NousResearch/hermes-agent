@@ -59,7 +59,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 一个持久状态栏位于输入区域上方，实时更新：
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
 ```
 
 | 元素 | 描述 |
@@ -160,7 +160,7 @@ quick_commands:
     target: /gateway restart
 ```
 
-然后在任意聊天中输入 `/status`、`/gpu` 或 `/restart`。更多示例参见[配置指南](/user-guide/configuration#quick-commands)。
+然后在任意聊天中输入 `/status`、`/gpu` 或 `/restart`。更多示例参见[配置指南](./configuration.md#quick-commands)。
 
 ## 启动时预加载 Skill
 
@@ -310,7 +310,7 @@ CLI 在 agent 工作时显示动态反馈：
   ┊ 📄 web_extract (2.1s)
 ```
 
-使用 `/verbose` 循环切换显示模式：`off → new → all → verbose`。该命令也可为消息平台启用——参见[配置](/user-guide/configuration#display-settings)。
+使用 `/verbose` 循环切换显示模式：`off → new → all → verbose`。该命令也可为消息平台启用——参见[配置](./configuration.md#display-settings)。
 
 ### 工具预览长度
 
@@ -412,7 +412,7 @@ Hermes 立即确认任务并将提示符还给你：
 后台任务完成时，结果会以面板形式出现在终端中：
 
 ```
-╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+╭─ ☤ Hermes (background #1) ──────────────────────────────────╮
 │ Found 3 errors in syslog from today:                         │
 │ 1. OOM killer invoked at 03:22 — killed process nginx        │
 │ 2. Disk I/O error on /dev/sda1 at 07:15                      │

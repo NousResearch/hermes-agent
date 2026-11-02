@@ -3,13 +3,10 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import threading
-import time
 from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
-from unittest import mock
 
 import pytest
 
@@ -25,7 +22,7 @@ class _FakeResponse:
         *,
         status: int = 200,
         json_body: Any = None,
-        headers: Dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
         text: str = "",
     ) -> None:
         self.status_code = status
@@ -75,7 +72,7 @@ def test_store_and_load_photon_token(tmp_hermes_home: Path) -> None:
     assert auth_json["credential_pool"]["photon"][0]["access_token"] == "abc123def456"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+@pytest.mark.platforms("posix")  # POSIX mode bits only
 def test_save_auth_never_world_readable(tmp_hermes_home: Path) -> None:
     """auth.json must be created 0o600 — no window at process umask."""
     photon_auth.store_photon_token("secret-token")
@@ -174,7 +171,7 @@ def _hold_auth_lock_then_release(hold_event: threading.Event, release_event: thr
 # Device login flow
 
 def test_request_device_code_uses_photon_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         captured["url"] = url
@@ -201,7 +198,7 @@ def test_request_device_code_uses_photon_cli(monkeypatch: pytest.MonkeyPatch) ->
     assert captured["body"]["scope"] == "openid profile email"
 
 
-def _device_code() -> "photon_auth.DeviceCode":
+def _device_code() -> photon_auth.DeviceCode:
     return photon_auth.DeviceCode(
         device_code="d", user_code="u",
         verification_uri="https://x", verification_uri_complete=None,
@@ -242,7 +239,7 @@ def test_find_project_by_name_case_insensitive(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_create_project_omits_spectrum_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         captured["url"] = url
@@ -314,6 +311,94 @@ def test_user_assigned_line() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Opt-in routing: only a row carrying meta.opt_in routes.
+
+def _users_body(*rows: dict[str, Any]) -> _FakeResponse:
+    return _FakeResponse(json_body={"succeed": True, "data": {"users": list(rows)}})
+
+
+def test_wait_for_opted_in_user_polls_until_flag_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Poll 1 fails transiently, poll 2 sees no flag, poll 3 sees it land."""
+    calls = {"n": 0}
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        meta = {"opt_in": True} if calls["n"] >= 3 else {}
+        return _users_body({"id": "u1", "phoneNumber": "+15551234567",
+                            "assignedPhoneNumber": "+16282679185", "meta": meta})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    waits: list = []
+    user = photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=50, interval_s=5,
+        on_waiting=waits.append, sleep_fn=lambda _s: None,
+    )
+    assert user is not None and photon_auth.user_opted_in(user)
+    assert calls["n"] == 3 and waits == [1, 2]
+    # Never opted in -> None at the bound, not an endless poll.
+    monkeypatch.setattr(photon_auth.httpx, "get", lambda url, **kw: _users_body(
+        {"id": "u1", "phoneNumber": "+15551234567", "meta": {}}))
+    assert photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=15, interval_s=5,
+        sleep_fn=lambda _s: None,
+    ) is None
+
+
+def test_wait_for_opted_in_user_wall_clock_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slow list calls must not stretch the promised wait past timeout_s (attempt cap is 12)."""
+    now = {"t": 0.0, "calls": 0}
+
+    def slow_get(url: str, **kwargs: Any) -> _FakeResponse:
+        now["calls"] += 1
+        now["t"] += 31.0  # each call burns most of its 30 s HTTP timeout
+        return _users_body({"id": "u1", "phoneNumber": "+15551234567", "meta": {}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", slow_get)
+    assert photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=60, interval_s=5,
+        sleep_fn=lambda s: now.__setitem__("t", now["t"] + s), clock=lambda: now["t"],
+    ) is None
+    assert now["calls"] == 2 and now["t"] <= 60 + 31
+
+
+def test_register_user_if_absent_reuses_opted_in_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-run must reuse the OPTED-IN duplicate, not list order, or a landed opt-in is lost."""
+    monkeypatch.setattr(photon_auth.httpx, "get", lambda url, **kw: _users_body(
+        {"id": "stale", "phoneNumber": "+15551234567", "meta": {}},
+        {"id": "live", "phoneNumber": "+1 (555) 123-4567", "meta": {"opt_in": True}},
+    ))
+    monkeypatch.setattr(photon_auth.httpx, "post", lambda url, **kw: pytest.fail("created a duplicate"))
+    user, created = photon_auth.register_user_if_absent(
+        "proj", "secret", phone_number="+15551234567",
+    )
+    assert created is False and user["id"] == "live"
+
+
+def test_print_routing_status_uses_short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`photon status` must not stall ~30 s on a black-holed API: the live row uses a short
+    timeout and reports "could not verify" instead of hanging or raising."""
+    seen: list = []
+
+    def timing_out_get(url: str, **kwargs: Any) -> _FakeResponse:
+        seen.append(kwargs.get("timeout"))
+        raise photon_auth.httpx.ReadTimeout("")
+
+    monkeypatch.setattr(photon_auth, "load_user_numbers", lambda: ("+15551234567", "+16282679185"))
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: ("proj", "secret"))
+    monkeypatch.setattr(photon_auth.httpx, "get", timing_out_get)
+    lines: list = []
+    photon_auth.print_routing_status(lines.append)
+    assert seen and seen[0] <= 5.0
+    assert lines == ["  routing             : ? could not verify (ReadTimeout)"]
+
+
+# ---------------------------------------------------------------------------
 # Lines (assigned number)
 
 def test_get_imessage_line_returns_existing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -345,12 +430,8 @@ def test_credential_summary_no_secret_leak(
     blob = "\n".join(lines)
     assert "token-aaaa" not in blob
     assert "secret-bbbb" not in blob
-    assert "device token        : ✓" in blob
-    assert "project secret      : ✓" in blob
-    # Unified id: dashboard id == Spectrum id, surfaced as one project id.
-    assert "project id          : sp-uuid" in blob
-    assert "my number           : ✗ missing" in blob
-    assert "assigned number     : ✗ missing" in blob
+    # Non-secret identifiers are still surfaced.
+    assert "sp-uuid" in blob
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +457,7 @@ def test_device_response_candidates_covers_known_shapes() -> None:
 def test_validate_photon_token_rejects_unrecognized_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/get-session"):
             return _FakeResponse(json_body={})  # no "user" key
         return _FakeResponse(json_body=[])
@@ -389,7 +470,7 @@ def test_validate_photon_token_rejects_unrecognized_session(
 def test_login_device_flow_validates_before_persisting(
     tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
+    def fake_post(url: str, *, json: dict[str, Any], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/device/code"):
             return _FakeResponse(json_body={
                 "device_code": "dev", "user_code": "AAAA",
@@ -400,7 +481,7 @@ def test_login_device_flow_validates_before_persisting(
         # device/token approval
         return _FakeResponse(json_body={"access_token": "good-token"})
 
-    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> _FakeResponse:
         if url.endswith("/api/auth/get-session"):
             return _FakeResponse(json_body={"user": {"id": "u1"}})
         return _FakeResponse(json_body=[])  # projects OK

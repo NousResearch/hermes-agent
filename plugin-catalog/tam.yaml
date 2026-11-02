@@ -1,0 +1,20 @@
+name: tam
+repo: https://github.com/vbcherepanov/hermes-tam-memory
+sha: 9a6e51839fb0619c6e41804ac201272e857ea825
+subdir: hermes_tam_memory
+version: "0.1.1"
+description: "Local-first long-term memory backed by total-agent-memory (TAM) over MCP — saves each completed turn (with a noise filter; TAM's quality gate applies), recalls relevant memories before each turn within a token budget, and adds tam_recall / tam_save tools; optional TAM team server for shared company memory. Disclosure — local mode starts the separately installed tam binary as a child process per session with an allowlisted environment that carries no credentials: Hermes provider keys (including HF_TOKEN and OLLAMA_API_KEY), TAM_API_TOKEN and any *_TOKEN / *_API_KEY / *_SECRET / *_PASSWORD variable are withheld, and of HF_* / OLLAMA_* only non-secret settings pass (OLLAMA_URL, OLLAMA_EMBED_MODEL, HF_HOME, HF_HUB_OFFLINE); it stores user/assistant turn text plus built-in memory additions (not tool output) in TAM's store, by default outside HERMES_HOME and shared with other agents using TAM; remote mode sends the same text to the user-configured URL with an optional TAM_API_TOKEN bearer token; hermes memory setup tam writes tam.json, TAM_API_TOKEN to .env and memory.provider in config.yaml."
+maintainer: vbcherepanov
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/vbcherepanov/hermes-tam-memory#readme
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+  - tam_recall
+  - tam_save
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

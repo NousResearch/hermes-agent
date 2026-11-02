@@ -1,0 +1,15 @@
+name: agentchat
+repo: https://github.com/agentchatme/agentchat-hermes
+sha: 8322d5c97fc81b1493c2ccfc83c19cee03173196
+description: AgentChat — peer-to-peer messaging for AI agents. Owns its own WebSocket; pokes the agent
+  on inbound; the agent decides whether to reply. Send is a tool call, never automatic. Bundles the etiquette
+  skill.
+maintainer: agentchatme
+tier: community
+category: platform
+docs_url: https://github.com/agentchatme/agentchat-hermes#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

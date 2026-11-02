@@ -96,6 +96,7 @@ def _make_source(path: Path) -> dict[str, int]:
         # These are derived transition markers and must not reach the new DB.
         db.set_meta("fts_rebuild_high_water", "999")
         db.set_meta("fts_rebuild_progress", "500")
+        db.set_meta("fts_tool_full_content_high_water", "7")
     finally:
         db.close()
     return {"sessions": 3, "messages": 21}
@@ -739,6 +740,25 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
     ]
 
 
+def test_recovery_regenerates_rather_than_copies_derived_fts_meta(tmp_path: Path) -> None:
+    """Derived FTS markers (including the retired tool high-water key) never reach the new DB."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+
+    conn = sqlite3.connect(str(output))
+    try:
+        keys = {row[0] for row in conn.execute("SELECT key FROM state_meta")}
+    finally:
+        conn.close()
+    assert "goal:recovery-session-0" in keys
+    assert not keys & {"fts_rebuild_high_water", "fts_rebuild_progress", "fts_tool_full_content_high_water"}
+
+
 def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:
     """CLI-only stores never created the lazy table; that is not data loss."""
 
@@ -915,3 +935,42 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     assert result["range_queries"] < 200
     # Only the rows on the damaged leaf are lost; everything behind it is recovered.
     assert result["copied_rows"] >= 180 - 60
+
+
+def test_recover_carries_message_identity_columns(tmp_path):
+    """``hermes sessions recover`` copies the compatible columns of ``messages`` into a current-schema
+    database: the durable ids (``message_uid``, the merge witness, the tool-call uids) survive with the rows."""
+    source = tmp_path / "source.db"
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("s", "cli", model="m")
+        db.append_message(session_id="s", role="user", content="q")
+        db._conn.execute("UPDATE messages SET absorbed_message_uids = ? WHERE content = 'q'", (json.dumps(["b" * 32]),))
+        db._conn.commit()
+        db.append_message(
+            session_id="s", role="assistant", content="",
+            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}])
+        db.append_message(session_id="s", role="tool", content="r", tool_call_id="call_1", tool_name="t")
+        expected = [dict(r) for r in db._conn.execute(
+            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+            "FROM messages WHERE session_id = 's' ORDER BY id")]
+    finally:
+        db.close()
+    assert all(len(r["message_uid"]) == 32 for r in expected)
+
+    output = tmp_path / "recovered.db"
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+
+    recovered = SessionDB(db_path=output)
+    try:
+        got = [dict(r) for r in recovered._conn.execute(
+            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+            "FROM messages WHERE session_id = 's' ORDER BY id")]
+        assert got == expected
+        restored = recovered.get_messages_as_conversation("s")
+        assert [m["message_uid"] for m in restored] == [r["message_uid"] for r in expected]
+        assert restored[0]["_absorbed_message_uids"] == ["b" * 32]
+        assert restored[2]["_tool_call_uid"] == restored[1]["_tool_call_uids"]["call_1"]
+    finally:
+        recovered.close()

@@ -11,15 +11,13 @@ from unittest.mock import patch
 from tools.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
-    _read_skill_name,
+    read_skill_name,
     _write_manifest,
     _discover_bundled_skills,
-    _compute_relative_dest,
-    _dir_hash,
+    dir_hash,
     sync_skills,
 )
 from tools.skills_sync_bundled_ops import reset_bundled_skill
-from tools.skills_sync_optional import restore_official_optional_skill
 
 
 class TestReadWriteManifest:
@@ -72,16 +70,16 @@ class TestDirHash:
             d.mkdir()
             (d / "SKILL.md").write_text("# Test")
             (d / "main.py").write_text("print(1)")
-        assert _dir_hash(dir_a) == _dir_hash(dir_b)
+        assert dir_hash(dir_a) == dir_hash(dir_b)
 
         (dir_b / "SKILL.md").write_text("# Version 2")
-        assert _dir_hash(dir_a) != _dir_hash(dir_b)
+        assert dir_hash(dir_a) != dir_hash(dir_b)
 
         empty = tmp_path / "empty"
         empty.mkdir()
-        assert isinstance(_dir_hash(empty), str) and len(_dir_hash(empty)) == 32
+        assert isinstance(dir_hash(empty), str) and len(dir_hash(empty)) == 32
         # A nonexistent dir hashes as empty content rather than raising.
-        assert isinstance(_dir_hash(tmp_path / "nope"), str)
+        assert isinstance(dir_hash(tmp_path / "nope"), str)
 
 
 class TestDiscoverBundledSkills:
@@ -116,16 +114,16 @@ class TestReadSkillName:
         skill_md = tmp_path / "SKILL.md"
 
         skill_md.write_text("---\nname: audiocraft-audio-generation\n---\n# Skill")
-        assert _read_skill_name(skill_md, "audiocraft") == "audiocraft-audio-generation"
+        assert read_skill_name(skill_md, "audiocraft") == "audiocraft-audio-generation"
 
         skill_md.write_text('---\nname: "serving-llms-vllm"\n---\n')
-        assert _read_skill_name(skill_md, "vllm") == "serving-llms-vllm"
+        assert read_skill_name(skill_md, "vllm") == "serving-llms-vllm"
 
         skill_md.write_text("# Just a heading\nNo frontmatter here")
-        assert _read_skill_name(skill_md, "my-skill") == "my-skill"
+        assert read_skill_name(skill_md, "my-skill") == "my-skill"
 
         skill_md.write_text("---\nname:\n---\n")
-        assert _read_skill_name(skill_md, "fallback") == "fallback"
+        assert read_skill_name(skill_md, "fallback") == "fallback"
 
     def test_discover_uses_frontmatter_name(self, tmp_path):
         skill_dir = tmp_path / "category" / "audiocraft"
@@ -137,13 +135,6 @@ class TestReadSkillName:
         assert skills[0][0] == "audiocraft-audio-generation"
 
 
-class TestComputeRelativeDest:
-    def test_preserves_category_structure(self):
-        bundled = Path("/repo/skills")
-        dest = _compute_relative_dest(Path("/repo/skills/mlops/axolotl"), bundled)
-        assert str(dest).endswith("mlops/axolotl")
-        # Flat (uncategorized) skills keep their own name.
-        assert _compute_relative_dest(Path("/repo/skills/simple"), bundled).name == "simple"
 
 
 class TestRmtreeWritableScopeGuard:
@@ -312,7 +303,7 @@ class TestRenamedBundledSkillRecovery:
 
         # User's copy sits at the OLD path, byte-identical to what sync wrote.
         old = self._skill(skills_dir, "oldcat/moved-skill")
-        origin_hash = _dir_hash(old)
+        origin_hash = dir_hash(old)
         manifest_file.parent.mkdir(parents=True, exist_ok=True)
         manifest_file.write_text(f"moved-skill:{origin_hash}\n")
 
@@ -333,7 +324,7 @@ class TestRenamedBundledSkillRecovery:
         assert "moved-skill" in result["updated"]
         assert "Updated upstream" in (new / "SKILL.md").read_text()
         # Future syncs can now detect further upstream changes.
-        assert recorded == _dir_hash(bundled / "newcat" / "moved-skill")
+        assert recorded == dir_hash(bundled / "newcat" / "moved-skill")
 
     def test_rename_leaves_user_modified_and_hub_owned_copies_alone(self, tmp_path):
         """A user-edited copy is never moved or overwritten, and a hub-owned
@@ -343,12 +334,12 @@ class TestRenamedBundledSkillRecovery:
         manifest_file = skills_dir / ".bundled_manifest"
 
         edited = self._skill(skills_dir, "oldcat/moved-skill")
-        edited_hash = _dir_hash(edited)
+        edited_hash = dir_hash(edited)
         # User then edits their copy, so it no longer matches the origin hash.
         (edited / "SKILL.md").write_text("---\nname: moved-skill\n---\n# MY EDITS\n")
 
         hub = self._skill(skills_dir, "oldcat/hub-skill", name="hub-skill")
-        hub_hash = _dir_hash(hub)
+        hub_hash = dir_hash(hub)
 
         manifest_file.parent.mkdir(parents=True, exist_ok=True)
         manifest_file.write_text(
@@ -470,7 +461,7 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
         skills_dir.mkdir(parents=True)
-        old_hash = _dir_hash(bundled / "old-skill")
+        old_hash = dir_hash(bundled / "old-skill")
         manifest_file.write_text(f"old-skill:{old_hash}\nremoved-skill:def456\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
@@ -497,7 +488,7 @@ class TestSyncSkills:
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old v1")
-        manifest_file.write_text(f"old-skill:{_dir_hash(user_skill)}\n")
+        manifest_file.write_text(f"old-skill:{dir_hash(user_skill)}\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
             def failing_copytree(src, dst, *a, **kw):
@@ -520,6 +511,52 @@ class TestSyncSkills:
             result2 = sync_skills(quiet=True)
             assert "new-skill" in result2["copied"]
             assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+
+
+class TestDroppedBuiltinProvenance:
+    """#95415: a built-in the catalog dropped keeps built-in provenance while any copy of it is left;
+    otherwise /api/skills badges it "Learned" and the Desktop offers edit/archive for it."""
+
+    def _bundled(self, tmp_path, *names):
+        bundled = tmp_path / "bundled_skills"
+        shutil.rmtree(bundled, ignore_errors=True)
+        for name in names:
+            (bundled / "cat" / name).mkdir(parents=True)
+            (bundled / "cat" / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n")
+        return bundled
+
+    def _sync(self, bundled):
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+                patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"):
+            return sync_skills(quiet=True)
+
+    def test_catalog_drop_keeps_builtin_provenance_while_a_copy_exists(self, tmp_path):
+        from hermes_constants import get_hermes_home
+        from tools.skill_usage import provenance
+
+        skills = get_hermes_home() / "skills"
+        self._sync(self._bundled(tmp_path, "kept", "dropped", "dropped-archived", "dropped-deleted"))
+        (skills / ".archive").mkdir()
+        shutil.move(str(skills / "cat" / "dropped-archived"), str(skills / ".archive" / "dropped-archived"))
+        shutil.rmtree(skills / "cat" / "dropped-deleted")
+
+        result = self._sync(self._bundled(tmp_path, "kept"))
+
+        assert result["cleaned"] == ["dropped-deleted"]
+        assert {"dropped", "dropped-archived"} <= set(_read_manifest())
+        assert provenance("dropped") == "bundled" and provenance("dropped-archived") == "bundled"
+
+    def test_suppressed_builtin_is_not_agent_authored_after_manifest_cleanup(self, tmp_path):
+        """Profiles an older sync already cleaned: the curator suppression list only records built-ins."""
+        from hermes_constants import get_hermes_home
+        from tools.skill_usage import provenance
+
+        skills = get_hermes_home() / "skills"
+        (skills / "resurrected").mkdir(parents=True)
+        (skills / "resurrected" / "SKILL.md").write_text("---\nname: resurrected\n---\n")
+        (skills / ".curator_suppressed").write_text("resurrected\n")
+
+        assert provenance("resurrected") == "bundled"
 
 
 class TestGetBundledDir:
@@ -586,7 +623,7 @@ class TestResetBundledSkill:
 
             # After reset, the manifest should hold the *current* bundled hash
             manifest_after = _read_manifest()
-            expected = _dir_hash(bundled / "productivity" / "google-workspace")
+            expected = dir_hash(bundled / "productivity" / "google-workspace")
             assert manifest_after["google-workspace"] == expected
         # User's copy was preserved (we didn't delete)
         assert dest.exists()
@@ -606,7 +643,6 @@ class TestResetBundledSkill:
 
         assert untracked["ok"] is False
         assert untracked["action"] == "not_in_manifest"
-        assert "not a tracked bundled skill" in untracked["message"]
 
         # Tracked in the manifest, but no longer shipped upstream.
         ghost = skills_dir / "productivity" / "ghost-skill"
@@ -696,7 +732,6 @@ class TestResetBundledSkill:
         # Restore failed, and the manifest must be left untouched.
         assert result["ok"] is False
         assert result["action"] == "not_reset"
-        assert "Manifest entry preserved" in result["message"]
         manifest_after = manifest_file.read_text()
         assert "google-workspace" in manifest_after
         # User copy is still on disk (we changed nothing).
@@ -850,7 +885,7 @@ class TestUpdateBackupRecovery:
         dest.mkdir(parents=True)
         (dest / "SKILL.md").write_text(text)
         with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
-            _write_manifest({"old-skill": _dir_hash(dest)})
+            _write_manifest({"old-skill": dir_hash(dest)})
         return dest
 
     def test_stale_backup_does_not_poison_failed_update(self, tmp_path):

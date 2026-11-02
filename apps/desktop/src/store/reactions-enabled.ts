@@ -15,11 +15,14 @@ import { atom } from 'nanostores'
 import { persistString, storedString } from '@/lib/storage'
 import { mirrorDisplayToggle } from '@/store/display-toggles'
 
+import { recordFeatureToggle } from './desktop-metrics'
+
 const KEY = 'hermes.desktop.reactions.v1'
 
 export const $reactionsEnabled = atom<boolean>(typeof window === 'undefined' ? false : storedString(KEY) === 'on')
 
 export function setReactionsEnabled(enabled: boolean): void {
+  recordFeatureToggle('reactions', $reactionsEnabled.get(), enabled)
   $reactionsEnabled.set(enabled)
 }
 

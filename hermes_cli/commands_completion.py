@@ -5,6 +5,7 @@ prompt_toolkit-free for the gateway."""
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import shutil
 import subprocess
@@ -16,16 +17,16 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS, SUBCOMMAND_DESCRIPTIONS
+from hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
-    Tuple[Tuple[Optional[str], Optional[int], Optional[int]], Dict[str, Any]]
+    tuple[tuple[Optional[str], Optional[int], Optional[int]], dict[str, Any]]
 ] = None
 
 
-def _personalities_from_cli_config() -> Dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+mtime+size:
+def _personalities_from_cli_config() -> dict[str, Any]:
+    """``available_personalities(load_cli_config())`` memoised on config path+signature:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
@@ -33,11 +34,11 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
+        from hermes_cli.config_backend import config_cache_version
         cfg_path = get_config_path()
-        st = cfg_path.stat()
-        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
+        sig = (str(cfg_path), *config_cache_version(cfg_path))
     except Exception:
-        sig = (None, None, None)
+        sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:
         _personalities_memo = (sig, available_personalities(load_cli_config()))
     return _personalities_memo[1]
@@ -218,7 +219,7 @@ def _dir_completions(
 def _path_completions(word: str, limit: int = 30):
     """Path completions for *word*, keeping the user's style (~, absolute, relative)."""
     if word.startswith("~"):
-        text_for = lambda fp: "~/" + os.path.relpath(fp, os.path.expanduser("~"))  # noqa: E731
+        text_for = lambda fp: "~/" + os.path.relpath(fp, os.path.expanduser("~"))
     else:
         text_for = str if os.path.isabs(word) else os.path.relpath
     yield from _dir_completions(os.path.expanduser(word), word, limit, text_for)
@@ -271,8 +272,10 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
-        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None) -> None:
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        plugin_commands_provider: Callable[[], Mapping[str, str] | None] | None = None) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._plugin_commands_provider = plugin_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
         # Cached project file list for fuzzy @ completions
@@ -281,11 +284,6 @@ class SlashCommandCompleter(Completer):
         self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
-        from hermes_cli.commands import command_available, resolve_command
-
-        command = resolve_command(slash_command)
-        if command is not None and not command_available(command):
-            return False
         try:
             return self._command_filter is None or bool(self._command_filter(slash_command))
         except Exception:
@@ -307,7 +305,8 @@ class SlashCommandCompleter(Completer):
         return "/" + token.lstrip("/").replace("_", "-").lower()
 
     def _is_skill_command(self, token: str) -> bool:
-        return self._normalize_skill_token(token) in self._iter_skill_commands()
+        from agent.skill_commands import resolve_slash_key
+        return resolve_slash_key(token.lstrip("/"), self._iter_skill_commands()) is not None
 
     def _stacked_skill_completions(self, text: str):
         """Skill-command completions for stacked invocations (``/skill-a /skill-b do XYZ``): only
@@ -319,21 +318,22 @@ class SlashCommandCompleter(Completer):
             _cap = 5
         completed, current_word = _split_args(text)
         skill_cmds = self._iter_skill_commands()
+        from agent.skill_commands import resolve_slash_key
         seen: set[str] = set()
         for token in completed:
-            key = self._normalize_skill_token(token)
-            if key not in skill_cmds or key in seen:
+            key = resolve_slash_key(token.lstrip("/"), skill_cmds)
+            if key is None or key in seen:
                 return
             seen.add(key)
         if len(seen) >= _cap or not current_word.startswith("/"):
             return  # a bare space after the chain may start the instruction
         word_key = self._normalize_skill_token(current_word)
         for cmd, info in skill_cmds.items():
-            if cmd in seen or not cmd.startswith(word_key):
+            if cmd in seen or not self._normalize_skill_token(cmd).startswith(word_key):
                 continue
             # Exact match: trailing space keeps the dropdown open for the next stacked token.
             yield _completion(
-                f"{cmd} " if cmd == word_key else cmd, current_word, cmd,
+                f"{cmd} " if self._normalize_skill_token(cmd) == word_key else cmd, current_word, cmd,
                 f"⚡ {info.get('description', 'Skill command')}")
 
     @staticmethod
@@ -385,7 +385,7 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd, encoding="utf-8", errors="replace")
+                    cwd=cwd, encoding="utf-8", errors="replace", check=False)
             except (subprocess.TimeoutExpired, OSError):
                 continue
             if proc.returncode != 0 or not proc.stdout.strip():
@@ -440,8 +440,7 @@ class SlashCommandCompleter(Completer):
                 yield from handler(sub_text, sub_text.lower())
             elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 yield from _prefix_completions(
-                    ((s, SUBCOMMAND_DESCRIPTIONS.get(base_cmd, {}).get(s))
-                     for s in SUBCOMMANDS[base_cmd]), sub_text)
+                    ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
         word = text[1:]
 
@@ -459,14 +458,22 @@ class SlashCommandCompleter(Completer):
         for cmd, info in self._iter_skill_commands().items():
             if cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
+        for cmd_name, desc in self._plugin_commands().items():
+            if cmd_name.startswith(word):
+                yield _cmd_completion(cmd_name, f"🔌 {desc or 'Plugin command'}")
+
+    def _plugin_commands(self) -> Mapping[str, str]:
+        """``{name: description}``: the provider's (the classic CLI asks its gateway), else, when it
+        has none (None), this process's plugin registry."""
         try:
-            from hermes_cli.plugins import get_plugin_commands
-            for cmd_name, cmd_info in get_plugin_commands().items():
-                if cmd_name.startswith(word):
-                    yield _cmd_completion(
-                        cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")
-        except Exception:
-            pass
+            found = self._plugin_commands_provider() if self._plugin_commands_provider else None
+            if found is None:
+                from hermes_cli.plugins import get_plugin_commands
+                found = {name: info.get("description", "") for name, info in get_plugin_commands().items()}
+            return found
+        except Exception:  # a plugin's registry or the gateway call must never break typing
+            logging.getLogger(__name__).debug("plugin command completion unavailable", exc_info=True)
+            return {}
 
 
 class SlashCommandAutoSuggest(AutoSuggest):
@@ -515,3 +522,13 @@ class SlashCommandAutoSuggest(AutoSuggest):
                 if sub.startswith(sub_lower) and sub != sub_lower:
                     return Suggestion(sub[len(sub_text):])
         return self._history_suggestion(buffer, document)
+
+
+def cli_slash_completer(cli):
+    """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
+    the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""
+    from cli import _session_skill_commands, get_skill_bundles
+    from hermes_cli import gateway_plugin_commands
+    return SlashCommandCompleter(
+        skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
+        skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))

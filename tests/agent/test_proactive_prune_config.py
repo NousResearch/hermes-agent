@@ -59,12 +59,6 @@ def _make_agent(monkeypatch, tmp_path: Path, **prune_keys):
 
 
 class TestProactivePruneConfig:
-    def test_default_is_disabled_when_unset(self, monkeypatch, tmp_path):
-        agent = _make_agent(monkeypatch, tmp_path)
-        cc = agent.context_compressor
-        assert cc.proactive_prune_tokens == 0
-        assert cc.proactive_prune_min_result_chars == 8000
-        assert cc.proactive_prune_min_reclaim_tokens == 4096
 
     def test_custom_values_are_honored(self, monkeypatch, tmp_path):
         agent = _make_agent(

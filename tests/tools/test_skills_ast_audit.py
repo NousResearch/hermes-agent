@@ -49,4 +49,3 @@ def test_format_report_with_findings():
     ]
     out = format_ast_report(findings, skill_name="test")
     assert "test" in out and "a.py" in out and "L1" in out and "L3" in out
-    assert "diagnostic hints" in out

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 from hermes_state import SessionDB
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def test_session_history_preserves_codex_message_items(tmp_path):
@@ -28,7 +28,7 @@ def test_session_history_preserves_codex_message_items(tmp_path):
         tool_calls=[{"id": "call-1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
     )
     previous_db = server._db
-    setattr(server, "_db", db)
+    server._db = db
     server._sessions["runtime-session"] = {
         "session_key": "stored-session",
         "history": [],
@@ -43,7 +43,7 @@ def test_session_history_preserves_codex_message_items(tmp_path):
         )
     finally:
         server._sessions.pop("runtime-session", None)
-        setattr(server, "_db", previous_db)
+        server._db = previous_db
         db.close()
 
     assert isinstance(response, dict)

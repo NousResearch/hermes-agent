@@ -1,0 +1,18 @@
+name: athletedata
+title: athletedata
+repo: https://github.com/athletedata-health/mcp
+sha: 1ca2fa8d129c6b7c80a8af516a6653b7aa250679
+version: "1.0.0"
+description: "The athlete's own training and health data from 39 apps (Garmin, Oura, WHOOP, Hevy, Apple Health, Intervals.icu and more) through athletedata's hosted MCP server (Streamable HTTP at https://mcp.athletedata.health/mcp): activities, training load, HRV, sleep, readiness, nutrition, body composition, race predictions, and structured workouts pushed to the athlete's watch. Bundles one skill that tells the agent when to use it. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code: every tool call, with its arguments, goes to mcp.athletedata.health and needs an athletedata account (paid, 7-day free trial) with its API key in ATHLETEDATA_API_KEY; the athlete's health and training data is returned from that server. Write tools (push a workout to the watch, log food, create a Hevy routine) change the athlete's own accounts; the package marks the server untrusted, so Hermes asks before every tool the server does not annotate as read-only. The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: athletedata
+tier: community
+category: tools
+docs_url: https://github.com/athletedata-health/mcp#hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [ATHLETEDATA_API_KEY]

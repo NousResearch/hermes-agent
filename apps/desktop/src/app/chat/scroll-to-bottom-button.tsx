@@ -2,13 +2,43 @@ import { useStore } from '@nanostores/react'
 import { useReducedMotion } from 'motion/react'
 import { useMemo, useRef } from 'react'
 
+import { useTranscriptWindow } from '@/components/assistant-ui/thread/transcript-window'
 import { Codicon } from '@/components/ui/codicon'
 import { AnimatedInt } from '@/components/ui/diff-count'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionApprovalRequest } from '@/store/prompts'
-import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom } from '@/store/thread-scroll'
+import {
+  $threadJumpButtonVisibleBySession,
+  $threadMessagesBelowBySession,
+  requestScrollToBottom
+} from '@/store/thread-scroll'
+
+import { useComposerSurfaceId } from './composer/scope'
+
+// Attribute-safe selector fragment. jsdom (vitest) does not ship `CSS.escape`.
+const cssEscape = (value: string): string => {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+
+  return value.replace(/[^a-zA-Z0-9_:-]/g, ch => `\\${ch}`)
+}
+
+// The pending-approval stack renders once per pane, tagged with the owning
+// session so a split view can't jump one pane's arrow into a sibling's
+// approval. `nearest` keeps this a minimal scroll within the transcript's own
+// scroll container instead of an unqualified scrollIntoView, which would also
+// nudge any overflow-hidden ancestor's programmatic scroll offset.
+function findSessionApprovalStack(sessionId: string | null): HTMLElement | null {
+  if (!sessionId) {
+    return null
+  }
+
+  return document.querySelector<HTMLElement>(`[data-approval-stack][data-session-id="${cssEscape(sessionId)}"]`)
+}
 
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
@@ -19,12 +49,10 @@ import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom }
  * away from the bottom, with an animated count of messages below the viewport.
  * Clicking re-arms sticky-bottom and pins the viewport.
  *
- * When the turn is BLOCKED on an approval, this same control morphs into an
- * "Approval needed" pill — the only response surface is the inline Run/Reject
- * bar on the parked tool row, which is always the bottom-most content, so the
- * existing scroll-to-bottom action lands the user right on it. One control, no
- * collision, no second scroll path (native scrollIntoView would scroll
- * overflow:hidden ancestors that can't scroll back and wreck the layout).
+ * While an approval is pending, relabel this control and, instead of jumping
+ * to the transcript's true bottom (which can overshoot a mid-transcript
+ * approval once newer content lands below it), scroll directly to the
+ * session's own approval stack.
  *
  * Enter/exit motion lives in styles.css under `.thread-jump-button` — a
  * directional scale (contract in from 1.1, contract out to 0.9) keyed off
@@ -33,8 +61,19 @@ import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom }
  */
 export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
-  const visible = useStore($threadJumpButtonVisible)
-  const count = useStore($threadMessagesBelow)
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+  const { isHistorical } = useTranscriptWindow()
+
+  const scrollVisible = useStoreSelector($threadJumpButtonVisibleBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
+  const count = useStoreSelector($threadMessagesBelowBySession, map =>
+    scrollSessionId ? (map[scrollSessionId] ?? 0) : 0
+  )
+
+  const visible = isHistorical || scrollVisible
   const reducedMotion = useReducedMotion()
   const request = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   // Scrolled away while an approval is pending → the inline Run/Reject bar is
@@ -71,7 +110,16 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       data-state={state}
       onClick={() => {
         triggerHaptic('selection')
-        requestScrollToBottom(sessionId)
+
+        const approvalStack = visibleApproval ? findSessionApprovalStack(request?.sessionId ?? null) : null
+
+        if (approvalStack) {
+          approvalStack.scrollIntoView({ block: 'nearest' })
+
+          return
+        }
+
+        requestScrollToBottom(scrollSessionId)
       }}
       style={{
         bottom: 'calc(var(--composer-measured-height) + 1rem)'

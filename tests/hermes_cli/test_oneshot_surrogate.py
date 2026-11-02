@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -35,5 +36,5 @@ def test_oneshot_replaces_lone_surrogate_and_exits_zero():
     # U+FFFD as UTF-8; no raw surrogate bytes
     assert "\ufffd".encode("utf-8") in result.stdout
     assert b"answer " in result.stdout
-    assert b" here\n" in result.stdout
+    assert (" here" + os.linesep).encode("ascii") in result.stdout
     assert b"Traceback" not in result.stderr

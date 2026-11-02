@@ -1,0 +1,3 @@
+.electron-local/
+.results*/
+__pycache__/

@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import type { useRoster } from './data'
 import { displayName } from './labels'
-import { mergeServerMeta, pullServerAvatars } from './profile-ops'
+import { pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
 import { backfillMessagingProtocol } from './soul'
@@ -43,12 +43,19 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       $lastSources.set(data.sources)
     }
 
-    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
+    // Names were already reconciled when the snapshot was fetched
+    // (data.ts::fetchRosterSnapshot), for every reader, pane open or not.
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
+    // Key on the `profiles`/`sources` subtrees, not the envelope: every 5 s
+    // poll stamps a fresh `fetchedAt`, so the envelope is a new object each
+    // tick while structural sharing keeps unchanged subtrees reference-stable.
+    // Keying on the envelope republished an identical roster every poll —
+    // every $lastRoster subscriber re-rendered and the avatar/meta/activity
+    // side effects re-ran with nothing changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data])
+  }, [live, data?.sources])
 }

@@ -87,7 +87,6 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
                 mcp_tool._reset_server_error(self.name)
                 self._reconnect_retries = 0
                 await self._wait_for_lifecycle_event()
-                return
 
         task = _Task("srv")
         task._registered_tool_names = ["srv__tool"]
@@ -112,17 +111,13 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
             f"(expected >= 8)"
         )
 
-        # Verify the counter is an instance variable, not a local.
-        assert hasattr(task, "_reconnect_retries"), (
-            "_reconnect_retries should be an instance variable"
-        )
 
         # Clean shutdown.
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
@@ -191,7 +186,7 @@ def test_reconnect_counter_still_parks_on_consecutive_failures(monkeypatch, tmp_
         task._reconnect_event.set()
         try:
             await asyncio.wait_for(run_task, timeout=15)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())

@@ -1,0 +1,26 @@
+# Community catalog entry: loaded-skills-indicator
+#
+# Owner-submitted: the PR author (`yugasurfer`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as static
+# files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+name: loaded-skills-indicator
+repo: https://github.com/yugasurfer/loaded-skills-indicator
+sha: "1c501473b192a45cbb36d08d1bc8c51f940ea416"   # tag v1.0.0
+description: "Status-bar chip, popover and dockable pane showing which skills are read into the active Hermes Desktop conversation's context: full bodies bold with an accent dot, compression-pruned ones ghosted, never-loaded ones not listed. A second pane view lists the whole skill library grouped by category with descriptions and a loaded marker, and clicking a skill drops /<skill> into the composer for you to send (it never submits). A small local backend reads the profile's state.db read-only to tell a live skill body from a [SKILL_PRUNED] marker, and reads SKILL.md frontmatter for the descriptions. No network calls, no credentials, no telemetry, no writes. Disclosure — the local backend opens state.db read-only for the requested session in this profile, the default root and, as a fallback, every other profile's state.db, and returns only skill names and load state; it reads SKILL.md frontmatter under the Hermes skill directories and makes no network calls or writes."
+maintainer: yugasurfer
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/yugasurfer/loaded-skills-indicator#readme
+version: "1.0.0"
+title: "Loaded Skills Indicator"
+image: https://raw.githubusercontent.com/yugasurfer/loaded-skills-indicator/1c501473b192a45cbb36d08d1bc8c51f940ea416/media/banner.png
+screenshots:
+- https://raw.githubusercontent.com/yugasurfer/loaded-skills-indicator/1c501473b192a45cbb36d08d1bc8c51f940ea416/media/pane-loaded.png
+- https://raw.githubusercontent.com/yugasurfer/loaded-skills-indicator/1c501473b192a45cbb36d08d1bc8c51f940ea416/media/pane-available.png
+- https://raw.githubusercontent.com/yugasurfer/loaded-skills-indicator/1c501473b192a45cbb36d08d1bc8c51f940ea416/media/popover.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

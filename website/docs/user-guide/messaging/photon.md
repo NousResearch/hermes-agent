@@ -42,7 +42,8 @@ automatically.
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
-- **Node.js 18.17 or newer** on PATH (`node --version`)
+- Node.js: Hermes uses its managed Node when available.
+  `hermes pm install node` provisions the pin; the adapter can fall back to PATH.
 - A phone number that can receive iMessage (used to bind your account)
 
 That's it — there is no public URL or tunnel to set up.
@@ -222,7 +223,7 @@ Common issues:
 - **Cron and standalone sends need the gateway running.** Out-of-process
   senders (cron jobs, `hermes send`, the dashboard) reuse the sidecar the
   gateway spawned — they read its port/token from
-  `<hermes-home>/runtime/photon-sidecar.json`, written once the sidecar
+  `<hermes-home>/photon-sidecar.json`, written once the sidecar
   passes its health check and removed when it stops. If a standalone send
   reports the gateway appears to be down, start (or restart) the gateway
   first.
@@ -241,7 +242,6 @@ Common issues:
 | `PHOTON_PROJECT_SECRET`   | from `.env`        | Project secret; set by setup               |
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
-| `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

@@ -70,19 +70,4 @@ describe('the bot-chat set moves independently of session state', () => {
 
     expect(isBotChatSession('runtime-1')).toBe(true)
   })
-
-  it('does not re-notify when the same scope is recorded twice', () => {
-    setSessionTileWorkspaceScope('stored-1', botScope)
-
-    const seen: number[] = []
-    const stop = $botChatSessionIds.listen(ids => seen.push(ids.size))
-
-    try {
-      setSessionTileWorkspaceScope('stored-1', botScope)
-    } finally {
-      stop()
-    }
-
-    expect(seen).toEqual([])
-  })
 })

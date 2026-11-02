@@ -1,4 +1,4 @@
-import { SLASH_COMMAND_RE } from './chat-runtime'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 
 /** Matches `agent/title_generator.py`'s MAX_DERIVED_TITLE_CHARS, so a draft
  *  doesn't visibly reflow the moment the backend's derived title replaces it. */

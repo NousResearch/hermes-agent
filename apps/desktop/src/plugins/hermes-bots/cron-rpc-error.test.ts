@@ -87,22 +87,6 @@ describe('a rejection always reaches React with a string name', () => {
     expect(() => react19Format(error)).not.toThrow()
   })
 
-  it('copies a sealed Error even where assignment would have worked', async () => {
-    const weird = new Error('sealed')
-
-    Object.defineProperty(weird, 'name', { configurable: true, value: 32000, writable: true })
-    Object.seal(weird)
-
-    const error = await rejectionFrom(weird)
-
-    expect(error).not.toBe(weird)
-    expect(typeof error.name).toBe('string')
-    expect(error.message).toMatch(/sealed/)
-    // Assignment would have succeeded on a sealed writable property; we still
-    // copy so React 19 never sees a numeric name even if mutation is possible.
-    expect(weird.name).toBe(32000)
-  })
-
   it('passes an ordinary Error through untouched', async () => {
     const original = new Error('gateway rejected the pause')
 

@@ -82,7 +82,7 @@ def save_pass_artifacts(output_dir, pass_num, artifacts):
 
 **3. Configuration Management**
 
-Use YAML configs for reproducibility:
+Use YAML configs for reproducibility (install `ruamel.yaml==0.18.17` in the experiment environment):
 
 ```yaml
 # config.yaml
@@ -96,10 +96,10 @@ convergence_k: 2
 ```
 
 ```python
-import yaml
+from ruamel.yaml import YAML
 
 with open("config.yaml") as f:
-    config = yaml.safe_load(f)
+    config = YAML(typ="safe").load(f)
 ```
 
 **4. Separation of Concerns**

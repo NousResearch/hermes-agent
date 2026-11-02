@@ -447,3 +447,35 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         for m in result["messages"]
     )
 
+
+
+def _finalize(agent, *, exit_reason, final_response, failed=False, api_calls=3):
+    return finalize_turn(
+        agent, final_response=final_response, api_call_count=api_calls, interrupted=False, failed=failed,
+        messages=[{"role": "user", "content": "q"}, {"role": "assistant", "content": final_response or ""}],
+        conversation_history=[], effective_task_id="task", turn_id="turn", user_message="q",
+        original_user_message="q", _should_review_memory=False, _turn_exit_reason=exit_reason,
+    )
+
+
+def test_advisory_exit_reasons_keep_failed_false_but_carry_a_failure_code(monkeypatch):
+    """empty_response_exhausted / local_processing_error: Desktop and TUI get a specific code, yet
+    ``failed`` stays False so cron silence, the kanban breaker and gateway transcript persistence
+    behave exactly as before the code was added."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent_max = FakeAgent().max_iterations
+    for exit_reason, code in (("empty_response_exhausted", "empty_response"),
+                              ("local_processing_error(TypeError: x)", "loop_error")):
+        result = _finalize(FakeAgent(), exit_reason=exit_reason, final_response="the model's last thoughts")
+        assert result["failed"] is False, exit_reason
+        # ``completed`` follows the ordinary rule for a non-failed turn (not forced False here).
+        assert result["completed"] == (result["final_response"] is not None and 3 < agent_max), exit_reason
+        assert result["failure_reason"] == code and isinstance(result["failure_retryable"], bool)
+        assert "error" not in result  # not a failed turn: no error text for the gateway to append a notice to
+
+
+def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"

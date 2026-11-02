@@ -185,7 +185,7 @@ located at ~/code/api. I discovered it uses Go version 1.22 and...
 hermes sessions list    # 浏览过去的会话
 ```
 
-有关三种调用形式（发现 / 滚动 / 浏览）和响应格式，请参阅[会话搜索工具](/user-guide/sessions#session-search-tool)。
+有关三种调用形式（发现 / 滚动 / 浏览）和响应格式，请参阅[会话搜索工具](../sessions.md#session-search-tool)。
 
 ### session_search 与 memory 的对比
 

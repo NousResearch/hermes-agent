@@ -1,4 +1,5 @@
 import json
+import pytest
 import os
 import queue
 import subprocess
@@ -26,6 +27,7 @@ def _read_json_line(out: queue.Queue[dict], timeout: float = 2.0) -> dict:
         raise AssertionError("timed out waiting for compute host JSON") from exc
 
 
+@pytest.mark.platforms("linux")
 def test_compute_host_line_json_hello_and_shutdown():
     repo = Path(__file__).resolve().parents[2]
     env = dict(os.environ)
@@ -43,7 +45,11 @@ def test_compute_host_line_json_hello_and_shutdown():
     assert proc.stdin is not None
     out = _stdout_queue(proc)
     try:
-        hello = _read_json_line(out)
+        # The hello waits behind the child's cold imports: hold it to the supervisor's own
+        # budget, not a tighter one that only a quiet machine meets (~1.3s idle, 5s+ loaded).
+        from tui_gateway.host_supervisor import _HELLO_TIMEOUT_SECS
+
+        hello = _read_json_line(out, timeout=_HELLO_TIMEOUT_SECS)
         assert hello["type"] == "hello"
         assert hello["host_pid"] == proc.pid
 

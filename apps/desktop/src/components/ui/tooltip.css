@@ -1,0 +1,69 @@
+.tooltip-bubble {
+  max-width: min(24rem, calc(100vw - 1.5rem), var(--radix-tooltip-content-available-width, 24rem));
+  border-radius: 0.25rem;
+  text-align: start;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+}
+
+/* Radix's positioning wrapper otherwise intercepts adjacent controls even
+   when the visible content has pointer-events: none. Leave other poppers alone. */
+[data-radix-popper-content-wrapper]:has(> .tooltip-bubble) {
+  pointer-events: none;
+}
+
+.tooltip-bubble[data-state='closed'] {
+  animation: tooltip-exit 100ms ease-in both;
+}
+
+.tooltip-bubble[data-side='top'] {
+  --tooltip-exit-x: 0;
+  --tooltip-exit-y: 0.125rem;
+}
+
+.tooltip-bubble[data-side='bottom'] {
+  --tooltip-exit-x: 0;
+  --tooltip-exit-y: -0.125rem;
+}
+
+.tooltip-bubble[data-side='left'] {
+  --tooltip-exit-x: 0.125rem;
+  --tooltip-exit-y: 0;
+}
+
+.tooltip-bubble[data-side='right'] {
+  --tooltip-exit-x: -0.125rem;
+  --tooltip-exit-y: 0;
+}
+
+@keyframes tooltip-exit {
+  from {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--tooltip-exit-x, 0), var(--tooltip-exit-y, 0));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-bubble[data-state='closed'] {
+    animation: none;
+  }
+}
+
+.tooltip-bubble-label {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+.tooltip-bubble [data-slot='tooltip-arrow'] {
+  fill: var(--foreground);
+}
+
+.tooltip-bubble-label pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

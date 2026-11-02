@@ -8,7 +8,7 @@ when present and valid it wins over fresh static detection.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 from agent.verify.recipes import Recipe, detect_recipe
@@ -27,7 +27,7 @@ def load_manifest(root: Path) -> Recipe | None:
     corrupt manifest degrades to fresh detection. Accepts the wrapped
     ``{version, recipe}`` shape and a bare recipe."""
     try:
-        manifest = json.loads(manifest_path(root).read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path(root).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):  # ValueError includes JSONDecodeError
         return None
     return Recipe.from_dict(manifest.get("recipe", manifest)) if isinstance(manifest, dict) else None
@@ -37,7 +37,7 @@ def save_manifest(root: Path, recipe: Recipe) -> Path:
     """Persist ``recipe`` in the versioned wrapper shape; returns the manifest path."""
     path = manifest_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": MANIFEST_VERSION, "recipe": recipe.to_dict(), "updatedAt": datetime.now(timezone.utc).isoformat()}
+    payload = {"version": MANIFEST_VERSION, "recipe": recipe.to_dict(), "updatedAt": datetime.now(UTC).isoformat()}
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 

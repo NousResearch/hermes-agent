@@ -13,6 +13,8 @@ import { makeSessionInfo } from '@/test/session-info'
 import { ChatSidebar } from './index'
 
 const noop = () => {}
+
+const noopAsync = async () => {}
 const resume = vi.fn()
 
 const mount = () =>
@@ -30,6 +32,7 @@ const mount = () =>
           onNewSessionInWorkspace={noop}
           onNewSessionSplit={noop}
           onResumeSession={resume}
+          onRetrySessions={noopAsync}
           onTriggerCronJob={async () => {}}
         />
       </SidebarProvider>

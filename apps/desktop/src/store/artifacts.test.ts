@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ArtifactDetection } from '@/lib/artifact-detect'
 
 import {
+  $artifactRegistry,
   $artifactVersionSelection,
   artifactsForSession,
   clearArtifactRegistry,
@@ -114,7 +115,9 @@ describe('artifacts store', () => {
 
     openArtifact(result.artifactId)
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Artifact tabs are never persistable, so the profile's bucket stays empty
+    // and the key is removed rather than stored as an empty list.
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('tracks version selection and snaps back to latest', () => {
@@ -160,5 +163,93 @@ describe('artifacts store', () => {
 
     expect($previewTabs.get()).toEqual([])
     expect(artifactsForSession('session-1')).toEqual([])
+  })
+
+  it('evicts the oldest historical version when versions exceed the content budget (#108172)', () => {
+    // One unit of headroom under the 4 Mi budget: latest versions are always
+    // retained, so a single artifact with 5 oversized versions must drop its
+    // oldest history while keeping every version's content byte-exact.
+    const chunk = 'x'.repeat(1024 * 1024)
+    const result = upsertArtifact('session-1', HTML_DETECTION, `${chunk} v1`)!
+
+    for (let n = 2; n <= 5; n += 1) {
+      upsertArtifact('session-1', HTML_DETECTION, `${chunk} v${n}`)
+    }
+
+    const record = getArtifact(result.artifactId)!
+
+    // 5 Mi total exceeded the budget; the oldest historical version was
+    // evicted, the newest version survives byte-exact.
+    expect(record.versions.length).toBeLessThan(5)
+    expect(record.versions.at(-1)!.content).toBe(`${chunk} v5`)
+
+    const totalUnits = Object.values($artifactRegistry.get())
+      .flatMap(records => records)
+      .flatMap(record => record.versions)
+      .reduce((sum, version) => sum + version.content.length, 0)
+
+    expect(totalUnits).toBeLessThanOrEqual(4 * 1024 * 1024)
+  })
+
+  it('evicts oldest whole artifact records when latest-only records exceed the budget (#108172)', () => {
+    const chunk = 'y'.repeat(1024 * 1024)
+
+    // Six separate artifacts, each one Mi: cumulative latest-only content
+    // (6 Mi) exceeds the 4 Mi budget, so the oldest whole records go.
+    for (let n = 1; n <= 6; n += 1) {
+      upsertArtifact(`session-${n}`, HTML_DETECTION, `${chunk} a${n}`)
+    }
+
+    const retained = Object.values($artifactRegistry.get()).flatMap(records => records)
+
+    expect(retained.length).toBeLessThan(6)
+
+    const totalUnits = retained
+      .flatMap(record => record.versions)
+      .reduce((sum, version) => sum + version.content.length, 0)
+
+    expect(totalUnits).toBeLessThanOrEqual(4 * 1024 * 1024)
+
+    // The newest record always survives, even when the registry is over budget.
+    expect(retained.some(record => record.versions[0]!.content === `${chunk} a6`)).toBe(true)
+  })
+
+  it('keeps the single newest record even when it alone exceeds the budget (#108172)', () => {
+    const huge = 'z'.repeat(5 * 1024 * 1024)
+    const result = upsertArtifact('session-1', HTML_DETECTION, huge)!
+
+    const record = getArtifact(result.artifactId)!
+
+    expect(record).not.toBeNull()
+    expect(record.versions.at(-1)!.content).toBe(huge)
+  })
+
+  it('follows a pinned selection by hash when pruning shifts version indexes (#108172)', () => {
+    // One artifact with four versions: the FIRST is oversized, the second is
+    // pinned. Going over budget evicts the oldest historical version (v1),
+    // shifting the pinned v2 from index 1 to index 0 while keeping its content.
+    const result = upsertArtifact('session-1', HTML_DETECTION, 'h'.repeat(3 * 1024 * 1024))!
+
+    upsertArtifact('session-1', HTML_DETECTION, 'small-v2')
+    upsertArtifact('session-1', HTML_DETECTION, 'small-v3')
+    upsertArtifact('session-1', HTML_DETECTION, 'small-v4')
+
+    // Pin the SECOND version (index 1) and capture ITS hash.
+    selectArtifactVersion(result.artifactId, 1)
+    const pinnedHash = getArtifact(result.artifactId)!.versions[1]!.hash
+    expect(pinnedHash).toBeTruthy()
+
+    // Push the registry over the 4 Mi budget: the oversized v1 is the oldest
+    // historical version, so pruning evicts exactly it.
+    upsertArtifact('session-2', { ...HTML_DETECTION, title: 'Huge Report' }, 'x'.repeat(1024 * 1024))
+
+    const record = getArtifact(result.artifactId)!
+    const selectionIndex = $artifactVersionSelection.get()[result.artifactId]
+
+    // v1 was evicted; the pinned version survived at a shifted index.
+    expect(record.versions).toHaveLength(3)
+    expect(record.versions.some(version => version.hash === pinnedHash)).toBe(true)
+    expect(selectionIndex).toBe(0)
+    expect(record.versions[selectionIndex!]!.hash).toBe(pinnedHash)
   })
 })

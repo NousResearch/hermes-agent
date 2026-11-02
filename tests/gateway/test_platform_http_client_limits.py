@@ -12,23 +12,12 @@ behaviour is only observable at runtime under load.
 
 from __future__ import annotations
 
-
 import pytest
-
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
-
-
-def test_returns_none_when_httpx_unavailable(monkeypatch):
-    """If httpx can't be imported, the helper returns None so callers
-    fall back to httpx's built-in Limits default without raising."""
-    import gateway.platforms._http_client_limits as mod
-    monkeypatch.setattr(mod, "httpx", None)
-    assert mod.platform_httpx_limits() is None
-
 
 def test_env_override_rejects_garbage(monkeypatch):
     """Malformed env values fall back to defaults rather than raising."""
@@ -42,30 +31,25 @@ def test_env_override_rejects_garbage(monkeypatch):
     assert limits.max_keepalive_connections > 0
 
 
-class TestWhatsappTypingLeakFix:
-    """#18451 — whatsapp.send_typing previously used a bare
-    `await self._http_session.post(...)` which leaked the aiohttp
-    response object until GC, holding its TCP socket in CLOSE_WAIT.
-    Must now wrap the call in `async with` so the response is
-    released immediately when the call returns.
+@pytest.mark.asyncio
+async def test_platform_http_client_is_ssrf_guarded_with_shared_limits():
+    """The public plugin client refuses private targets at connect time, re-checks redirects ahead of
+    caller hooks, and uses the shared keepalive limits."""
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from gateway.platforms.base import ssrf_redirect_guard
+    from gateway.platforms.helpers import platform_http_client
 
-    We verify by inspecting the source text rather than exercising
-    the coroutine — the test suite would otherwise need a live
-    aiohttp server, and the contract we care about is structural.
-    """
+    async def caller_hook(response):
+        return None
 
-    def test_bare_await_removed(self):
-        import inspect
-        import plugins.platforms.whatsapp.adapter as mod
-
-        src = inspect.getsource(mod.WhatsAppAdapter.send_typing)
-        # The fix must be structural: the post() call is inside an
-        # `async with`, not a bare `await`.
-        assert "async with self._http_session.post(" in src, (
-            "send_typing must wrap self._http_session.post(...) in "
-            "`async with` to release the aiohttp response socket "
-            "(#18451). Otherwise the response sits in CLOSE_WAIT "
-            "until GC."
-        )
-        # The old bare-await form must be gone.
-        assert "await self._http_session.post(" not in src
+    client = platform_http_client(event_hooks={"response": [caller_hook]})
+    try:
+        assert client.event_hooks["response"] == [ssrf_redirect_guard, caller_hook]
+        pool = client._transport._pool
+        limits = platform_httpx_limits()
+        assert (pool._max_keepalive_connections, pool._keepalive_expiry) == (
+            limits.max_keepalive_connections, limits.keepalive_expiry)
+        with pytest.raises(ValueError):
+            await client.get("http://169.254.169.254/latest/meta-data/")
+    finally:
+        await client.aclose()

@@ -48,7 +48,7 @@ def test_relay_default_callback_streams_and_ticks_hook_sync_and_async():
         assert sync_client.wire == [True]
         assert resp.choices[0].message.content == "hello world"
         sync_ticks = len(ticks)
-        assert sync_ticks >= 2  # one per substantive chunk, on top of the dispatch tick
+        assert sync_ticks >= 2  # one per substantive chunk; dispatch alone is not progress (#114938)
 
         async_client = _AsyncClient()
         resp = asyncio.run(aux._relay_async_completion(async_client, {"model": "m", "messages": []}))

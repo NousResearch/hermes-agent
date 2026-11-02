@@ -14,6 +14,7 @@ malformed).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -109,7 +110,8 @@ def _warm_reasoning_caps_async(refresh) -> None:
     Callers own the once-per-process guard; the fetch keeps its own failure TTL."""
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return
-    threading.Thread(target=refresh, name="reasoning-caps-warm", daemon=True).start()
+    # copy_context: the Portal URL and disk mirror are the calling profile's, not the launch home's.
+    threading.Thread(target=contextvars.copy_context().run, args=(refresh,), name="reasoning-caps-warm", daemon=True).start()
 
 
 def _hydrate_reasoning_caps_from_disk(url: str, refresh) -> Optional[Caps]:
@@ -144,9 +146,10 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
 def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
     """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps; None when unreachable or
     empty so callers remember the failure. Sends a User-Agent: the Portal 403s anonymous reads."""
+    from hermes_cli.version_info import hermes_user_agent
     m = _origin()
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": m._HERMES_USER_AGENT})
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": hermes_user_agent()})
         with m._urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
@@ -170,12 +173,23 @@ class _CapsSource:
     disk_checked: str
     warm_started: str
     url: Callable[[], str]
+    # True when the URL (hence the catalog) follows the active profile's credentials/.env: under a
+    # routed profile the slots then live per home, and the once-per-process guards must not let the
+    # launch profile's disk hydrate or warm count as another profile's.
+    per_profile: bool = False
 
     def get(self, slot: str):
-        return getattr(_origin(), getattr(self, slot))
+        if not self.per_profile:
+            return getattr(_origin(), getattr(self, slot))
+        from hermes_cli.models_profile_cache import profile_slot_get
+        return profile_slot_get(_origin(), getattr(self, slot), False if slot in ("disk_checked", "warm_started") else None)
 
     def set(self, slot: str, value) -> None:
-        setattr(_origin(), getattr(self, slot), value)
+        if not self.per_profile:
+            setattr(_origin(), getattr(self, slot), value)
+            return
+        from hermes_cli.models_profile_cache import profile_slot_set
+        profile_slot_set(_origin(), getattr(self, slot), value)
 
 
 def _fetch_caps(src: _CapsSource, timeout: float = 6.0, *, force: bool = False) -> Optional[Caps]:
@@ -250,7 +264,7 @@ _OPENROUTER_CAPS = _CapsSource(
 _NOUS_CAPS = _CapsSource(
     "_nous_reasoning_caps_cache", "_nous_reasoning_caps_failed_at",
     "_nous_caps_disk_checked", "_nous_caps_warm_started",
-    lambda: nous_catalog_url(),
+    lambda: nous_catalog_url(), per_profile=True,
 )
 
 

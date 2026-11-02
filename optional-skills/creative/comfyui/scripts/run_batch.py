@@ -33,14 +33,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import (  # noqa: E402
+from _common import (
     DEFAULT_LOCAL_HOST, ENV_API_KEY, coerce_seed, emit_json, log,
     looks_like_video_workflow, resolve_api_key, unwrap_workflow,
 )
-from run_workflow import (  # noqa: E402
+from run_workflow import (
     ComfyRunner, download_outputs, inject_params,
 )
-from extract_schema import extract_schema  # noqa: E402
+from extract_schema import extract_schema
 
 
 def expand_sweep(sweep: dict, base_args: dict, count: int, randomize_seed: bool) -> list[dict]:

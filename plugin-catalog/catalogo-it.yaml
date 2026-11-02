@@ -1,0 +1,18 @@
+name: catalogo-it
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: d678baf37018398bf9c38afbb418d43e11b82a8e
+subdir: plugins/catalogo-it
+title: Plugin Catalog (Italian)
+description: "The official Hermes plugin catalog in a native page (sidebar entry, route /catalogo, plus a command-palette entry) with an Italian interface and on-the-fly Italian descriptions: Google Translate first, MyMemory as a second public source, and a final fallback to the user's own local llama.cpp model. Disclosure — it fetches the public catalog feed (hermes-agent.nousresearch.com) and, when you open a plugin entry, sends that entry's English description to translate.googleapis.com (Google Translate's keyless public endpoint) and, if that fails, to api.mymemory.translated.net; nothing else leaves the machine. It reads no credentials or Hermes files, and its backend route is empty. Translation runs when a plugin entry is opened, not for the whole catalog. No telemetry. UI is Italian-first with an English bundle."
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it/tree/main/plugins/catalogo-it
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

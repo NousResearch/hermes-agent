@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { type ReactNode, useSyncExternalStore } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { setHideThreadTimeline } from '@/store/thread-timeline'
 
 /**
  * The timeline must do NO work it can't currently show. Two gates are proven
@@ -8,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
  *
  *  - a background (kept-alive but hidden) tab derives nothing and subscribes
  *    to nothing — the transcript selector is never even called;
- *  - an unhovered rail builds its ticks but not the popover's rows.
+ *  - an unhovered rail builds only a bounded tick slice, never a label list.
  *
  * The prompt-id selector is also asserted to be content-blind, which is what
  * keeps a streaming assistant reply from re-deriving previews per token.
@@ -22,6 +24,7 @@ interface FakeMessage {
 
 const selectorCalls = vi.fn()
 const transcriptReads = vi.fn()
+const messageListeners = new Set<() => void>()
 let messages: FakeMessage[] = []
 
 vi.mock('@assistant-ui/react', () => ({
@@ -37,7 +40,14 @@ vi.mock('@assistant-ui/react', () => ({
   useAuiState: (selector: (state: { thread: { messages: FakeMessage[] } }) => unknown) => {
     selectorCalls()
 
-    return selector({ thread: { messages } })
+    return useSyncExternalStore(
+      listener => {
+        messageListeners.add(listener)
+
+        return () => messageListeners.delete(listener)
+      },
+      () => selector({ thread: { messages } })
+    )
   }
 }))
 
@@ -62,8 +72,15 @@ const transcript = (count: number): FakeMessage[] =>
 
 const renderTimeline = (ui: ReactNode = <ThreadTimeline />) => render(ui)
 
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(300)
+  vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(48)
+})
+
 afterEach(() => {
   cleanup()
+  setHideThreadTimeline(false)
+  vi.restoreAllMocks()
   selectorCalls.mockClear()
   transcriptReads.mockClear()
   paneActive = true
@@ -92,44 +109,69 @@ describe('ThreadTimeline in a background tab', () => {
   })
 })
 
-describe('ThreadTimeline popover', () => {
-  it('builds no rows until the rail is hovered', () => {
+describe('ThreadTimeline idle work', () => {
+  it('builds ticks without a separate popover or mounted labels', () => {
     messages = transcript(6)
 
     const { container } = renderTimeline()
     const popover = container.querySelector('[data-slot="thread-timeline-popover"]')
 
-    // The shell renders (it owns the fade transition); its rows do not.
-    expect(popover).not.toBeNull()
-    expect(popover?.querySelectorAll('button')).toHaveLength(0)
+    expect(popover).toBeNull()
+    expect(container.querySelectorAll('[data-timeline-id]')).toHaveLength(6)
     expect(screen.queryByText('prompt 0')).toBeNull()
   })
 
-  it('builds the rows on hover and keeps them for the close fade', () => {
-    messages = transcript(6)
+  it('keeps a large rail bounded before and after pointer movement', () => {
+    messages = transcript(5000)
 
     const { container } = renderTimeline()
-    const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline"]')!
+    const rail = container.querySelector<HTMLElement>('[data-slot="thread-timeline-ticks"]')!
+    const ticks = Array.from(rail.querySelectorAll('[data-timeline-id]'))
 
-    fireEvent.mouseEnter(rail)
+    expect(ticks.length).toBeGreaterThan(0)
+    expect(ticks.length).toBeLessThan(60)
 
-    const popover = container.querySelector('[data-slot="thread-timeline-popover"]')
-    expect(popover?.querySelectorAll('button')).toHaveLength(6)
+    fireEvent.pointerMove(rail, { clientY: 100, pointerType: 'mouse' })
+    fireEvent.pointerLeave(rail)
 
-    fireEvent.mouseLeave(rail)
-
-    // Still mounted — the popover fades out, it does not pop out of existence.
-    expect(popover?.querySelectorAll('button')).toHaveLength(6)
+    expect(Array.from(rail.querySelectorAll('[data-timeline-id]'))).toEqual(ticks)
+    expect(container.querySelector('[data-slot="thread-timeline-popover"]')).toBeNull()
+    expect(screen.queryByText('prompt 0')).toBeNull()
   })
 })
 
-describe('ThreadTimeline below the threshold', () => {
-  it('renders nothing for a short thread', () => {
+describe('ThreadTimeline availability', () => {
+  it('hides every rail without reading transcripts and restores them when enabled', () => {
+    messages = transcript(2)
+    setHideThreadTimeline(true)
+
+    const { container } = renderTimeline(
+      <>
+        <ThreadTimeline />
+        <ThreadTimeline />
+      </>
+    )
+
+    const rails = () => container.querySelectorAll('[data-slot="thread-timeline"]')
+
+    expect(rails()).toHaveLength(0)
+    expect(selectorCalls).not.toHaveBeenCalled()
+    expect(transcriptReads).not.toHaveBeenCalled()
+
+    act(() => setHideThreadTimeline(false))
+    expect(rails()).toHaveLength(2)
+
+    act(() => setHideThreadTimeline(true))
+    expect(rails()).toHaveLength(0)
+  })
+
+  it('keeps navigation available for a short thread', () => {
     messages = transcript(2)
 
     const { container } = renderTimeline()
 
-    expect(container.querySelector('[data-slot="thread-timeline"]')).toBeNull()
+    expect(container.querySelector('[data-slot="thread-timeline"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-timeline-id]')).toHaveLength(2)
   })
 })
 
@@ -137,7 +179,7 @@ describe('ThreadTimeline while a reply streams', () => {
   it('does not re-derive the rail as assistant content grows', () => {
     messages = [...transcript(6), { content: [{ text: 'th', type: 'text' }], id: 'a1', role: 'assistant' }]
 
-    const { rerender } = renderTimeline()
+    renderTimeline()
     const derivations = transcriptReads.mock.calls.length
 
     // A token lands: the assistant message's content changes, the user prompt
@@ -147,7 +189,7 @@ describe('ThreadTimeline while a reply streams', () => {
       ...messages.slice(0, -1),
       { content: [{ text: 'thinking…', type: 'text' }], id: 'a1', role: 'assistant' }
     ]
-    rerender(<ThreadTimeline />)
+    act(() => messageListeners.forEach(listener => listener()))
 
     expect(transcriptReads.mock.calls.length).toBe(derivations)
   })
@@ -155,11 +197,11 @@ describe('ThreadTimeline while a reply streams', () => {
   it('re-derives once a new prompt is sent', () => {
     messages = transcript(6)
 
-    const { rerender } = renderTimeline()
+    renderTimeline()
     const derivations = transcriptReads.mock.calls.length
 
     messages = [...messages, userTurn('u6', 'prompt 6')]
-    rerender(<ThreadTimeline />)
+    act(() => messageListeners.forEach(listener => listener()))
 
     expect(transcriptReads.mock.calls.length).toBeGreaterThan(derivations)
   })

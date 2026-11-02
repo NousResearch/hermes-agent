@@ -75,4 +75,4 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
     from providers import get_provider_profile, list_providers
 
     assert not [p for p in list_providers() if p.name in ("other-standalone", "manifestless", "broken-manifest")]
-    assert get_provider_profile("copilot-acp") is not None  # bundled set still intact
+    assert get_provider_profile("openrouter") is not None  # bundled set still intact

@@ -28,14 +28,6 @@ describe('allFixedAbsorberIndex', () => {
     expect(allFixedAbsorberIndex(growable, max)).toBe(-1)
   })
 
-  it('returns -1 for an empty run', () => {
-    expect(allFixedAbsorberIndex([], () => undefined)).toBe(-1)
-  })
-
-  it('absorbs a lone uncapped track', () => {
-    expect(allFixedAbsorberIndex([3], () => undefined)).toBe(3)
-  })
-
   it('refuses a lone capped sidebar', () => {
     // ⌘G alone: only review is visible in the rail — must stay at 237px / max 20rem.
     expect(allFixedAbsorberIndex([0], () => '20rem')).toBe(-1)

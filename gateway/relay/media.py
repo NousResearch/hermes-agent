@@ -12,6 +12,8 @@ per-gateway signed bearer the WS upgrade uses; stdlib ``urllib`` in a thread exe
 from __future__ import annotations
 
 import asyncio
+import email.message
+import email.utils
 import json
 import logging
 import mimetypes
@@ -22,6 +24,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from gateway.platforms.event import clean_attachment_filename
 from gateway.relay.auth import make_upgrade_token
 
 logger = logging.getLogger(__name__)
@@ -44,8 +47,7 @@ def media_base_url(relay_dial_url: str) -> str:
         raw = "http://" + raw[len("ws://") :]
     elif raw.startswith("wss://"):
         raw = "https://" + raw[len("wss://") :]
-    if raw.endswith("/relay"):
-        raw = raw[: -len("/relay")]
+    raw = raw.removesuffix("/relay")
     return raw
 
 
@@ -110,8 +112,19 @@ class RelayMediaClient:
         return await asyncio.get_running_loop().run_in_executor(None, _post)
 
     async def download(self, url: str, *, suggested_name: Optional[str] = None) -> Optional[str]:
-        """GET an attachment to a local temp file; return its path or None on any failure.
+        """GET an attachment to a local temp file; return its path or None on any failure."""
+        result = await self.download_with_name(url, suggested_name=suggested_name)
+        return result[0] if result else None
 
+    async def download_with_name(
+        self, url: str, *, suggested_name: Optional[str] = None
+    ) -> Optional[tuple[str, str]]:
+        """GET an attachment to a local temp file; return ``(path, original_name)`` or None.
+
+        ``original_name`` is ``suggested_name`` when given, else the response's
+        ``Content-Disposition`` filename, cleaned for display; ``""`` when neither names it.
+        The file is always a random ``relay_media_*`` temp name (the name only picks the
+        extension), so identical names never collide.
         The bearer is presented only for connector re-host URLs; public URLs
         (e.g. a Discord CDN pass-through) are fetched without it.
         """
@@ -124,7 +137,7 @@ class RelayMediaClient:
         if needs_auth:
             headers["Authorization"] = f"Bearer {self._bearer()}"
 
-        def _get() -> Optional[str]:
+        def _get() -> Optional[tuple[str, str]]:
             req = urllib.request.Request(url, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
@@ -136,19 +149,19 @@ class RelayMediaClient:
                         return None
                     # Extension matters: vision/file tools sniff by extension.
                     # Prefer suggested/content-disposition name, then mime, then .bin.
-                    name = suggested_name or ""
-                    if not name:
-                        cd = resp.headers.get("Content-Disposition") or ""
-                        if "filename=" in cd:
-                            name = cd.split("filename=", 1)[1].strip().strip('"')
+                    name = clean_attachment_filename(suggested_name) or _content_disposition_filename(
+                        resp.headers.get("Content-Disposition") or ""
+                    )
                     ext = Path(name).suffix if name else ""
+                    if not ext.isascii() or not ext[1:].isalnum() or len(ext) > 16:
+                        ext = ""
                     if not ext:
                         mime = (resp.headers.get("Content-Type") or "").split(";")[0]
                         ext = mimetypes.guess_extension(mime) or ".bin"
                     fd, tmp_path = tempfile.mkstemp(prefix="relay_media_", suffix=ext)
                     with os.fdopen(fd, "wb") as fh:
                         fh.write(data)
-                    return tmp_path
+                    return tmp_path, name
             except (urllib.error.URLError, ValueError, OSError) as exc:
                 logger.warning("relay media download failed for %s: %s", url, exc)
                 return None
@@ -156,4 +169,28 @@ class RelayMediaClient:
         return await asyncio.get_running_loop().run_in_executor(None, _get)
 
 
-__all__ = ["RelayMediaClient", "media_base_url", "MEDIA_MAX_BYTES"]
+def _content_disposition_filename(header: str) -> str:
+    """The filename a ``Content-Disposition`` header names, cleaned for display; ``""`` if none.
+
+    RFC 6266: an RFC 5987 ``filename*`` (``UTF-8''r%C3%A9sum%C3%A9.pdf``) wins over the plain
+    ``filename``; quoted values and escapes are handled by the stdlib MIME parser."""
+    if not header:
+        return ""
+    msg = email.message.Message()
+    try:
+        msg["Content-Disposition"] = header
+        params = msg.get_params(header="content-disposition") or []
+    except (ValueError, TypeError, IndexError):
+        return ""
+    plain, extended = "", ""
+    for key, value in params[1:]:
+        if key.lower() != "filename":
+            continue
+        if isinstance(value, tuple):
+            extended = extended or email.utils.collapse_rfc2231_value(value)
+        else:
+            plain = plain or email.utils.unquote(value)
+    return clean_attachment_filename(extended or plain)
+
+
+__all__ = ["MEDIA_MAX_BYTES", "RelayMediaClient", "media_base_url"]

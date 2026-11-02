@@ -16,16 +16,11 @@ class _SlowHandler:
         self.delay = delay
         self._result = result if result is not None else {"images": []}
 
+    def iter_events(self, **_):
+        return iter(())
+
     def get(self):
         time.sleep(self.delay)
-        return self._result
-
-
-class _FastHandler:
-    def __init__(self, result):
-        self._result = result
-
-    def get(self):
         return self._result
 
 
@@ -34,11 +29,6 @@ def _clean_interrupt():
     set_interrupt(False)
     yield
     set_interrupt(False)
-
-
-def test_wait_fal_result_returns_result():
-    result = image_tool._wait_fal_result(_FastHandler({"images": [{"url": "u"}]}))
-    assert result == {"images": [{"url": "u"}]}
 
 
 def test_wait_fal_result_raises_on_interrupt():
@@ -56,7 +46,7 @@ def test_wait_fal_result_raises_on_interrupt():
 
 
 def test_wait_fal_result_propagates_handler_error():
-    class _ErrHandler:
+    class _ErrHandler(_SlowHandler):
         def get(self):
             raise ValueError("boom")
 

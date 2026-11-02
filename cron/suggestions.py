@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -21,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -48,25 +46,18 @@ def _current_suggestions_file() -> Path:
     return SUGGESTIONS_FILE or (get_hermes_home().resolve() / "cron" / "suggestions.json")
 
 
-def _secure_file(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
 def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
     _ensure_cron_dir(_current_suggestions_file().parent)
 
 
-def _load_raw() -> Dict[str, Any]:
+def _load_raw() -> dict[str, Any]:
     suggestions_file = _current_suggestions_file()
     if not suggestions_file.exists():
         return {"suggestions": []}
     try:
-        with open(suggestions_file, "r", encoding="utf-8") as f:
+        with open(suggestions_file, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("suggestions.json unreadable (%s); starting empty", e)
@@ -79,43 +70,29 @@ def _load_raw() -> Dict[str, Any]:
     return {"suggestions": []}
 
 
-def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
+def _save_raw(suggestions: list[dict[str, Any]]) -> None:
     _ensure_dir()
-    suggestions_file = _current_suggestions_file()
-    fd, tmp_path = tempfile.mkstemp(dir=str(suggestions_file.parent), suffix=".tmp", prefix=".sugg_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
-            json.dump(payload, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, suggestions_file)
-        _secure_file(suggestions_file)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
+    atomic_json_write(_current_suggestions_file(), payload, mode=0o600)
 
 
-def load_suggestions() -> List[Dict[str, Any]]:
+def load_suggestions() -> list[dict[str, Any]]:
     """Return all suggestion records (any status)."""
     return _load_raw().get("suggestions", [])
 
 
-def _pending(suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _pending(suggestions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [s for s in suggestions if s.get("status") == _STATUS_PENDING]
 
 
-def list_pending() -> List[Dict[str, Any]]:
+def list_pending() -> list[dict[str, Any]]:
     """Return pending suggestions in creation order (oldest first)."""
     return _pending(load_suggestions())
 
 
 def add_suggestion(
-    *, title: str, description: str, source: str, job_spec: Dict[str, Any], dedup_key: str,
-) -> Optional[Dict[str, Any]]:
+    *, title: str, description: str, source: str, job_spec: dict[str, Any], dedup_key: str,
+) -> Optional[dict[str, Any]]:
     """Register a pending suggestion. Returns the record, or None when skipped: the same
     ``dedup_key`` was already decided on or is still pending (never re-offer, never duplicate), or
     the pending list is full (``MAX_PENDING``). ``job_spec`` is passed straight to
@@ -152,7 +129,7 @@ def add_suggestion(
         return record
 
 
-def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
+def get_suggestion(ref: str) -> Optional[dict[str, Any]]:
     """Resolve a suggestion by id, 1-based pending index, or exact (case-insensitive) title."""
     suggestions = load_suggestions()
     for s in suggestions:
@@ -187,7 +164,7 @@ def dismiss_suggestion(ref: str) -> bool:
     return bool(s) and _set_status(s["id"], _STATUS_DISMISSED)
 
 
-def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def accept_suggestion(ref: str, *, origin: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
     """Accept a suggestion: create the real cron job from its ``job_spec``. Returns the job dict, or
     None if not found / not pending. ``origin`` (platform/chat) is merged so "origin" delivery
     routes back to the chat where the user accepted."""

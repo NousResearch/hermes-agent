@@ -246,3 +246,63 @@ async def test_media_message_carries_sender_and_reply_context(monkeypatch):
     assert "nice photo" in msg.reply_to_text
     assert msg.reply_to_author_id == "@erin:example.org"
     assert msg.reply_to_author_name == "erin"
+
+
+# ---------------------------------------------------------------------------
+# Reply fallback vs. the mention strip (#111233): under the default
+# MATRIX_REQUIRE_MENTION=true a reply to the bot is a mention *because of* the
+# ``> <@bot:srv> ...`` pill, so the strip runs on exactly the messages that carry
+# a pill — and must not rewrite it before _extract_reply_context parses it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_under_require_mention_keeps_reply_author(monkeypatch):
+    """The pill is the only mention: the strip used to turn ``> <@bot>`` into ``> <>``
+    before the fallback parse, losing reply_to_author_id and mangling reply_to_text."""
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    body = "> <@hermes:example.org> did you check the logs?\n\nhello there"
+    event = _make_event(body, in_reply_to_event_id="$bot_msg", event_id="$evt_reply_bot")
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id == "$bot_msg"
+    assert msg.reply_to_author_id == "@hermes:example.org"
+    assert msg.reply_to_author_name == "hermes"
+    assert msg.reply_to_text == "did you check the logs?"
+    assert msg.text == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_reply_with_explicit_mention_still_strips_it_from_reply_text(monkeypatch):
+    """Only the quote block is exempt: a typed @bot in the reply text is still stripped."""
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    body = "> <@carol:example.org> original question\n\n@hermes:example.org because reasons"
+    event = _make_event(body, in_reply_to_event_id="$carol_msg", event_id="$evt_reply_carol")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_author_id == "@carol:example.org"
+    assert msg.reply_to_text == "original question"
+    assert msg.text == "because reasons"
+
+
+@pytest.mark.asyncio
+async def test_plain_blockquote_without_reply_is_stripped_whole(monkeypatch):
+    """The quote exemption keys on m.in_reply_to, not on a leading ``> ``: a hand-typed
+    blockquote mentioning the bot in a non-reply message must not reach the agent raw."""
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    event = _make_event("> @hermes:example.org please summarise\n\nthanks", event_id="$evt_quote")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id is None
+    assert "@hermes:example.org" not in msg.text
+    assert "thanks" in msg.text

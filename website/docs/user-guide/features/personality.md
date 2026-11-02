@@ -211,7 +211,7 @@ These are convenient overlays, but your global `SOUL.md` still gives Hermes its 
 
 ## Custom personalities in config
 
-Built-in personalities are always available on every surface (CLI, messaging platforms, TUI, and the desktop app). You can add your own — or override a built-in by reusing its name — in `~/.hermes/config.yaml` under `agent.personalities`.
+Built-in personalities are always available on every surface (CLI, messaging platforms, TUI, and the desktop app). You can add your own — or override a built-in by reusing its name — in `~/.hermes/config.yaml` under `agent.personalities` (a top-level `personalities:` block works too; `agent.personalities` wins if the same name appears in both).
 
 ```yaml
 agent:
@@ -274,10 +274,10 @@ At a high level, the prompt stack includes:
 
 ## Related docs
 
-- [Context Files](/user-guide/features/context-files)
-- [Configuration](/user-guide/configuration)
-- [Tips & Best Practices](/guides/tips)
-- [SOUL.md Guide](/guides/use-soul-with-hermes)
+- [Context Files](./context-files.md)
+- [Configuration](../configuration.md)
+- [Tips & Best Practices](../../guides/tips.md)
+- [SOUL.md Guide](../../guides/use-soul-with-hermes.md)
 
 ## CLI appearance vs conversational personality
 

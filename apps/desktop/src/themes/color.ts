@@ -1,106 +1,24 @@
 /**
- * Small color helpers shared by the theme context (synthesised light variants)
- * and the VS Code theme converter (token → seed mapping).
+ * Desktop-only color helpers: the naive light/dark bucketer, the VS Code hex
+ * normaliser, and the OKLCH toolkit. The sRGB primitives (parse/mix/measure/
+ * ensureContrast) live in `@hermes/shared/color` and are shared with the TUI.
  *
  * Everything works in 6-digit `#rrggbb`. `normalizeHex` is the front door for
  * untrusted input (VS Code themes use `#rgb`, `#rgba`, `#rrggbbaa`, and named
  * tokens), flattening alpha over a backdrop so downstream math stays simple.
  */
 
-export function hexToRgb(hex: string): [number, number, number] | null {
-  const clean = hex.trim().replace(/^#/, '')
+import { contrastRatio, parseColor, readableOn, relativeLuminance, toHex } from '@hermes/shared/color'
 
-  if (!/^[0-9a-f]{6}$/i.test(clean)) {
-    return null
-  }
+/** The desktop's ink pair: its near-black text colour, not pure black. */
+const DESKTOP_INKS = ['#161616', '#ffffff'] as const
 
-  return [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16)) as [number, number, number]
-}
-
-export const rgbToHex = ([r, g, b]: [number, number, number]): string =>
-  `#${[r, g, b]
-    .map(n =>
-      Math.round(Math.min(255, Math.max(0, n)))
-        .toString(16)
-        .padStart(2, '0')
-    )
-    .join('')}`
-
-export function mix(a: string, b: string, amount: number): string {
-  const ar = hexToRgb(a)
-  const br = hexToRgb(b)
-
-  return ar && br
-    ? rgbToHex([ar[0] + (br[0] - ar[0]) * amount, ar[1] + (br[1] - ar[1]) * amount, ar[2] + (br[2] - ar[2]) * amount])
-    : a
-}
-
-const linearize = (channel: number): number =>
-  channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
-
-/** WCAG relative luminance (gamma-corrected), 0..1. */
-export function relativeLuminance(hex: string): number {
-  const rgb = hexToRgb(hex)
-
-  if (!rgb) {
-    return 0
-  }
-
-  const [r, g, b] = rgb.map(v => linearize(v / 255))
-
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-/** WCAG contrast ratio (1..21) between two hex colors. */
-export function contrastRatio(a: string, b: string): number {
-  const la = relativeLuminance(a)
-  const lb = relativeLuminance(b)
-
-  return la >= lb ? (la + 0.05) / (lb + 0.05) : (lb + 0.05) / (la + 0.05)
-}
-
-/**
- * A readable foreground (`#161616` or `#ffffff`) for a background hex.
- *
- * Picks whichever of the two actually measures better, rather than splitting on
- * a luminance threshold. The threshold version got mid-lightness accents wrong
- * in the direction that matters — white on GitHub's dark green `#4f9e5e` is
- * 3.29:1 (fails AA) where near-black is 5.50:1, and Catppuccin's mauve was a
- * 2.03:1 white-on-lilac. Two candidates is a cheap enough search to just
- * measure.
- */
-export function readableOn(hex: string): string {
-  return contrastRatio(hex, '#ffffff') >= contrastRatio(hex, '#161616') ? '#ffffff' : '#161616'
-}
-
-/**
- * Guarantee `color` reads against `bg`: if it's below `min` contrast, mix it
- * toward white (on a dark bg) or black (on a light bg) in steps until it clears,
- * keeping the hue as much as possible. Used so imported accents never collapse
- * into a near-background sidebar (the "invisible label" case).
- */
-export function ensureContrast(color: string, bg: string, min: number): string {
-  if (contrastRatio(color, bg) >= min) {
-    return color
-  }
-
-  const towards = relativeLuminance(bg) < 0.5 ? '#ffffff' : '#000000'
-  let best = color
-
-  for (let amount = 0.2; amount <= 1.0001; amount += 0.2) {
-    best = mix(color, towards, Math.min(amount, 1))
-
-    if (contrastRatio(best, bg) >= min) {
-      return best
-    }
-  }
-
-  return best
-}
+/** A readable foreground (`#161616` or `#ffffff`) for a background hex. */
+export const readableInk = (bg: string): string => readableOn(bg, DESKTOP_INKS)
 
 /** Perceptual-ish luminance in 0..1 (naive, for light/dark bucketing). */
 export function luminance(hex: string): number {
-  const rgb = hexToRgb(hex)
+  const rgb = parseColor(hex)
 
   if (!rgb) {
     return 0
@@ -136,20 +54,20 @@ export function normalizeHex(input: string | undefined | null, backdrop = '#0000
     return null
   }
 
-  const rgb = hexToRgb(`#${clean.slice(0, 6)}`)
+  const rgb = parseColor(`#${clean.slice(0, 6)}`)
 
   if (!rgb) {
     return null
   }
 
   if (clean.length === 6) {
-    return rgbToHex(rgb)
+    return toHex(rgb)
   }
 
   const alpha = parseInt(clean.slice(6, 8), 16) / 255
-  const base = hexToRgb(backdrop) ?? [0, 0, 0]
+  const base = parseColor(backdrop) ?? [0, 0, 0]
 
-  return rgbToHex([
+  return toHex([
     base[0] + (rgb[0] - base[0]) * alpha,
     base[1] + (rgb[1] - base[1]) * alpha,
     base[2] + (rgb[2] - base[2]) * alpha
@@ -174,7 +92,7 @@ export interface Oklch {
 }
 
 export function hexToOklch(hex: string): Oklch | null {
-  const rgb = hexToRgb(hex)
+  const rgb = parseColor(hex)
 
   if (!rgb) {
     return null
@@ -241,7 +159,7 @@ const inSrgbGamut = (rgb: readonly number[]): boolean => rgb.every(c => c >= -0.
  */
 export function oklchToHex(color: Oklch): string {
   if (inSrgbGamut(oklchToRgbRaw(color))) {
-    return rgbToHex(oklchToRgbRaw(color).map(c => delinearize01(c) * 255) as [number, number, number])
+    return toHex(oklchToRgbRaw(color).map(c => delinearize01(c) * 255) as [number, number, number])
   }
 
   let lo = 0
@@ -257,7 +175,7 @@ export function oklchToHex(color: Oklch): string {
     }
   }
 
-  return rgbToHex(oklchToRgbRaw({ ...color, c: lo }).map(c => delinearize01(c) * 255) as [number, number, number])
+  return toHex(oklchToRgbRaw({ ...color, c: lo }).map(c => delinearize01(c) * 255) as [number, number, number])
 }
 
 /**
@@ -346,8 +264,8 @@ export function harmonize(hex: string, accent: string, strength: number): string
  * blending neutrals, where there is no hue to preserve.
  */
 export function mixOklab(a: string, b: string, amount: number): string {
-  const ra = hexToRgb(a)
-  const rb = hexToRgb(b)
+  const ra = parseColor(a)
+  const rb = parseColor(b)
 
   if (!ra || !rb) {
     return a
@@ -379,7 +297,9 @@ export function withHue(hex: string, hue: number): string {
  * ends of the lightness range rather than looping.
  */
 export function ensureContrastOklch(hex: string, bg: string, min: number): string {
-  if (contrastRatio(hex, bg) >= min) {
+  const ratio = contrastRatio(hex, bg)
+
+  if (ratio === null || ratio >= min) {
     return hex
   }
 
@@ -390,7 +310,7 @@ export function ensureContrastOklch(hex: string, bg: string, min: number): strin
   }
 
   // Lighten on a dark backdrop, darken on a light one.
-  const up = relativeLuminance(bg) < 0.5
+  const up = (relativeLuminance(bg) ?? 0) < 0.5
   let best = hex
 
   for (let step = 1; step <= 40; step += 1) {
@@ -402,7 +322,7 @@ export function ensureContrastOklch(hex: string, bg: string, min: number): strin
 
     best = oklchToHex({ ...lch, l })
 
-    if (contrastRatio(best, bg) >= min) {
+    if ((contrastRatio(best, bg) ?? 0) >= min) {
       return best
     }
   }

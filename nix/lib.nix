@@ -24,26 +24,46 @@
   writeShellScript,
   coreutils,
   callPackage,
-  nodejs_26,
-  symlinkJoin,
   buildNpmPackage,
   runCommand,
+  python3,
+  # pm/lock.json pins, used for node and npm.
+  pmPackages,
 }:
 let
   repoRoot = ./..;
 
-  npm12 = callPackage ./npm-12-0-2.nix { };
-  node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { };
-  nodejs_26_npm_12 = symlinkJoin {
-    name = "nodejs-26-npm-12";
-    paths = [
-      npm12
-      nodejs_26
-    ];
-    inherit (nodejs_26) meta passthru;
+  # Every JS tool comes from pm/lock.json — the node the builds and the
+  # shipped app run on, plus npm wrapped onto it. nixpkgs supplies nothing
+  # here; node/npm have Linux artifacts in the lock.
+  pmNode = pmPackages.node;
+  npm12 = callPackage ./npm-pinned.nix { nodejs = pmNode; };
+  node_gyp_11_4_0 = callPackage ./node-gyp-11-4-0.nix { nodejs = nodejs; };
+  # bin/npm and bin/npx are the pinned npm; the rest of the tree (node,
+  # include/node headers, lib/node_modules/node's own bundled npm) is the
+  # pinned node. A plain symlinkJoin cannot express that: both paths carry
+  # bin/npm, so assemble it explicitly.
+  nodejs = (runCommand "nodejs-26-npm-12" {
+    # buildNpmPackage reads nodejs.meta.platforms; the pm derivation carries no
+    # meta, and the lock has artifacts for every platform.
+    meta = {
+      platforms = lib.platforms.all;
+      mainProgram = "node";
+    };
+  } ''
+    cp -rs ${pmNode} $out
+    # cp -r copies the store's read-only directory modes; make the farm's own
+    # directories writable so bin/npm and bin/npx can be replaced. Only real
+    # directories are chmodded, never the symlink targets.
+    find $out -type d -exec chmod u+w {} +
+    rm -f $out/bin/npm $out/bin/npx
+    ln -s ${npm12}/bin/npm $out/bin/npm
+    ln -s ${npm12}/bin/npx $out/bin/npx
+  '') // {
+    # buildNpmPackage puts nodejs.python (its build interpreter) on the npm
+    # hook's PATH; the pm node derivation has no such attribute.
+    python = python3;
   };
-
-  nodejs = nodejs_26_npm_12;
 
   # Patched hook: just a new derivation that copies and patches the script
   patchedNpmConfigHook = runCommand "npm-config-hook-patched" { } ''
@@ -174,6 +194,9 @@ let
       in
       if relPath == "" then
         true
+      else if lib.hasPrefix "scripts/build/" relPath && lib.hasSuffix ".mjs" relPath then
+        # Frontend recipes belong to their product source filters, not Python.
+        false
       else if builtins.elem relPath excludedFiles then
         false
       else if builtins.elem topComponent excludedDirs then
@@ -209,6 +232,11 @@ let
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    # The lock already records override resolutions. importNpmLock changes
+    # direct specs to file:/nix/store tarballs, which conflict with the
+    # original semver overrides (EOVERRIDE). Drop them only from this offline
+    # build manifest; the hook restores the repository manifest afterwards.
+    package = builtins.removeAttrs rootPackageJson [ "overrides" ];
   };
 
   # Build a per-package npm source: workspace resolution files + the
@@ -303,7 +331,7 @@ in
 
     # importNpmLock reads hashes from the lockfile itself — rebuild every
     # npm package to verify the new lockfile resolves offline.
-    nix build .#tui .#web .#desktop
+    nix build .#tui .#web .#webapp .#desktop
     echo "Lockfile updated and all npm packages built."
   '';
 

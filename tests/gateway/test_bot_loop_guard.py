@@ -97,7 +97,9 @@ async def test_ingress_gate_counts_an_authorized_bot_once_and_drops_it_when_refu
 
     runner = object.__new__(GatewayRunner)
     runner._scale_to_zero_note_real_inbound = lambda: None
-    runner._hm_pre_gateway_dispatch_hook = lambda event, source: event
+    async def _passthrough_hook(event, source):  # the inbound path awaits the hook
+        return event
+    runner._hm_pre_gateway_dispatch_hook = _passthrough_hook
     runner._is_user_authorized_for_source = lambda source, **kw: True
     admitted = []
     runner._admit_bot_message = lambda source: admitted.append(source.user_id) or source.user_id != BOT_B
@@ -124,7 +126,7 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     runner._effective_busy_input_mode = lambda source: "steer"
     runner._effective_busy_text_mode = lambda source: "steer"
     runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
-    runner._adapter_for_source = lambda source: SimpleNamespace(_pending_messages={})
+    runner._delivery_adapter_for = lambda source: SimpleNamespace(_pending_messages={})
     runner._peek_session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=object()))
     steer = AsyncMock(return_value=SimpleNamespace(effective_mode="steer", redirected=False, steered=True))
     runner._resolve_busy_steer_or_redirect = steer
@@ -136,7 +138,9 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     assert steer.await_count == 1
 
     runner._scale_to_zero_note_real_inbound = lambda: None
-    runner._hm_pre_gateway_dispatch_hook = lambda event, source: event
+    async def _passthrough_hook(event, source):  # the inbound path awaits the hook
+        return event
+    runner._hm_pre_gateway_dispatch_hook = _passthrough_hook
     runner._is_user_authorized_for_source = lambda source, **kw: True
     runner._admit_bot_message = lambda source: pytest.fail("the busy path already charged this event")
     assert (await runner._hm_admit_event(events[0]))[0] is events[0]
@@ -158,7 +162,9 @@ async def test_routed_bot_traffic_is_metered_by_the_transport_profiles_policy(tm
     runner._principal_authorized = lambda *a, **kw: True
     runner._adapter_profile_for_source = lambda source: "transport"
     runner._scale_to_zero_note_real_inbound = lambda: None
-    runner._hm_pre_gateway_dispatch_hook = lambda event, source: event
+    async def _passthrough_hook(event, source):  # the inbound path awaits the hook
+        return event
+    runner._hm_pre_gateway_dispatch_hook = _passthrough_hook
 
     def _routed_bot(i: int) -> MessageEvent:
         source = _bot(BOT_A)

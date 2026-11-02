@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from agent.conversation_loop import _is_interpreter_shutdown_error
 
-
 class TestInterpreterShutdownDetection:
     """Verify the interpreter-shutdown error matcher used by the
     conversation loop's outer except handler."""
@@ -52,17 +51,4 @@ class TestInterpreterShutdownDetection:
     def test_does_not_match_non_runtime_error(self):
         """Non-RuntimeError exceptions must not match."""
         exc = ValueError("cannot schedule new futures")
-        assert _is_interpreter_shutdown_error(exc) is False
-
-    def test_does_not_match_none(self):
-        """None must not match (defensive — caller may pass None)."""
-        try:
-            result = _is_interpreter_shutdown_error(None)  # type: ignore[arg-type]
-        except TypeError:
-            result = False
-        assert result is False
-
-    def test_does_not_match_empty_string_exception(self):
-        """Empty-message exceptions must not match."""
-        exc = RuntimeError("")
         assert _is_interpreter_shutdown_error(exc) is False

@@ -188,10 +188,7 @@ describe('a group room seats members from several machines', () => {
 
     // CONTROL: same-connection self still gets (you)
     expect(
-      formatGroupChatLine(
-        { at: 2, from: { kind: 'member', name: 'default' }, text: 'Mine' },
-        { name: 'default' }
-      )
+      formatGroupChatLine({ at: 2, from: { kind: 'member', name: 'default' }, text: 'Mine' }, { name: 'default' })
     ).toContain('(you)')
 
     // CONTROL: remote viewer seeing own remote line still gets (you)

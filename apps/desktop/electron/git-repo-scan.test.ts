@@ -50,6 +50,13 @@ describe('scanGitRepos', () => {
     expect(read).not.toHaveBeenCalled()
   })
 
+  it('does not fall back to scanning the home directory when roots are empty (#53328)', async () => {
+    const read = vi.spyOn(fs.promises, 'readdir')
+
+    await expect(scanGitRepos([], { enabled: true })).resolves.toEqual([])
+    expect(read).not.toHaveBeenCalled()
+  })
+
   it('scans only configured roots and excludes complete subtrees', async () => {
     const root = tempDir()
     const included = path.join(root, 'included')
@@ -74,7 +81,7 @@ describe('scanGitRepos', () => {
   })
 })
 
-describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
+describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
   it('finds a normal repo but skips root-level media folders on darwin', async () => {
     const root = tempDir()
     const dev = makeRepoAt(root, 'dev', 'proj')

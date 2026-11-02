@@ -95,7 +95,7 @@ def test_runtime_health_is_sanitized_and_recovers() -> None:
             raise RuntimeError("database disk image is malformed at secret/profile/state.db")
         return object()
 
-    with patch("gateway.status.write_runtime_status", side_effect=lambda **kw: writes.append(kw)):
+    with patch("gateway.status.publish_runtime_status", side_effect=lambda **kw: writes.append(kw)):
         assert cache.get(path, opener) is None
         clock.now = 1.0
         assert cache.get(path, opener) is not None

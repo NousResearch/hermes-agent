@@ -7,6 +7,7 @@ subsequent terminal/file-tool call until the gateway restarts.
 
 Regression coverage for https://github.com/NousResearch/hermes-agent/issues/17558.
 """
+import pytest
 
 import os
 import shutil
@@ -27,6 +28,7 @@ class TestResolveSafeCwd:
         assert _resolve_safe_cwd(path) == path
 
 
+    @pytest.mark.platforms("linux")
     def test_returns_root_when_only_root_exists(self, monkeypatch):
         """If every ancestor except the filesystem root is gone, the root
         itself is still a valid recovery target — don't skip it just because
@@ -74,6 +76,12 @@ def _close_fds(fds):
 
 class TestRunBashCwdRecovery:
     """End-to-end recovery: deleted ``self.cwd`` must not crash Popen."""
+
+    @pytest.fixture(autouse=True)
+    def _no_supervisor(self, monkeypatch):
+        # The faked Popen must see only the command, not the owner-death supervisor's spawn.
+        monkeypatch.setattr("tools.environments.local.own_process_groups", lambda pgids: None)
+        monkeypatch.setattr("tools.environments.local.release_process_groups", lambda pgids: None)
 
     def test_recovers_when_cwd_deleted_after_init(self, tmp_path, caplog):
         """Reproduces the wedge from #17558: cwd was valid when the

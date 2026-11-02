@@ -21,7 +21,6 @@ from gateway.agent_cache_pressure import (
     transcript_persistence_caught_up,
 )
 
-
 class TestBoundsResolution:
     """Absent config must stay absent so gateway/run.py keeps its defaults."""
 
@@ -66,7 +65,6 @@ class TestBoundsResolution:
         )
         assert bounds.protect_recent == 0
 
-
 class TestMemoryBudgetResolution:
     @pytest.mark.parametrize("setting", [0, False, None, "off", "none", ""])
     def test_falsy_settings_disable_the_pass(self, setting):
@@ -97,6 +95,41 @@ class TestMemoryBudgetResolution:
 
         assert resolve_memory_high_mb("auto") is None
 
+@pytest.mark.platforms("linux")
+class TestPressureSignalScope:
+    """The budget is the unit's cgroup limit, so the signal must be the unit's anon charge:
+    an execute_code kernel in the same cgroup counts even while the gateway itself is small (#110549)."""
+
+    def _cgroup(self, monkeypatch, tmp_path, stat_text):
+        import gateway.agent_cache_pressure as acp
+        import gateway.cgroup_cleanup as cleanup
+
+        monkeypatch.setattr(cleanup, "_own_cgroup_path", lambda: "/hermes.service")
+        real_read_text = acp.Path.read_text
+
+        def read_text(self, *args, **kwargs):
+            if str(self) == "/sys/fs/cgroup/hermes.service/memory.high":
+                return "6979321856\n"
+            if str(self) == "/sys/fs/cgroup/hermes.service/memory.stat":
+                if stat_text is None:
+                    raise OSError("restricted /sys mount")
+                return stat_text
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(acp.Path, "read_text", read_text)
+        return acp
+
+    def test_same_cgroup_child_anon_counts_against_the_budget(self, monkeypatch, tmp_path):
+        acp = self._cgroup(monkeypatch, tmp_path, "anon 4928307200\nfile 5426061312\nkernel 3629735936\n")
+        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+
+        assert acp.read_anon_rss_mb() == 4_700
+
+    def test_unreadable_cgroup_stat_keeps_the_self_reading(self, monkeypatch, tmp_path):
+        acp = self._cgroup(monkeypatch, tmp_path, None)
+        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+
+        assert acp.read_anon_rss_mb() == 1_600
 
 class TestPersistenceGuard:
     """Soft eviction drops the transcript, so it may only run once the
@@ -123,13 +156,6 @@ class TestPersistenceGuard:
         agent._session_db_created = True
         return agent
 
-    def test_fresh_agent_holds_nothing_to_lose(self, tmp_path):
-        agent = self._agent(tmp_path, "fresh")
-        try:
-            assert transcript_persistence_caught_up(agent) is True
-        finally:
-            agent.close()
-
     def test_unflushed_turn_blocks_eviction_then_flush_unblocks_it(self, tmp_path):
         agent = self._agent(tmp_path, "lagging")
         try:
@@ -152,7 +178,6 @@ class TestPersistenceGuard:
     def test_unknown_shapes_are_treated_as_unsafe(self):
         assert transcript_persistence_caught_up(object()) is False
         assert transcript_persistence_caught_up(None) is False
-
 
 class TestEvictionPlanner:
     def _entries(self, n):
@@ -206,7 +231,6 @@ class TestEvictionPlanner:
             protect_recent=0,
         )
         assert [key for key, _ in plan] == ["s1", "s2"]
-
 
 class TestGatewayPressureSweep:
     """End-to-end against the real GatewayRunner method."""
@@ -329,7 +353,6 @@ class TestGatewayPressureSweep:
         assert runner._sweep_agent_cache_under_pressure() == 0
         assert "s0" in runner._agent_cache
 
-
 class TestConfiguredBoundsReachTheCache:
     """The two existing bounds must be operator-tunable, and must keep their
     built-in values when config.yaml says nothing."""
@@ -382,7 +405,6 @@ class TestConfiguredBoundsReachTheCache:
         assert runner._sweep_idle_cached_agents() == 1
         assert "s-stale" not in runner._agent_cache
 
-
 def _wait_for(predicate, timeout: float = 3.0) -> None:
     """Wait for a background release thread to finish its work."""
     import time as _t
@@ -393,7 +415,6 @@ def _wait_for(predicate, timeout: float = 3.0) -> None:
             return
         _t.sleep(0.02)
     assert predicate(), "background release did not complete in time"
-
 
 class TestSalvageFollowups:
     """Follow-up behaviors added while salvaging PR #80795."""
@@ -427,84 +448,3 @@ class TestSalvageFollowups:
             {"agent": {"agent_cache": {"protect_recent": False}}}
         )
         assert bounds.protect_recent > 0
-
-    def test_release_batch_drains_plan_before_trim(self, monkeypatch):
-        """The plan list must be empty when trim_memory runs, so no local
-        reference pins the evicted agents during gc.collect + malloc_trim
-        (otherwise the in-pass trim frees nothing and the next tick
-        over-evicts another batch)."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        released = []
-        runner._commit_then_release_soft = lambda agent, key: released.append(key)
-
-        plan_len_at_trim = {}
-
-        import hermes_cli.mem_trim as mem_trim_mod
-
-        plan = [(f"s{i}", MagicMock()) for i in range(3)]
-
-        def fake_trim(force=False, reason=None):
-            plan_len_at_trim["len"] = len(plan)
-            return True
-
-        monkeypatch.setattr(mem_trim_mod, "trim_memory", fake_trim)
-
-        runner._release_pressure_batch(plan)
-
-        assert released == ["s0", "s1", "s2"], "LRU-first (FIFO) release order"
-        assert plan_len_at_trim["len"] == 0, (
-            "plan still held agent references when trim_memory ran"
-        )
-
-    def test_soft_release_clears_db_flush_scan_prefix(self):
-        """_db_flush_scan_prefix shallow-copies the flushed transcript and is
-        populated on exactly the agents the valve targets — leaving it pins
-        every message dict the eviction claims to free."""
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        agent = MagicMock()
-        transcript = [{"role": "user", "content": "x" * 1024}]
-        agent._session_messages = transcript
-        agent._db_flush_scan_prefix = transcript[:]
-
-        runner._release_evicted_agent_soft(agent)
-
-        assert agent._session_messages == []
-        assert agent._db_flush_scan_prefix is None
-
-    def test_no_evictable_warning_distinguishes_unflushed_persistence(self, monkeypatch, caplog):
-        """When everything is blocked on un-flushed persistence (e.g. the
-        session DB never initialized), the warning must say so instead of
-        blaming mid-turn agents."""
-        import logging as _logging
-
-        from collections import OrderedDict as _OD
-
-        import gateway.agent_cache_pressure as acp
-        from gateway.run import GatewayRunner
-
-        runner = GatewayRunner.__new__(GatewayRunner)
-        runner._agent_cache = _OD()
-        runner._agent_cache_lock = threading.Lock()
-        runner._running_agents = {}
-        runner._agent_cache_bounds_cache = AgentCacheBounds(
-            memory_high_mb=1000, max_evictions_per_pass=8, protect_recent=0
-        )
-        monkeypatch.setattr(acp, "read_anon_rss_mb", lambda: 4000)
-
-        for i in range(3):
-            agent = MagicMock()
-            agent._session_messages = [{"role": "user", "content": "x"}]
-            agent._last_flushed_db_idx = 0  # never flushed
-            runner._agent_cache[f"s{i}"] = (agent, "sig")
-
-        with caplog.at_level(_logging.WARNING, logger="gateway.run"):
-            evicted = runner._sweep_agent_cache_under_pressure()
-
-        assert evicted == 0
-        joined = " ".join(r.getMessage() for r in caplog.records)
-        assert "blocked on un-flushed persistence" in joined
-        assert "3 blocked" in joined

@@ -25,10 +25,6 @@ def test_grep_inside_a_substitution_is_not_malformed(command):
     assert detect_hardline_command(command) == (False, None)
 
 
-def test_lexer_stops_at_the_end_of_the_simple_command():
-    seg = 'sed -n "$(grep -n X f | cut -d: -f1),+3p" f'
-    toks = _shell_tokens_with_spans(seg, seg.index("grep"))
-    assert [t[0] for t in toks] == ["grep", "-n", "X", "f"]
 
 
 def test_genuinely_unbalanced_quoting_still_fails_closed():

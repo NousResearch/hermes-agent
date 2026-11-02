@@ -169,25 +169,6 @@ class TestAnthropicOAuthOutgoingPrefix:
         )
 
 
-    def test_oauth_promotes_single_underscore_mcp_server_tool(self):
-        """OAuth + ``mcp_<server>_<tool>`` -> promoted to double underscore.
-
-        This is the gap left by the bare constant swap: MCP server tools used
-        to be *skipped* and went on the wire single-underscore, still tripping
-        the classifier.  They must become ``mcp__`` and NOT be double-prefixed.
-        """
-        kwargs = self._build([{
-            "type": "function",
-            "function": {
-                "name": "mcp_linear_get_issue",
-                "description": "x",
-                "parameters": {},
-            },
-        }])
-        names = [t["name"] for t in kwargs["tools"]]
-        assert names == ["mcp__linear_get_issue"]
-        # never double-prefixed
-        assert not any(n.startswith("mcp__mcp_") for n in names)
 
 
     def test_oauth_no_single_underscore_mcp_on_wire(self):

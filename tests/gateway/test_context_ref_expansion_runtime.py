@@ -233,7 +233,8 @@ async def test_vision_enrichment_tokens_do_not_trigger_context_reference_expansi
     img = tmp_path / "screenshot.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    monkeypatch.setattr(runner, "_resolve_image_input_mode_for_source", lambda *a, **kw: "text")
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda *a, **kw: "text")
+    monkeypatch.setattr(runner, "_session_key_for_source", lambda *_a, **_kw: "key", raising=False)
 
     async def _fake_enrich(user_text: str, image_paths: list[str]) -> str:
         note = (

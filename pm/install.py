@@ -859,6 +859,18 @@ def _refuse_declined(package, extras: Optional[list[str]], *, explicit: bool) ->
                            "run `" + "`, `".join(install_hint(extra) for extra in dropped) + "` to enable them again")
 
 
+def decline_extras(names: list[str]) -> None:
+    """Record ``hermes pm install --without NAME`` for extras, under the dependency lock: an
+    in-flight `--extra NAME` sync clears its decline before releasing it, so an unlocked write
+    landing mid-sync would be erased."""
+    if not names:
+        return
+    from pm.extras import record_declined_extras
+
+    with _venv_install_lock(patient=True):
+        record_declined_extras(add=names, project_root=paths.repo_root())
+
+
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
               plugins: PluginInput | None = None, repair: bool = False,
               evict_incompatible_plugins: bool = False) -> None:
@@ -897,10 +909,10 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
-        _refuse_declined(package, extras, explicit=explicit)
         from hermes_cli.runtime_state import recover_publication
         from pm.publication import StagedPlugin
         with _venv_install_lock(patient=explicit or repair):
+            _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())
             change = _publication(plugins)
             if isinstance(change, StagedPlugin) and not change.active:
@@ -923,11 +935,12 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                 receipt.record_feature_list(enabled)
                 _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
                                   current=current, repair=repair, explicit=explicit)
-        if extras and explicit and not repair:
-            from pm.extras import record_declined_extras
+            if extras and explicit and not repair:
+                from pm.extras import record_declined_extras
 
-            # An explicit request is the opt-back-in: later syncs carry it again.
-            record_declined_extras(remove=extras, project_root=package.project_root())
+                # An explicit request is the opt-back-in. Cleared before the lock is released, or a
+                # sync queued behind this one still reads the decline and publishes without the extra.
+                record_declined_extras(remove=extras, project_root=package.project_root())
         outcome = "ok"
     except BaseException as exc:
         receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")

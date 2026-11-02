@@ -933,7 +933,7 @@ export const csOverrides = {
       advancedOutput: 'Limity výstupu',
       advancedDelegation: 'Dílčí agenti',
       advancedDesktop: 'Desktop a spouštění',
-      gatewayConnection: 'Toto okno',
+      gatewayConnection: 'Hlavní brána',
       gatewayDevices: 'Uložená připojení',
       gatewayManagedUpdates: 'Vzdálené aktualizace',
       gatewayManagedUpdatesUnavailable:
@@ -1064,9 +1064,7 @@ export const csOverrides = {
         unverified: 'Neověřeno',
         verified: 'Ověřeno',
         versionLabel: 'Verze'
-      },
-      disable: 'Vypnout',
-      enable: 'Zapnout'
+      }
     },
     vault: {
       title: 'Hesla a přihlášení',
@@ -1199,7 +1197,19 @@ export const csOverrides = {
       completionSoundPreview: 'Náhled',
       muteSoundsDesc:
         'Vypne zvuky automatického dokončení, probouzecího slova a přemýšlení, haptickou odezvu i zvuky systémových oznámení. Ukázky zvuků a mluvené odpovědi se přehrávají dál.',
-      muteSoundsTitle: 'Ztlumit zvuky rozhraní'
+      muteSoundsTitle: 'Ztlumit zvuky rozhraní',
+      browserPermission: {
+        allow: 'Povolit',
+        states: {
+          default:
+            'Zobrazovat upozornění z tohoto prohlížeče, i když je karta na pozadí. Dokud to nepovolíte, bliká jen titulek karty.',
+          denied: 'Zablokováno v nastavení stránek tohoto prohlížeče. Titulek karty přesto bliká.',
+          granted: 'Povoleno. Upozornění se zobrazují, když je karta na pozadí; bliká i titulek karty.',
+          insecure: 'Vyžaduje HTTPS, například Tailscale serve. Přes obyčejné HTTP bliká jen titulek karty.',
+          unsupported: 'Tento prohlížeč neumí zobrazovat upozornění. Titulek karty přesto bliká.'
+        },
+        title: 'Upozornění prohlížeče'
+      }
     },
     sections: {
       model: 'Model',
@@ -1824,7 +1834,7 @@ export const csOverrides = {
       intro:
         'Spravujte toto zařízení a všechny brány Hermes dostupné prostřednictvím vzdáleného připojení, SSH nebo Hermes Cloud.',
       stagedNote:
-        'Brány můžete přepínat v Relacích. Profily, chaty, zprávy a naplánované úlohy zůstávají přiřazené ke své bráně; práce na ostatních bránách pokračuje.',
+        'Všechny brány zůstávají připojené. Profily, chaty, zprávy a naplánované úlohy zůstávají u své brány a Relace je mohou zobrazit všechny najednou.',
       launchModeTitle: 'Při spuštění otevřít relace na naposledy použité bráně',
       launchModeDesc: 'Je-li volba vypnutá, relace se otevřou na primární bráně.',
       searchPlaceholder: 'Prohledat brány…',
@@ -3247,7 +3257,11 @@ export const csOverrides = {
       previewFailed: 'Náhled dovednosti se nezdařil',
       scanFailed: 'Bezpečnostní kontrola se nezdařila',
       searchFailed: 'Vyhledávání v hubu se nezdařilo'
-    }
+    },
+    lock: 'Uzamknout',
+    lockHint: 'Agent nemůže tuto dovednost měnit, dokud je uzamčená. Sami ji upravovat můžete.',
+    locked: 'Uzamčeno',
+    unlockedHint: 'Uzamkněte ji, aby ji agent nemohl měnit. Sami ji upravovat můžete.'
   },
   starmap: {
     title: 'Mapa paměti',
@@ -3870,13 +3884,10 @@ export const csOverrides = {
       gateway: gateway => `Profily na ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · nedostupné`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Přepnout na ${name} na bráně ${gateway}`,
+      switchTo: (name, gateway) => `Otevřít ${name} na bráně ${gateway}`,
       deleteOn: gateway => ` na bráně ${gateway}`,
       localDevice: 'Toto zařízení (místní backend — nainstaluje Hermes, pokud chybí, jinak otevře novou relaci)',
-      switchDeviceTitle: 'Přepnout na toto zařízení?',
-      switchDeviceDesc: 'Otevře novou relaci na tomto počítači. Konverzace, ve které jste, zůstává na druhé bráně.',
-      switchDeviceConfirm: 'Přepnout',
-      installDeviceTitle: 'Přepnout na toto zařízení?',
+      installDeviceTitle: 'Nainstalovat Hermes na toto zařízení?',
       installDeviceDesc:
         'Hermes se nainstaluje místně a poté se na tomto počítači otevře nová relace. Nic se nenainstaluje, dokud nepotvrdíte.',
       installDeviceConfirm: 'Nainstalovat místně',
@@ -4159,7 +4170,19 @@ export const csOverrides = {
       emptyTitle: 'Nejsou k dispozici žádné plány',
       emptyDesc: 'Na tomto backendu nejsou k dispozici žádné plány automatizace.'
     },
-    queuedRun: 'Spuštění ve frontě'
+    queuedRun: 'Spuštění ve frontě',
+    control: {
+      catchUpChoices: { default: 'Použít výchozí nastavení', run: 'Spustit jednou po obnovení', skip: 'Přeskočit' },
+      catchUpHint: 'Co dělat s běhy, které se zmeškaly, když Hermes neběžel.',
+      catchUpLabel: 'Zmeškané běhy',
+      failedStop: 'Běh se nepodařilo zastavit',
+      finishedFirst: 'Běh skončil dřív, než se mohl zastavit',
+      lastCancelled: reason => (reason ? `Poslední běh zrušen: ${reason}` : 'Poslední běh zrušen'),
+      nothingToStop: 'Žádný běh neprobíhá',
+      stop: 'Zastavit',
+      stopped: 'Běh zrušen',
+      stopping: 'Zastavuji…'
+    }
   },
   artifacts: {
     search: 'Hledat artefakty…',
@@ -4417,7 +4440,6 @@ export const csOverrides = {
       backgroundRunning: 'Úloha běží na pozadí',
       draftSession: 'Koncept — zatím nebylo nic odesláno',
       handoffOrigin: platform => `Odevzdáno ${platform}`,
-      continuationOrigin: 'Automatické pokračování — tato konverzace byla zkomprimována a pokračuje',
       ownedByProfile: profile => `Profil: ${profile}`,
       renamed: 'Přejmenováno',
       renameFailed: 'Přejmenovat selhalo',
@@ -5571,7 +5593,14 @@ export const csOverrides = {
     terminalDropTooLarge: (names, limit) => `Každý soubor může mít až ${limit}. Nenahráno: ${names}`,
     terminalDropUploadFailed: name => `Soubor ${name} se nepodařilo nahrát`,
     terminalDropControlTitle: 'Nevloženo do terminálu',
-    terminalDropTooLargeTitle: 'Příliš velké pro nahrání'
+    terminalDropTooLargeTitle: 'Příliš velké pro nahrání',
+    terminalDisconnectedBody: 'Terminál se odpojil. Stisknutím Enter spustíte nový shell; historie zůstane zachována.',
+    terminalGatewayNoShellBody:
+      'Tato brána nemá přístup k shellu, takže terminál nelze znovu otevřít. Zavřete tuto kartu.',
+    terminalGatewayRemoved: 'Odebraná brána',
+    terminalGatewayRemovedBody:
+      'Brána, na které tento terminál běžel, byla odebrána, takže se nedá znovu otevřít. Zavřete tuto kartu.',
+    terminalNewOn: 'Nový terminál na…'
   },
   preview: {
     tab: 'Náhled',
@@ -5813,7 +5842,7 @@ export const csOverrides = {
         billing: 'Nedostatek kreditů',
         disk: 'Disk plný',
         endpoint: 'K serveru modelu se nelze připojit',
-        gateway: 'V Hermesu došlo k problému',
+        gateway: 'Zprávu se nepodařilo odeslat',
         generic: 'Hermes nemohl dokončit odpověď',
         provider: 'Služba AI vrátila chybu',
         runtime: 'V Hermesu došlo k problému',
@@ -5835,134 +5864,136 @@ export const csOverrides = {
       },
       errorCodes: {
         auth: {
-          title: provider => `${provider} odmítl přihlášení`,
-          body: provider =>
-            `Uložené údaje pro ${provider} nebyly přijaty. Opravte je v Nastavení nebo změňte poskytovatele a zprávu odešlete znovu.`
+          title: provider => `${provider} odmítl váš API klíč`,
+          body: () => 'Uložený klíč je neplatný nebo byl zrušen. Aktualizujte jej a zprávu odešlete znovu.'
         },
         auth_permanent: {
-          title: provider => `${provider} odmítl přihlášení`,
-          body: provider =>
-            `Uložené údaje pro ${provider} jsou neplatné nebo byly zrušeny. Aktualizujte je nebo změňte poskytovatele a zprávu odešlete znovu.`
+          title: provider => `${provider} odmítl váš API klíč`,
+          body: () => 'Uložený klíč je neplatný nebo byl zrušen. Aktualizujte jej a zprávu odešlete znovu.'
         },
         billing: {
-          title: 'Nedostatek kreditů',
-          body: provider =>
-            `Na účtu ${provider} nezbývají kredity. Doplňte je nebo změňte poskytovatele a zprávu odešlete znovu.`
+          title: provider => `Na ${provider} došly kredity`,
+          body: provider => `Doplňte kredity, abyste mohli na ${provider} dál používat placené modely.`
         },
         rate_limit: {
-          title: 'Služba AI je vytížená',
-          body: provider => `${provider} nyní omezuje požadavky. Minutu počkejte a akci opakujte.`
+          title: provider => `${provider} je nyní vytížený`,
+          body: provider => `Dosáhli jste limitu požadavků ${provider}. Chvíli počkejte a zkuste to znovu.`
         },
         upstream_rate_limit: {
-          title: 'Služba AI je vytížená',
-          body: provider => `${provider} nyní omezuje požadavky. Minutu počkejte a akci opakujte.`
+          title: (_provider, model) => `${model ? model : 'Tento model'} je nyní vytížený`,
+          body: (provider, model) =>
+            `${model ? model : 'Tento model'} je omezený na straně ${provider}, ne na vašem účtu. Za chvíli to zkuste znovu.`
         },
         overloaded: {
-          title: 'Služba AI je přetížená',
-          body: provider => `${provider} má nyní potíže. Za chvíli akci opakujte nebo změňte poskytovatele.`
+          title: provider => `${provider} je nyní vytížený`,
+          body: provider => `${provider} je přetížený a tento požadavek nepřijal. Za chvíli to zkuste znovu.`
         },
         server_error: {
-          title: 'Ve službě AI došlo k problému',
-          body: provider => `${provider} vrátil chybu serveru. Za chvíli akci opakujte nebo změňte poskytovatele.`
+          title: provider => `${provider} má potíže`,
+          body: provider => `${provider} vrátil chybu serveru. Za chvíli to zkuste znovu.`
         },
         timeout: {
-          title: 'Službu AI se nepodařilo kontaktovat',
-          body: provider =>
-            `${provider} se nepodařilo kontaktovat nebo neodpověděl včas. Zkontrolujte internetové připojení a zkuste to znovu.`
+          title: provider => `${provider} není dostupný`,
+          body: provider => `Hermes se k ${provider} nedostal. Zkontrolujte připojení a zkuste to znovu.`
         },
         stream_drop: {
           title: 'Odpověď byla přerušena',
           body: 'Připojení se přerušilo před dokončením odpovědi. Odešlete požadavek znovu.'
         },
         no_reply: {
-          title: 'Odpověď se nedokončila',
-          body: 'Hermes ukončil tento tah bez odpovědi. Zkuste to znovu a odešlete ji.'
+          title: 'Odpověď nedorazila',
+          body: 'Hermes tento tah dokončil, ale do tohoto okna nedorazila žádná odpověď. Zkuste to znovu.'
         },
         upstream_blocked: {
-          title: 'Požadavek zablokoval firewall',
+          title: provider => `${provider} tento požadavek zablokoval`,
           body: provider =>
-            `Firewall nebo CDN před ${provider} zablokoval požadavek dřív, než dorazil k modelu — váš klíč je pravděpodobně v pořádku. V Nastavení nastavte v extra_headers poskytovatele hlavičku User-Agent nebo změňte poskytovatele a pak zprávu odešlete znovu.`
+            `Firewall před ${provider} požadavek odmítl, dřív než dorazil k modelu. Změňte poskytovatele, nebo pro něj nastavte vlastní User-Agent.`
         },
         ssl_cert_verification: {
-          title: 'Zabezpečené připojení selhalo',
+          title: provider => `Připojení k ${provider} nelze ověřit`,
           body: provider =>
-            `Hermes nemohl ověřit zabezpečené připojení k ${provider}. Zkontrolujte síť nebo proxy, případně změňte poskytovatele, a zprávu odešlete znovu.`
+            `Zabezpečené připojení k ${provider} zablokovala proxy nebo zastaralé úložiště certifikátů. V návodu k nastavení najdete, jak to opravit.`
         },
         context_overflow: {
-          title: 'Tato konverzace je příliš dlouhá',
-          body: 'Konverzace se už nevejde do modelu. Zkomprimujte ji nebo spusťte nový chat a pak zprávu odešlete znovu.'
+          title: 'Tento chat je příliš dlouhý',
+          body: (_provider, model) =>
+            `Konverzace se už nevejde do kontextového okna ${model ? model : 'modelu'}. Zkomprimujte ji, abyste mohli pokračovat.`
         },
         payload_too_large: {
           title: 'Tato zpráva je příliš velká',
-          body: 'Požadavek byl pro model příliš velký. Zkomprimujte konverzaci nebo spusťte nový chat a pak zprávu odešlete znovu.'
+          body: provider =>
+            `Požadavek včetně příloh přesahuje velikostní limit ${provider}. Zkomprimujte konverzaci nebo odeberte přílohy.`
         },
         model_not_found: {
-          title: 'Tento model není dostupný',
-          body: provider => `${provider} tento model pro váš účet nenabízí. Vyberte jiný model a zprávu odešlete znovu.`
+          title: (_provider, model) => `${model ? model : 'Tento model'} není dostupný`,
+          body: (provider, model) =>
+            `${provider} nenabízí ${model ? model : 'tento model'} pro váš účet. Vyberte jiný model.`
         },
         provider_policy_blocked: {
-          title: 'Model blokuje nastavení vašeho účtu',
+          title: (provider, model) => `Nastavení ${provider} blokuje ${model ? model : 'tento model'}`,
           body: provider =>
-            `${provider} nemůže požadavek směrovat kvůli nastavení dat nebo soukromí vašeho účtu. Vyberte jiný model nebo poskytovatele.`
+            `Nastavení soukromí vašeho účtu ${provider} vylučuje všechny koncové body pro tento model. Změňte je na ${provider}, nebo vyberte jiný model.`
         },
         content_policy_blocked: {
-          title: 'Služba AI požadavek odmítla',
-          body: provider => `${provider} na tuto zprávu neodpověděl. Upravte ji a odešlete znovu.`
+          title: provider => `${provider} tuto zprávu odmítl`,
+          body: provider => `Bezpečnostní filtr ${provider} tuto zprávu odmítl. Upravte ji a odešlete znovu.`
         },
         format_error: {
-          title: 'Služba AI požadavek odmítla',
-          body: provider => `${provider} nepřijal formát požadavku. Změňte poskytovatele nebo odešlete diagnostiku.`
+          title: provider => `${provider} tento požadavek odmítl`,
+          body: provider =>
+            `${provider} nepřijal strukturu této konverzace. Změňte poskytovatele, nebo pokud se to opakuje, spusťte nový chat.`
         },
         truncated: {
           title: 'Odpověď byla zkrácena',
-          body: 'Model skončil před dokončením. Zkuste získat úplnou odpověď znovu.'
+          body: (_provider, model) =>
+            `${model ? model : 'Model'} skončil před dokončením odpovědi. Pokračujte, odkud přestal.`
         },
         invalid_response: {
-          title: 'Služba AI odeslala nečitelnou odpověď',
-          body: provider => `${provider} vrátil obsah, který Hermes nemohl přečíst. Za chvíli akci opakujte.`
+          title: 'Odpověď se nepodařilo přečíst',
+          body: provider => `${provider} vrátil prázdnou nebo poškozenou odpověď. Za chvíli to zkuste znovu.`
         },
         empty_response: {
-          title: 'Služba AI odeslala prázdnou odpověď',
+          title: 'Odpověď nepřišla',
           body: provider => `${provider} na tuto zprávu nic nevrátil. Za chvíli akci opakujte.`
         },
         loop_error: {
-          title: 'Hermes uvízl ve smyčce',
-          body: 'Odpověď opakovala stejné kroky, proto ji Hermes zastavil. Zkuste to znovu; pokud se problém opakuje, spusťte nový chat.'
+          title: 'Hermes nemohl tento krok dokončit',
+          body: 'Při zpracování odpovědi se něco pokazilo. Zkuste to znovu; pokud se to opakuje, odešlete diagnostiku z podrobností.'
         },
         SESSION_NOT_OWNED: {
-          title: 'Tento chat je otevřen jinde',
-          body: 'Chat je otevřen v jiném okně nebo terminálu Hermesu. Tam jej zavřete a zprávu odešlete znovu, případně zde spusťte nový chat.'
+          title: 'Chat je otevřen jinde',
+          body: 'Tento chat je otevřený v jiném okně nebo terminálu Hermesu. Spusťte zde nový chat, nebo jej tam nejdřív zavřete.'
         },
         disk_full: {
-          title: 'Disk plný',
-          body: 'Disk je plný, takže Hermes nemohl konverzaci uložit. Uvolněte místo a akci opakujte.'
+          title: 'Disk je plný',
+          body: 'Hermes nemohl tuto konverzaci uložit. Uvolněte místo a zkuste to znovu.'
         },
         free_tier_disabled: {
-          title: 'Používání Hermesu bez přihlášení je nyní vypnuté',
+          title: 'Přihlaste se a pokračujte v chatu',
           body: 'Chcete-li pokračovat, přihlaste se bezplatným účtem Nous.'
         },
         free_tier_rate_limited: {
-          title: 'Vyčerpali jste limit chatu bez přihlášení',
+          title: 'Bezplatný limit vyčerpán',
           body: 'Limit se brzy obnoví. Bezplatným přihlášením k Nous získáte vyšší limit.'
         },
         free_tier_at_capacity: {
-          title: 'Chat bez přihlášení je nyní velmi vytížený',
+          title: 'Bezplatný tarif je vytížený',
           body: 'Bezplatným přihlášením přeskočíte frontu, případně to zkuste za chvíli.'
         },
         free_tier_model_not_free: {
-          title: 'Tento model není bez přihlášení dostupný',
+          title: 'Tento model vyžaduje přihlášení',
           body: 'Hermes zatím používá bezplatný model. Přihlášením k Nous zdarma získáte další modely.'
         },
         free_tier_route: {
-          title: 'Hermes se na této trase nemohl připojit k bezplatnému modelu',
+          title: 'Bezplatný model není dostupný',
           body: 'Přihlaste se bezplatným účtem Nous nebo zkontrolujte nastavení NOUS_INFERENCE_BASE_URL.'
         },
         free_tier_outage: {
-          title: 'Bezplatný model má nyní potíže s odpovědí',
+          title: 'Bezplatný model má potíže',
           body: 'Za minutu zkuste zprávu odeslat znovu.'
         },
         free_tier_refused: {
-          title: 'Hermes to bez přihlášení nemohl odeslat',
+          title: 'Přihlaste se a pokračujte v chatu',
           body: 'Přihlášení účtem Nous je zdarma.'
         },
         cron_session_read_only: {
@@ -5992,24 +6023,32 @@ export const csOverrides = {
         workspace_unavailable: {
           body: 'Složka, ve které tento chat pracuje, byla přesunuta nebo smazána, proto se vaše zpráva nespustila. Složku obnovte, nebo chatu přiřaďte jinou pomocí Přesunout do projektu a zkuste to znovu.',
           title: 'Složka tohoto chatu už neexistuje'
+        },
+        agent_init_failed: {
+          body: provider =>
+            `Hermes se k ${provider} pro tento chat nepřipojil. Zkuste to znovu; pokud se to opakuje, zkontrolujte poskytovatele v Nastavení.`,
+          title: 'Chat se nepodařilo spustit'
+        },
+        local_runtime_unavailable: {
+          body: 'Lokální server modelu zatím neodpovídá: možná se ještě spouští. Zkuste to za chvíli znovu, nebo přepněte na jiný model.',
+          bodyNoRetry:
+            'Lokální server modelu je vypnutý. Spusťte ho v aplikaci Hermes pro počítač nebo příkazem `hermes model` v terminálu, případně přepněte na jiný model.',
+          title: 'Lokální server modelu není dostupný'
         }
       },
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} odmítl váš API klíč`,
-          body: provider =>
-            `Klíč uložený pro ${provider} je neplatný nebo byl zrušen. Aktualizujte jej a akci opakujte.`
+          body: () => 'Uložený klíč je neplatný nebo byl zrušen. Aktualizujte jej a zprávu odešlete znovu.'
         },
         oauth: {
-          title: provider => `Platnost přihlášení k ${provider} vypršela`
+          title: provider => `Přihlaste se znovu k ${provider}`
         }
       },
-      errorDetails: 'Podrobnosti',
+      errorDetails: 'Zobrazit podrobnosti chyby',
       errorGenericProvider: 'Služba AI',
       errorToastTitle: 'Hermes nemohl dokončit odpověď',
       errorRetry: 'Zkusit znovu',
-      errorLimitResets: time => `Limit se obnoví v ${time}`,
-      errorRetryAtReset: time => `Opakovat po obnovení limitu (${time})`,
       errorRetryScheduled: (time, wait) => `Další pokus v ${time} — za ${wait}`,
       errorRetryScheduledCancel: 'Zrušit',
       errorStartNewSession: 'Spustit novou relaci',
@@ -6023,11 +6062,10 @@ export const csOverrides = {
       errorSignInAgain: provider => `Znovu se přihlásit k ${provider}`,
       errorSignInFreeTier: 'Přihlásit se účtem Nous',
       errorOauthExpired: provider =>
-        `Přihlášení k ${provider} vypršelo nebo bylo zrušeno. Chcete-li pokračovat v chatu, přihlaste se znovu.`,
+        `Platnost přihlášení k ${provider} vypršela nebo bylo zrušeno. Přihlaste se znovu, ať můžete pokračovat v chatu.`,
       errorOpenLogs: 'Otevřít protokoly',
       errorOpenLogsFailed: 'Nelze otevřít složku záznamů',
       errorOpenDesktopLogs: 'Otevřít protokoly aplikace Desktop',
-      errorCopyDiagnostics: 'Kopírovat podrobnosti chyby',
       errorSendDiagnostics: 'Odeslat diagnostiku',
       filesChanged: count => (count === 1 ? 'Změněn 1 soubor' : `Změněné soubory: ${count}`),
       reviewChanges: 'Zkontrolovat',
@@ -6056,7 +6094,19 @@ export const csOverrides = {
       errorOpenBillingSettings: 'Otevřít nastavení fakturace',
       errorSwitchModelFailed: 'Model se nepodařilo přepnout',
       errorUseCredits: 'Zapnout Pokračovat z kreditů',
-      errorUseCreditsFailed: 'Pokračovat z kreditů se nepodařilo zapnout'
+      errorUseCreditsFailed: 'Pokračovat z kreditů se nepodařilo zapnout',
+      errorChooseModelLink: 'Vybrat jiný model',
+      errorContinue: 'Pokračovat',
+      errorCopyRaw: 'Kopírovat chybu',
+      errorDetailsCopy: 'Kopírovat podrobnosti',
+      errorHideDetails: 'Skrýt podrobnosti chyby',
+      errorOpenModelSettings: 'Otevřít nastavení modelů',
+      errorOpenProviderSettings: provider => `Otevřít nastavení ${provider}`,
+      errorOpenSetupGuide: 'Otevřít návod k nastavení',
+      errorRateLimitResetBody: (provider, time) => `Dosáhli jste limitu ${provider}. Obnoví se ${time}.`,
+      errorRetryAtResetShort: time => `Zkusit znovu ${time}`,
+      errorSetupGuideLink: 'Návod k nastavení',
+      errorStartNewChatLink: 'Spustit nový chat'
     },
     approval: {
       gatewayDisconnected:

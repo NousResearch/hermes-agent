@@ -3,9 +3,10 @@
 Order of controls (each is a gate, never skipped by a cache hit): secret-URL
 refusal -> SSRF filter (in web_tools.web_extract_tool) -> provider resolution
 (strict selection) -> per-URL website policy -> disk cache -> vendor call with
-one-shot keyless rescue -> website policy + SSRF on every page reported under a
-URL that was not requested (redirect targets). Logs under the origin
-(tools.web_tools) logger.
+one-shot keyless rescue (whole-batch, or only its failed entries when
+``web.rescue_partial_failures`` is on) -> website policy + SSRF on every page
+reported under a URL that was not requested (redirect targets). Logs under the
+origin (tools.web_tools) logger.
 """
 
 import asyncio
@@ -15,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import _rescue_eligible, _rescue_extract, _rescue_partial_enabled
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -159,7 +160,14 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
     failed (backend outage, not per-page problems): an origin HTTP 4xx/5xx is the page's own answer,
-    so a batch with one never triggers it. Returns ``(results, rescued)``.
+    so a batch with one never triggers it. With ``web.rescue_partial_failures`` on, a mixed batch
+    also rescues just its genuinely failed entries (through ``_rescue_extract`` — the dispatcher
+    never re-implements the merge). Returns ``(results, rescued)``.
+
+    A partial rescue returns ``(merged, False)`` deliberately: ``_dispatch_extract`` must still run
+    its cache loop so the batch's original successes are cached — rescued entries are skipped there
+    by the ``metadata.rescued_from`` guard. Only a whole-batch rescue returns ``rescued=True``: none
+    of its entries is worth caching and the next call retries the chosen backend.
     """
     import inspect
     timeout = _extract_timeout_seconds()
@@ -187,6 +195,14 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
     if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+    if (
+        _rescue_partial_enabled()
+        and _rescue_eligible(provider)
+        and len(results) == len(fetch_urls)  # the partial merge is positional: no parity, no rescue
+        and any(r.get("error") for r in results)
+    ):
+        merged = await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+        return merged, False
     return results, False
 
 
@@ -229,7 +245,8 @@ async def _gate_final_urls(results: list[dict], requested: set[str]) -> list[dic
 
 async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[str]) -> list[dict]:
     """Fetch *fetch_urls* (with keyless rescue), re-gate redirect targets, then cache the passes.
-    Rescued batches are never cached."""
+    A whole-batch rescue is never cached; in a partially rescued batch the original successes still
+    cache and the rescued entries are skipped."""
     from tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
     results, rescued = await _fetch_with_rescue(provider, fetch_urls, format)
     requested = set(fetch_urls)
@@ -244,6 +261,8 @@ async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[st
     # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
     for fetched in results:
         meta = fetched.get("metadata")
+        if isinstance(meta, dict) and meta.get("rescued_from"):
+            continue  # a one-shot rescue served this page; caching it for the TTL would make it sticky
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")

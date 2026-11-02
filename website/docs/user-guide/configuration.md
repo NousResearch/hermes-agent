@@ -2839,6 +2839,13 @@ web:
   # call attempts the chosen backend again (never sticky).
   keyless_rescue: true
 
+  # Partial-batch rescue (default: false). When only some URLs of a
+  # web_extract batch fail, re-fetch just the failed URLs through the
+  # keyless ring — one shot, never cached, origin HTTP answers and policy
+  # blocks left alone. Off by default: a partially failed batch can
+  # double-fetch against a paid backend.
+  rescue_partial_failures: false
+
   # Pin Exa/Parallel to a tier (set by the hermes tools Free/Paid rows).
   # free = always the anonymous endpoint; paid = always the keyed SDK path;
   # unset = auto (key present -> paid, otherwise free).

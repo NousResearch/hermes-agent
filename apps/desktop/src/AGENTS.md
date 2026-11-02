@@ -96,6 +96,12 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
 
+### Group Chats: gateway rooms and classic rooms
+
+Follow [the group contract](../docs/canonical-groups.md): offer a control only when the gateway lists
+its method, send only what the generated contract declares, never fall back to classic execution,
+and give a Send's words back only on the gateway's `admitted: false` proof.
+
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 
 `$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a

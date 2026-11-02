@@ -6,7 +6,6 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
-const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
 export interface CanonicalGroupEvent {
   seq: number
@@ -23,9 +22,14 @@ interface CanonicalGroupHistoryProps {
   events: CanonicalGroupEvent[]
   members?: CanonicalRoomMember[]
   disabled?: boolean
+  /** Whether the room's gateway lists groups.attachment.download. */
+  downloads?: boolean
 }
 
-function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean) {
+function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean, you: string) {
+  // The gateway records this Desktop's own messages as the user `desktop`.
+  if (isMessage && event.actor?.kind === 'user' && event.actor.id === 'desktop' && !event.actor.display_name) {return you}
+
   const memberId = isMessage
     ? event.actor?.kind === 'member' ? event.actor.id : undefined
     : event.payload.member_id
@@ -58,11 +62,13 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
   const text = event.payload.text || event.payload.content || ''
 
   return <div className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" data-selectable-text="true">
-    {/* The shared renderer (layout and large-message safeguards). media={false}: room text
-        may come from another machine, so its MEDIA: paths never resolve against this gateway;
-        room files keep their own download path below. */}
-    {MessageTextContent ? <MessageTextContent media={false} text={text} />
-      : Streamdown ? <Streamdown>{text}</Streamdown> : text}
+    {/* The shared renderer (layout and large-message safeguards). Room text may come from
+        another machine: media={false} keeps its MEDIA: paths from resolving against this gateway,
+        and previewOnly keeps its images, file links, directive cards and rich fences inert (a
+        fence shows its source; an explicit web link to a public host still opens on a click). A
+        shell without it gets plain text, never a renderer without those limits. Room files keep
+        their own download path below. */}
+    {MessageTextContent ? <MessageTextContent media={false} previewOnly text={text} /> : text}
   </div>
 }
 
@@ -153,7 +159,7 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
+export function CanonicalGroupHistory({ binding, events, members = [], disabled = false, downloads = true }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
 
@@ -174,7 +180,7 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
     const isMessage = event.kind === 'message' || event.kind === 'message.user' || event.kind === 'message.member'
 
     if (!notice && !isMessage) {return null}
-    const author = eventAuthor(event, roster, isMessage)
+    const author = eventAuthor(event, roster, isMessage, labels.you)
     const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
     return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
@@ -183,10 +189,10 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
       <EventTime timestamp={event.created_at} />
     </div>
     <EventBody event={event} notice={notice} />
-    {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
+    {downloads && previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
       <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
-      binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
+      binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} downloads={downloads} readOnly />}
   </div>})}</>
 }

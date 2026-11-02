@@ -17,14 +17,17 @@ import { supersedeGatewaySwitch } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
+  $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
   $showAllProfiles,
   captureNewChatSource,
   currentNewChatIntent,
   ensureGatewayAgent,
+  isLegacyNewChatProfile,
   normalizeProfileKey,
   openGatewayAgent,
+  pinLegacyNewChatProfile,
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
@@ -132,6 +135,7 @@ export function _resetConnectionsForTests(): void {
   pendingTarget = null
   restoreAttempted = false
   switchRevision = 0
+  tentativeRehome = null
   $pendingConnectionId.set(null)
 }
 
@@ -149,6 +153,87 @@ function rehomeNewChatDraft(profile: string, keepExplicitRoute = false, connecti
 
   captureNewChatSource(connectionId)
   requestFreshSession()
+}
+
+// Returns what puts the current draft back (an explicit agent route and a
+// legacy profile pin included), for a pick whose activation then fails.
+function snapshotNewChatDraft(): () => void {
+  const profile = $newChatProfile.get()
+  const route = $newChatRoute.get()
+  const source = $newChatConnectionId.get()
+  const legacy = profile !== null && isLegacyNewChatProfile(profile) ? profile : null
+
+  return () => {
+    if (legacy !== null) {
+      pinLegacyNewChatProfile(legacy)
+
+      return
+    }
+
+    $newChatProfile.set(profile)
+    $newChatRoute.set(route)
+    captureNewChatSource(source)
+  }
+}
+
+// A pick's tentative draft re-home: the new-chat intent it produced, whether
+// the pick's target is active, how to give back the draft from before the
+// click, and the intent that give-back produced once it ran.
+interface DraftRehome {
+  intent: number
+  landed: () => boolean
+  restore: () => void
+  revision: number
+  undoneAs: null | number
+}
+
+// The re-home of the latest pick that reached its turn and whose pick has not
+// finished (landed or not).
+// Activations are serialized, so a pick queued behind it takes its turn right
+// after that activation settles, possibly before that pick's caller resumes.
+let tentativeRehome: DraftRehome | null = null
+
+// The tentative re-home the draft shows when a pick starts, if any: the pick
+// ahead of it whose pick has not finished (landed or not).
+function rehomeAhead(draftIntent: number): DraftRehome | null {
+  return tentativeRehome?.intent === draftIntent ? tentativeRehome : null
+}
+
+// True while no new-chat intent newer than the pick's own start has taken the
+// draft over. The pick ahead failing and giving its draft back is not one.
+function noNewerDraftIntent(draftIntent: number, ahead: DraftRehome | null): boolean {
+  const intent = currentNewChatIntent()
+
+  return intent === draftIntent || (ahead !== null && intent === ahead.undoneAs)
+}
+
+function releaseTentativeRehome(revision: number): void {
+  if (tentativeRehome?.revision === revision) {
+    tentativeRehome = null
+  }
+}
+
+// What a failed pick gives back. While the draft is still the tentative
+// re-home of a pick ahead that did not land, that pick's give-back has not run
+// yet, so it is the draft from before that click, not the tentative one.
+function draftBeforePick(ahead: DraftRehome | null): () => void {
+  if (ahead !== null && ahead.intent === currentNewChatIntent() && !ahead.landed()) {
+    return ahead.restore
+  }
+
+  return snapshotNewChatDraft()
+}
+
+// Gives the draft back, but only while no newer new-chat intent has taken it
+// over since the re-home.
+function undoDraftRehome(rehome: DraftRehome): void {
+  if (currentNewChatIntent() !== rehome.intent) {
+    return
+  }
+
+  rehome.restore()
+  requestFreshSession()
+  rehome.undoneAs = currentNewChatIntent()
 }
 
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
@@ -449,10 +534,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // A draft the user starts while this pick is in flight (a gateway group's
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
   const draftIntent = currentNewChatIntent()
+  const ahead = rehomeAhead(draftIntent)
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
+  let undoRehome = (): void => undefined
 
   // Runs inside the activation's serialized section, synchronously right
   // before the target is published, so the center is already a fresh draft on
@@ -475,12 +562,24 @@ export async function selectConnection(connectionId: string, options: SelectConn
       exitProjectScope()
     }
 
-    if (currentNewChatIntent() === draftIntent) {
+    if (noNewerDraftIntent(draftIntent, ahead)) {
       // The open runtime belongs to the gateway being left; unbind it now, not
       // when the fresh draft renders, so nothing pairs it with the target.
       setActiveSessionId(null)
       setSelectedStoredSessionId(null)
+      const restore = draftBeforePick(ahead)
       rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId)
+
+      const rehome: DraftRehome = {
+        intent: currentNewChatIntent(),
+        landed: targetIsActive,
+        restore,
+        revision,
+        undoneAs: null
+      }
+
+      tentativeRehome = rehome
+      undoRehome = () => undoDraftRehome(rehome)
       rehomed = true
     }
 
@@ -530,12 +629,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
       }
     }
 
-    if (revision !== switchRevision) {
-      return
-    }
-
     if (!targetIsActive()) {
       throw new Error(`Connection "${targetConnection.label}" did not become active.`)
+    }
+
+    if (revision !== switchRevision) {
+      return
     }
 
     await rememberConnection(connectionId)
@@ -544,19 +643,23 @@ export async function selectConnection(connectionId: string, options: SelectConn
       await refreshActiveProfile()
     }
   } catch (error) {
+    // The target never became active: give back the draft as it was before
+    // the click, even when a newer pick superseded this one (its re-home is
+    // still the draft until that pick takes its turn). A draft the user
+    // started since the re-home is newer than this pick and is left alone.
+    if (rehomed) {
+      undoRehome()
+    }
+
     // A newer pick owns the outcome; this one's failure is moot.
     if (revision !== switchRevision) {
       return
     }
 
-    // The target never became active: point the draft back at the gateway
-    // still in front so the next message cannot go to the one that failed.
-    if (rehomed) {
-      rehomeNewChatDraft(currentProfile)
-    }
-
     throw error
   } finally {
+    releaseTentativeRehome(revision)
+
     if (revision === switchRevision) {
       pendingTarget = null
       $pendingConnectionId.set(null)

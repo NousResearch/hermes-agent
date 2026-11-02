@@ -115,6 +115,32 @@ def test_satellite_cannot_send_to_an_unrouted_chat_through_the_primary_bot(rig):
     assert r._resolve_injection_adapter("discord", restored_b) is None
 
 
+def test_inferred_transport_is_not_a_receiving_bot(rig):
+    """``run_inbound`` canonicalizes hand-built internal/voice sources; the identity it pins guesses
+    the primary as transport (``transport_inferred``). That guess must still pass the route gate."""
+    from gateway.session_identity import identity_of, resolve_identity
+
+    r = rig.runner
+
+    def _canonical(chat_id="123", platform=Platform.DISCORD):
+        source = _restored("ops", platform, chat_id)
+        resolve_identity(source, runner=r)
+        assert getattr(identity_of(source), "transport_inferred", None) is True
+        return source
+
+    unrouted = _canonical("999")
+    assert r._delivery_adapter_for(unrouted) is None
+    assert r._resolve_injection_adapter("discord", unrouted) is None
+    routed = _canonical("123")
+    assert r._delivery_adapter_for(routed) is rig.primary_discord
+    assert r._resolve_injection_adapter("discord", routed) is rig.primary_discord
+    # ops owns a Telegram bot that is down: never the primary's Telegram bot.
+    del r._profile_adapters["ops"][Platform.TELEGRAM]
+    tg = _canonical(platform=Platform.TELEGRAM)
+    assert r._delivery_adapter_for(tg) is None
+    assert r._resolve_injection_adapter("telegram", tg) is None
+
+
 def test_satellite_own_adapter_on_the_routed_platform_wins(rig):
     r = rig.runner
     ops_discord = _stub(Platform.DISCORD, r, "OPS_DISCORD", owner="ops")

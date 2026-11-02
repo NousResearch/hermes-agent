@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles } from '@/api/profiles'
+import { getConnectionServedProfiles, getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
@@ -39,7 +39,7 @@ import {
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
-import { startupProfileForConnection } from './startup-profile-restore'
+import { servedProfileSet, startupProfileForConnection } from './startup-profile-restore'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -260,9 +260,14 @@ async function reconcileStartupProfile(
 
   const profile = normalizeProfileKey($activeGatewayProfile.get())
   const revision = switchRevision
+
   // A failed roster read is not evidence the profile is absent. Do not
-  // mask a subsequent switch failure as a roster failure, though.
-  const roster = await getProfiles({ connectionId }).catch(() => null)
+  // mask a subsequent switch failure as a roster failure, though. The status
+  // read names which installed profiles this gateway serves; failed = unknown.
+  const [roster, status] = await Promise.all([
+    getProfiles({ connectionId }).catch(() => null),
+    getConnectionServedProfiles(connectionId).catch(() => null)
+  ])
 
   const unchanged =
     revision === switchRevision &&
@@ -277,11 +282,18 @@ async function reconcileStartupProfile(
     return
   }
 
-  const target = startupProfileForConnection(profile, startupLastProfileByConnection[connectionId], roster.profiles)
+  const served = servedProfileSet(status)
+
+  const target = startupProfileForConnection(
+    profile,
+    startupLastProfileByConnection[connectionId],
+    roster.profiles,
+    served
+  )
 
   if (target) {
     await selectConnection(connectionId, { profile: target, restore: true })
-  } else if (roster.profiles.some(candidate => candidate.name === profile)) {
+  } else if (roster.profiles.some(candidate => candidate.name === profile) && (served === null || served.has(profile))) {
     $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [connectionId]: profile })
   }
 }

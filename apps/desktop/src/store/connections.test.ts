@@ -228,6 +228,23 @@ describe('connection registry cache', () => {
     expect($showAllProfiles.get()).toBe(true)
   })
 
+  it('#130944: a profile installed on the remote but not served there (parked) is not kept', async () => {
+    list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'marina', registryScoped: true })
+    $activeGatewayProfile.set('marina')
+    // /api/profiles lists installed profiles; /api/status names the served ones.
+    api.mockImplementation((async (request: { path: string }) =>
+      request.path === '/api/status'
+        ? { gateway_shared_with: ['default', 'lab'] }
+        : { profiles: [{ name: 'default' }, { name: 'lab' }, { name: 'marina' }] }) as never)
+
+    await initializeConnectionsRegistry()
+
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'homelab', path: '/api/status' }))
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+  })
+
   it('#130944: a remote profile that exists there, or a roster read that fails, keeps the live route', async () => {
     for (const roster of [
       Promise.resolve({ profiles: [{ name: 'default' }, { name: 'marina' }] }),

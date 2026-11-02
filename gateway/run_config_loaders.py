@@ -281,6 +281,13 @@ class GatewayConfigLoadersMixin:
         return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
+    def _load_daybreak() -> bool:
+        """``agent.daybreak`` (off unless explicitly true). Read per turn so the Desktop switch reaches
+        the next turn of a running chat without rebuilding its cached agent."""
+        from gateway.run import _load_gateway_config
+        return cfg_get(_load_gateway_config(), "agent", "daybreak") is True
+
+    @staticmethod
     def _load_show_reasoning() -> bool:
         """``display.show_reasoning`` toggle."""
         from gateway.run import _load_gateway_config

@@ -210,6 +210,7 @@ def _policy_env_keys(source_dir: Optional[Path] = None) -> set[str]:
 _CREDENTIAL_SUFFIXES = (
     "_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_APP_ID", "_CLIENT_ID", "_BOT_ID", "_ACCOUNT_SID",
     "_SERVICE_ACCOUNT_JSON", "_PROJECT_ID",
+    "_ACCOUNT",  # Signal: SIGNAL_ACCOUNT (the registered number) is the identity; there is no token
 )
 
 

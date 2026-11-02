@@ -170,11 +170,11 @@ class ProviderProfile:
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
 
-    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ── Provider-owned auth (optional) ──────────
     # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
     # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
-    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
-    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled row, OAuth
+    # or API key — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
     # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
     # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
     # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after

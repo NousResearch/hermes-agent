@@ -42,6 +42,7 @@ def _reserve_child_transcript(child: Any) -> None:
             session_id=child.session_id, source="subagent",
             parent_session_id=child._parent_session_id,
         )
+        child._session_db_reserved = True
     except BaseException:
         # Ownership has transferred, but the child is not attached or published yet.
         child.close()

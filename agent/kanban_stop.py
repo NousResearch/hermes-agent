@@ -1,13 +1,20 @@
-"""Turn-end guard for kanban workers, which must end with a terminal board tool that hands
-the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
-``kanban_request_review``, ``kanban_request_changes``). Some models narrate the next step
-and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` → dispatcher
-``protocol_violation``. Policy-only: return a bounded synthetic nudge so the loop continues
-instead of exiting.
+"""Turn-end guards for kanban workers, whose turn must END on the terminal board tool that
+hands the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
+``kanban_request_review``, ``kanban_request_changes``), and must NOT end without one.
+
+``build_kanban_stop_nudge`` covers the missing-handoff direction: some models narrate the
+next step and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` →
+dispatcher ``protocol_violation``, so we return a bounded synthetic nudge instead of
+exiting. ``terminal_handoff_status`` covers the landed-handoff direction: the agent loop
+breaks its turn once a terminal call has succeeded, because the card already has a new
+owner and a worker that keeps iterating acts on a task it no longer holds.
+
+Policy-only: no board access, no state.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable, Optional
 
@@ -61,6 +68,69 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def _landed_status(content: Any) -> Optional[str]:
+    """The card status a SUCCESS payload reports, else ``None``.
+
+    Success payloads are ``{"ok": true, ...}`` (``tools/kanban_tools._ok`` / ``_ok_landed``
+    carry the status the card actually landed in); a refused call is a ``tool_error`` row
+    (``{"error": ...}``) and must NOT read as a handoff — the worker has to retry. Anything
+    that is not a success payload (spilled/stubbed result, multimodal content list) counts
+    the same way: no evidence, no handoff.
+    """
+    if isinstance(content, dict):
+        payload: Any = content
+    elif isinstance(content, str) and '"ok"' in content:
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        return None
+    status = payload.get("status")
+    return status.strip() if isinstance(status, str) else ""
+
+
+def terminal_handoff_status(
+    messages: Iterable[dict] | None,
+    tool_calls: Iterable[Any] | None,
+) -> Optional[str]:
+    """The status landed by a terminal board call in the round that just ran, else ``None``.
+
+    The result rows are read from the tail of ``messages`` — the block after the newest
+    assistant row carrying tool calls, i.e. THIS round's results, never an earlier round's —
+    and are matched to a terminal call by call id (``tool_call_id_variants``, the single
+    pairing policy), not by tool name: the mixed-invalid-batch path appends an error row
+    under the terminal tool's own name, and name alone would read that as a handoff.
+    """
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+
+    terminal_calls = [
+        tc for tc in (tool_calls or ()) if _tool_call_name(tc) in _TERMINAL_KANBAN_TOOLS
+    ]
+    if not terminal_calls:
+        return None
+
+    history = [m for m in (messages or ()) if isinstance(m, dict)]
+    start = 0
+    for idx in range(len(history) - 1, -1, -1):
+        if history[idx].get("role") == "assistant" and history[idx].get("tool_calls"):
+            start = idx + 1
+            break
+    rows = [m for m in history[start:] if m.get("role") == "tool"]
+
+    for tc in terminal_calls:
+        wanted = tool_call_id_variants(tc)
+        for row in rows:
+            if not (wanted & tool_result_id_variants(row.get("tool_call_id"))):
+                continue
+            status = _landed_status(row.get("content"))
+            if status is not None:
+                return status
+    return None
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -98,4 +168,9 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "build_kanban_stop_nudge",
+    "kanban_stop_nudge_enabled",
+    "session_called_kanban_terminal",
+    "terminal_handoff_status",
+]

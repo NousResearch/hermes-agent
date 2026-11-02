@@ -1855,9 +1855,11 @@ For the MiniMax M3.1 release line, Hermes sends effort as `output_config.effort`
 on the Anthropic-compatible route and as `reasoning_effort` on the global
 `https://api.minimax.io/v1` Chat Completions route. Supported levels are `low`,
 `medium`, `high`, `xhigh`, and `max`; `minimal` maps to `low` and `ultra` to `max`.
-M3.1 cannot disable thinking: `none` omits the controls, leaving the model's
-thinking enabled at its server default (`max`). Use `low` to reduce thinking
-cost and latency. MiniMax M3 and M2.x retain their existing behavior.
+M3.1 cannot disable thinking: an explicit `none` or disabled reasoning setting
+selects `low`, the minimum supported effort. Truly unset transport configuration
+(`None` or `{}`) omits the controls and leaves the server default (`max`).
+`/reasoning none` selects minimum reasoning; `/reasoning off` remains the
+existing display-only toggle. MiniMax M3 and M2.x retain their existing behavior.
 See [MiniMax's thinking guide](https://platform.minimax.io/docs/guides/text-generation#thinking).
 :::
 

@@ -1247,6 +1247,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return preview.text
         return _format_discord_markdown_link(preview.text, preview.url)
 
+    def format_tool_name(self, name: str) -> str:
+        """Inline code, so ``mcp_server_tool`` underscores aren't eaten as italic/underline markdown;
+        a name holding a backtick can't be a code span, so it is backslash-escaped instead."""
+        return re.sub(r"([\\`*_~|<\[\]])", r"\\\1", name) if "`" in name else f"`{name}`"
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None

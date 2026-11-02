@@ -378,7 +378,6 @@ async def test_fifo_depth_limit_preserves_every_accepted_message(monkeypatch, tm
             session_id="fifo-depth", session_key=SESSION_KEY,
             inbound_message_id=event.message_id, event_message_id=event.message_id,
         )
-        return None
 
     adapter.set_message_handler(handler)
     events = [MessageEvent(text=f"M{i}", source=_source(), message_id=f"M{i}")
@@ -463,3 +462,25 @@ async def test_depth_limit_restores_events_without_media_merging(
     assert runner._overflow_queue(SESSION_KEY) == queued[1:] + [late]
     assert [(event.text, tuple(event.media_urls), tuple(event.media_types))
             for event in queued] == original_payloads
+
+
+@pytest.mark.asyncio
+async def test_depth_limit_keeps_eventless_followup_and_staged_completion():
+    """At the cap an eventless follow-up (leftover /steer) is parked as a real turn ahead of an
+    already-staged async completion, which stays queued: its ledger row is already delivered."""
+    adapter = HookRecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._queued_events = {}
+    source = _source()
+    completion = MessageEvent(text="[delegation finished]", source=source, internal=True)
+    adapter._pending_messages[SESSION_KEY] = completion
+    result = {"final_response": "done", "messages": []}
+    turn_ctx = SimpleNamespace(
+        source=source, session_id="depth-eventless", session_key=SESSION_KEY,
+        run_generation=None, _interrupt_depth=runner._MAX_INTERRUPT_DEPTH,
+        history=[], _status_thread_metadata=None, result_holder=[result],
+    )
+    await runner._run_agent_queued_followup(turn_ctx, adapter, "steer text", None, result, result, None)
+    head = adapter._pending_messages[SESSION_KEY]
+    assert head.text == "steer text" and not head.internal
+    assert runner._overflow_queue(SESSION_KEY) == [completion]

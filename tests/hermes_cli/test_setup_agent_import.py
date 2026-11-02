@@ -162,7 +162,7 @@ def test_grok_bot_export_in_downloads_is_offered_like_the_other_agents(homes):
                          str(hermes_home))
 
 
-def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flags(homes):
+def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flags(homes, monkeypatch):
     """`hermes migrate grok-bot ...` through the real parser: the plugin is installed from the catalog
     when missing, and the import runs as its own command (no --from-setup) with the user's flags."""
     import argparse
@@ -180,3 +180,7 @@ def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flag
         ("import", ["--profile", "default", "import-agent", "grok-bot", "--yes", "--activate-routines",
                     "--source", str(user_home / "export.json"), "--bot", "Scout"], str(hermes_home)),
     ]
+    # A failed import fails the command, so `hermes migrate x && ...` stops there.
+    monkeypatch.setattr(step.subprocess, "run", lambda argv, env, check=False: subprocess.CompletedProcess(argv, 1))
+    monkeypatch.setattr(step, "_ensure_plugin", lambda home: True)
+    assert args.func(args) == 1

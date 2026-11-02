@@ -134,17 +134,23 @@ def _snapshot(hermes_home: Path) -> tuple[Optional[bytes], ...]:
                  for p in (hermes_home / "config.yaml", hermes_home / ".env"))
 
 
-def _run_import(source: ImportSource, hermes_home: Path, extra_args: tuple[str, ...] = (),
-                from_setup: bool = True) -> bool:
+def _run_import(source: ImportSource, hermes_home: Path) -> bool:
+    """Setup's import step: :func:`_import_child` for *source*; True when the run changed config.yaml
+    or .env, which the setup sections after it read."""
+    before = _snapshot(hermes_home)
+    _import_child(source, hermes_home)
+    return _snapshot(hermes_home) != before
+
+
+def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str, ...] = (),
+                  from_setup: bool = True) -> int:
     """``hermes import-agent <source>`` in a child process, so the freshly installed plugin's command
-    is wired; it previews and asks before changing anything (and exits 0 on a no too). True when the
-    run changed config.yaml or .env, which the setup sections after it read. ``hermes migrate``
-    passes the user's flags as ``extra_args`` and runs it as a command of its own (``from_setup``
-    False)."""
+    is wired; it previews and asks before changing anything (and exits 0 on a no too). Returns its
+    exit code. ``hermes migrate`` passes the user's flags as ``extra_args`` and runs it as a command
+    of its own (``from_setup`` False)."""
     from hermes_cli.setup import print_header, print_warning
     from tools.environments.local import served_profile_child_env
     print_header(f"Importing from {source.label}", gap=True)
-    before = _snapshot(hermes_home)
     # A home that is not <root>/profiles/<name> is the root: without a selector the child's
     # _apply_profile_override would follow the sticky active_profile into another profile.
     selector = [] if hermes_home.resolve().parent.name == "profiles" else ["--profile", "default"]
@@ -164,7 +170,7 @@ def _run_import(source: ImportSource, hermes_home: Path, extra_args: tuple[str, 
     if returncode:
         print_warning(f"The {source.label} import did not run. If the error names an invalid choice or "
                       f"unrecognized arguments, update the plugin first: hermes plugins update {PLUGIN}")
-    return _snapshot(hermes_home) != before
+    return returncode
 
 
 def _update_plugin(source: ImportSource) -> bool:
@@ -196,5 +202,4 @@ def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tu
     source = next(s for s in IMPORT_SOURCES if s.name == source_name)
     if not _ensure_plugin(hermes_home):
         return 1
-    _run_import(source, hermes_home, extra_args, from_setup=False)
-    return 0
+    return 1 if _import_child(source, hermes_home, extra_args, from_setup=False) else 0

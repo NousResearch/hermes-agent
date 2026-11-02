@@ -2,7 +2,7 @@ name: cadence
 repo: https://github.com/abundantbeing/cadence
 sha: d74f2636eb680efa063769359020d7d2b6fd7540
 title: Cadence
-description: "Local usage page: year heatmap, streaks from days a chat was used, model and place breakdowns, and this week against last week. Disclosure: reads the selected profile state.db read-only and runs the local cadence command through Hermes cli.exec. No network calls, secrets, telemetry, or provider logins. Not a fork of hermes-activity."
+description: "Local usage page: year heatmap, streaks from days a chat was used, model and place breakdowns, and this week against last week. Disclosure — reads the selected profile state.db read-only and runs the local cadence command through Hermes cli.exec. No network calls, secrets, telemetry, or provider logins. Not a fork of hermes-activity."
 maintainer: abundantbeing
 tier: community
 category: desktop

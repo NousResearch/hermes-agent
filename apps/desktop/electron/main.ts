@@ -569,6 +569,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
+import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -10632,15 +10633,7 @@ async function ensureRegistryBackend(
     }
 
     if (!resolvedRegistrySshConfig) {
-      resolvedRegistrySshConfig = normalizeSshConfig({
-        mode: 'ssh',
-        host: source.host,
-        user: source.user,
-        port: source.port,
-        keyPath: source.keyPath,
-        remoteHermesPath: source.remoteHermesPath,
-        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-      })
+      resolvedRegistrySshConfig = managedSshConfig(source, profileKey)
     }
 
     return resolvedRegistrySshConfig
@@ -10753,6 +10746,18 @@ async function ensureRegistryBackend(
 
   const key = backendScopeKey(id, profile)
   const existing = backendPool.get(key)
+
+  // One remote `hermes serve` per SSH host: a named profile rides the default backend when it can.
+  const shared = existing ? null : await resolveSharedSshProfileBackend(source, profile, {
+    ensureDefault: (): Promise<any> => ensureRegistryBackend(id, 'default', managedUpdateCorrelation, { passive }),
+    listProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+  })
+
+  if (shared) {
+    setWslBridgeProfileState(shared.profile, false)
+
+    return shared
+  }
 
   if (existing) {
     const connectionPromise = existing.connectionPromise
@@ -10958,20 +10963,6 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
       managedPrimaryRestoreOwners.delete(source.id)
     }
   }
-}
-
-function managedSshConfig(source, profile = '') {
-  const profileKey = String(profile ?? '').trim() || 'default'
-
-  return normalizeSshConfig({
-    mode: 'ssh',
-    host: source.host,
-    user: source.user,
-    port: source.port,
-    keyPath: source.keyPath,
-    remoteHermesPath: source.remoteHermesPath,
-    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-  })
 }
 
 async function captureManagedSshScopes(source) {
@@ -15942,9 +15933,10 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
+// straight from the backend pool, never dialing. SSH sources list every pooled
+// (connection, profile) backend: the default one reads every profile through the
+// remote aggregate, the rest serve older runtimes' per-profile lists; remote/cloud
+// sources are one shared host.
 // The primary local connection is excluded for the legacy unpinned path — the
 // primary aggregate carries local rows there. A registry-pinned aggregate opts
 // in so forced-local backends remain visible when the legacy primary is remote.
@@ -15991,7 +15983,8 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
 
     if (backends.length) {
       const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
+      const sharedProfiles = connection.kind === 'ssh' ? sharedSshProfiles(connection.id, backends) : undefined
+      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind, sharedProfiles })
     }
   }
 

@@ -874,7 +874,7 @@ test('remote session reads keep small requests on one call', async () => {
   assert.equal(result, expected)
 })
 
-test('registry sources: ssh backends are read natively and rows tagged with connection + profile', async () => {
+test('registry sources: ssh backends use the shared cross-profile aggregate', async () => {
   const calls: Array<{ descriptor: unknown; path: string }> = []
 
   const rows = await fetchRegistrySessionRows(
@@ -892,24 +892,82 @@ test('registry sources: ssh backends are read natively and rows tagged with conn
     async (descriptor, path) => {
       calls.push({ descriptor, path })
 
-      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+      return {
+        sessions: [{ id: 's-research', profile: 'research', message_count: 3 }, { id: 's-chief', profile: 'chief-of-staff', message_count: 3 }],
+        total: 2
+      }
     }
   )
 
-  assert.equal(calls.length, 2)
-  // The remote serves its own state.db: no profile param forwarded.
-  assert.ok(calls.every(({ path }) => path.startsWith('/api/sessions?') && !path.includes('profile=')))
+  assert.equal(calls.length, 1)
+  // One warm SSH backend serves the shared remote HERMES_HOME.
+  assert.equal(calls[0].descriptor, 'spark-desc')
+  assert.ok(calls[0].path.startsWith('/api/profiles/sessions?') && calls[0].path.includes('profile=all'))
   // Hidden Bot Mode chats must stay hidden — include_hidden is never requested.
   assert.ok(calls.every(({ path }) => !path.includes('include_hidden')))
 
   assert.deepEqual(
     rows.map(row => [(row as any).id, (row as any).connection_id, (row as any).profile]),
     [
-      ['s-spark-desc', 'gw-spark', 'research'],
-      ['s-spark-desc-2', 'gw-spark', 'default']
+      ['s-research', 'gw-spark', 'research'],
+      ['s-chief', 'gw-spark', 'chief-of-staff']
     ]
   )
   assert.ok(rows.every(row => (row as any).is_default_profile === false))
+})
+
+test('registry sources: an older ssh runtime without the aggregate reads each pooled profile backend', async () => {
+  const calls: Array<{ descriptor: unknown; path: string }> = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-spark',
+        kind: 'ssh',
+        backends: [
+          { descriptor: 'spark-default', profileLabel: 'default' },
+          { descriptor: 'spark-research', profileLabel: 'research' }
+        ]
+      }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0', profile: 'all' }),
+    async (descriptor, path) => {
+      calls.push({ descriptor, path })
+
+      if (path.startsWith('/api/profiles/sessions')) {
+        throw Object.assign(new Error('404: Not Found'), { statusCode: 404 })
+      }
+
+      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(
+    calls.filter(({ path }) => path.startsWith('/api/sessions?')).map(({ descriptor, path }) => [descriptor, path.includes('profile=')]),
+    [
+      ['spark-default', false],
+      ['spark-research', false]
+    ]
+  )
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile]),
+    [
+      ['s-spark-default', 'default'],
+      ['s-spark-research', 'research']
+    ]
+  )
+})
+
+test('pinned registry aggregation counts ssh profiles served through the default backend', () => {
+  const source = {
+    connectionId: 'gateway-ssh',
+    kind: 'ssh',
+    backends: [{ descriptor: 'default-desc', profileLabel: 'default' }]
+  }
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [source]), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'delta', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), false)
 })
 
 test('registry sources: forced-local backends are read per profile', async () => {

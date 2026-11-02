@@ -88,7 +88,10 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         provider=provider, base_url=base_url, api_mode=api_mode, model=model)
     agent._ensure_lmstudio_runtime_loaded()  # LM Studio: preload before probing context length
     _update_fallback_context_compressor(agent)
-    _reresolve_fallback_reasoning_config(agent)
+    # Unset means config-resolved. Callers set ``reasoning_pinned`` when reasoning_config is the session's
+    # own choice (`--reasoning`, a session /reasoning, a cron job's level); the bound route keeps it.
+    if not getattr(agent, "reasoning_pinned", False):
+        _reresolve_fallback_reasoning_config(agent)
     _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
     return old_model, old_provider
 

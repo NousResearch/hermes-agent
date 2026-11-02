@@ -215,7 +215,7 @@ def _wire_turn_agent(authority, generation, agent):
         _clarify_callback_sync=lambda *a, **k: None, _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
         combined_tool_start_callback=None, combined_tool_complete_callback=None)
-    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, False, None, None, False)
 
 
 @pytest.mark.asyncio

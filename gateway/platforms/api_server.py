@@ -2223,10 +2223,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
             enabled_toolsets = list(policy.enabled_toolsets)
             max_iterations = policy.max_iterations
-        # Reasoning resolves against the model that actually runs (per-model overrides), so only
-        # after the precedence chain settles; an explicit request wins.
-        if request_reasoning_config is None:
-            request_reasoning_config = GatewayRunner._load_reasoning_config(model)
+        # Resolved against the model that actually runs (per-model overrides); an explicit request wins and is pinned.
+        reasoning_pinned = request_reasoning_config is not None  # so a fallback keeps the requested level
+        request_reasoning_config = request_reasoning_config if reasoning_pinned else GatewayRunner._load_reasoning_config(model)
         agent_kwargs = {
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
@@ -2251,6 +2250,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        agent.reasoning_pinned = reasoning_pinned
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

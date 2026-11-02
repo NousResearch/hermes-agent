@@ -45,6 +45,13 @@ def session_pinned(config, field, launched):
     return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
 
 
+def _typed_reasoning(runner, session_key):
+    """The session's typed ``/reasoning`` override (the messaging handler's), else None."""
+    peek = getattr(runner, '_peek_session_state', None)
+    state = peek(session_key) if session_key and peek is not None else None
+    return state.conversation.reasoning_override if state is not None else None
+
+
 def pin_reasoning_effort(config, effort, *, session=False):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
     (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one.
@@ -262,16 +269,21 @@ class LocalSessionPolicy:
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
         the profile's current effort when following, else the frozen one."""
-        peek = getattr(runner, '_peek_session_state', None)
-        state = peek(session_key) if session_key and peek is not None else None
-        if state is not None and state.conversation.reasoning_override is not None:
-            return dict(state.conversation.reasoning_override)
+        if (typed := _typed_reasoning(runner, session_key)) is not None:
+            return dict(typed)
         if not self.follows_profile:
             return self.reasoning_config
         from gateway.session_authorities import active_authority
         from hermes_constants import resolve_reasoning_config
         config, model = self.effective(active_authority(runner), secrets=False)
         return resolve_reasoning_config(config, model or '')
+
+    def reasoning_pinned(self, runner, session_key=None):
+        """Whether the next turn's level is the session's own choice (a typed /reasoning, a launch
+        ``--reasoning``, a committed ``/reasoning`` or pick), which a provider fallback keeps."""
+        launched = 'reasoning' in json.loads(self.request_json)
+        return (_typed_reasoning(runner, session_key) is not None
+                or session_pinned(json.loads(self.config_json), 'reasoning', launched))
 
     def current_service_tier(self, runner, session_key):
         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""

@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, hermes_home_key, parse_reasoning_effort
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -498,9 +498,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
     """Effective reasoning config for a cron run. A per-job ``reasoning_effort`` pin beats global
-    and per-model config and is model-independent by design (also governs an auth-fallback swap);
+    and per-model config and is model-independent by design (also governs any fallback swap);
     clamping stays with provider transports. An unparseable pin warns and falls back to config."""
-    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+    from hermes_constants import resolve_reasoning_config
 
     pinned = job.get("reasoning_effort")
     if pinned is not None:
@@ -2460,9 +2460,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
-    setup.reasoning_config = _resolve_job_reasoning_config(
-        job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
-    )
+    setup.reasoning_config = _resolve_job_reasoning_config(job, _cfg, str(setup.model))
     # Mid-run provider ladder: same rule as resolution above, so a pinned job cannot be swapped
     # onto the global chain by a 5xx/429 either.
     setup.fallback_model = _job_fallback_chain(job, _cfg)
@@ -2481,7 +2479,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
-    return AIAgent(
+    agent = AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2513,6 +2511,8 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_id=session_id,
         session_db=session_db,
     )
+    agent.reasoning_pinned = parse_reasoning_effort(job.get("reasoning_effort")) is not None  # kept on fallback
+    return agent
 
 
 class _FireAudit:

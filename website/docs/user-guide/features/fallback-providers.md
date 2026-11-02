@@ -133,7 +133,7 @@ When triggered, Hermes:
 1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
 2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
 3. Swaps the model, provider, and client in-place
-4. Re-resolves the reasoning effort for the fallback model (its `agent.reasoning_overrides` entry, else the global `agent.reasoning_effort`)
+4. Re-resolves the reasoning effort for the fallback model (its `agent.reasoning_overrides` entry, else the global `agent.reasoning_effort`). A level the session chose itself (`hermes chat --reasoning <level>`, `hermes -z --reasoning <level>`, a session `/reasoning <level>`, a cron job's own `reasoning_effort`) is kept instead, since it outranks both.
 5. Resets the retry counter and continues the conversation
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.

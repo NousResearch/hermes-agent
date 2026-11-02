@@ -135,15 +135,24 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
+      - name: Look up this platform's duration cache entry
+        id: durations
+        shell: bash
+        env:
+          KEYS: ${{ inputs.durations_keys }}
+          PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+        run: |
+          "$HERMES_PYTHON" -c "import json, os; print('key=' + json.loads(os.environ['KEYS'] or '{}').get(os.environ['PLATFORM'], ''))" >> "$GITHUB_OUTPUT"
+
       - name: Restore per-file duration cache
         # The exact entry ci.yaml's detect job picked for this platform, so every
         # slice of the run sees the same durations and agrees on the split. A miss
         # fails the job rather than let two slices split the suite differently.
-        if: fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] != null
+        if: steps.durations.outputs.key != ''
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: ${{ fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] }}
+          key: ${{ steps.durations.outputs.key }}
           fail-on-cache-miss: true
 
       - name: Run ${{ matrix.marker }} tests
@@ -220,7 +229,7 @@ jobs:
           # starves cold child startup before the fixture's idle deadline.
           HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
           HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
-          HERMES_TEST_SLICE_BY_DURATION: ${{ fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] != null && '1' || '' }}
+          HERMES_TEST_SLICE_BY_DURATION: ${{ steps.durations.outputs.key != '' && '1' || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''

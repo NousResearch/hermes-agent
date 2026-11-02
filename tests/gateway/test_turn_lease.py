@@ -485,3 +485,106 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     _run(scenario())
 
 
+@pytest.mark.parametrize("turn_exit", ["cancelled", "failed"])
+def test_cancel_while_finalizer_awaits_marker_clear_still_releases_lease_and_slot(
+    monkeypatch, tmp_path, turn_exit
+):
+    """Whatever ended the turn, a cancellation landing while the dispatch finalizer awaits the
+    durable-marker clear must not skip the synchronous releases. Here the turn ends before the
+    agent returns, so the finalizer still owns the slot: the lease ends free with its token
+    released, and the routing key's slot is idle again."""
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
+
+    class _TurnFailed(Exception):
+        pass
+
+    async def scenario():
+        runner = _bootstrap(monkeypatch, tmp_path)
+        registry = runner._turn_leases = SessionTurnLeaseRegistry()
+        session_id = runner.session_store.get_or_create_session.return_value.session_id
+        session_key = "agent:main:telegram:group:-1001:12345"
+        in_turn, in_cleanup, never = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        held = {}
+
+        async def mark(_event, _session_key):
+            held["token"] = registry._leases[session_id].holder
+            in_turn.set()
+            if turn_exit == "failed":
+                raise _TurnFailed()
+            await never.wait()
+
+        async def slow_clear(_event):
+            in_cleanup.set()
+            await never.wait()
+
+        runner._mark_durable_active_turn = mark
+        runner._clear_durable_active_turn = slow_clear
+        task = asyncio.create_task(runner._handle_message(_event()))
+        await asyncio.wait_for(in_turn.wait(), timeout=5)
+        if turn_exit == "cancelled":
+            task.cancel()
+        await asyncio.wait_for(in_cleanup.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        token, lease = held["token"], registry._leases[session_id]
+        assert token is not None and token.released
+        assert lease.holder is None and not lease.lock.locked()
+        assert not runner._session_state(session_key).turn.lease_tokens
+        assert not runner._is_session_running(session_key)
+
+    _run(scenario())
+
+
+def test_stop_after_the_agent_returned_then_cancel_in_marker_clear_releases_the_lease(monkeypatch, tmp_path):
+    """The agent run frees the running-agent slot when the agent returns, before the dispatch
+    finalizer clears the durable marker. A /stop in that window finds no running agent, answers
+    "No active task to stop." and does not sweep the lease; the adapter then cancels the dispatch
+    task. If that cancel lands in the marker clear, the turn lease must still be released, or every
+    later turn on the session times out on it and /stop can never free it."""
+    from gateway.platforms.event import MessageEvent, MessageType
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event
+
+    async def scenario():
+        runner = _bootstrap(monkeypatch, tmp_path)
+        registry = runner._turn_leases = SessionTurnLeaseRegistry()
+        session_id = runner.session_store.get_or_create_session.return_value.session_id
+        session_key = "agent:main:telegram:group:-1001:12345"
+        in_cleanup, never = asyncio.Event(), asyncio.Event()
+        held = {}
+
+        async def mark(_event, _session_key):
+            held["token"] = registry._leases[session_id].holder
+
+        async def agent_returns(*_args, **_kwargs):
+            # As the real agent run does once the agent returns: free this generation's slot.
+            runner._release_running_agent_state(session_key, run_generation=1)
+            return {"final_response": "done", "messages": []}
+
+        async def slow_clear(_event):
+            in_cleanup.set()
+            await never.wait()
+
+        runner._mark_durable_active_turn = mark
+        runner._run_agent = agent_returns
+        runner._clear_durable_active_turn = slow_clear
+        task = asyncio.create_task(runner._handle_message(_event()))
+        await asyncio.wait_for(in_cleanup.wait(), timeout=5)
+
+        stop = MessageEvent(text="/stop", message_type=MessageType.TEXT, source=_event().source)
+        assert "No active task" in str(await runner._handle_stop_command(stop))
+        token = held["token"]
+        assert token is not None and not token.released  # /stop left this turn's lease held
+
+        task.cancel()  # the adapter cancels the dispatch task after answering /stop
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert token.released
+        assert not runner._session_state(session_key).turn.lease_tokens
+        successor = await registry.acquire(session_id, owner_key=session_key, generation=2, timeout=0.5)
+        assert successor is not None, "the next turn must get the lease instead of timing out"
+        assert registry.release(successor) is True
+
+    _run(scenario())

@@ -179,4 +179,3 @@ def test_cold_auth_import_on_another_thread_never_waits_for_the_fetch(tmp_path):
         env.update(remote_env(plane), HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(REPO),
                    PYTHONDONTWRITEBYTECODE="1")
         assert _value(_run([sys.executable, "-c", CONCURRENT_AUTH_IMPORT], env)) == "ares"
-

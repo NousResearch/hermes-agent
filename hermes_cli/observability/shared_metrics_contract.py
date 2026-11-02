@@ -534,7 +534,8 @@ UPDATE_STOP_CLASSES = frozenset({
     "lock_held",              # (see above)
     "managed_install",        # (see above): HERMES_MANAGED installs refuse before any receipt
     "merge_conflict",         # local commits on a custom branch conflict with upstream
-    "not_git_checkout",       # the install is not a git checkout (non-Windows)
+    "merge_abort_failed",      # a conflict could not be proven safely aborted; manual recovery required
+    "not_git_checkout",        # the install is not a git checkout (non-Windows)
     "old_version_handoff",    # an older updater's hand-off to this version could not finish
     "parked_branch_blocked",  # the checkout is parked on another branch that is unsafe to switch
     "permission_denied",      # (see above): git could not write a file it needs (e.g. index.lock's directory)

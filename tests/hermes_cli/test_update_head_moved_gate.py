@@ -10,6 +10,7 @@ and fails loudly when the update was a no-op.
 """
 
 from types import SimpleNamespace
+import subprocess
 
 import pytest
 
@@ -109,3 +110,128 @@ def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "✓ Code updated!" not in out
+
+
+def test_release_target_is_not_treated_as_in_place_branch_update(monkeypatch, tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", "main"], check=True)
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "base.txt"], check=True)
+    subprocess.run([
+        "git", "-C", str(tmp_path), "-c", "user.name=Fixture",
+        "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base",
+    ], check=True)
+    selected = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    (tmp_path / "release.txt").write_text("release\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "release.txt"], check=True)
+    subprocess.run([
+        "git", "-C", str(tmp_path), "-c", "user.name=Fixture",
+        "-c", "user.email=fixture@example.invalid", "commit", "-qm", "release",
+    ], check=True)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        PROJECT_ROOT=tmp_path,
+        _stash_local_changes_if_needed=lambda *a, **kw: None,
+    ))
+    plan = update_cmd._prepare_checkout_for_update(
+        ["git"], "main", "main", is_fork=False, assume_yes=True, gateway_mode=False,
+        gw_input_fn=None, switch_branch=False, target_ref=selected,
+        _windows_gateway_resume=None)
+    assert plan.in_place_update is False
+
+
+def test_release_completion_rejects_a_real_descendant_of_selected_sha(monkeypatch, tmp_path):
+    selected = ""
+    descendant = ""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "checkout", "-qb", "main"], check=True)
+    for name, contents, message in (("base.txt", "base\n", "base"), ("child.txt", "child\n", "child")):
+        (tmp_path / name).write_text(contents, encoding="utf-8")
+        subprocess.run(["git", "-C", str(tmp_path), "add", name], check=True)
+        subprocess.run([
+            "git", "-C", str(tmp_path), "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "-qm", message,
+        ], check=True)
+        sha = subprocess.run(
+            ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True).stdout.strip()
+        if not selected:
+            selected = sha
+        else:
+            descendant = sha
+    assert subprocess.run(
+        ["git", "-C", str(tmp_path), "merge-base", "--is-ancestor", selected, descendant]).returncode == 0
+
+    plan = update_cmd._CheckoutPlan(
+        in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
+        upstream_checked=True, commit_count=1, prompt_for_restore=False, switch_block_reason=None)
+    monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **kw: descendant)
+    monkeypatch.setattr(update_cmd, "_capture_head_sha", lambda *a, **kw: descendant)
+    monkeypatch.setattr(update_cmd, "_record_stop", lambda reason: None)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        PROJECT_ROOT=tmp_path,
+        _resume_windows_gateways_after_update=lambda token: None))
+    request = {"expected_sha": selected, "target_sha": selected, "require_exact_target_sha": True}
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._apply_pulled_update(
+            ["git"], "main", selected, plan,
+            _windows_gateway_resume=None, completion_request=request)
+    assert exc.value.code == 1
+
+
+@pytest.mark.parametrize("observed", [None, "b" * 40], ids=["capture-failed", "head-moved"])
+def test_exact_release_noop_does_not_complete_without_matching_fresh_sha(
+        monkeypatch, tmp_path, observed):
+    selected = "a" * 40
+    completed = []
+    stop_reasons = []
+    plan = update_cmd._CheckoutPlan(
+        in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
+        upstream_checked=True, commit_count=0, prompt_for_restore=False, switch_block_reason=None)
+    monkeypatch.setattr(update_cmd, "_capture_head_sha", lambda *a, **kw: observed)
+    monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
+    monkeypatch.setattr(update_cmd, "_record_stop", stop_reasons.append)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        PROJECT_ROOT=tmp_path,
+        _resume_windows_gateways_after_update=lambda token: None))
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._finish_already_up_to_date(
+            ["git"], "main", "main", plan, gw_input_fn=None,
+            completion_request={
+                "target_sha": selected,
+                "expected_sha": selected,
+                "require_exact_target_sha": True,
+            }, _windows_gateway_resume=None)
+    assert exc.value.code == 1
+    assert completed == []
+    assert stop_reasons == ["head_moved"]
+
+
+def test_release_completion_refuses_when_fresh_exact_sha_is_unavailable(monkeypatch, tmp_path):
+    selected = "a" * 40
+    completed = []
+    plan = update_cmd._CheckoutPlan(
+        in_place_update=False, auto_stash_ref=None, parked_branch_switched=False,
+        upstream_checked=True, commit_count=1, prompt_for_restore=False, switch_block_reason=None)
+    # The first verification saw the selected SHA, but the fresh post-move
+    # identity probe failed. Exact-release completion must not reuse that stale
+    # value or run the completion tail.
+    monkeypatch.setattr(update_cmd, "_verify_head_after_pull", lambda *a, **kw: selected)
+    monkeypatch.setattr(update_cmd, "_capture_head_sha", lambda *a, **kw: None)
+    monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
+    monkeypatch.setattr(update_cmd, "_record_stop", lambda reason: None)
+    monkeypatch.setattr(update_cmd, "_m", lambda: SimpleNamespace(
+        PROJECT_ROOT=tmp_path,
+        _resume_windows_gateways_after_update=lambda token: None))
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._apply_pulled_update(
+            ["git"], "main", selected, plan,
+            _windows_gateway_resume=None,
+            completion_request={
+                "expected_sha": selected,
+                "target_sha": selected,
+                "require_exact_target_sha": True,
+            })
+    assert exc.value.code == 1
+    assert completed == []

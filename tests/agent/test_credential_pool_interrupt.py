@@ -54,5 +54,35 @@ def test_rotate_immediately_when_credential_already_exhausted():
 
     assert recovered is True
     assert retried is False
+
+
+def test_rotate_daily_free_limit_immediately_on_first_429():
+    """A provider-declared daily quota is a usage-limit rotation, not a retry."""
+    entries = [_make_entry(0), _make_entry(1)]
+    pool = _make_pool(entries)
+    pool.mark_exhausted_and_rotate.return_value = entries[1]
+
+    from run_agent import AIAgent
+    with patch("model_tools.get_tool_definitions", return_value=[]), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI"):
+        agent = MagicMock(spec=AIAgent)
+        agent._credential_pool = pool
+        agent.provider = "test-provider"
+        agent.model = "test-model"
+        agent.base_url = "https://example.invalid"
+        agent.api_key = "key-0"
+        agent._credential_pool_entry_id = "cred-0"
+        agent._swap_credential = MagicMock()
+        recovered, retried = AIAgent._recover_with_credential_pool(
+            agent,
+            status_code=429,
+            has_retried_429=False,
+            classified_reason=FailoverReason.rate_limit,
+            error_context={"message": "Daily free limit reached. Try again in 23h 26m"},
+        )
+
+    assert recovered is True
+    assert retried is False
     pool.mark_exhausted_and_rotate.assert_called_once()
     agent._swap_credential.assert_called_once_with(entries[1])

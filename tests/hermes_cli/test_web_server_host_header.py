@@ -389,8 +389,9 @@ def test_a_port_forwarded_dashboard_page_opens_its_own_sockets(monkeypatch, host
 def test_plugin_websockets_run_the_core_host_origin_gate(monkeypatch, host, origin, allowed):
     """HTTP middleware never sees a WebSocket upgrade, so plugin sockets need the gate the core
     sockets run before accept. The kanban plugin's /events only checked the credential: a token
-    read by a page on another local port still opened it. The gate is attached when plugin routers
-    are mounted, so the real kanban socket is covered without the plugin opting in."""
+    read by a page on another local port still opened it. PluginApiWebSocketGate runs the gate on
+    every /api/plugins/<name> socket, so the real kanban socket is covered without the plugin
+    opting in."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
@@ -414,9 +415,11 @@ def test_plugin_websockets_run_the_core_host_origin_gate(monkeypatch, host, orig
         assert exc.value.code == 4403
 
 
-def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch):
-    """The gate lives on the mount, not in each plugin: a plugin that declares a socket and checks
-    nothing itself is still refused for a foreign origin and served for the dashboard's own."""
+@pytest.mark.parametrize("path", ["socket", "raw", "raw-decorated"])
+def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch, path):
+    """The gate is not in each plugin: a plugin that declares a socket and checks nothing itself is
+    still refused for a foreign origin and served for the dashboard's own, whichever form declares
+    it (a router dependency reaches ``@router.websocket`` only, not Starlette's route forms)."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
@@ -429,13 +432,20 @@ def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch):
     (api_dir / "api.py").write_text(
         "from fastapi import APIRouter, WebSocket\n"
         "router = APIRouter()\n"
-        "@router.websocket('/socket')\n"
-        "async def socket(ws: WebSocket):\n"
+        "async def _serve(ws):\n"
         "    await ws.accept()\n"
         "    await ws.send_text('open')\n"
         "    await ws.close()\n"
+        "@router.websocket('/socket')\n"
+        "async def socket(ws: WebSocket):\n"
+        "    await _serve(ws)\n"
+        "router.add_websocket_route('/raw', _serve)\n"
+        "@router.websocket_route('/raw-decorated')\n"
+        "async def raw_decorated(ws):\n"
+        "    await _serve(ws)\n"
     )
     fresh = FastAPI()
+    fresh.add_middleware(dashboard.PluginApiWebSocketGate)
     fresh.state.bound_host, fresh.state.bound_port, fresh.state.auth_required = "127.0.0.1", 9119, False
     monkeypatch.setattr(ws, "app", fresh)
     monkeypatch.setattr(ws, "_dashboard_plugins_cache", [{
@@ -445,12 +455,12 @@ def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch):
     client = TestClient(fresh)
 
     with client.websocket_connect(
-            "/api/plugins/wsprobe/socket",
+            f"/api/plugins/wsprobe/{path}",
             headers={"Host": "127.0.0.1:9119", "Origin": "http://127.0.0.1:9119"}) as sock:
         assert sock.receive_text() == "open"
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
-                "/api/plugins/wsprobe/socket",
+                f"/api/plugins/wsprobe/{path}",
                 headers={"Host": "127.0.0.1:9119", "Origin": "http://localhost:3999"}):
             pass
     assert exc.value.code == 4403

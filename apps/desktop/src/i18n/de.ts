@@ -592,6 +592,7 @@ export const deOverrides = {
       'session.focusSearch': 'Sessions durchsuchen',
       'session.togglePin': 'Aktuelle Session anheften / lösen',
       'session.archive': 'Aktuelle Session archivieren',
+      'conversation.scrollToEnd': 'Zur neuesten Nachricht springen',
       'workspace.newWorktree': 'Neues Worktree',
       'workspace.openFolder': 'Ordner als Projekt öffnen',
       'composer.focus': 'Composer fokussieren',

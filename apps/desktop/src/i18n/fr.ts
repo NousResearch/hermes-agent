@@ -592,6 +592,7 @@ export const frOverrides = {
       'session.focusSearch': 'Rechercher des sessions',
       'session.togglePin': 'Épingler / désépingler la session actuelle',
       'session.archive': 'Archiver la session actuelle',
+      'conversation.scrollToEnd': 'Aller au message le plus récent',
       'workspace.newWorktree': 'Nouveau worktree',
       'workspace.openFolder': 'Ouvrir le dossier comme projet',
       'composer.focus': 'Mettre le focus sur le compositeur',

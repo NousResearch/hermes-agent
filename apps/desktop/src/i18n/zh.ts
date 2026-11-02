@@ -375,6 +375,7 @@ export const zhOverrides = {
       'session.archive': '归档当前会话',
       'conversation.scrollPageUp': '向上翻动一页会话',
       'conversation.scrollPageDown': '向下翻动一页会话',
+      'conversation.scrollToEnd': '跳到最新消息',
       'workspace.newWorktree': '新建工作树',
       'workspace.openFolder': '打开文件夹为项目',
       'composer.focus': '聚焦输入框',

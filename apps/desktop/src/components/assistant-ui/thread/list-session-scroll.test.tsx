@@ -430,6 +430,27 @@ describe('list session-scroll restore', () => {
     expect(vp.dataset.following).toBe('true')
   })
 
+  it('jumps the requested conversation to the newest message on End', async () => {
+    expect(keybindAction('conversation.scrollToEnd')?.defaults).toEqual(['end', 'mod+down'])
+
+    const { container } = render(<ScrollHarness messages={sessionMessages('a')} sessionKey="a" />)
+    const vp = viewportEl(container)
+
+    await settleScroll()
+    act(() => requestThreadPageScroll(-1, 'a'))
+    act(() => requestThreadPageScroll(-1, 'a'))
+    act(() => vp.dispatchEvent(new Event('scroll')))
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H * 3)
+
+    act(() => requestThreadPageScroll('end', 'other'))
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H * 3)
+
+    act(() => requestThreadPageScroll('end', 'a'))
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+  })
+
   it('restores a reading offset on return after switching away', async () => {
     saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
 

@@ -91,6 +91,7 @@ export const arChrome = {
       'session.togglePin': 'تثبيت / إلغاء تثبيت الجلسة الحالية',
       'conversation.scrollPageUp': 'تمرير المحادثة صفحة إلى الأعلى',
       'conversation.scrollPageDown': 'تمرير المحادثة صفحة إلى الأسفل',
+      'conversation.scrollToEnd': 'الانتقال إلى أحدث رسالة',
       'workspace.newWorktree': 'worktree جديد',
       'workspace.openFolder': 'فتح مجلد كمشروع',
       'composer.focus': 'التركيز على المحرّر',

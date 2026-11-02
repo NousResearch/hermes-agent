@@ -23,6 +23,7 @@ import {
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
+import { trimSlashCommandText } from '@/lib/slash-paste'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { markCompressDeferred } from '@/store/compaction'
@@ -189,6 +190,44 @@ const BUSY_KICKOFF_TEXT = {
   busy: 'session busy — stop the current reply first (Stop button or Esc), then send this command'
 } as const
 
+export function snapshotSlashTarget(
+  options: SubmitTextOptions | undefined,
+  activeSessionId: string | null,
+  selectedStoredSessionId: string | null,
+  routedStoredSessionId: string | null
+) {
+  const hasExplicitRuntimeId = options?.sessionId !== undefined
+  const hasExplicitStoredId = options?.storedSessionId !== undefined
+  const initialRuntimeId = hasExplicitRuntimeId ? (options.sessionId ?? null) : activeSessionId
+  const initialSelectedId = hasExplicitStoredId ? (options.storedSessionId ?? null) : selectedStoredSessionId
+  const initialRoutedId = hasExplicitStoredId ? (options.storedSessionId ?? null) : routedStoredSessionId
+
+  const initialStoredId = hasExplicitStoredId
+    ? (options.storedSessionId ?? null)
+    : hasExplicitRuntimeId
+      ? options.sessionId
+        ? ($sessionStates.get()[options.sessionId]?.storedSessionId ?? null)
+        : null
+      : (initialRoutedId ?? initialSelectedId)
+
+  return { hasExplicitStoredId, initialRoutedId, initialRuntimeId, initialSelectedId, initialStoredId }
+}
+
+function resolveSlashOutputStoredId(
+  sessionId: string,
+  initialStoredId: string | null,
+  initialRuntimeId: string | null,
+  hasExplicitStoredId: boolean,
+  activeSessionId: string | null,
+  selectedStoredSessionId: string | null
+): string | null {
+  return (
+    $sessionStates.get()[sessionId]?.storedSessionId ??
+    initialStoredId ??
+    (!initialRuntimeId && !hasExplicitStoredId && activeSessionId === sessionId ? selectedStoredSessionId : null)
+  )
+}
+
 export function useSlashCommand(deps: SlashCommandDeps) {
   const {
     activeSessionIdRef,
@@ -215,17 +254,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
   return useCallback(
     async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }) => {
-      const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
-      const initialSelectedId = selectedStoredSessionIdRef.current
-      const initialRoutedId = getRoutedStoredSessionId()
+      const { hasExplicitStoredId, initialRoutedId, initialRuntimeId, initialSelectedId, initialStoredId } =
+        snapshotSlashTarget(
+          options,
+          activeSessionIdRef.current,
+          selectedStoredSessionIdRef.current,
+          getRoutedStoredSessionId()
+        )
 
       let submitted = true
-
-      const initialStoredId =
-        options?.storedSessionId ??
-        (options?.sessionId
-          ? ($sessionStates.get()[options.sessionId]?.storedSessionId ?? null)
-          : (initialRoutedId ?? initialSelectedId))
 
       const destination =
         options?.destination ?? captureSubmissionDestination(initialStoredId ?? initialRuntimeId, ambientRequestGateway)
@@ -316,10 +353,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // to updateSessionState re-keyed the tile's cache entry onto the
         // primary's stored session. Fall back to the selection only for a
         // session with no published state yet (a draft this call just created).
-        const storedSessionId =
-          $sessionStates.get()[sessionId]?.storedSessionId ??
-          initialStoredId ??
-          (!initialRuntimeId && activeSessionIdRef.current === sessionId ? selectedStoredSessionIdRef.current : null)
+        const storedSessionId = resolveSlashOutputStoredId(
+          sessionId,
+          initialStoredId,
+          initialRuntimeId,
+          hasExplicitStoredId,
+          activeSessionIdRef.current,
+          selectedStoredSessionIdRef.current
+        )
 
         // Header carries the command token only. The full invocation would
         // duplicate long args — `/goal <prose>` echoed the whole goal in the
@@ -510,7 +551,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           submitted = await submitPromptText(message, {
             ...retryOptions,
             sessionId,
-            storedSessionId,
+            storedSessionId: storedSessionId ?? (hasExplicitStoredId ? sessionId : null),
             displayText,
             submission_id: submissionId,
             destination
@@ -1029,9 +1070,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             applyReasoningSlashResult(result.value)
             // Typed while a reply streams: the owner applies the level from the next turn.
             renderSlashOutput(
-              result.status === 'deferred'
-                ? translateNow('shell.modelMenu.pickDeferred', value)
-                : `reasoning: ${value}`
+              result.status === 'deferred' ? translateNow('shell.modelMenu.pickDeferred', value) : `reasoning: ${value}`
             )
           } catch (err) {
             if (isMissingRpcMethod(err)) {
@@ -1443,7 +1482,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // The whole dispatcher: resolve the command's desktop surface, then act on
       // its kind. No per-command ladder — behavior lives in the registry.
       async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
-        const command = commandText.trim()
+        // A multiline paste body reaches slash.exec verbatim, trailing whitespace included.
+        const command = trimSlashCommandText(commandText)
         const { name, arg } = parseSlashCommand(command)
 
         if (!name) {

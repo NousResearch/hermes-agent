@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { expandPastedSlashArgs, hasNonPasteAttachment } from '@/lib/slash-paste'
 import { isTouchInteraction } from '@/lib/touch-interaction'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
@@ -77,6 +78,21 @@ interface UseComposerSubmitArgs {
   /** Restored-send identity (see use-composer-draft); absent = every send is a new message. */
   rememberDraftRetry?: (scope: string | null, retry: ComposerDraftRetry) => void
   takeDraftRetry?: (text: string, attachments: ComposerAttachment[]) => ComposerDraftRetry | undefined
+  /** Lock shared with the queue engine while a slash command's paste chips are being read. */
+  slashReadInFlightRef?: RefObject<boolean>
+}
+
+type SubmitTarget = Parameters<ChatBarProps['onSubmit']>[1]
+
+// An explicit target names its stored session, null included (a fresh draft); otherwise the
+// composer's current scope does. A fresh chat's composer is keyed by its per-lifecycle
+// fresh-draft key (`__new__:<uuid>`), but the submit contract spells "no session yet" as null.
+function resolveSubmittedScope(target: SubmitTarget, currentScope: string | null): string | null {
+  if (target && 'storedSessionId' in target && target.storedSessionId !== undefined) {
+    return target.storedSessionId
+  }
+
+  return isFreshDraftScope(currentScope) ? null : currentScope
 }
 
 /**
@@ -115,13 +131,16 @@ export function useComposerSubmit({
   setComposerText,
   stashAt,
   rememberDraftRetry,
-  takeDraftRetry
+  takeDraftRetry,
+  slashReadInFlightRef: sharedSlashReadInFlightRef
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
+  const ownSlashReadInFlightRef = useRef(false)
+  const slashReadInFlightRef = sharedSlashReadInFlightRef ?? ownSlashReadInFlightRef
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-stash the draft so the words survive. Repaint it
@@ -132,18 +151,17 @@ export function useComposerSubmit({
     text: string,
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
-    target?: Parameters<ChatBarProps['onSubmit']>[1],
-    onRejected?: (scope: string | null, submissionId: string) => void
+    target?: SubmitTarget,
+    onRejected?: (scope: string | null, submissionId: string) => void,
+    restoreDraft?: { attachments: ComposerAttachment[]; text: string }
   ) => {
-    // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
-    // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
-    // null: the create handoff below and the composer drift prong both key off
-    // it, and draftKey(null) resolves to that same fresh bucket.
-    const submittedScope =
-      target?.storedSessionId ?? (isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current)
+    // "No session yet" is null: the create handoff below and the composer drift
+    // prong both key off it, and draftKey(null) resolves to the fresh bucket.
+    const submittedScope = resolveSubmittedScope(target, draftScopeRef.current)
 
     let restoreScope = submittedScope
-    const submittedAttachments = attachments ?? []
+    const draftText = restoreDraft?.text ?? text
+    const submittedAttachments = restoreDraft?.attachments ?? attachments ?? []
 
     let outgoing: OutgoingSend | undefined
 
@@ -168,15 +186,15 @@ export function useComposerSubmit({
     // chain must not take the words with it (see composer-outbox).
     outgoing = displayKind
       ? undefined
-      : journalOutgoingSend(submittedScope, draftRetry(submissionId, text, submittedAttachments))
+      : journalOutgoingSend(submittedScope, draftRetry(submissionId, draftText, submittedAttachments))
 
     const restore = () => {
-      stashAt(restoreScope, text, submittedAttachments)
+      stashAt(restoreScope, draftText, submittedAttachments)
       // Restored with its identity: Enter on this exact draft retries the same send.
-      rememberDraftRetry?.(restoreScope, draftRetry(submissionId, text, submittedAttachments))
+      rememberDraftRetry?.(restoreScope, draftRetry(submissionId, draftText, submittedAttachments))
 
       if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
-        loadIntoComposer(text, submittedAttachments)
+        loadIntoComposer(draftText, submittedAttachments)
       }
     }
 
@@ -205,7 +223,7 @@ export function useComposerSubmit({
       .then(accepted => {
         if (accepted === false) {
           rejected()
-        } else if (stashStillHoldsSent(submittedScope, text, submittedAttachments)) {
+        } else if (stashStillHoldsSent(submittedScope, draftText, submittedAttachments)) {
           // Through the composer's own save, so a next message the user types
           // into this emptied draft counts as unsaved and is saved again.
           stashAt(submittedScope, '', [])
@@ -339,19 +357,6 @@ export function useComposerSubmit({
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
-        // Slash commands cannot ride alongside attachments — warn the user
-        // instead of silently queuing the payload (which would then reach the
-        // idle path and be submitted as plain text with no command execution).
-        notify({
-          kind: 'warning',
-          title: copy.slashCommandIgnoredTitle,
-          message: copy.slashCommandIgnoredBody
-        })
-
-        return false
-      }
-
       const retry = takeDraftRetry?.(text, [])
       triggerHaptic('submit')
       clearDraft()
@@ -472,21 +477,7 @@ export function useComposerSubmit({
     return true
   }
 
-  const submitDraft = () => {
-    if (disabled) {
-      return
-    }
-
-    const editorHadFocus = editorHasFocus()
-
-    // Source the text from the DOM editor, not React state. The AUI composer
-    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
-    // render, so on fast typing or IME composition the final keystroke(s) may
-    // not have synced yet — reading state here drops the message (Enter looks
-    // like it does nothing; typing a trailing space only "fixes" it because the
-    // extra input event forces a state sync). draftRef is updated on every
-    // input event; refresh it from the editor once more to also cover an
-    // in-flight keystroke that hasn't fired its input event yet.
+  const syncEditorDraft = (): string => {
     const editor = editorRef.current
 
     if (editor) {
@@ -498,13 +489,96 @@ export function useComposerSubmit({
       }
     }
 
+    return draftRef.current
+  }
+
+  const submitSlashWithAttachments = (rawDraft: string, text: string, editorHadFocus: boolean): boolean => {
+    if (queueEdit || !isSlashCommandText(text) || attachments.length === 0) {
+      return false
+    }
+
+    if (hasNonPasteAttachment(attachments)) {
+      notify({
+        kind: 'warning',
+        title: copy.slashCommandIgnoredTitle,
+        message: copy.slashCommandIgnoredBody
+      })
+
+      return true
+    }
+
+    const capturedAttachments = [...attachments]
+    const submittedAttachments = cloneAttachments(attachments)
+    // Captured before the read: switching sessions mid-read must not retarget this send.
+    const submittedScope = draftScopeRef.current
+    const submittedStoredSessionId = isFreshDraftScope(submittedScope) ? null : submittedScope
+    const submittedSessionId = sessionId ?? null
+    const wasBusy = busy
+
+    slashReadInFlightRef.current = true
+
+    void expandPastedSlashArgs(text.trim(), submittedAttachments)
+      .then(expanded => {
+        if (!expanded.ok) {
+          notify({
+            kind: 'warning',
+            title: copy.slashCommandIgnoredTitle,
+            message: copy.slashCommandIgnoredBody
+          })
+
+          return
+        }
+
+        // Parked cards and restored-send identities belong to the composer that is showing now.
+        const sameScope = draftScopeRef.current === submittedScope
+
+        if (sameScope) {
+          answerParkedCardWithDraft(text, true)
+        }
+
+        const retry = sameScope ? takeDraftRetry?.(text, submittedAttachments) : undefined
+        triggerHaptic('submit')
+
+        if (!wasBusy) {
+          resetBrowseState(sessionId)
+        }
+
+        if (sameScope && (draftRef.current === rawDraft || pathifyRefs(draftRef.current) === text)) {
+          clearDraft()
+          scope.attachments.removeOccurrences(capturedAttachments)
+        }
+
+        const target = {
+          sessionId: submittedSessionId,
+          storedSessionId: submittedStoredSessionId,
+          ...(retry ? { submission_id: retry.id } : {})
+        }
+
+        dispatchSubmit(expanded.text, [], undefined, target, undefined, { attachments: submittedAttachments, text })
+        refocusAfterSend(editorHadFocus)
+      })
+      .finally(() => {
+        slashReadInFlightRef.current = false
+      })
+
+    return true
+  }
+
+  const submitDraft = () => {
+    if (disabled || slashReadInFlightRef.current) {
+      return
+    }
+
+    const editorHadFocus = editorHasFocus()
+    const rawDraft = syncEditorDraft()
+
     // A path that never got its committing space (`@apps/desktop/` left by a Tab
     // descend, then Enter) is still the reference the user picked — promote it
     // on the way out so it attaches instead of submitting as inert text.
-    const text = pathifyRefs(draftRef.current)
+    const text = pathifyRefs(rawDraft)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    if (refusedDuringSetup(text)) {
+    if (refusedDuringSetup(text) || submitSlashWithAttachments(rawDraft, text, editorHadFocus)) {
       return
     }
 
@@ -628,9 +702,10 @@ export function useComposerSubmit({
       .catch(keep)
   }
 
-  const queueDraft = () => {
-    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
-      return
+  // Returns whether the draft was handed to the queue engine.
+  const queueDraft = (): boolean => {
+    if (slashReadInFlightRef.current || disabled || !busy || refusedDuringSetup(draftRef.current)) {
+      return false
     }
 
     const editorHadFocus = editorHasFocus()
@@ -643,6 +718,8 @@ export function useComposerSubmit({
     }
 
     refocusAfterSend(editorHadFocus)
+
+    return true
   }
 
   return { dispatchSubmit, queueDraft, steerDraft, submitDraft }

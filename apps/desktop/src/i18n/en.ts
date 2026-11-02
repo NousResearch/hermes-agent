@@ -4714,7 +4714,7 @@ export const en: Translations = {
     emptySlashCommand: 'empty slash command',
     slashCommandIgnoredTitle: 'Command not sent',
     slashCommandIgnoredBody:
-      'Slash commands cannot be combined with attachments. Remove the attachment or send the command separately.',
+      'Slash commands can take pasted text only. Remove the other attachments, or send the command separately.',
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,
     warningLine: message => `warning: ${message}`,

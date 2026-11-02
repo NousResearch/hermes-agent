@@ -12,6 +12,7 @@ import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { expandPastedSlashArgs, trimSlashCommandText } from '@/lib/slash-paste'
 import { normalize } from '@/lib/text'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { clearClarifyRequest } from '@/store/clarify'
@@ -77,7 +78,7 @@ import {
   sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from './rewind'
-import { useSlashCommand } from './slash'
+import { snapshotSlashTarget, useSlashCommand } from './slash'
 import { captureSteeringSession } from './steering-session'
 import { captureSubmissionDestination } from './submission-destination'
 import { useSubmitPrompt } from './submit'
@@ -137,9 +138,10 @@ export async function uploadComposerAttachment(
   // Edit-message drops bypass the main composer store, so also resolve their
   // source descriptor here. Absence means an older browser backend/native file
   // and retains the existing byte-upload rules.
-  const stagedUpload = attachment.kind === 'file'
-    ? attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path)
-    : undefined
+  const stagedUpload =
+    attachment.kind === 'file'
+      ? (attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path))
+      : undefined
 
   if (stagedUpload && stagedUpload.path !== path) {
     throw new Error(`Could not attach ${label}: staged source changed; select the file again`)
@@ -211,9 +213,7 @@ export async function uploadComposerAttachment(
       session_id: liveSessionId,
       // Omit path as well as bytes for the provenance-aware branch: an older
       // RPC implementation must reject it rather than ignore source ownership.
-      ...(stagedUpload
-        ? { staged_upload: stagedUpload }
-        : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
+      ...(stagedUpload ? { staged_upload: stagedUpload } : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
     })
 
     if (!result.attached || !result.ref_text) {
@@ -696,11 +696,30 @@ export function usePromptActions({
 
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = sanitizeComposerInput(rawText).trim()
+      // A multiline command's paste body keeps its trailing whitespace (see trimSlashCommandText).
+      const visibleText = trimSlashCommandText(sanitizeComposerInput(rawText))
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
+        if (attachments.length === 0) {
+          triggerHaptic('selection')
+
+          return await executeSlashCommand(visibleText, { ...options, attachments: [] })
+        }
+
+        const { initialRuntimeId: sessionId, initialStoredId: storedSessionId } = snapshotSlashTarget(
+          options,
+          activeSessionIdRef.current,
+          selectedStoredSessionIdRef.current,
+          getRoutedStoredSessionId()
+        )
+
+        const destination =
+          options?.destination ?? captureSubmissionDestination(storedSessionId ?? sessionId, requestGateway)
+
+        const expanded = await expandPastedSlashArgs(visibleText.trim(), attachments)
+
+        if (!expanded.ok) {
           notify({
             kind: 'warning',
             title: copy.slashCommandIgnoredTitle,
@@ -714,12 +733,27 @@ export function usePromptActions({
 
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        return await executeSlashCommand(visibleText, options)
+        return await executeSlashCommand(expanded.text, {
+          ...options,
+          attachments: [],
+          destination,
+          sessionId,
+          storedSessionId
+        })
       }
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [
+      activeSessionIdRef,
+      copy.slashCommandIgnoredBody,
+      copy.slashCommandIgnoredTitle,
+      executeSlashCommand,
+      getRoutedStoredSessionId,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      submitPromptText
+    ]
   )
 
   const transcribeVoiceAudio = useCallback(

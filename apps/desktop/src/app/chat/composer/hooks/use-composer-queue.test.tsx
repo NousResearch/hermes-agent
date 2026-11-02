@@ -2,7 +2,14 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
-import { clearComposerTerminalSelections, setComposerTerminalSelection } from '@/store/composer'
+import { expandPastedSlashArgs } from '@/lib/slash-paste'
+import {
+  $composerAttachments,
+  $composerDraft,
+  clearComposerTerminalSelections,
+  type ComposerAttachment,
+  setComposerTerminalSelection
+} from '@/store/composer'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -47,32 +54,39 @@ function deferred() {
 
 function renderQueueHook(
   overrides: {
+    attachments?: ComposerAttachment[]
     busy?: boolean
     draft?: string
     onCancel?: () => void
     onSteer?: ChatBarProps['onSteer']
+    onSubmit?: ChatBarProps['onSubmit']
     replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
+    slashReadInFlightRef?: { current: boolean }
   } = {}
 ) {
-  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(overrides.onSubmit ?? (async () => true))
   const onCancel = overrides.onCancel ?? vi.fn()
   const onSteer = overrides.onSteer
   const queueEditRef: { current: QueueEditState | null } = { current: null }
   const draftRef = { current: overrides.draft ?? '' }
 
+  const clearDraft = vi.fn(() => {
+    draftRef.current = ''
+    $composerDraft.set('')
+  })
+
   const hook = renderHook(
-    ({ busy }: { busy: boolean }) =>
+    ({ attachments = overrides.attachments ?? [], busy }: { attachments?: ComposerAttachment[]; busy: boolean }) =>
       useComposerQueue({
         activeQueueSessionKey: SESSION_KEY,
-        attachments: [],
+        attachments,
         busy,
-        clearDraft: () => {
-          draftRef.current = ''
-        },
+        clearDraft,
         draftRef,
         focusInput: () => undefined,
         loadIntoComposer: (text: string) => {
           draftRef.current = text
+          $composerDraft.set(text)
         },
         onCancel,
         onSteer,
@@ -80,12 +94,18 @@ function renderQueueHook(
         queueEditRef,
         queueSessionKey: SESSION_KEY,
         replaceServerQueued: overrides.replaceServerQueued,
-        sessionId: 'rt-session-queue-hook'
+        sessionId: 'rt-session-queue-hook',
+        slashReadInFlightRef: overrides.slashReadInFlightRef
       }),
-    { initialProps: { busy: overrides.busy ?? false } }
+    {
+      initialProps: {
+        attachments: overrides.attachments,
+        busy: overrides.busy ?? false
+      } as { attachments?: ComposerAttachment[]; busy: boolean }
+    }
   )
 
-  return { draftRef, hook, onCancel, onSubmit }
+  return { clearDraft, draftRef, hook, onCancel, onSubmit }
 }
 
 describe('useComposerQueue park integration', () => {
@@ -117,27 +137,56 @@ describe('useComposerQueue park integration', () => {
   it('admits native Queue through submit and retains an uncertain draft without a local replay', async () => {
     $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
     const draftRef = { current: 'durable queue' }
-    const clearDraft = vi.fn(() => { draftRef.current = '' })
+
+    const clearDraft = vi.fn(() => {
+      draftRef.current = ''
+    })
+
     const onSubmit = vi.fn<ChatBarProps['onSubmit']>().mockResolvedValue(false)
 
-    const hook = renderHook(({ busy }) => useComposerQueue({
-      activeQueueSessionKey: SESSION_KEY, attachments: [], busy, clearDraft, draftRef,
-      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
-      onSubmit, queueEditRef: { current: null }, queueSessionKey: SESSION_KEY, sessionId: 'rt-session-queue-hook'
-    }), { initialProps: { busy: true } })
+    const hook = renderHook(
+      ({ busy }) =>
+        useComposerQueue({
+          activeQueueSessionKey: SESSION_KEY,
+          attachments: [],
+          busy,
+          clearDraft,
+          draftRef,
+          focusInput: () => undefined,
+          loadIntoComposer: () => undefined,
+          onCancel: vi.fn(),
+          onSteer: undefined,
+          onSubmit,
+          queueEditRef: { current: null },
+          queueSessionKey: SESSION_KEY,
+          sessionId: 'rt-session-queue-hook'
+        }),
+      { initialProps: { busy: true } }
+    )
 
     try {
-      await act(async () => { await hook.result.current.queueCurrentDraft() })
-      expect(onSubmit).toHaveBeenCalledWith('durable queue', expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY }))
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
+      expect(onSubmit).toHaveBeenCalledWith(
+        'durable queue',
+        expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY })
+      )
       expect(draftRef.current).toBe('durable queue')
       expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
       onSubmit.mockResolvedValue(true)
-      await act(async () => { await hook.result.current.queueCurrentDraft() })
+      await act(async () => {
+        await hook.result.current.queueCurrentDraft()
+      })
       expect(clearDraft).toHaveBeenCalledTimes(1)
       hook.rerender({ busy: false })
-      await act(async () => { await Promise.resolve() })
+      await act(async () => {
+        await Promise.resolve()
+      })
       expect(onSubmit).toHaveBeenCalledTimes(2)
-    } finally { $connection.set(null) }
+    } finally {
+      $connection.set(null)
+    }
   })
 
   it('does not clear the next session draft when a queue ACK arrives after navigation', async () => {
@@ -146,19 +195,43 @@ describe('useComposerQueue park integration', () => {
     const clearDraft = vi.fn()
     const draftRef = { current: 'same text' }
 
-    const hook = renderHook(({ key }) => useComposerQueue({
-      activeQueueSessionKey: key, attachments: [], busy: true, clearDraft, draftRef,
-      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
-      onSubmit: () => new Promise<boolean>(resolve => { accept = resolve }), queueEditRef: { current: null }, queueSessionKey: key, sessionId: key
-    }), { initialProps: { key: 'outgoing' } })
+    const hook = renderHook(
+      ({ key }) =>
+        useComposerQueue({
+          activeQueueSessionKey: key,
+          attachments: [],
+          busy: true,
+          clearDraft,
+          draftRef,
+          focusInput: () => undefined,
+          loadIntoComposer: () => undefined,
+          onCancel: vi.fn(),
+          onSteer: undefined,
+          onSubmit: () =>
+            new Promise<boolean>(resolve => {
+              accept = resolve
+            }),
+          queueEditRef: { current: null },
+          queueSessionKey: key,
+          sessionId: key
+        }),
+      { initialProps: { key: 'outgoing' } }
+    )
 
     try {
       let pending: boolean | Promise<boolean> = false
-      act(() => { pending = hook.result.current.queueCurrentDraft() })
+      act(() => {
+        pending = hook.result.current.queueCurrentDraft()
+      })
       hook.rerender({ key: 'incoming' })
-      await act(async () => { accept(true); await pending })
+      await act(async () => {
+        accept(true)
+        await pending
+      })
       expect(clearDraft).not.toHaveBeenCalled()
-    } finally { $connection.set(null) }
+    } finally {
+      $connection.set(null)
+    }
   })
 
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {
@@ -545,7 +618,13 @@ describe('useComposerQueue scope', () => {
           onSubmit: vi.fn(async () => true),
           queueEditRef: { current: null }
         }),
-      { initialProps: { activeQueueSessionKey: 'session-a', queueSessionKey: 'session-a', sessionId: 'session-a' } as Scope }
+      {
+        initialProps: {
+          activeQueueSessionKey: 'session-a',
+          queueSessionKey: 'session-a',
+          sessionId: 'session-a'
+        } as Scope
+      }
     )
 
     expect(hook.result.current.queuedPrompts.map(entry => entry.text)).toEqual(['for A'])
@@ -612,7 +691,12 @@ describe('useComposerQueue scope', () => {
       { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
     ])
     const reply = deferred()
-    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    const { draftRef, hook } = renderQueueHook({
+      busy: true,
+      draft: 'my draft',
+      replaceServerQueued: () => reply.promise
+    })
 
     act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
     draftRef.current = 'new words'
@@ -635,8 +719,12 @@ describe('useComposerQueue scope', () => {
     ])
     clearNotifications()
     const replies = [deferred(), deferred(), deferred()]
-    const replaceServerQueued = vi.fn((_admissionId: string, _text: string, _submissionId: string) =>
-      replies[replaceServerQueued.mock.calls.length - 1]!.promise)
+
+    const replaceServerQueued = vi.fn(
+      (_admissionId: string, _text: string, _submissionId: string) =>
+        replies[replaceServerQueued.mock.calls.length - 1]!.promise
+    )
+
     const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
 
     act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
@@ -672,9 +760,11 @@ describe('useComposerQueue scope', () => {
     reconcilePendingSubmissions(SESSION_KEY, [
       { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
     ])
+
     const replaceServerQueued = vi.fn(async (_admissionId: string, _text: string, _submissionId: string) => {
       throw new Error('socket closed')
     })
+
     const { draftRef, hook } = renderQueueHook({ busy: true, replaceServerQueued })
 
     act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
@@ -698,7 +788,12 @@ describe('useComposerQueue scope', () => {
       { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
     ])
     const reply = deferred()
-    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued: () => reply.promise })
+
+    const { draftRef, hook } = renderQueueHook({
+      busy: true,
+      draft: 'my draft',
+      replaceServerQueued: () => reply.promise
+    })
 
     act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
     draftRef.current = 'new words'
@@ -744,5 +839,328 @@ describe('useComposerQueue scope', () => {
     act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
 
     expect(hook.result.current.queueEdit).toBeNull()
+  })
+})
+
+describe('useComposerQueue slash commands with pasted-content chips', () => {
+  const PASTE_PATH = '/home/user/.hermes/composer-pastes/pasted_content_2026-11-01_12-00-00-000_queue1.txt'
+  const readFileText = vi.fn()
+
+  const makePasteChip = (path = PASTE_PATH): ComposerAttachment => ({
+    id: `file:${path}`,
+    kind: 'file',
+    label: 'Pasted content (4.9 KB)',
+    path,
+    refText: `@file:${path}`,
+    titlePreview: 'preview-1000-chars'
+  })
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    readFileText.mockReset()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    $composerDraft.set('')
+    $composerAttachments.set([])
+    clearNotifications()
+    setSessionsLoading(false)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileText }
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $queuedPromptsBySession.set({})
+    $parkedQueueSessions.set({})
+    $composerDraft.set('')
+    $composerAttachments.set([])
+    clearNotifications()
+    setSessionsLoading(true)
+  })
+
+  it('refuses queueing a slash command with a non-paste attachment without ever mutating the draft or attachment stores', () => {
+    const realFile: ComposerAttachment = {
+      id: 'file:/work/notes.txt',
+      kind: 'file',
+      label: 'notes.txt',
+      path: '/work/notes.txt'
+    }
+
+    $composerDraft.set('/goal ship it')
+    $composerAttachments.set([realFile])
+
+    const draftTransitions: string[] = []
+    const attachmentTransitions: (readonly ComposerAttachment[])[] = []
+    const unsubDraft = $composerDraft.listen(next => draftTransitions.push(next))
+    const unsubAttachments = $composerAttachments.listen(next => attachmentTransitions.push(next))
+
+    const { clearDraft, hook } = renderQueueHook({
+      attachments: [realFile],
+      busy: true,
+      draft: '/goal ship it'
+    })
+
+    try {
+      act(() => {
+        expect(hook.result.current.queueCurrentDraft()).toBe(false)
+      })
+
+      expect(clearDraft).not.toHaveBeenCalled()
+      expect(draftTransitions).toEqual([])
+      expect(attachmentTransitions).toEqual([])
+      expect($composerDraft.get()).toBe('/goal ship it')
+      expect($composerAttachments.get()).toEqual([realFile])
+      expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+      expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+    } finally {
+      unsubDraft()
+      unsubAttachments()
+    }
+  })
+
+  it('expands a pasted-content chip once at enqueue and drains to one slash.exec without re-expanding', async () => {
+    const pasteBody = 'full queued goal specification'
+    readFileText.mockResolvedValue({ path: PASTE_PATH, text: pasteBody })
+
+    const chip = makePasteChip()
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const slashExecCalls: string[] = []
+
+    const { clearDraft, hook, onSubmit } = renderQueueHook({
+      attachments: [chip],
+      busy: true,
+      draft: '/goal',
+      onSubmit: async (text, options) => {
+        const expanded = await expandPastedSlashArgs(text, options?.attachments ?? [])
+
+        if (!expanded.ok) {
+          return false
+        }
+
+        slashExecCalls.push(expanded.text.replace(/^\/+/, ''))
+
+        return true
+      }
+    })
+
+    await act(async () => {
+      expect(await hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+
+    expect(readFileText).toHaveBeenCalledExactlyOnceWith(PASTE_PATH)
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    expect($composerAttachments.get()).toEqual([])
+
+    const queued = getQueuedPrompts(SESSION_KEY)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]?.text).toBe(`/goal\n${pasteBody}`)
+    expect(queued[0]?.attachments).toEqual([])
+
+    hook.rerender({ attachments: [], busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(readFileText).toHaveBeenCalledTimes(1)
+    expect(slashExecCalls).toEqual([`goal\n${pasteBody}`])
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('expands a pasted-content chip when saving an edited queue entry and refuses non-paste attachments', async () => {
+    const pasteBody = 'edited goal paste'
+    readFileText.mockResolvedValueOnce({ path: PASTE_PATH, text: pasteBody })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'original queued text' })
+
+    const chip = makePasteChip()
+
+    const realFile: ComposerAttachment = {
+      id: 'file:/work/notes.txt',
+      kind: 'file',
+      label: 'notes.txt',
+      path: '/work/notes.txt'
+    }
+
+    const { draftRef, hook } = renderQueueHook({
+      attachments: [],
+      busy: true,
+      draft: 'interrupted draft'
+    })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+
+    draftRef.current = '/goal'
+    hook.rerender({ attachments: [realFile], busy: true })
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(false)
+    })
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('original queued text')
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+
+    clearNotifications()
+    hook.rerender({ attachments: [chip], busy: true })
+
+    await act(async () => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+
+    await waitFor(() => expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe(`/goal\n${pasteBody}`))
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments).toEqual([])
+    expect(draftRef.current).toBe('interrupted draft')
+  })
+
+  const slowRead = () => {
+    const read = deferred()
+    readFileText.mockImplementationOnce(() => read.promise)
+
+    return (text: string) => read.resolve({ path: PASTE_PATH, text })
+  }
+
+  it('keeps the paste body trailing whitespace verbatim at enqueue and through the drain', async () => {
+    const pasteBody = 'goal body with trailing space   \n'
+    readFileText.mockResolvedValue({ path: PASTE_PATH, text: pasteBody })
+
+    const chip = makePasteChip()
+    const slashExecCalls: string[] = []
+
+    const { hook, onSubmit } = renderQueueHook({
+      attachments: [chip],
+      busy: true,
+      draft: '/goal  ',
+      onSubmit: async text => {
+        slashExecCalls.push(text.replace(/^\/+/, ''))
+
+        return true
+      }
+    })
+
+    await act(async () => {
+      expect(await hook.result.current.queueCurrentDraft()).toBe(true)
+    })
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe(`/goal\n${pasteBody}`)
+
+    hook.rerender({ attachments: [], busy: false })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(slashExecCalls).toEqual([`goal\n${pasteBody}`])
+  })
+
+  it('honors a shared in-flight lock and holds it during its own paste read', async () => {
+    const resolveRead = slowRead()
+    const slashReadInFlightRef = { current: true }
+    const chip = makePasteChip()
+    const { hook } = renderQueueHook({ attachments: [chip], busy: true, draft: '/goal', slashReadInFlightRef })
+
+    act(() => {
+      expect(hook.result.current.queueCurrentDraft()).toBe(false)
+    })
+    expect(readFileText).not.toHaveBeenCalled()
+
+    slashReadInFlightRef.current = false
+    let pending: boolean | Promise<boolean> = false
+    act(() => {
+      pending = hook.result.current.queueCurrentDraft()
+    })
+    expect(slashReadInFlightRef.current).toBe(true)
+
+    await act(async () => {
+      resolveRead('goal body')
+      await pending
+    })
+    expect(slashReadInFlightRef.current).toBe(false)
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('/goal\ngoal body')
+  })
+
+  it('keeps text typed during a slow paste read when a local edit save lands', async () => {
+    const resolveRead = slowRead()
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'original queued text' })
+    const chip = makePasteChip()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'interrupted draft' })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = '/goal'
+    hook.rerender({ attachments: [chip], busy: true })
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+    draftRef.current = 'typed mid-read'
+
+    await act(async () => {
+      resolveRead('edited body')
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('/goal\nedited body')
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('typed mid-read\n\ninterrupted draft')
+  })
+
+  it('settles a server-row paste save against the editor text at Save, not the expanded text', async () => {
+    reconcilePendingSubmissions(SESSION_KEY, [
+      { admission_id: 'adm-1', status: 'queued', user: 'old words', controls: ['steer', 'replace'] }
+    ])
+    const resolveRead = slowRead()
+    const reply = deferred()
+    const replaceServerQueued = vi.fn((_admissionId: string, _text: string, _submissionId: string) => reply.promise)
+    const chip = makePasteChip()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'my draft', replaceServerQueued })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[0]!))
+    draftRef.current = '/goal'
+    hook.rerender({ attachments: [chip], busy: true })
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+    await act(async () => {
+      resolveRead('server body')
+    })
+    expect(replaceServerQueued).toHaveBeenCalledWith('adm-1', '/goal\nserver body', expect.any(String))
+
+    await act(async () => reply.resolve({}))
+
+    expect(hook.result.current.queueEdit).toBeNull()
+    expect(draftRef.current).toBe('my draft')
+  })
+
+  it('refuses to step a queue edit while a paste read is in flight or into a slash + attachment entry', async () => {
+    const resolveRead = slowRead()
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
+    const chip = makePasteChip()
+    const { draftRef, hook } = renderQueueHook({ busy: true, draft: 'interrupted draft' })
+
+    act(() => hook.result.current.beginQueuedEdit(getQueuedPrompts(SESSION_KEY)[1]!))
+    draftRef.current = '/goal'
+    hook.rerender({ attachments: [chip], busy: true })
+
+    act(() => {
+      expect(hook.result.current.stepQueuedEdit(-1)).toBe(true)
+    })
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first', 'second'])
+    expect(getQueuedPrompts(SESSION_KEY)[1]?.attachments).toEqual([])
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(true)
+    expect(hook.result.current.queueEdit?.entryId).toBe(getQueuedPrompts(SESSION_KEY)[1]!.id)
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(true)
+    })
+    // Mid-read, the chip is gone and new text typed: stepping would save it over the pending Save.
+    draftRef.current = 'typed mid-read'
+    hook.rerender({ attachments: [], busy: true })
+    act(() => {
+      expect(hook.result.current.stepQueuedEdit(-1)).toBe(true)
+    })
+    expect(hook.result.current.queueEdit?.entryId).toBe(getQueuedPrompts(SESSION_KEY)[1]!.id)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first', 'second'])
+
+    await act(async () => {
+      resolveRead('stepped body')
+    })
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['first', '/goal\nstepped body'])
+    expect(draftRef.current).toBe('typed mid-read\n\ninterrupted draft')
   })
 })

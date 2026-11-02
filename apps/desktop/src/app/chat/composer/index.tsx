@@ -1,14 +1,6 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import {
-  type ClipboardEvent,
-  type FormEvent,
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef
-} from 'react'
+import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import type { GatewayRequester } from '@/app/contrib/types'
@@ -249,14 +241,13 @@ export function ChatBar({
     poppedOut
   } = useComposerPopout({ composerRef })
 
-  // Coordinator-owned: the draft engine reads the live queue-edit snapshot off
-  // this ref (to suppress its stash while editing a queued prompt) and the queue
-  // engine writes it — an explicit shared handle, not a back-reference.
+  // Coordinator-owned: the draft engine reads the live queue-edit snapshot off this ref (to suppress
+  // its stash while editing a queued prompt); the queue engine writes it. Not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
+  const slashReadInFlightRef = useRef(false) // Send + Queue share it while slash paste chips are read
   const composingRef = useRef(false) // true during IME composition (CJK input)
-  // The blur-close timer must not outlive the composer: an unmounted editor's
-  // deferred closeTrigger() would setState after teardown (vitest reported it as
-  // an unhandled "window is not defined" from paste-url-is-text.test.tsx).
+  // The blur-close timer must not outlive the composer: an unmounted editor's deferred closeTrigger()
+  // would setState after teardown (an unhandled "window is not defined" in paste-url-is-text.test.tsx).
   const blurCloseTimer = useRef<number | null>(null)
 
   useEffect(
@@ -355,8 +346,7 @@ export function ChatBar({
     onAddUrl
   })
 
-  // The queue engine — queued turns, in-place editing, the shared drain lock,
-  // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
+  // The queue engine (queued turns, in-place edits, drain lock, bounded auto-drain); writes `queueEditRef`.
   const {
     beginQueuedEdit,
     deliverQueuedNow,
@@ -383,7 +373,8 @@ export function ChatBar({
     onSubmit,
     queueEditRef,
     queueSessionKey,
-    sessionId
+    sessionId,
+    slashReadInFlightRef
   })
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
@@ -455,6 +446,7 @@ export function ChatBar({
     setComposerText,
     stashAt,
     rememberDraftRetry,
+    slashReadInFlightRef,
     takeDraftRetry
   })
 

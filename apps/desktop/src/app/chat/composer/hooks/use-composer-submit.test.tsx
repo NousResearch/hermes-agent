@@ -6,6 +6,8 @@ import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/util
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import {
+  $composerAttachments,
+  $composerDraft,
   clearComposerTerminalSelections,
   type ComposerAttachment,
   setComposerTerminalSelection
@@ -39,6 +41,7 @@ interface SubmitHarnessOptions {
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
+  slashReadInFlightRef?: { current: boolean }
   submitOnHide?: boolean
   surfaceId?: string | null
   text?: string
@@ -54,6 +57,7 @@ function renderSubmitHook({
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
+  slashReadInFlightRef,
   submitOnHide = false,
   surfaceId,
   text = '',
@@ -79,6 +83,7 @@ function renderSubmitHook({
   const clearDraft = vi.fn(() => {
     draftRef.current = ''
     editorRef.current!.textContent = ''
+    $composerDraft.set('')
   })
 
   const Wrapper = ({ children }: PropsWithChildren) => {
@@ -109,7 +114,7 @@ function renderSubmitHook({
   }
 
   const hook = renderHook(
-    () =>
+    ({ sessionId }: { sessionId: string }) =>
       useComposerSubmit({
         activeQueueSessionKey: sessionKey,
         activeQueueSessionKeyRef: { current: sessionKey },
@@ -133,17 +138,20 @@ function renderSubmitHook({
         queueCurrentDraft,
         queueEdit: null,
         queuedPrompts: [],
-        sessionId: 'runtime-session',
+        sessionId,
         setComposerText: vi.fn(),
+        slashReadInFlightRef,
         stashAt
       }),
-    { wrapper: Wrapper }
+    { initialProps: { sessionId: 'runtime-session' }, wrapper: Wrapper }
   )
 
   return {
     loadIntoComposer,
     stashAt,
     clearDraft,
+    draftRef,
+    draftScopeRef,
     editor,
     focusInput,
     hook,
@@ -1251,5 +1259,364 @@ describe('useComposerSubmit on an insecure origin (plain-HTTP LAN: no crypto.ran
     expect(clearDraft).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep these words', [attachment]))
     expect(stashAt).toHaveBeenCalledWith('stored-session', 'keep these words', [attachment])
+  })
+})
+
+describe('useComposerSubmit slash commands with attachments and pasted text', () => {
+  const PASTE_A = '/home/user/.hermes/composer-pastes/pasted_content_2026-11-01_12-00-00-000_aaaaaa.txt'
+  const PASTE_B = '/home/user/.hermes/composer-pastes/pasted_content_2026-11-01_12-00-01-000_bbbbbb.txt'
+  const readFileText = vi.fn()
+
+  const makePasteChip = (path = PASTE_A): ComposerAttachment => ({
+    id: `file:${path}`,
+    kind: 'file',
+    label: 'Pasted content (4.9 KB)',
+    path,
+    refText: `@file:${path}`,
+    titlePreview: 'preview-1000-chars'
+  })
+
+  beforeEach(() => {
+    readFileText.mockReset()
+    $notifications.set([])
+    $composerDraft.set('')
+    $composerAttachments.set([])
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileText }
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    $notifications.set([])
+    $composerDraft.set('')
+    $composerAttachments.set([])
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['idle', false],
+    ['busy', true]
+  ])(
+    'refuses a slash command with a non-paste attachment on %s Enter without ever clearing the draft or attachment stores',
+    (_mode, busy) => {
+      const realFile: ComposerAttachment = {
+        id: 'file:/work/notes.txt',
+        kind: 'file',
+        label: 'notes.txt',
+        path: '/work/notes.txt'
+      }
+
+      $composerDraft.set('/goal ship it')
+      $composerAttachments.set([realFile])
+
+      const draftTransitions: string[] = []
+      const attachmentTransitions: (readonly ComposerAttachment[])[] = []
+      const unsubDraft = $composerDraft.listen(next => draftTransitions.push(next))
+      const unsubAttachments = $composerAttachments.listen(next => attachmentTransitions.push(next))
+
+      const { clearDraft, hook, loadIntoComposer, onSubmit } = renderSubmitHook({
+        attachments: [realFile],
+        busy,
+        text: '/goal ship it'
+      })
+
+      try {
+        act(() => hook.result.current.submitDraft())
+
+        expect(onSubmit).not.toHaveBeenCalled()
+        expect(clearDraft).not.toHaveBeenCalled()
+        expect(loadIntoComposer).not.toHaveBeenCalled()
+        expect(draftTransitions).toEqual([])
+        expect(attachmentTransitions).toEqual([])
+        expect($composerDraft.get()).toBe('/goal ship it')
+        expect($composerAttachments.get()).toEqual([realFile])
+        expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+      } finally {
+        unsubDraft()
+        unsubAttachments()
+      }
+    }
+  )
+
+  it.each([
+    ['truncated: true', () => Promise.resolve({ path: PASTE_A, text: 'cut', truncated: true })],
+    ['binary: true', () => Promise.resolve({ binary: true, path: PASTE_A, text: 'bin' })],
+    [
+      '{ ok: false }',
+      () => Promise.resolve({ error: 'ENOENT', message: 'Missing', ok: false as const, path: PASTE_A })
+    ],
+    ['a thrown error', () => Promise.reject(new Error('read failed'))]
+  ])('keeps the composer text and paste chip untouched when reading the paste fails (%s)', async (_label, mockRead) => {
+    readFileText.mockImplementationOnce(mockRead)
+    const chip = makePasteChip(PASTE_A)
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const draftTransitions: string[] = []
+    const attachmentTransitions: (readonly ComposerAttachment[])[] = []
+    const unsubDraft = $composerDraft.listen(next => draftTransitions.push(next))
+    const unsubAttachments = $composerAttachments.listen(next => attachmentTransitions.push(next))
+
+    const { clearDraft, hook, onSubmit } = renderSubmitHook({
+      attachments: [chip],
+      text: '/goal'
+    })
+
+    try {
+      await act(async () => {
+        hook.result.current.submitDraft()
+        await Promise.resolve()
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(clearDraft).not.toHaveBeenCalled()
+      expect(draftTransitions).toEqual([])
+      expect(attachmentTransitions).toEqual([])
+      expect($composerDraft.get()).toBe('/goal')
+      expect($composerAttachments.get()).toEqual([chip])
+      expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+    } finally {
+      unsubDraft()
+      unsubAttachments()
+    }
+  })
+
+  it.each([
+    ['idle', false],
+    ['busy', true]
+  ])('expands two paste chips in chip order with a newline between them on %s Enter', async (_mode, busy) => {
+    const chipA = makePasteChip(PASTE_A)
+    const chipB = makePasteChip(PASTE_B)
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chipA, chipB])
+
+    readFileText
+      .mockResolvedValueOnce({ path: PASTE_A, text: 'first paste' })
+      .mockResolvedValueOnce({ path: PASTE_B, text: 'second paste' })
+
+    const { clearDraft, hook, onSubmit } = renderSubmitHook({
+      attachments: [chipA, chipB],
+      busy,
+      text: '/goal'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        '/goal\nfirst paste\nsecond paste',
+        expect.objectContaining({
+          attachments: [],
+          composerScope: 'stored-session'
+        })
+      )
+    )
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    expect($composerAttachments.get()).toEqual([])
+  })
+
+  it('ignores a second Enter while a slow paste read is in flight and clears only after the read succeeds', async () => {
+    let resolveRead!: (value: { path: string; text: string }) => void
+    readFileText.mockImplementationOnce(
+      () =>
+        new Promise<{ path: string; text: string }>(resolve => {
+          resolveRead = resolve
+        })
+    )
+
+    const chip = makePasteChip(PASTE_A)
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const { clearDraft, hook, onSubmit } = renderSubmitHook({
+      attachments: [chip],
+      text: '/goal'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+      hook.result.current.submitDraft()
+    })
+
+    expect(readFileText).toHaveBeenCalledTimes(1)
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect($composerDraft.get()).toBe('/goal')
+    expect($composerAttachments.get()).toEqual([chip])
+
+    await act(async () => {
+      resolveRead({ path: PASTE_A, text: 'full slow paste' })
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        '/goal\nfull slow paste',
+        expect.objectContaining({ attachments: [] })
+      )
+    )
+    expect(clearDraft).toHaveBeenCalledTimes(1)
+    expect($composerAttachments.get()).toEqual([])
+  })
+
+  it('does not clear the composer if the draft changed while the paste file was being read', async () => {
+    let resolveRead!: (value: { path: string; text: string }) => void
+    readFileText.mockImplementationOnce(
+      () =>
+        new Promise<{ path: string; text: string }>(resolve => {
+          resolveRead = resolve
+        })
+    )
+
+    const chip = makePasteChip(PASTE_A)
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const { clearDraft, draftRef, editor, hook, onSubmit } = renderSubmitHook({
+      attachments: [chip],
+      text: '/goal'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    draftRef.current = 'next draft typed mid-read'
+    editor.textContent = 'next draft typed mid-read'
+    $composerDraft.set('next draft typed mid-read')
+
+    await act(async () => {
+      resolveRead({ path: PASTE_A, text: 'pasted goal body' })
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        '/goal\npasted goal body',
+        expect.objectContaining({ attachments: [] })
+      )
+    )
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect($composerDraft.get()).toBe('next draft typed mid-read')
+  })
+
+  const slowRead = () => {
+    let resolveRead!: (value: { path: string; text: string }) => void
+    readFileText.mockImplementationOnce(
+      () =>
+        new Promise<{ path: string; text: string }>(resolve => {
+          resolveRead = resolve
+        })
+    )
+
+    return (text: string) => resolveRead({ path: PASTE_A, text })
+  }
+
+  it('sends to the session it was submitted in when the user switches sessions during a slow paste read', async () => {
+    const resolveRead = slowRead()
+    const chip = makePasteChip(PASTE_A)
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const { clearDraft, draftRef, draftScopeRef, editor, hook, onSubmit } = renderSubmitHook({
+      attachments: [chip],
+      text: '/goal'
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    // Session B takes the composer before the read resolves.
+    const chipB = makePasteChip(PASTE_B)
+    draftScopeRef.current = 'session-b'
+    draftRef.current = 'session B draft'
+    editor.textContent = 'session B draft'
+    $composerDraft.set('session B draft')
+    $composerAttachments.set([chipB])
+    hook.rerender({ sessionId: 'runtime-session-b' })
+
+    await act(async () => {
+      resolveRead('session A goal body')
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        '/goal\nsession A goal body',
+        expect.objectContaining({
+          attachments: [],
+          composerScope: 'stored-session',
+          sessionId: 'runtime-session',
+          storedSessionId: 'stored-session'
+        })
+      )
+    )
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect($composerDraft.get()).toBe('session B draft')
+    expect($composerAttachments.get()).toEqual([chipB])
+  })
+
+  it('makes Queue a no-op while Send is reading a paste chip, and Send a no-op while the shared lock is held', async () => {
+    const resolveRead = slowRead()
+    const chip = makePasteChip(PASTE_A)
+    const slashReadInFlightRef = { current: false }
+    $composerDraft.set('/goal')
+    $composerAttachments.set([chip])
+
+    const { draftRef, editor, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      attachments: [chip],
+      busy: true,
+      slashReadInFlightRef,
+      text: '/goal'
+    })
+
+    act(() => hook.result.current.submitDraft())
+    expect(slashReadInFlightRef.current).toBe(true)
+
+    act(() => {
+      expect(hook.result.current.queueDraft()).toBe(false)
+    })
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveRead('goal body')
+    })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(slashReadInFlightRef.current).toBe(false)
+
+    // The queue engine holds the shared lock (its own paste read): Send and Queue both wait.
+    slashReadInFlightRef.current = true
+    readFileText.mockClear()
+    draftRef.current = '/goal'
+    editor.textContent = '/goal'
+    act(() => {
+      hook.result.current.submitDraft()
+      expect(hook.result.current.queueDraft()).toBe(false)
+    })
+    expect(readFileText).not.toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('preserves trailing spaces of a single-line paste body even when the command draft ends with a space', async () => {
+    const chip = makePasteChip(PASTE_A)
+    const body = 'single line body   '
+    readFileText.mockResolvedValueOnce({ path: PASTE_A, text: body })
+
+    $composerDraft.set('/goal ')
+    $composerAttachments.set([chip])
+
+    const { hook, onSubmit } = renderSubmitHook({
+      attachments: [chip],
+      text: '/goal '
+    })
+
+    act(() => hook.result.current.submitDraft())
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
+        `/goal\n${body}`,
+        expect.objectContaining({
+          attachments: []
+        })
+      )
+    )
   })
 })

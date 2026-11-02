@@ -417,7 +417,7 @@ export const zhHantChat = {
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     slashCommandIgnoredTitle: '指令未傳送',
-    slashCommandIgnoredBody: '斜線指令不能與附件同時使用。請移除附件或單獨傳送指令。',
+    slashCommandIgnoredBody: '斜線指令僅能附帶貼上的文字。請移除其他附件，或單獨傳送指令。',
     desktopCommands: '桌面端指令',
     skillCommandsAvailable: count => `${count} 個技能指令可用。`,
     warningLine: message => `警告：${message}`,

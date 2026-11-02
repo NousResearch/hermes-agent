@@ -160,14 +160,20 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 
-  it.each(['interrupt', 'steer'] as const)('rejects tile %s RPC failure without converting it to a queue signal', async mode => {
-    requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
-    const { result } = renderTileActions()
-    await act(async () => {
-      await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
-    })
-    expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(mode === 'steer' ? 'session.steer' : 'session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'keep correction' })
-  })
+  it.each(['interrupt', 'steer'] as const)(
+    'rejects tile %s RPC failure without converting it to a queue signal',
+    async mode => {
+      requestGatewayMock.mockRejectedValue(new Error('correction unsupported'))
+      const { result } = renderTileActions()
+      await act(async () => {
+        await expect(result.current.steerPrompt('keep correction', mode)).rejects.toThrow('correction unsupported')
+      })
+      expect(requestGatewayMock).toHaveBeenCalledExactlyOnceWith(
+        mode === 'steer' ? 'session.steer' : 'session.redirect',
+        { session_id: RUNTIME_SESSION_ID, text: 'keep correction' }
+      )
+    }
+  )
 
   // #141644: a correction the owner refused before any agent saw it hands the words back (false)
   // so the composer re-queues them, instead of throwing a "prompt failed" that drops them.
@@ -530,5 +536,80 @@ describe('useSessionTileActions reloadFromMessage failed-submit rollback (#95745
     expect(rolledBack?.map(m => m.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
     expect(rolledBack?.some(m => m.hidden)).toBe(false)
     expect($sessionStates.get()[RUNTIME_SESSION_ID]?.busy).toBe(false)
+  })
+
+  it('expands a pasted-content chip in tile submitText for slash commands and refuses real file attachments', async () => {
+    const pastePath = '/home/user/.hermes/composer-pastes/pasted_content_2026-11-01_12-00-00-000_tile01.txt'
+
+    const readFileText = vi.fn(async () => ({
+      binary: false,
+      path: pastePath,
+      text: 'tile goal body from paste',
+      truncated: false
+    }))
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileText }
+    })
+
+    const executeSlash = vi.fn(async () => undefined)
+    setSessionTileDelegate({
+      archiveSession: vi.fn(async () => undefined),
+      branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
+      deleteSession: vi.fn(async () => undefined),
+      executeSlash,
+      interruptSession: vi.fn(async () => undefined),
+      resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
+      submitToSession: vi.fn(async () => ({
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: null
+      })),
+      updateSession: vi.fn()
+    })
+
+    const { result } = renderTileActions()
+
+    let accepted = false
+    await act(async () => {
+      accepted = await result.current.submitText('/goal', {
+        attachments: [
+          {
+            id: `file:${pastePath}`,
+            kind: 'file',
+            label: 'Pasted content (3.2 KB)',
+            path: pastePath,
+            refText: `@file:${pastePath}`
+          }
+        ]
+      })
+    })
+
+    expect(accepted).toBe(true)
+    expect(readFileText).toHaveBeenCalledExactlyOnceWith(pastePath)
+    expect(executeSlash).toHaveBeenCalledExactlyOnceWith('/goal\ntile goal body from paste', RUNTIME_SESSION_ID)
+
+    executeSlash.mockClear()
+    readFileText.mockClear()
+
+    let refused = true
+    await act(async () => {
+      refused = await result.current.submitText('/goal', {
+        attachments: [
+          {
+            id: 'file:/work/real.txt',
+            kind: 'file',
+            label: 'real.txt',
+            path: '/work/real.txt',
+            refText: '@file:/work/real.txt'
+          }
+        ]
+      })
+    })
+
+    expect(refused).toBe(false)
+    expect(readFileText).not.toHaveBeenCalled()
+    expect(executeSlash).not.toHaveBeenCalled()
   })
 })

@@ -5,6 +5,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { expandPastedSlashArgs, hasNonPasteAttachment } from '@/lib/slash-paste'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -37,6 +38,8 @@ import { replaceQueuedPrompt } from '../discard-lost-prompt'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
+type FrozenQueuedDraft = { text: string; displayText?: string; frozenTransport?: string }
+
 /** Freeze terminal chips for queue persistence. Persists the chip/display
  *  form; fenced selection CONTENTS stay in the runtime map. Returns null when
  *  a chip has no selection payload (caller should abort without mutating the queue). */
@@ -46,7 +49,7 @@ function freezeQueuedDraftText(
     terminalSelectionMissingTitle: string
     terminalSelectionMissingBody: string
   }
-): null | { text: string; displayText?: string; frozenTransport?: string } {
+): FrozenQueuedDraft | null {
   const trimmed = text.trim()
 
   if (!trimmed) {
@@ -74,6 +77,31 @@ function freezeQueuedDraftText(
   }
 }
 
+/** Inline pasted-content chips into an already-frozen slash command. The freeze trims, so the
+ *  paste body is appended after it and keeps its whitespace verbatim. Null: a read failed. */
+async function expandFrozenSlashDraft(
+  frozen: FrozenQueuedDraft,
+  chips: ComposerAttachment[]
+): Promise<FrozenQueuedDraft | null> {
+  const expanded = await expandPastedSlashArgs(frozen.text, chips)
+
+  if (!expanded.ok) {
+    return null
+  }
+
+  const body = expanded.text.slice(frozen.text.length)
+
+  return {
+    text: expanded.text,
+    ...(frozen.displayText !== undefined ? { displayText: frozen.displayText + body } : {}),
+    ...(frozen.frozenTransport !== undefined ? { frozenTransport: frozen.frozenTransport + body } : {})
+  }
+}
+
+function warnSlashCommandIgnored(copy: { slashCommandIgnoredBody: string; slashCommandIgnoredTitle: string }) {
+  notify({ kind: 'warning', title: copy.slashCommandIgnoredTitle, message: copy.slashCommandIgnoredBody })
+}
+
 interface UseComposerQueueArgs {
   activeQueueSessionKey: string | null
   attachments: ComposerAttachment[]
@@ -91,14 +119,18 @@ interface UseComposerQueueArgs {
    *  active gateway, routed to the session's owner). */
   replaceServerQueued?: (admissionId: string, text: string, submissionId: string) => Promise<unknown>
   sessionId: string | null | undefined
+  /** Lock shared with the submit engine while a slash command's paste chips are being read. */
+  slashReadInFlightRef?: RefObject<boolean>
 }
 
 /** Text kept in the composer, followed by the draft a queued-row edit interrupted (when it differs). */
-const withPreEditDraft = (text: string, draft: string) => (draft.trim() && draft !== text ? `${text}\n\n${draft}` : text)
+const withPreEditDraft = (text: string, draft: string) =>
+  draft.trim() && draft !== text ? `${text}\n\n${draft}` : text
 
 /** The owner answered with a named refusal: nothing was replaced. Anything else (a lost reply, a
  *  dropped connection) leaves the outcome unknown. */
-const isOwnerRefusal = (error: unknown) => typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
+const isOwnerRefusal = (error: unknown) =>
+  typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
 
 /**
  * The composer's queue engine — everything about queued turns: the per-session
@@ -123,6 +155,7 @@ export function useComposerQueue({
   queueEditRef,
   queueSessionKey,
   sessionId,
+  slashReadInFlightRef,
   replaceServerQueued = (admissionId, text, submissionId) => {
     const gateway = activeGateway()
 
@@ -194,6 +227,8 @@ export function useComposerQueue({
   currentQueueKeyRef.current = activeQueueSessionKey
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
+  const ownSlashReadInFlightRef = useRef(false)
+  const slashPasteReadInFlightRef = slashReadInFlightRef ?? ownSlashReadInFlightRef
   const drainFailuresRef = useRef(new Map<string, number>())
   const [drainRetryTick, setDrainRetryTick] = useState(0)
 
@@ -225,8 +260,9 @@ export function useComposerQueue({
       return false
     }
 
-    // A server row's text lives in the owner's FIFO: only an explicit save replaces it.
-    if (editingQueuedPrompt?.serverStatus) {
+    // A server row's text lives in the owner's FIFO: only an explicit save replaces it. A paste
+    // read in flight is a save that has not landed yet: stepping would race it.
+    if (editingQueuedPrompt?.serverStatus || slashPasteReadInFlightRef.current) {
       return true
     }
 
@@ -235,6 +271,14 @@ export function useComposerQueue({
 
     if (index < 0 || target < 0) {
       return index >= 0 // at the oldest: swallow; missing entry: let it fall through
+    }
+
+    // Stepping never inlines paste chips (only an explicit Save does): an unexpanded slash +
+    // attachment entry would be refused on every drain.
+    if (isSlashCommandText(draftRef.current) && attachments.length > 0) {
+      warnSlashCommandIgnored(t.desktop)
+
+      return true
     }
 
     const frozen = draftRef.current.trim()
@@ -268,12 +312,153 @@ export function useComposerQueue({
     return true
   }
 
+  // `rawEditorText`: the composer text at Save, before any paste chip was inlined into `frozen`.
+  const commitQueuedEditSave = (
+    editSnapshot: QueueEditState,
+    frozen: FrozenQueuedDraft,
+    next: ComposerAttachment[],
+    rawEditorText: string
+  ): boolean => {
+    // A server row's edit (its row may be gone while an unconfirmed save of it is retried).
+    if (serverEditRef.current === editSnapshot.entryId) {
+      // The owner replaces the admission and its pending fanout repaints the card. Text only,
+      // like the row it replaces: the owner serves `replace` only for text-only rows.
+      if (next.length > 0 || !frozen.text.trim()) {
+        return false
+      }
+
+      const edited = frozen.frozenTransport ?? frozen.text
+      const entryId = editSnapshot.entryId
+
+      if (serverSaveRef.current?.edit === editSnapshot) {
+        return true // its save is already with the owner
+      }
+
+      if (edited !== editingQueuedPrompt?.text) {
+        // The edit stays open until the owner answers: only an accepted replacement restores the
+        // pre-edit draft; a refusal keeps the edited text; an unknown outcome keeps the edit open.
+        const save = { edit: editSnapshot, text: rawEditorText, token: Symbol('queued-edit-save') }
+        const retained = unconfirmedRef.current
+
+        const submissionId =
+          retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : randomUuid()
+
+        serverSaveRef.current = save
+
+        const settle = (outcome: 'accepted' | 'refused' | 'unconfirmed') => {
+          if (serverSaveRef.current?.token !== save.token) {
+            return
+          }
+
+          serverSaveRef.current = null
+          // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
+          const open = queueEditRef.current === save.edit
+          // A known outcome spends the identity; an unknown one keeps it for the open edit's retry.
+          unconfirmedRef.current =
+            outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
+
+          if (!open) {
+            return
+          }
+
+          if (outcome === 'unconfirmed') {
+            notify({
+              kind: 'warning',
+              title: t.promptNotices.sessionCommands.queueEditUnconfirmedTitle,
+              message: t.promptNotices.sessionCommands.queueEditUnconfirmed
+            })
+
+            return
+          }
+
+          // What the composer holds now, typed after Save included.
+          const current = draftRef.current
+
+          if (outcome === 'refused') {
+            keepServerEditAsDraft(save.edit, current)
+
+            return
+          }
+
+          serverEditRef.current = null
+          setQueueEditSnapshot(null)
+          loadIntoComposer(
+            current === save.text ? save.edit.draft : withPreEditDraft(current, save.edit.draft),
+            save.edit.attachments
+          )
+          focusInput()
+        }
+
+        replaceServerQueued(entryId, edited, submissionId).then(
+          () => settle('accepted'),
+          error => settle(isOwnerRefusal(error) ? 'refused' : 'unconfirmed')
+        )
+        triggerHaptic('success')
+
+        return true
+      }
+
+      triggerHaptic('success')
+    } else {
+      const saved = updateQueuedPrompt(editSnapshot.sessionKey, editSnapshot.entryId, {
+        attachments: next,
+        text: frozen.text,
+        displayText: frozen.displayText ?? null,
+        frozenTransport: frozen.frozenTransport ?? null
+      })
+
+      triggerHaptic(saved ? 'success' : 'selection')
+    }
+
+    // Text typed while a paste chip was being read is kept ahead of the pre-edit draft.
+    const current = draftRef.current
+    serverEditRef.current = null
+    unconfirmedRef.current = null
+    setQueueEditSnapshot(null)
+    loadIntoComposer(
+      current === rawEditorText ? editSnapshot.draft : withPreEditDraft(current, editSnapshot.draft),
+      editSnapshot.attachments
+    )
+    focusInput()
+
+    return true
+  }
+
+  // Save an edit into a slash command whose pasted-content chips are inlined into its text.
+  const saveSlashPasteEdit = (editSnapshot: QueueEditState, text: string, next: ComposerAttachment[]) => {
+    const frozen = freezeQueuedDraftText(text, t.composer)
+
+    if (!frozen) {
+      return false
+    }
+
+    slashPasteReadInFlightRef.current = true
+
+    void expandFrozenSlashDraft(frozen, next)
+      .then(expanded => {
+        if (!expanded) {
+          warnSlashCommandIgnored(t.desktop)
+        } else if (queueEditRef.current === editSnapshot) {
+          commitQueuedEditSave(editSnapshot, expanded, [], text)
+        }
+      })
+      .finally(() => {
+        slashPasteReadInFlightRef.current = false
+      })
+
+    return true
+  }
+
   const exitQueuedEdit = (action: 'cancel' | 'save'): boolean => {
     if (!queueEdit) {
       return false
     }
 
     if (action === 'save') {
+      if (slashPasteReadInFlightRef.current) {
+        return false
+      }
+
       const text = draftRef.current
       const next = cloneAttachments(attachments)
 
@@ -283,116 +468,23 @@ export function useComposerQueue({
 
       // Editing a queued entry into a slash-command + attachment combo would
       // produce an undrainable entry (submitText rejects it on every attempt).
-      // Refuse the save so the queue can never hold an entry that livelocks.
+      // Only pasted-text chips may be inlined into the command.
       if (isSlashCommandText(text) && next.length) {
-        notify({
-          kind: 'warning',
-          title: t.desktop.slashCommandIgnoredTitle,
-          message: t.desktop.slashCommandIgnoredBody
-        })
+        if (hasNonPasteAttachment(next)) {
+          warnSlashCommandIgnored(t.desktop)
 
-        return false
+          return false
+        }
+
+        return saveSlashPasteEdit(queueEdit, text, next)
       }
 
       const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
 
-      if (!frozen) {
-        return false
-      }
-
-      // A server row's edit (its row may be gone while an unconfirmed save of it is retried).
-      if (serverEditRef.current === queueEdit.entryId) {
-        // The owner replaces the admission and its pending fanout repaints the card. Text only,
-        // like the row it replaces: the owner serves `replace` only for text-only rows.
-        if (next.length > 0 || !text.trim()) {
-          return false
-        }
-
-        const edited = frozen.frozenTransport ?? frozen.text
-        const entryId = queueEdit.entryId
-
-        if (serverSaveRef.current?.edit === queueEdit) {
-          return true // its save is already with the owner
-        }
-
-        if (edited !== editingQueuedPrompt?.text) {
-          // The edit stays open until the owner answers: only an accepted replacement restores the
-          // pre-edit draft; a refusal keeps the edited text; an unknown outcome keeps the edit open.
-          const save = { edit: queueEdit, text, token: Symbol('queued-edit-save') }
-          const retained = unconfirmedRef.current
-
-          const submissionId =
-            retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : randomUuid()
-
-          serverSaveRef.current = save
-
-          const settle = (outcome: 'accepted' | 'refused' | 'unconfirmed') => {
-            if (serverSaveRef.current?.token !== save.token) {
-              return
-            }
-
-            serverSaveRef.current = null
-            // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
-            const open = queueEditRef.current === save.edit
-            // A known outcome spends the identity; an unknown one keeps it for the open edit's retry.
-            unconfirmedRef.current = outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
-
-            if (!open) {
-              return
-            }
-
-            if (outcome === 'unconfirmed') {
-              notify({
-                kind: 'warning',
-                title: t.promptNotices.sessionCommands.queueEditUnconfirmedTitle,
-                message: t.promptNotices.sessionCommands.queueEditUnconfirmed
-              })
-
-              return
-            }
-
-            // What the composer holds now, typed after Save included.
-            const current = draftRef.current
-
-            if (outcome === 'refused') {
-              keepServerEditAsDraft(save.edit, current)
-
-              return
-            }
-
-            serverEditRef.current = null
-            setQueueEditSnapshot(null)
-            loadIntoComposer(
-              current === save.text ? save.edit.draft : withPreEditDraft(current, save.edit.draft),
-              save.edit.attachments
-            )
-            focusInput()
-          }
-
-          replaceServerQueued(entryId, edited, submissionId).then(
-            () => settle('accepted'),
-            error => settle(isOwnerRefusal(error) ? 'refused' : 'unconfirmed')
-          )
-          triggerHaptic('success')
-
-          return true
-        }
-
-        triggerHaptic('success')
-      } else {
-        const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-          attachments: next,
-          text: frozen.text,
-          displayText: frozen.displayText ?? null,
-          frozenTransport: frozen.frozenTransport ?? null
-        })
-
-        triggerHaptic(saved ? 'success' : 'selection')
-      }
-    } else {
-      triggerHaptic('cancel')
+      return frozen ? commitQueuedEditSave(queueEdit, frozen, next, text) : false
     }
 
+    triggerHaptic('cancel')
     serverEditRef.current = null
     unconfirmedRef.current = null
     setQueueEditSnapshot(null)
@@ -402,86 +494,190 @@ export function useComposerQueue({
     return true
   }
 
-  // `submissionId` names the restored send this draft retries: the admission (or the local entry that
-  // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
-  const queueCurrentDraft = useCallback((submissionId?: string) => {
-    const text = draftRef.current
+  // A slash command whose pasted-content chips are inlined once, at enqueue (see queueCurrentDraft).
+  const queueSlashPasteDraft = useCallback(
+    (text: string, queueKey: string, submissionId?: string): boolean | Promise<boolean> => {
+      // Freeze the command first: the freeze trims, and the paste body keeps its whitespace.
+      const frozenCommand = freezeQueuedDraftText(text, t.composer)
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
-      return false
-    }
+      if (!frozenCommand) {
+        return false
+      }
 
-    // Slash commands cannot ride alongside attachments — the drain path would
-    // reject the entry on every attempt (submitText warns + returns false) and
-    // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
-      notify({
-        kind: 'warning',
-        title: t.desktop.slashCommandIgnoredTitle,
-        message: t.desktop.slashCommandIgnoredBody
-      })
+      const capturedAttachments = [...attachments]
+      const submittedAttachments = cloneAttachments(attachments)
+      slashPasteReadInFlightRef.current = true
 
-      return false
-    }
+      return expandFrozenSlashDraft(frozenCommand, submittedAttachments)
+        .then(frozen => {
+          if (!frozen) {
+            warnSlashCommandIgnored(t.desktop)
 
-    // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
-    // fenced selection in the runtime map so drain never re-resolves the live
-    // label map and localStorage never stores terminal CONTENTS (#77078).
-    const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
-
-    if (!frozen) {
-      return false
-    }
-
-    // Canonical (gateway-owned) sessions admit busy input straight into the
-    // durable gateway FIFO; the row comes back as a server-owned queue entry.
-    // `fromQueue` submits skip the transport freeze, so send the frozen text.
-    if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
-      return Promise.resolve(
-        onSubmit(frozen.frozenTransport ?? frozen.text, {
-          attachments: cloneAttachments(attachments),
-          ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
-          fromQueue: true,
-          sessionId: sessionId ?? null,
-          storedSessionId: activeQueueSessionKey,
-          ...(submissionId ? { submission_id: submissionId } : {})
-        })
-      )
-        .then(accepted => {
-          if (accepted !== true) {
             return false
           }
 
-          if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
-            clearDraft()
-            scope.attachments.removeOccurrences(attachments)
+          if (serverOwnsComposerQueue(sessionId ?? queueKey)) {
+            return Promise.resolve(
+              onSubmit(frozen.frozenTransport ?? frozen.text, {
+                attachments: [],
+                ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+                fromQueue: true,
+                sessionId: sessionId ?? null,
+                storedSessionId: queueKey,
+                ...(submissionId ? { submission_id: submissionId } : {})
+              })
+            )
+              .then(accepted => {
+                if (accepted !== true) {
+                  return false
+                }
+
+                if (currentQueueKeyRef.current === queueKey && draftRef.current === text) {
+                  clearDraft()
+                  scope.attachments.removeOccurrences(capturedAttachments)
+                }
+
+                return true
+              })
+              .catch(() => false)
           }
+
+          if (
+            !enqueueQueuedPrompt(queueKey, {
+              ...(submissionId ? { id: submissionId } : {}),
+              text: frozen.text,
+              attachments: [],
+              ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+              ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
+            })
+          ) {
+            return false
+          }
+
+          if (currentQueueKeyRef.current === queueKey && draftRef.current === text) {
+            clearDraft()
+            scope.attachments.removeOccurrences(capturedAttachments)
+          }
+
+          triggerHaptic('selection')
 
           return true
         })
-        .catch(() => false)
-    }
+        .finally(() => {
+          slashPasteReadInFlightRef.current = false
+        })
+    },
+    [
+      attachments,
+      clearDraft,
+      draftRef,
+      scope.attachments,
+      onSubmit,
+      sessionId,
+      slashPasteReadInFlightRef,
+      t.composer,
+      t.desktop
+    ]
+  )
 
-    if (
-      !enqueueQueuedPrompt(activeQueueSessionKey, {
-        ...(submissionId ? { id: submissionId } : {}),
-        text: frozen.text,
-        attachments,
-        ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
-        ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
-      })
-    ) {
-      return false
-    }
+  // `submissionId` names the restored send this draft retries: the admission (or the local entry that
+  // drains under its id) keeps it, so the owner never runs the interrupted original a second time.
+  const queueCurrentDraft = useCallback(
+    (submissionId?: string): boolean | Promise<boolean> => {
+      if (slashPasteReadInFlightRef.current) {
+        return false
+      }
 
-    clearDraft()
-    // Queue entry retains blob: previews; revoke when the entry is discarded
-    // or drained into a submit that takes ownership (see composer-queue).
-    scope.attachments.clear({ retainPreviewUrls: true })
-    triggerHaptic('selection')
+      const text = draftRef.current
 
-    return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer])
+      if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+        return false
+      }
+
+      // Slash commands can only inline pasted-text chips — any other attachment
+      // would be rejected on every drain attempt and livelock the queue.
+      if (isSlashCommandText(text) && attachments.length) {
+        if (hasNonPasteAttachment(attachments)) {
+          warnSlashCommandIgnored(t.desktop)
+
+          return false
+        }
+
+        return queueSlashPasteDraft(text, activeQueueSessionKey, submissionId)
+      }
+
+      // Freeze `@terminal:` chips at enqueue. Persist the chip form; keep the
+      // fenced selection in the runtime map so drain never re-resolves the live
+      // label map and localStorage never stores terminal CONTENTS (#77078).
+      const frozen = text.trim() ? freezeQueuedDraftText(text, t.composer) : { text }
+
+      if (!frozen) {
+        return false
+      }
+
+      // Canonical (gateway-owned) sessions admit busy input straight into the
+      // durable gateway FIFO; the row comes back as a server-owned queue entry.
+      // `fromQueue` submits skip the transport freeze, so send the frozen text.
+      if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
+        return Promise.resolve(
+          onSubmit(frozen.frozenTransport ?? frozen.text, {
+            attachments: cloneAttachments(attachments),
+            ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+            fromQueue: true,
+            sessionId: sessionId ?? null,
+            storedSessionId: activeQueueSessionKey,
+            ...(submissionId ? { submission_id: submissionId } : {})
+          })
+        )
+          .then(accepted => {
+            if (accepted !== true) {
+              return false
+            }
+
+            if (currentQueueKeyRef.current === activeQueueSessionKey && draftRef.current === text) {
+              clearDraft()
+              scope.attachments.removeOccurrences(attachments)
+            }
+
+            return true
+          })
+          .catch(() => false)
+      }
+
+      if (
+        !enqueueQueuedPrompt(activeQueueSessionKey, {
+          ...(submissionId ? { id: submissionId } : {}),
+          text: frozen.text,
+          attachments,
+          ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+          ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
+        })
+      ) {
+        return false
+      }
+
+      clearDraft()
+      // Queue entry retains blob: previews; revoke when the entry is discarded
+      // or drained into a submit that takes ownership (see composer-queue).
+      scope.attachments.clear({ retainPreviewUrls: true })
+      triggerHaptic('selection')
+
+      return true
+    },
+    [
+      activeQueueSessionKey,
+      attachments,
+      clearDraft,
+      draftRef,
+      scope.attachments,
+      onSubmit,
+      sessionId,
+      queueSlashPasteDraft,
+      slashPasteReadInFlightRef,
+      t.composer,
+      t.desktop
+    ]
+  )
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the

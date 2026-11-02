@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { expandPastedSlashArgs, trimSlashCommandText } from '@/lib/slash-paste'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
@@ -335,7 +336,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       listTileSession(visibleText)
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
+        const targetRuntimeId = runtimeIdRef.current
+        // A multiline command's paste body keeps its trailing whitespace (see trimSlashCommandText).
+        const commandText = attachments.length ? visibleText : trimSlashCommandText(rawText)
+        const expanded = await expandPastedSlashArgs(commandText, attachments)
+
+        if (!expanded.ok) {
           notify({
             kind: 'warning',
             title: copy.slashCommandIgnoredTitle,
@@ -346,14 +352,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
 
         triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+        await sessionTileDelegate()?.executeSlash(expanded.text, targetRuntimeId)
 
         return true
       }
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [
+      copy.slashCommandIgnoredBody,
+      copy.slashCommandIgnoredTitle,
+      listTileSession,
+      scope.attachments.$attachments,
+      submitPromptText
+    ]
   )
 
   const cancelRun = useCallback(async () => {

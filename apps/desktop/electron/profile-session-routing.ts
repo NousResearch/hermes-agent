@@ -1689,15 +1689,36 @@ export async function fetchAllProfilesAggregatePerProfile(
 }
 
 /** Which registry connection the primary session aggregate reads: the registry id stamped on a
- *  remote primary's descriptor, else this device. `resolve` must be passive, so a sidebar refresh
- *  never spawns or dials for it. */
-export async function primaryAggregateConnectionId(resolve: () => Promise<unknown>): Promise<string> {
+ *  remote primary's descriptor, or this device when the descriptor is a local backend. A remote
+ *  primary with no registry id (`HERMES_DESKTOP_REMOTE_URL`) or an unreadable descriptor is
+ *  `null`: its rows stay untagged rather than being sent to a local backend that lacks them.
+ *  `resolve` must be passive, so a sidebar refresh never spawns or dials for it. */
+export async function primaryAggregateConnectionId(resolve: () => Promise<unknown>): Promise<null | string> {
   try {
-    const descriptor = (await resolve()) as { connectionId?: unknown } | null
+    const descriptor = (await resolve()) as { connectionId?: unknown; mode?: unknown } | null
+    const connectionId = String(descriptor?.connectionId || '').trim()
 
-    return String(descriptor?.connectionId || '').trim() || 'local'
+    if (connectionId) {
+      return connectionId
+    }
+
+    return descriptor && String(descriptor.mode || 'local') === 'local' ? 'local' : null
   } catch {
-    return 'local'
+    return null
+  }
+}
+
+/** Tag the primary aggregate's rows for a window pinned to another gateway, when the primary's
+ *  owner is known (see `primaryAggregateConnectionId`). */
+export async function tagPrimaryAggregateRows(
+  data: unknown,
+  resolve: () => Promise<unknown>,
+  pinnedConnectionId: string
+): Promise<void> {
+  const owner = await primaryAggregateConnectionId(resolve)
+
+  if (owner) {
+    tagPrimarySessionRows(data, owner, pinnedConnectionId)
   }
 }
 

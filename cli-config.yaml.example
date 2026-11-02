@@ -42,7 +42,7 @@ database:
 #
 # malloc_arena_max caps glibc malloc arenas in the gateway / `hermes serve`
 # process (Linux/glibc only; child commands keep glibc's default). An explicit
-# MALLOC_ARENA_MAX in the environment wins. 0, false, or null = glibc default
+# MALLOC_ARENA_MAX (exported or in .env) wins. 0, false, or null = glibc default
 # (8 per CPU core). Default: 4.
 runtime:
   nofile_soft_limit: 4096

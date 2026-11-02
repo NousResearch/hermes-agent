@@ -7,6 +7,13 @@ import { countEnabledTools } from '@/lib/mcp-tool-filter'
 
 import { loadMcpUsage, okProbe, type Probe, serverCost, type ServerCost } from './mcp-status'
 
+interface MountedProbe {
+  at: number
+  epoch: number
+  key: string
+  value: Probe
+}
+
 export interface McpProbes {
   costFor: (name: string, entry: McpServerEntry) => ServerCost
   probes: Record<string, Probe>
@@ -33,57 +40,115 @@ export function useMcpProbes({
   scopeProfileKey,
   servers
 }: UseMcpProbesOptions): McpProbes {
-  const [probes, setProbes] = useState<Record<string, Probe>>({})
-  const probesRef = useRef(probes)
-  probesRef.current = probes
+  const [mountedProbes, setMountedProbes] = useState<Record<string, MountedProbe>>({})
+  const probesRef = useRef(mountedProbes)
+  const scopeRef = useRef({ servers, scopeProfileKey })
+  scopeRef.current = { servers, scopeProfileKey }
 
   const [toolCalls30d, setToolCalls30d] = useState<null | Record<string, number>>(null)
 
+  const replaceProbes = (next: Record<string, MountedProbe>) => {
+    // Update synchronously so superseding calls and effect replays see the new owner.
+    probesRef.current = next
+    setMountedProbes(next)
+  }
+
+  const putProbe = (serverName: string, key: string, value: Probe, at = Date.now()): MountedProbe => {
+    const mounted = { key, value, at, epoch: profileEpoch.current }
+    replaceProbes({ ...probesRef.current, [serverName]: mounted })
+
+    return mounted
+  }
+
   const setProbe = (serverName: string, value: Probe) => {
-    setProbes(current => ({ ...current, [serverName]: value }))
+    // Manual authentication owns the row too, superseding any pending health probe.
+    putProbe(serverName, probeKey(serverName, servers[serverName], scopeProfileKey), value)
   }
 
   const runProbe = async (serverName: string) => {
     const epoch = profileEpoch.current
     const key = probeKey(serverName, servers[serverName], scopeProfileKey)
-    setProbes(current => ({ ...current, [serverName]: 'probing' }))
+    const pending = putProbe(serverName, key, 'probing')
+
+    const isCurrent = () => {
+      const scope = scopeRef.current
+      const server = scope.servers[serverName]
+
+      return (
+        profileEpoch.current === epoch &&
+        probesRef.current[serverName] === pending &&
+        server !== undefined &&
+        serverEnabled(server) &&
+        probeKey(serverName, server, scope.scopeProfileKey) === key
+      )
+    }
+
+    let result
 
     try {
-      const result = await testMcpServer(serverName, profile ?? undefined)
-
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
-      probeCache.set(key, { at: Date.now(), result })
-      setProbes(current => ({ ...current, [serverName]: result }))
+      result = await testMcpServer(serverName, profile ?? undefined)
     } catch (err) {
-      if (profileEpoch.current !== epoch) {
-        return
-      }
-
-      const result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] }
-      probeCache.set(key, { at: Date.now(), result })
-      setProbes(current => ({ ...current, [serverName]: result }))
+      result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] }
     }
+
+    if (!isCurrent()) {
+      return
+    }
+
+    const at = Date.now()
+    probeCache.set(key, { at, result })
+    putProbe(serverName, key, result, at)
   }
 
+  const probes = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(mountedProbes)
+          .filter(([name, mounted]) => servers[name] && mounted.key === probeKey(name, servers[name], scopeProfileKey))
+          .map(([name, mounted]) => [name, mounted.value])
+      ),
+    [mountedProbes, servers, scopeProfileKey]
+  )
+
   useEffect(() => {
+    // Retire removed/changed rows and pending requests invalidated by effect
+    // cleanup; a late request must not regain ownership when its row is reused.
+    const retained = Object.fromEntries(
+      Object.entries(probesRef.current).filter(
+        ([name, mounted]) =>
+          servers[name] &&
+          serverEnabled(servers[name]) &&
+          (mounted.value !== 'probing' || mounted.epoch === profileEpoch.current) &&
+          mounted.key === probeKey(name, servers[name], scopeProfileKey)
+      )
+    )
+
+    if (Object.keys(retained).length !== Object.keys(probesRef.current).length) {
+      replaceProbes(retained)
+    }
+
     for (const [serverName, server] of Object.entries(servers)) {
-      if (!serverEnabled(server) || probesRef.current[serverName] !== undefined) {
+      if (!serverEnabled(server)) {
         continue
       }
 
-      const cached = probeCache.get(probeKey(serverName, server, scopeProfileKey))
+      const key = probeKey(serverName, server, scopeProfileKey)
+      const mounted = probesRef.current[serverName]
+
+      if (mounted?.key === key && (mounted.value === 'probing' || Date.now() - mounted.at < PROBE_TTL_MS)) {
+        continue
+      }
+
+      const cached = probeCache.get(key)
 
       if (cached && Date.now() - cached.at < PROBE_TTL_MS) {
-        setProbes(current => ({ ...current, [serverName]: cached.result }))
+        putProbe(serverName, key, cached.result, cached.at)
       } else {
         void runProbe(serverName)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [servers])
+  }, [servers, scopeProfileKey])
 
   useEffect(() => {
     const epoch = profileEpoch.current
@@ -133,9 +198,9 @@ export function useMcpProbes({
   }, [probes, servers, toolCalls30d])
 
   const retainProbes = (entries: McpServers, prevServers: McpServers) => {
-    setProbes(current =>
+    replaceProbes(
       Object.fromEntries(
-        Object.entries(current).filter(
+        Object.entries(probesRef.current).filter(
           ([name]) => name in entries && serverFingerprint(entries[name]) === serverFingerprint(prevServers[name] ?? {})
         )
       )
@@ -143,7 +208,7 @@ export function useMcpProbes({
   }
 
   const resetForProfileSwitch = () => {
-    setProbes({})
+    replaceProbes({})
     setToolCalls30d(null)
   }
 

@@ -7,7 +7,9 @@ import type { McpTestResult } from '@/hermes'
 // may re-probe what the other just learned.
 // ---------------------------------------------------------------------------
 
-export const NEEDS_AUTH_RE = /\b(401|unauthorized|forbidden|invalid[_ ]?token|authentication|oauth)\b/i
+// Auth terminology in timeout/config advice is not evidence of an auth failure.
+export const NEEDS_AUTH_RE =
+  /\b(401|403|unauthorized|forbidden|invalid[_ ]?token|(?:authentication|authorization|oauth)(?:\s+is)?[\s:]+(?:required|failed|expired|denied)|no cached tokens found|(?:oauth(?: callback)?|authorization) requires (?:browser authorization|an interactive session|`hermes mcp login))\b/i
 
 // Probe results outlive any component: each probe is a real connect/disconnect,
 // so re-entering the MCP page (or a background sweep) must not re-probe the

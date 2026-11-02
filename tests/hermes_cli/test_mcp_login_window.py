@@ -48,3 +48,20 @@ def test_probe_timeout_names_server_and_knobs(monkeypatch):
     message = str(info.value)
     assert "hangsrv" in message and "timed out" in message
     assert "connect_timeout" in message and "oauth.timeout" in message
+
+
+def test_stdio_probe_timeout_does_not_suggest_oauth(monkeypatch):
+    """Local process timeouts must not be labelled as sign-in failures by clients."""
+    import hermes_cli.mcp_config as mc
+
+    async def _hang(name, config):
+        await asyncio.Event().wait()  # never set: the probe's own connect_timeout must end the wait
+
+    monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _hang)
+    with pytest.raises(TimeoutError) as info:
+        mc._probe_single_server("rea", {"command": "npx", "args": ["rea-agents", "mcp"]}, connect_timeout=0.2)
+    message = str(info.value)
+    assert "rea" in message and "timed out" in message
+    assert "connect_timeout" in message
+    assert "oauth" not in message.lower()
+    assert "authentication" not in message.lower()

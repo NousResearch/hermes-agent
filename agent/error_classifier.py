@@ -285,6 +285,9 @@ _MODEL_NOT_FOUND_PATTERNS = (
     # credential, so fall back instead of burning retries (#123180). Unlike the free-tier
     # billing wording, the account's balance/tier is not what rejected the call.
     "is no longer free",
+    # HTTP 410 Gone: model was permanently retired by the provider. The slug
+    # is dead for every credential, so fall back instead of burning retries.
+    "was retired",
 )
 
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body
@@ -1312,6 +1315,9 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    # 410 Gone: model permanently retired by provider -> model_not_found
+    # (fallback, not retry) instead of the generic 4xx format_error default.
+    410: lambda c: _V_MODEL_NOT_FOUND if any(p in c.msg for p in _MODEL_NOT_FOUND_PATTERNS) else _V_FORMAT_ERROR,
 }
 
 

@@ -954,7 +954,7 @@ from tools.terminal_tool_guards import (
     gateway_lifecycle_block, locked_skill_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
-from tools.terminal_tool_result import finalize_foreground_result
+from tools.terminal_tool_result import _cwd_fallback_note, finalize_foreground_result
 
 
 def _resolve_notification_flag_conflict(*, notify_on_complete: bool, watch_patterns, background: bool) -> tuple:
@@ -1394,6 +1394,7 @@ def _run_foreground(
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
             "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+            **({"cwd_fallback": note} if (note := _cwd_fallback_note(result.get("cwd_fallback"))) else {}),
         }, ensure_ascii=False)
     if metered:
         record_terminal_outcome(command, env_type, result)
@@ -1408,6 +1409,23 @@ def _run_foreground(
 # (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
 # (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
 _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
+
+
+def _refuse_missing_local_workdir(workdir: str, env: Any) -> None:
+    """An explicit ``workdir`` the model named is never swapped for a parent: a typo would run
+    ``rm -f ./*`` one level up. Only a cwd the session inherited falls back (``_usable_cwd``),
+    and only ``LocalEnvironment`` falls back at all."""
+    from tools.environments.local import LocalEnvironment
+    requested = os.path.expanduser(workdir)
+    if not isinstance(env, LocalEnvironment) or not os.path.isabs(requested):
+        return
+    _, fallback = env._usable_cwd(requested)
+    if fallback:
+        raise _Rejected(_error_json(
+            f"workdir {workdir} does not exist or is not accessible; the command did not run. "
+            "Create it first or pass an existing directory.",
+            exit_code=126, status="error",
+        ))
 
 
 def _pre_exec_block(
@@ -1430,6 +1448,7 @@ def _pre_exec_block(
             logger.warning("Blocked dangerous workdir: %s (command: %s)",
                            workdir[:200], _safe_command_preview(command))
             raise _Rejected(_error_json(workdir_error, status="blocked"))
+        _refuse_missing_local_workdir(workdir, env)
     if env_type == "local":
         blocked = (self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
                    or locked_skill_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key))

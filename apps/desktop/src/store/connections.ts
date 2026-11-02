@@ -339,14 +339,17 @@ function waitForInitialConnection(): Promise<void> {
  *  the target down, the window has fallen back, and the target recovering later
  *  must not re-home it (the user may be working there by then). The kept socket
  *  (store/gateway-persistence) still reconnects the target, so its sessions fill
- *  in without moving the window. */
+ *  in without moving the window. A profile repair on the gateway already in
+ *  front is not a fallback: the window is there, and a cached down row from an
+ *  earlier failed read must not leave it on a profile the gateway lacks. */
 async function restoreConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+  const crossGateway = $activeConnectionId.get() !== connectionId
   const restore = selectConnection(connectionId, { ...options, restore: true })
   // selectConnection claims its revision before its first await.
   const revision = switchRevision
   const ownsPick = () => revision === switchRevision && pendingTarget?.startsWith(`${connectionId}::`) === true
 
-  if (!ownsPick()) {
+  if (!crossGateway || !ownsPick()) {
     return restore
   }
 

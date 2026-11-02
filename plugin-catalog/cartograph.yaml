@@ -3,7 +3,7 @@ title: Cartograph
 repo: https://github.com/anthony-maio/cartograph
 sha: e2e06db1c79f3de60760d9045ae6908ddf4e4b21
 subdir: assets/hermes
-description: Map local repositories and retrieve task-focused source excerpts with line references.
+description: "Map local repositories and retrieve task-focused source excerpts with line references. Disclosure — runs the separately installed Cartograph Node CLI (no shell, bounded time/output, credential-free env) against any local directory the model names unless `allowed_roots` is set, returns source excerpts into the conversation, and caches excerpts in the plugin data directory."
 maintainer: anthony-maio
 tier: community
 category: tools

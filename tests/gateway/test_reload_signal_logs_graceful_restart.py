@@ -83,5 +83,9 @@ async def test_sigusr1_handler_installed_by_start_gateway_logs_graceful_restart(
     handler, args = installed[signal.SIGUSR1]
     with caplog.at_level(logging.INFO, logger="gateway.run"):
         handler(*args)
+        # The handler only dispatches the request protocol as a loop task (no
+        # filesystem work in the raw callback) — let it run before asserting.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
     assert runners[0].restart_calls == [{"detached": False, "via_service": True}]

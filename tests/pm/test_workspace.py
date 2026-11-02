@@ -142,7 +142,7 @@ def test_plugin_local_groups_do_not_constrain_runtime_workspace(layout):
     original = metadata.read_bytes()
     root = tmp / "runtime-workspace"
     environment = managed_environment(tmp / "runtime-env")
-    ws.lock_and_sync([plugin], [], root=root, source=core, seed_lock=None,
+    ws.lock_and_sync([plugin], ["feature"], root=root, source=core, seed_lock=None,
                      environment=environment)
     snapshot = next((root / "plugin-sources").iterdir())
     projected = tomllib.loads((snapshot / "pyproject.toml").read_text())
@@ -172,6 +172,48 @@ def test_plugin_local_groups_do_not_constrain_runtime_workspace(layout):
     with pytest.raises(ws.ResolutionConflict):
         ws.lock_and_sync([plugin], [], root=tmp / "conflicting-runtime", source=core,
                          seed_lock=None, environment=managed_environment(tmp / "conflicting-env"))
+
+
+def test_unselected_plugin_extras_do_not_constrain_runtime_workspace(layout):
+    """A plugin's test extra conflicting with a core pin must not fail the lock (and so evict
+    the plugin on update): sync installs only the extras it names, so only those may reach it."""
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\ndev=["base-dep==2.0"]\nfeature=["chosen-dep==1.0"]\n')
+
+    def solve(name, extras):
+        root = tmp / name
+        ws.lock_and_sync([plugin], extras, root=root, source=core, seed_lock=None,
+                         environment=managed_environment(tmp / f"{name}-env"))
+        snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+        locked = {p["name"]: p["version"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+        return snapshot["project"].get("optional-dependencies"), locked
+
+    optional, locked = solve("unselected", [])
+    assert optional is None
+    assert locked["base-dep"] == "1.0" and "member-dep" in locked
+
+    optional, locked = solve("selected", ["feature"])
+    assert optional == {"feature": ["chosen-dep==1.0"]}
+    assert locked["base-dep"] == "1.0"
+
+
+def test_plugin_extras_its_own_requirements_name_stay_in_the_snapshot(layout):
+    """``plugin[runtime]`` in the plugin's own dependencies installs that extra on every sync."""
+    import tomllib
+
+    tmp, _, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace(
+        'dependencies=["member-dep==1.0"]', 'dependencies=["member-dep==1.0", "Plugin_Member[Runtime]"]') +
+        '\n[project.optional-dependencies]\nruntime=["plugin-member[extra-io]"]\nextra_io=["other-dep==1.0"]\n'
+        'dev=["base-dep==2.0"]\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    member = ws._workspace_member(plugin, tmp / "buildable", identity=plugin)
+    optional = tomllib.loads((member / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    assert optional == {"runtime": ["plugin-member[extra-io]"], "extra_io": ["other-dep==1.0"]}
 
 
 def test_classify_network_failure_stays_generic():

@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -135,7 +135,7 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
 
 
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
-                        python: Path) -> None:
+                        python: Path, extras: Iterable[str] = ()) -> None:
     """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
@@ -145,7 +145,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
+    members = [_workspace_member(source, root, identity=identity, extras=extras).relative_to(root).as_posix()
                for identity, source in member_sources(plugin_dirs).items()
                if _is_member_candidate(source)]
 
@@ -292,21 +292,68 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
-def _runtime_member_metadata(document: dict) -> bool:
-    """Keep published requirements, not a plugin checkout's local developer environment.
+def _selected_member_extras(document: dict, extras: Iterable[str]) -> set[str]:
+    """The member's extras this generation installs: those ``uv sync --extra`` names
+    (it applies a name to every member declaring it), closed over the member's own
+    ``name[extra]`` references, which install whatever references them."""
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
 
-    uv locks every declared group even when sync excludes it. Developer groups therefore
-    cannot share the host's runtime lock; the original plugin source remains untouched.
+    from pm.install import _extra_key
+
+    project = document.get("project", {})
+    declared = {_extra_key(key): specs for key, specs in project.get("optional-dependencies", {}).items()}
+    own = canonicalize_name(str(project.get("name", "")))
+    pending = list(project.get("dependencies", []))
+    selected: set[str] = set()
+    for key in {_extra_key(extra) for extra in extras} & declared.keys():
+        selected.add(key)
+        pending.extend(declared[key])
+    while pending:
+        try:
+            requirement = Requirement(pending.pop())
+        except InvalidRequirement:
+            continue  # uv reports it; this pass only decides what to keep.
+        if canonicalize_name(requirement.name) != own:
+            continue
+        for key in {_extra_key(extra) for extra in requirement.extras} & declared.keys() - selected:
+            selected.add(key)
+            pending.extend(declared[key])
+    return selected
+
+
+def _runtime_member_metadata(document: dict, extras: Iterable[str]) -> bool:
+    """Keep what this generation installs, not a plugin checkout's development environment.
+
+    uv locks every declared group and extra of every member even when sync excludes it, so a
+    test pin (``dev = ["httpx<0.28"]``) would fail the lock against core's runtime pins. Sync
+    never installs a member's groups (core's ``default-groups = []`` covers the workspace) and
+    installs only the extras named by ``--extra``. The original plugin source stays untouched.
     """
+    from pm.install import _extra_key
+
     changed = "dependency-groups" in document
     document.pop("dependency-groups", None)
+    project = document.get("project", {})
+    optional = project.get("optional-dependencies")
+    if optional:
+        keep = _selected_member_extras(document, extras)
+        kept = {key: specs for key, specs in optional.items() if _extra_key(key) in keep}
+        if kept != optional:
+            changed = True
+            if kept:
+                project["optional-dependencies"] = kept
+            else:
+                project.pop("optional-dependencies")
+    kept_extras = {_extra_key(key) for key in project.get("optional-dependencies", {})}
     settings = document.get("tool", {}).get("uv", {})
     for key in ("default-groups", "dependency-groups", "dev-dependencies"):
         if key in settings:
             settings.pop(key)
             changed = True
     if "conflicts" in settings:
-        conflicts = [[spec for spec in conflict if "group" not in spec]
+        conflicts = [[spec for spec in conflict
+                      if "group" not in spec and ("extra" not in spec or _extra_key(spec["extra"]) in kept_extras)]
                      for conflict in settings["conflicts"]]
         conflicts = [conflict for conflict in conflicts if len(conflict) > 1]
         if conflicts != settings["conflicts"]:
@@ -318,7 +365,7 @@ def _runtime_member_metadata(document: dict) -> bool:
     return changed
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = ()) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -339,7 +386,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = _runtime_member_metadata(document)
+        changed = _runtime_member_metadata(document, extras)
         if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
             changed = True
@@ -450,7 +497,7 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python)
+        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python, extras=extras)
         if seed_lock is not None:
             (root / "uv.lock").write_bytes(seed_lock.read_bytes())
     else:

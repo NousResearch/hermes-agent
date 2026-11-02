@@ -84,6 +84,23 @@ gateway:
 
 That's enough — the bundled-plugin scan in `gateway/config.py` automatically picks up `plugins/platforms/line/`. No `Platform.LINE` enum edit, no `_create_adapter` registration.
 
+Optionally gate group/room chats on a trigger keyword (LINE has no @mentions in
+groups, so without a gate the bot answers every authorized message):
+
+```yaml
+gateway:
+  platforms:
+    line:
+      enabled: true
+      extra:
+        group_keyword: hermes
+```
+
+When set, the bot stays silent in group/room chats unless the message text
+contains the keyword (case-insensitive); DMs are never gated. The
+`LINE_GROUP_KEYWORD` environment variable sets the same value and wins over
+the yaml key.
+
 ---
 
 ## Step 4: Set the webhook URL
@@ -168,6 +185,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 | `LINE_ALLOWED_USERS` | one of | — | Comma-separated user IDs (U-prefixed) |
 | `LINE_ALLOWED_GROUPS` | one of | — | Comma-separated group IDs (C-prefixed) |
 | `LINE_ALLOWED_ROOMS` | one of | — | Comma-separated room IDs (R-prefixed) |
+| `LINE_GROUP_KEYWORD` | no | — (no gate) | When set, group/room chats are only answered when the message text contains this keyword (case-insensitive); DMs are never gated |
 | `LINE_ALLOW_ALL_USERS` | dev only | `false` | Skip allowlist entirely |
 | `LINE_HOME_CHANNEL` | no | — | Default cron / notification delivery target |
 | `LINE_SLOW_RESPONSE_THRESHOLD` | no | `45` | Seconds before the postback button fires (`0` = disabled) |

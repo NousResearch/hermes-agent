@@ -40,7 +40,7 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { currentUserSessionOpen } from '@/store/session-open-intent'
+import { currentUserSessionOpen, LAUNCH_USER_SESSION_OPEN } from '@/store/session-open-intent'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
@@ -462,7 +462,9 @@ async function restorePreferredConnection(
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
   const freshSessionRequest = $freshSessionRequest.get()
-  const userOpenSince = currentUserSessionOpen()
+  // Counted from window start, not from here: a chat can be opened before boot
+  // reaches the registry.
+  const userOpenSince = LAUNCH_USER_SESSION_OPEN
 
   const [registry, defaultLoaded] = await Promise.all([
     refreshConnectionsRegistry(),
@@ -578,7 +580,7 @@ export interface SelectConnectionOptions {
    *  the local backend before the registry settles — read as user-initiated. */
   restore?: boolean
   /** The launch restores: the user-open revision (store/session-open-intent)
-   *  when boot began. A chat the person opened since then wins over the
+   *  at window start. A chat the person opened since then wins over the
    *  restore, however early it was opened; a chat selected automatically (the
    *  cold-start route resume) does not bump it, so the restore still lands. */
   userOpenSince?: number

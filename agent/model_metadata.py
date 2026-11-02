@@ -26,7 +26,9 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
-from agent.model_metadata_token_memo import _MSG_TOKENS_CACHE, remember_message_tokens
+from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
+    _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2458,18 +2460,16 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
-        pins: list = []
+        pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
-        cached = _MSG_TOKENS_CACHE.get(key)
+        cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
         return text + images * image_cost
     if cached is not None:
-        with contextlib.suppress(KeyError):  # another thread may have evicted it since the get
-            _MSG_TOKENS_CACHE.move_to_end(key)
         return cached[1] + cached[2] * image_cost
     text, images = _compute()
     remember_message_tokens(key, (pins, text, images))

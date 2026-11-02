@@ -1,5 +1,6 @@
-"""The per-message token-estimate memo sheds least-recently-used entries only: a running conversation keeps
-its hits however many dead sessions or large bodies stream past it, and dead bodies stop counting forever."""
+"""The per-message token-estimate memo sheds least-recently-used idle entries only: a running conversation keeps
+its hits however many dead sessions or large bodies stream past it, even when it alone is larger than the
+budget, and idle bodies stop counting forever."""
 
 import agent.model_metadata as mm
 import agent.model_metadata_token_memo as memo
@@ -33,13 +34,21 @@ def test_two_large_running_conversations_both_keep_their_memo_hits(monkeypatch):
     assert computed[0] == 0
 
 
+def _fake_clock(monkeypatch) -> list[float]:
+    now = [1000.0]
+    monkeypatch.setattr(memo, "_clock", lambda: now[0], raising=False)
+    return now
+
+
 def test_dead_bodies_past_the_byte_budget_go_first_and_estimates_never_change(monkeypatch):
     mm._MSG_TOKENS_CACHE.clear()
     monkeypatch.setattr(memo, "_MSG_TOKENS_CACHE_MAX_BYTES", 3_500_000, raising=False)
+    now = _fake_clock(monkeypatch)
     active = {"role": "user", "content": "active " + "y" * 100_000}
     active_tokens = mm.estimate_messages_tokens_rough([active])
     dead_bodies = []
     for i in range(10):
+        now[0] += 3600  # each dead body goes idle before the next arrives
         dead_bodies.append(f"dead {i} " + "z" * 1_000_000)
         mm.estimate_messages_tokens_rough([{"role": "tool", "content": dead_bodies[-1]}])
         assert mm.estimate_messages_tokens_rough([dict(active)]) == active_tokens  # the running turn touches it
@@ -48,3 +57,24 @@ def test_dead_bodies_past_the_byte_budget_go_first_and_estimates_never_change(mo
     assert id(active["content"]) in pinned
     assert sum(id(body) in pinned for body in dead_bodies) <= 3
     assert id(dead_bodies[-1]) in pinned
+
+
+def test_a_running_conversation_larger_than_both_bounds_never_misses_then_sheds_when_idle(monkeypatch):
+    mm._MSG_TOKENS_CACHE.clear()
+    monkeypatch.setattr(memo, "_MSG_TOKENS_CACHE_MAX_BYTES", 1_000_000, raising=False)
+    monkeypatch.setattr(memo, "_MSG_TOKENS_CACHE_MAX", 1000, raising=False)
+    now = _fake_clock(monkeypatch)
+    computed = _count_computes(monkeypatch)
+    history = _history("big", 5000, size=1000)  # ~6 MB retained and 5000 entries: over both bounds alone
+    expected = mm.estimate_messages_tokens_rough(history)
+    computed[0] = 0
+    for _ in range(3):  # agent-loop iterations seconds apart, each appending a message
+        now[0] += 5
+        history.append({"role": "user", "content": f"turn {len(history)} " + "q" * 1000})
+        expected = mm.estimate_messages_tokens_rough([dict(m) for m in history])
+    assert computed[0] == 3  # only each pass's new message is ever computed
+    assert mm.estimate_messages_tokens_rough([dict(m) for m in history]) == expected
+
+    now[0] += 3600  # the conversation goes idle; the next insert sheds it back under the bounds
+    mm.estimate_messages_tokens_rough([{"role": "user", "content": "next " + "w" * 1000}])
+    assert len(mm._MSG_TOKENS_CACHE) <= 1000 and memo.retained_bytes() <= 1_000_000

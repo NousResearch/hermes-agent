@@ -91,7 +91,9 @@ def _retry_after_backoff(agent: Any, pool: Any, episode: dict[str, Any], *, fail
         f"{agent.log_prefix}🔐 Nous rejected a still-valid key (transient); retrying in {wait:.0f}s...",
         force=True, diagnostic=True)
     if not _interruptible_wait(agent, wait):
-        return True, has_retried_429  # the loop's interrupt check ends the turn before any request
+        # Not recovered: the caller's interrupt check then aborts (or redirects) the turn. A
+        # True here re-sends the request, and the retry loop never re-checks the interrupt.
+        return False, has_retried_429
     # A peer process may have rotated meanwhile: adopt what the store holds now (no POST).
     entry = _entry_for(pool, credential_id or entry_id, failed_key)
     if entry is not None:

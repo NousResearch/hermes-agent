@@ -116,5 +116,26 @@ it('redials a dropped kept route even while a named profile on the same gateway 
   liveNamedProfile.add('homelab')
   vi.advanceTimersByTime(30_000)
 
-  expect(openGatewayForAgent.mock.calls).toEqual([['homelab', 'default']])
+  expect(dialedRoutes()).toEqual([['homelab', 'default']])
+})
+
+/** (connection, profile) per dial, whatever options the keeper passes. */
+function dialedRoutes(): unknown[][] {
+  return openGatewayForAgent.mock.calls.map(call => call.slice(0, 2))
+}
+
+it("dials nothing while no primary route is published, so the primary's own gateway never gets a second socket", () => {
+  $primaryGatewayRoute.set({ connectionId: null, mode: null })
+  stop = startPersistentGateways()
+  vi.advanceTimersByTime(30_000)
+  expect(openGatewayForAgent).not.toHaveBeenCalled()
+
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  expect(dialedRoutes()).toEqual([['vps', 'default']])
+
+  // A primary teardown clears the route until the next primary publishes.
+  openGatewayForAgent.mockClear()
+  $primaryGatewayRoute.set({ connectionId: null, mode: null })
+  vi.advanceTimersByTime(30_000)
+  expect(openGatewayForAgent).not.toHaveBeenCalled()
 })

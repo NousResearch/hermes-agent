@@ -55,7 +55,15 @@ export function startPersistentGateways(): () => void {
   const pins = new Map<string, () => void>()
 
   const reconcile = () => {
-    const wanted = new Set(persistentGatewayIds($connectionsRegistry.get(), $primaryGatewayRoute.get()))
+    const primary = $primaryGatewayRoute.get()
+
+    // Until the primary publishes its route (boot, or a primary teardown), the
+    // primary's own gateway looks unserved and would get a duplicate socket.
+    if (!primary.connectionId && !primary.mode) {
+      return
+    }
+
+    const wanted = new Set(persistentGatewayIds($connectionsRegistry.get(), primary))
 
     for (const [connectionId, release] of pins) {
       if (!wanted.has(connectionId)) {

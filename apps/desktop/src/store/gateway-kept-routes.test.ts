@@ -33,7 +33,7 @@ const {
   setPrimaryGateway
 } = await import('./gateway')
 
-const { keepRoute, onKeptRouteOpened } = await import('./gateway-kept-routes')
+const { isKeptRoute, keepRoute, onKeptRouteOpened } = await import('./gateway-kept-routes')
 
 let endpoint = 'wss://homelab.invalid/api/ws?token=old'
 
@@ -107,4 +107,16 @@ it('an unkept route is still pruned when idle and announces nothing', async () =
   expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
   expect(opened).not.toHaveBeenCalled()
   off()
+})
+
+it('a route two holders keep stays kept until both release it, however often one releases', () => {
+  const first = keepRoute('workshop', 'default')
+  const second = keepRoute('workshop', 'default')
+
+  first()
+  first()
+  expect(isKeptRoute('workshop', 'default')).toBe(true)
+
+  second()
+  expect(isKeptRoute('workshop', 'default')).toBe(false)
 })

@@ -558,13 +558,69 @@ def _catalog_key_matches(key: str, model_lower: str) -> bool:
     return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
 
 
-def _longest_key_match(table: dict[str, int], model_lower: str) -> Optional[tuple[str, int]]:
+def _longest_key_match(table: dict[str, int], model_lower: str, *, require_decorative_residual: bool = False) -> Optional[tuple[str, int]]:
     """First ``(key, value)`` whose key is a substring of ``model_lower``, longest key first so
-    specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order."""
+    specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order.
+
+    ``require_decorative_residual=True`` (the custom-endpoint last resort) rejects a hit whose key is
+    followed by an identity-bearing token — ``qwen3.8-flash`` matching ``qwen3.8-flash-next``,
+    ``glm-4.5`` matching ``glm-4.5-air`` — and keeps scanning. Substring matching decodes relay slugs
+    (``z-ai-glm-5-3`` → ``glm-5.3``, #97398), but a sibling model id is not a decoration: inheriting a
+    sibling's window is false-safe, inflating compression budgets past what the endpoint accepts."""
     for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
-        if _catalog_key_matches(key, model_lower):
-            return key, value
+        if not _catalog_key_matches(key, model_lower):
+            continue
+        if require_decorative_residual:
+            residual = _catalog_key_residual(key, model_lower)
+            if not _catalog_hit_accepts_residual(key, residual):
+                logger.info(
+                    "Catalog key %r matches model %r but trailing %r is a distinct model identity — "
+                    "skipping its inherited %s window", key, model_lower, residual, f"{value:,}")
+                continue
+        return key, value
     return None
+
+
+# Residuals that decorate a model id without changing its advertised window: region/mode markers
+# (``:US``, ``:batch``), channel tags (``-latest``, ``-preview``). Generation/snapshot continuations
+# (``.4``, ``-1017``) stay family scope so catch-alls still answer new lineup members. Anything else
+# after a full catalog key is a different model, not a variant.
+_DECORATIVE_RESIDUAL_RE = re.compile(
+    r"^(?:[-:.@](?:us|eu|uk|ca|jp|global|intl|batch|chat|instruct|thinking|reasoning|cot|tee"
+    r"|latest|preview|beta|alpha|dev|nightly|experimental|online|offline|stable|high|low|fast))+$")
+
+
+def _catalog_hit_accepts_residual(key: str, residual: Optional[str]) -> bool:
+    """Gate on how much identity the catalog key already carries.
+
+    A bare family head without version digits (``minimax``, ``qwen``, ``glm``) is a catch-all by
+    design — it answers new lineup members (``MiniMax-M2.7``). A key that already carries a full
+    model identity (``glm-4.5``, ``kimi-k3``, ``qwen3.8-flash``) transfers its window only to a
+    decoration (``:batch``, ``-cot``, ``-1017``, ``.4``), never to a sibling model id
+    (``-air``, ``-next``) whose window is its own to advertise."""
+    if not residual:
+        return True
+    if not any(ch.isdigit() for ch in key):
+        return True  # bare family head: continuations are the point
+    if _DECORATIVE_RESIDUAL_RE.match(residual):
+        return True
+    # ``.4-mini`` / ``-1017-free``: a numeric generation or snapshot continuation of the family.
+    return re.match(r"^[ -:.@]*\.?\d", residual) is not None
+
+
+def _catalog_key_residual(key: str, model_lower: str) -> Optional[str]:
+    """Text following the catalog key's occurrence in the model id (version separators
+    normalised); ``None`` for boundary-matched family keys, which carry their own semantics."""
+    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
+        return None
+    idx = model_lower.find(key)
+    if idx >= 0:
+        return model_lower[idx + len(key):]
+    norm_model, norm_key = _normalize_model_version(model_lower), _normalize_model_version(key)
+    idx = norm_model.find(norm_key)
+    if idx < 0:
+        return None
+    return norm_model[idx + len(norm_key):]
 
 
 def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Optional[int] = None) -> Optional[int]:
@@ -2069,8 +2125,10 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
     # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
-    # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    # but its model name still matches DEFAULT_CONTEXT_LENGTHS. Identity guard on: with every probe
+    # already failed, a sibling model id (``flash`` vs ``flash-next``) must not inherit the table
+    # entry's window — nothing on the wire contradicts the mismatch.
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower(), require_decorative_residual=True)
     if hit:
         logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
         return hit[1]
@@ -2315,7 +2373,9 @@ def get_model_context_length(
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    # Identity guard on: an unprobed last resort must also refuse to hand a table entry's window to a
+    # sibling model id that merely contains it.
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower(), require_decorative_residual=True)
     if hit:
         return hit[1]
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.

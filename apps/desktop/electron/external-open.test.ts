@@ -56,6 +56,14 @@ test('resolves ok and opens when openExternal succeeds', async () => {
   assert.equal(calls.notified.length, 0)
 })
 
+test('opens a well-formed tel: number and rejects a crafted one', async () => {
+  const { deps, calls } = makeDeps()
+
+  assert.deepEqual(await openExternalUrl('tel:+46104956404', deps), { ok: true })
+  assert.deepEqual(await openExternalUrl('tel:123&calc', deps), { ok: false, reason: 'invalid' })
+  assert.deepEqual(calls.opened, ['tel:+46104956404'])
+})
+
 test('notifies and resolves failed when openExternal rejects', async () => {
   const { deps, calls } = makeDeps({
     openExternal: async () => {

@@ -43,6 +43,15 @@ from hermes_cli.plugin_host_wire import (
 
 logger = logging.getLogger("hermes_cli.plugins")
 
+# Identity registry is populated only when the host constructs a proxy; provider
+# attributes (including __hermes_plugin_host_ref__) are not proof of origin.
+_hosted_objects: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
+
+
+def _is_hosted_object(value: Any) -> bool:
+    return _hosted_objects.get(id(value)) is value
+
+
 _HOST_MODULE = "hermes_cli.plugin_host_child"
 _START_TIMEOUT_SECS = 30.0
 _SHUTDOWN_GRACE_SECS = 3.0
@@ -135,8 +144,13 @@ class PluginHost:
         env[HOST_PROCESS_ENV] = "1"
         return env
 
+    def _ensure_manager_active(self) -> None:
+        if getattr(self._manager, "_retired", False):
+            raise PluginHostUnavailable("plugin manager has been retired")
+
     def ensure_started(self) -> Channel:
         with self._lock:
+            self._ensure_manager_active()
             if self.alive:
                 return self._channel  # type: ignore[return-value]
             self._stopping = False
@@ -326,7 +340,10 @@ class PluginHost:
         channel = self._channel
         if channel is None or channel.closed_reason is not None:
             return
-        errors = (channel.call("unload", {"plugin_key": plugin_key}) or {}).get("errors") or []
+        errors = (
+            channel.call("unload", {"plugin_key": plugin_key}, timeout=_SHUTDOWN_GRACE_SECS)
+            or {}
+        ).get("errors") or []
         for error in errors:
             logger.warning("Plugin '%s' on_unload callback failed in the plugin host: %s", plugin_key, error)
 
@@ -334,6 +351,7 @@ class PluginHost:
     def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
               timeout: Optional[float] = None, returns: Any = None) -> Any:
         """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it."""
+        self._ensure_manager_active()
         channel = self._channel
         try:
             if channel is None:
@@ -521,6 +539,7 @@ class PluginHost:
         cls.__abstractmethods__ = frozenset()
         proxy = object.__new__(cls)
         slot.track(proxy)
+        _hosted_objects[id(proxy)] = proxy
         return proxy
 
 

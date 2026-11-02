@@ -1,5 +1,6 @@
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -19,7 +20,7 @@ def _agent():
     )
 
 
-def _wait_for(predicate, timeout=1.0):
+def _wait_for(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -34,8 +35,19 @@ def _make_stream_chunk(content=None, finish_reason=None):
     return SimpleNamespace(choices=[choice], model="test/model")
 
 
-def _callbacks(callbacks_by_hook):
-    return lambda name: tuple(callbacks_by_hook.get(name, ()))
+def _patch_test_callback_manager(monkeypatch, callbacks_by_hook):
+    """Use the explicit lock-free manager double for tests that inject callbacks directly."""
+    from hermes_cli import plugins
+
+    hooks = {name: list(callbacks) for name, callbacks in callbacks_by_hook.items()}
+    manager = SimpleNamespace(
+        _hooks=hooks,
+        _observer_dispatcher_scope=object(),
+        _report_hook_failure=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins, "iter_hook_callbacks", lambda name: tuple(hooks.get(name, ())))
+    return manager
 
 
 def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
@@ -44,21 +56,28 @@ def test_stream_delta_plugin_hook_is_queued_off_token_path(monkeypatch):
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
 
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    dispatch_returned = threading.Event()
+
     def on_stream_delta(**kwargs):
-        time.sleep(0.2)
+        callback_started.set()
+        release_callback.wait(timeout=10.0)
         calls.append(("on_stream_delta", kwargs))
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
-
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
     agent = _agent()
-
-    started = time.monotonic()
-    agent._fire_stream_delta("hello")
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 0.05
-    _wait_for(lambda: calls)
-    shutdown_plugin_stream_hook_dispatcher()
+    producer = threading.Thread(
+        target=lambda: (agent._fire_stream_delta("hello"), dispatch_returned.set())
+    )
+    try:
+        producer.start()
+        assert callback_started.wait(timeout=5.0)
+        assert dispatch_returned.wait(timeout=5.0)
+    finally:
+        release_callback.set()
+        producer.join(timeout=5.0)
+        shutdown_plugin_stream_hook_dispatcher(timeout=5.0)
 
     assert calls[0][0] == "on_stream_delta"
     assert calls[0][1]["delta"] == "hello"
@@ -76,7 +95,7 @@ def test_stream_delta_plugin_hook_error_does_not_break_streaming(monkeypatch):
     def on_stream_delta(**_kwargs):
         raise RuntimeError("plugin failed")
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
 
     agent = _agent()
     agent.stream_delta_callback = ui_deltas.append
@@ -99,12 +118,12 @@ def test_stream_hook_queue_drops_oldest_pending_event_when_full(monkeypatch):
     def on_stream_delta(**kwargs):
         delivered.append(kwargs["delta"])
         first_delivered.set()
-        release_worker.wait(timeout=1.0)
+        release_worker.wait(timeout=5.0)
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
 
     assert enqueue_plugin_stream_hook("on_stream_delta", delta="first") is True
-    assert first_delivered.wait(timeout=1.0)
+    assert first_delivered.wait(timeout=5.0)
     assert enqueue_plugin_stream_hook("on_stream_delta", delta="second") is True
     assert enqueue_plugin_stream_hook("on_stream_delta", delta="third") is True
 
@@ -113,6 +132,246 @@ def test_stream_hook_queue_drops_oldest_pending_event_when_full(monkeypatch):
     shutdown_plugin_stream_hook_dispatcher()
 
     assert delivered == ["first", "third"]
+
+
+def test_observer_dispatch_drops_an_oversized_event_without_truncating(monkeypatch):
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook
+
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 256, raising=False)
+    delivered = []
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [delivered.append]})
+
+    assert enqueue_plugin_observer_hook(
+        "memory_prefetch", query="q" * 512, context_sha256="digest", turn_id="turn"
+    ) is False
+    assert enqueue_plugin_observer_hook("memory_prefetch", unsupported=object()) is False
+    assert delivered == []
+
+
+def test_memory_prefetch_observer_accepts_full_64k_observation_batch(monkeypatch):
+    from agent.memory_provider import MAX_MEMORY_OBSERVATIONS, MemoryObservation
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    observations = tuple(
+        MemoryObservation(
+            source_kind="recall",
+            schema="fixture.recall",
+            version=1,
+            payload={"text": "x" * (3900 + index)},
+        )
+        for index in range(MAX_MEMORY_OBSERVATIONS)
+    )
+    delivered = threading.Event()
+    payloads = []
+
+    def capture(**payload):
+        payloads.append(payload)
+        delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [capture]})
+    try:
+        assert enqueue_plugin_observer_hook(
+            "memory_prefetch",
+            query="question",
+            context_sha256="digest",
+            turn_id="turn",
+            observations=observations,
+        ) is True
+        assert delivered.wait(timeout=5.0)
+    finally:
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert len(payloads[0]["observations"]) == MAX_MEMORY_OBSERVATIONS
+    assert payloads[0]["observations"][0].payload["text"] == "x" * 3900
+
+
+def test_stream_end_observer_restores_full_oversized_response_text(monkeypatch, tmp_path):
+    import tools.spill_safety
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_stream_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "observer-spill-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    delivered = threading.Event()
+    payloads = []
+    spill_calls = []
+
+    def forbid_spill(*args, **kwargs):
+        spill_calls.append((args, kwargs))
+        raise AssertionError("stream completion must not write spill files")
+
+    monkeypatch.setattr(tools.spill_safety, "write_text_exclusive", forbid_spill)
+
+    def capture(**payload):
+        payloads.append(payload)
+        delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"on_stream_end": [capture]})
+    response = "complete response text " * 20_000
+    try:
+        assert enqueue_plugin_stream_hook(
+            "on_stream_end", final_text=response, finished=True, error=None
+        ) is True
+        assert delivered.wait(timeout=5.0)
+    finally:
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert payloads[0]["final_text"] == response
+    assert spill_calls == []
+    assert not (home / "cache" / "plugin-observer-spill").exists()
+
+
+def test_oversized_stream_end_observer_uses_one_bounded_shared_text_holder(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr(
+        "agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096, raising=False
+    )
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    delivered = []
+
+    def slow(**payload):
+        delivered.append(("slow", payload["final_text"]))
+        if payload["final_text"] == "a" * 3000:
+            slow_started.set()
+            release_slow.wait(timeout=5.0)
+
+    def fast(**payload):
+        delivered.append(("fast", payload["final_text"]))
+
+    _patch_test_callback_manager(
+        monkeypatch, {"on_stream_end": [slow, fast]}
+    )
+
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 3000, finished=True
+        ) is True
+        assert slow_started.wait(timeout=5.0)
+        # The fast callback returned, but the blocked slow consumer still holds
+        # the shared holder, so another large event exceeds the retained budget.
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 3000, finished=True
+        ) is False
+        release_slow.set()
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="c" * 3000, finished=True
+        ) is True
+        _wait_for(lambda: len(delivered) == 4)
+    finally:
+        release_slow.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert sorted(delivered) == sorted(
+        [
+            ("slow", "a" * 3000),
+            ("fast", "a" * 3000),
+            ("slow", "c" * 3000),
+            ("fast", "c" * 3000),
+        ]
+    )
+
+
+def test_stream_observer_system_exit_does_not_strand_queued_text(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_delivered = threading.Event()
+
+    def exits_then_recovers(**payload):
+        if payload["final_text"] == "a" * 1000:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+            raise SystemExit("plugin callback exit")
+        second_delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"on_stream_end": [exits_then_recovers]})
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 1000, finished=True
+        ) is True
+        assert first_started.wait(timeout=5.0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 1000, finished=True
+        ) is True
+        release_first.set()
+        assert second_delivered.wait(timeout=5.0)
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+    finally:
+        release_first.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_observer_custom_base_exception_and_reporter_failure_do_not_strand_text(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_delivered = threading.Event()
+
+    class PluginAbort(BaseException):
+        pass
+
+    class ReporterAbort(BaseException):
+        pass
+
+    def abort_then_recover(**payload):
+        if payload["final_text"] == "a" * 1000:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+            raise PluginAbort("custom plugin abort")
+        second_delivered.set()
+
+    manager = _patch_test_callback_manager(monkeypatch, {"on_stream_end": [abort_then_recover]})
+
+    def broken_reporter(*_args, **_kwargs):
+        raise ReporterAbort("failure reporter abort")
+
+    manager._report_hook_failure = broken_reporter
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 1000, finished=True
+        ) is True
+        assert first_started.wait(timeout=5.0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 1000, finished=True
+        ) is True
+        release_first.set()
+        assert second_delivered.wait(timeout=5.0)
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+    finally:
+        release_first.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
 
 
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
@@ -128,18 +387,17 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     def slow_consumer(**kwargs):
         slow_delivered.append(kwargs["delta"])
         slow_started.set()
-        release_slow.wait(timeout=1.0)
+        release_slow.wait(timeout=5.0)
 
     def fast_consumer(**kwargs):
         fast_delivered.append(kwargs["delta"])
 
-    monkeypatch.setattr(
-        "hermes_cli.plugins.iter_hook_callbacks",
-        _callbacks({"on_stream_delta": [slow_consumer, fast_consumer]}),
+    _patch_test_callback_manager(
+        monkeypatch, {"on_stream_delta": [slow_consumer, fast_consumer]}
     )
 
     assert enqueue_plugin_stream_hook("on_stream_delta", delta="first") is True
-    assert slow_started.wait(timeout=1.0)
+    assert slow_started.wait(timeout=5.0)
     _wait_for(lambda: fast_delivered == ["first"])
     assert enqueue_plugin_stream_hook("on_stream_delta", delta="second") is True
     _wait_for(lambda: fast_delivered == ["first", "second"])
@@ -153,6 +411,176 @@ def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     assert slow_delivered == ["first", "third"]
 
 
+def test_stream_observers_keep_context_and_dispatcher_scope_per_profile(
+    monkeypatch, tmp_path
+):
+    """Concurrent profile events use each profile's home and callback."""
+    from hermes_cli import plugins
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    manager_a = plugins.PluginManager(scope_key=str(home_a))
+    manager_b = plugins.PluginManager(scope_key=str(home_b))
+    manager_a._discovered = True
+    manager_b._discovered = True
+    delivered = []
+    delivered_lock = threading.Lock()
+    delivered_event = threading.Event()
+
+    def callback_a(**kwargs):
+        with delivered_lock:
+            delivered.append(("a", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    def callback_b(**kwargs):
+        with delivered_lock:
+            delivered.append(("b", str(get_hermes_home()), kwargs["event_id"]))
+            if len(delivered) == 2:
+                delivered_event.set()
+
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-a-plugin"), manager_a
+    ).register_hook("memory_prefetch", callback_a)
+    plugins.PluginContext(
+        plugins.PluginManifest(name="profile-b-plugin"), manager_b
+    ).register_hook("memory_prefetch", callback_b)
+
+    def manager_for_active_home():
+        return manager_a if get_hermes_home() == home_a else manager_b
+
+    monkeypatch.setattr(plugins, "get_plugin_manager", manager_for_active_home)
+
+    def emit(home, event_id):
+        token = set_hermes_home_override(home)
+        try:
+            return enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert set(pool.map(emit, (home_a, home_b), ("event-a", "event-b"))) == {True}
+
+    assert delivered_event.wait(timeout=5.0)
+    shutdown_plugin_observer_dispatcher()
+    assert sorted(delivered) == sorted(
+        [
+            ("a", str(home_a), "event-a"),
+            ("b", str(home_b), "event-b"),
+        ]
+    )
+
+
+def test_observer_failures_report_in_originating_profile(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli import plugins
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook, shutdown_plugin_observer_dispatcher
+
+    shutdown_plugin_observer_dispatcher()
+    homes = [tmp_path / "a", tmp_path / "b"]
+    managers = {home: plugins.PluginManager(scope_key=str(home)) for home in homes}
+    reports = []
+
+    def failing(**kwargs):
+        raise ValueError(kwargs["event_id"])
+
+    for home, manager in managers.items():
+        manager._discovered = True
+        plugins.PluginContext(plugins.PluginManifest(name="failure-plugin"), manager).register_hook(
+            "memory_prefetch", failing
+        )
+        def report(hook, callback, payload, exc, owner=home):
+            reports.append((owner, get_hermes_home(), payload["event_id"], str(exc)))
+        monkeypatch.setattr(manager, "_report_hook_failure", report)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: managers[get_hermes_home()])
+    try:
+        for index, home in enumerate([homes[0], homes[1], homes[0]]):
+            token = set_hermes_home_override(home)
+            try:
+                assert enqueue_plugin_observer_hook("memory_prefetch", event_id=str(index))
+            finally:
+                reset_hermes_home_override(token)
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+        assert sorted(reports) == sorted(
+            (home, home, str(index), str(index))
+            for index, home in enumerate([homes[0], homes[1], homes[0]])
+        )
+    finally:
+        shutdown_plugin_observer_dispatcher()
+
+
+def test_observer_dispatcher_shutdown_has_bounded_join(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_consumer(**_kwargs):
+        started.set()
+        release.wait(timeout=10.0)
+
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [blocked_consumer]})
+    assert enqueue_plugin_observer_hook("memory_prefetch", turn_id="turn") is True
+    assert started.wait(timeout=5.0)
+
+    shutdown_returned = threading.Event()
+
+    def shutdown():
+        shutdown_plugin_observer_dispatcher(timeout=2.0)
+        shutdown_returned.set()
+
+    shutdown_thread = threading.Thread(target=shutdown)
+    try:
+        shutdown_thread.start()
+        assert shutdown_returned.wait(timeout=5.0)
+        assert not release.is_set()
+    finally:
+        release.set()
+        shutdown_thread.join(timeout=5.0)
+
+
+def test_observer_dispatcher_shutdown_drains_pending_events(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    delivered = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def consumer(**kwargs):
+        delivered.append(kwargs["event_id"])
+        if kwargs["event_id"] == "first":
+            first_started.set()
+            release_first.wait(timeout=5.0)
+
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [consumer]})
+
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="first") is True
+    assert first_started.wait(timeout=5.0)
+    assert enqueue_plugin_observer_hook("memory_prefetch", event_id="second") is True
+    release_first.set()
+    shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert delivered == ["first", "second"]
+
+
 def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
     from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
 
@@ -162,7 +590,7 @@ def test_reasoning_stream_delta_plugin_hook_is_opt_in(monkeypatch):
     def on_stream_delta(**kwargs):
         calls.append(("on_stream_delta", kwargs))
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
 
     agent = _agent()
     agent._fire_reasoning_delta("private chain")
@@ -191,7 +619,7 @@ def test_interim_message_plugin_hook_is_queued(monkeypatch):
     def on_interim_message(**kwargs):
         calls.append(("on_interim_message", kwargs))
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_interim_message": [on_interim_message]}))
+    _patch_test_callback_manager(monkeypatch, {"on_interim_message": [on_interim_message]})
 
     agent = _agent()
     agent._emit_interim_assistant_message({"content": "I will inspect the files first."})
@@ -204,7 +632,7 @@ def test_interim_message_plugin_hook_is_queued(monkeypatch):
 
 
 def test_stream_plugin_hook_counts_as_stream_consumer(monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [lambda **_kwargs: None]}))
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [lambda **_kwargs: None]})
 
     agent = _agent()
 
@@ -212,7 +640,7 @@ def test_stream_plugin_hook_counts_as_stream_consumer(monkeypatch):
 
 
 def test_interim_message_plugin_hook_does_not_count_as_stream_consumer(monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_interim_message": [lambda **_kwargs: None]}))
+    _patch_test_callback_manager(monkeypatch, {"on_interim_message": [lambda **_kwargs: None]})
 
     agent = _agent()
 
@@ -231,9 +659,9 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     def on_stream_end(**kwargs):
         calls.append(("on_stream_end", kwargs))
 
-    monkeypatch.setattr(
-        "hermes_cli.plugins.iter_hook_callbacks",
-        _callbacks({"on_stream_start": [on_stream_start], "on_stream_end": [on_stream_end]}),
+    _patch_test_callback_manager(
+        monkeypatch,
+        {"on_stream_start": [on_stream_start], "on_stream_end": [on_stream_end]},
     )
 
     agent = _agent()
@@ -260,15 +688,13 @@ def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, 
 
     shutdown_plugin_stream_hook_dispatcher()
     calls = []
-    monkeypatch.setattr(
-        "hermes_cli.plugins.iter_hook_callbacks",
-        _callbacks(
-            {
-                "on_stream_start": [lambda **kwargs: calls.append(("on_stream_start", kwargs))],
-                "on_stream_delta": [lambda **kwargs: calls.append(("on_stream_delta", kwargs))],
-                "on_stream_end": [lambda **kwargs: calls.append(("on_stream_end", kwargs))],
-            }
-        ),
+    _patch_test_callback_manager(
+        monkeypatch,
+        {
+            "on_stream_start": [lambda **kwargs: calls.append(("on_stream_start", kwargs))],
+            "on_stream_delta": [lambda **kwargs: calls.append(("on_stream_delta", kwargs))],
+            "on_stream_end": [lambda **kwargs: calls.append(("on_stream_end", kwargs))],
+        },
     )
 
     mock_client = SimpleNamespace(
@@ -319,7 +745,7 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
     def on_stream_delta(**kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("hermes_cli.plugins.iter_hook_callbacks", _callbacks({"on_stream_delta": [on_stream_delta]}))
+    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
     monkeypatch.setattr("hermes_cli.config.cfg_get", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         "agent.bedrock_adapter._get_bedrock_runtime_client",
@@ -390,3 +816,1115 @@ def test_finish_chat_stream_recovers_inline_reasoning_content():
     resp = call._finish_chat_stream(None, "assistant", deltas, [], {}, "stop", "MiniMax-M3", None,
                                     flush_pending=lambda: None)
     assert resp.choices[0].message.reasoning_content == "Let me check config"
+
+
+def test_manager_unload_retires_only_its_observers_across_reload(monkeypatch, tmp_path):
+    """Unloading one cached profile manager discards its pending old-generation events.
+
+    The same callback object is deliberately re-registered after unload: manager identity and
+    callback identity alone must not make the old dispatcher/queue current again. A second
+    profile's live dispatcher must survive the A -> B -> A transition.
+    """
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    enqueue_plugin_observer_hook = psh.enqueue_plugin_observer_hook
+    shutdown_plugin_observer_dispatcher = psh.shutdown_plugin_observer_dispatcher
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    def manager_at(home):
+        token = set_hermes_home_override(home)
+        try:
+            return plugins.get_plugin_manager()
+        finally:
+            reset_hermes_home_override(token)
+
+    manager_a, manager_b = manager_at(home_a), manager_at(home_b)
+    delivered = []
+    delivered_lock = threading.Lock()
+    a_started = threading.Event()
+    release_a = threading.Event()
+    active_generation_delivered = threading.Event()
+
+    def record(profile, event_id):
+        with delivered_lock:
+            delivered.append((profile, str(get_hermes_home()), event_id))
+            ids = {entry[2] for entry in delivered}
+            if {"b-still-active", "a-new-generation"}.issubset(ids):
+                active_generation_delivered.set()
+
+    def on_a(**kwargs):
+        event_id = kwargs["event_id"]
+        if event_id == "a-running":
+            a_started.set()
+            release_a.wait(timeout=10.0)
+        record("a", event_id)
+
+    def on_b(**kwargs):
+        record("b", kwargs["event_id"])
+
+    manager_a._discovered = manager_b._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="observer-a"), manager_a).register_hook(
+        "memory_prefetch", on_a
+    )
+    plugins.PluginContext(plugins.PluginManifest(name="observer-b"), manager_b).register_hook(
+        "memory_prefetch", on_b
+    )
+
+    def emit(home, event_id):
+        token = set_hermes_home_override(home)
+        try:
+            return enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(token)
+
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    unload_returned = threading.Event()
+    queue_drained = threading.Event()
+    unload_errors = []
+    unload_thread = None
+    drainer = None
+    original_stop = psh._stop_dispatcher
+
+    def pause_stop(dispatcher, timeout=5.0, *, discard_pending=False):
+        if dispatcher is a_dispatcher:
+            stop_entered.set()
+            assert allow_stop.wait(timeout=5.0)
+        return original_stop(dispatcher, timeout, discard_pending=discard_pending)
+
+    def unload_a():
+        try:
+            manager_a.unload()
+        except BaseException as exc:
+            unload_errors.append(exc)
+        finally:
+            unload_returned.set()
+
+    try:
+        assert emit(home_a, "a-running")
+        assert a_started.wait(timeout=5.0)
+        token = set_hermes_home_override(home_a)
+        try:
+            a_dispatcher = psh._dispatchers_for("memory_prefetch")[0]
+            a_worker = a_dispatcher.thread
+        finally:
+            reset_hermes_home_override(token)
+        assert a_worker is not None
+        assert emit(home_a, "a-pending-old-generation")
+
+        # Pause after the manager lock has been released but before queue discard/stop signalling.
+        # The running callback may finish; the queued callback must be rejected at its retirement gate.
+        monkeypatch.setattr(psh, "_stop_dispatcher", pause_stop)
+        unload_thread = threading.Thread(target=unload_a)
+        unload_thread.start()
+        assert stop_entered.wait(timeout=5.0)
+        assert a_dispatcher.retired
+        release_a.set()
+
+        def wait_for_queue_drain():
+            a_dispatcher.events.join()
+            queue_drained.set()
+
+        drainer = threading.Thread(target=wait_for_queue_drain)
+        drainer.start()
+        assert queue_drained.wait(timeout=5.0)
+        with delivered_lock:
+            assert ("a", str(home_a), "a-running") in delivered
+            assert ("a", str(home_a), "a-pending-old-generation") not in delivered
+
+        allow_stop.set()
+        assert unload_returned.wait(timeout=5.0)
+        unload_thread.join(timeout=5.0)
+        assert not unload_errors
+        plugins.PluginContext(plugins.PluginManifest(name="observer-a"), manager_a).register_hook(
+            "memory_prefetch", on_a
+        )
+        manager_a._discovered = True
+
+        # B is an active cached profile, not dead state to reap just because A is now active.
+        assert emit(home_b, "b-still-active")
+        token = set_hermes_home_override(home_b)
+        try:
+            b_worker = psh._dispatchers_for("memory_prefetch")[0].thread
+        finally:
+            reset_hermes_home_override(token)
+        assert b_worker is not None
+        assert emit(home_a, "a-new-generation")
+        assert active_generation_delivered.wait(timeout=5.0)
+
+        with delivered_lock:
+            assert ("a", str(home_a), "a-new-generation") in delivered
+            assert ("b", str(home_b), "b-still-active") in delivered
+            assert ("a", str(home_a), "a-pending-old-generation") not in delivered
+        a_worker.join(timeout=5.0)
+        assert not a_worker.is_alive()
+        assert b_worker.is_alive()
+    finally:
+        release_a.set()
+        allow_stop.set()
+        if unload_thread is not None:
+            unload_thread.join(timeout=5.0)
+        if drainer is not None:
+            drainer.join(timeout=5.0)
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_stale_enqueue_racing_manager_unload_cannot_enter_new_generation(monkeypatch, tmp_path):
+    """A callback snapshot taken before unload is rejected after the manager token rotates."""
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "race-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    delivered = []
+    delivered_lock = threading.Lock()
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    new_generation_delivered = threading.Event()
+
+    def observer(**kwargs):
+        event_id = kwargs["event_id"]
+        if event_id == "running":
+            callback_started.set()
+            release_callback.wait(timeout=10.0)
+        with delivered_lock:
+            delivered.append(event_id)
+            if event_id == "new-generation-event":
+                new_generation_delivered.set()
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="race-observer"), manager).register_hook(
+        "memory_prefetch", observer
+    )
+
+    def emit(event_id):
+        scoped_token = set_hermes_home_override(home)
+        try:
+            return psh.enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+        finally:
+            reset_hermes_home_override(scoped_token)
+
+    original_scope = psh._active_manager_scope
+    scope_captured = threading.Event()
+    resume_scope_capture = threading.Event()
+    emitter = None
+
+    def delayed_scope(current_manager):
+        scope_key = original_scope(current_manager)
+        if threading.current_thread() is emitter:
+            scope_captured.set()
+            assert resume_scope_capture.wait(timeout=5.0)
+        return scope_key
+
+    try:
+        assert emit("running")
+        assert callback_started.wait(timeout=5.0)
+        monkeypatch.setattr(psh, "_active_manager_scope", delayed_scope)
+        queued = {}
+
+        def enqueue_stale_snapshot():
+            queued["result"] = emit("stale-race-event")
+
+        emitter = threading.Thread(target=enqueue_stale_snapshot)
+        emitter.start()
+        assert scope_captured.wait(timeout=5.0)
+
+        # The enqueue captured the old token, but has not acquired the manager lock or queued yet.
+        token = set_hermes_home_override(home)
+        try:
+            manager.unload()
+            plugins.PluginContext(plugins.PluginManifest(name="race-observer"), manager).register_hook(
+                "memory_prefetch", observer
+            )
+            manager._discovered = True
+        finally:
+            reset_hermes_home_override(token)
+
+        resume_scope_capture.set()
+        emitter.join(timeout=5.0)
+        assert not emitter.is_alive()
+        assert queued["result"] is False
+        assert emit("new-generation-event")
+        release_callback.set()
+        assert new_generation_delivered.wait(timeout=5.0)
+        with delivered_lock:
+            assert "new-generation-event" in delivered
+            assert "stale-race-event" not in delivered
+    finally:
+        resume_scope_capture.set()
+        release_callback.set()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, tmp_path):
+    """First observer enqueue starts lazy discovery off the producer thread."""
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "lazy-discovery"
+    manager = plugins.PluginManager(scope_key=str(home))
+    manager._discovered = False
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    manifest = plugins.PluginManifest(name="lazy-discovery-observer")
+    delivered = threading.Event()
+    discovery_started = threading.Event()
+    release_discovery = threading.Event()
+    discovered = threading.Event()
+    enqueue_returned = threading.Event()
+    enqueue_result = []
+
+    def observer(**_kwargs):
+        delivered.set()
+
+    def discover_on_manager():
+        with manager._discovery_lock:
+            discovery_started.set()
+            release_discovery.wait(timeout=5.0)
+            plugins.PluginContext(manifest, manager).register_hook("memory_prefetch", observer)
+            manager._discovered = True
+            discovered.set()
+
+    monkeypatch.setattr(manager, "discover_and_load", discover_on_manager)
+    token = set_hermes_home_override(home)
+    producer = threading.Thread(
+        target=lambda: (
+            enqueue_result.append(
+                psh.enqueue_plugin_observer_hook(
+                    "memory_prefetch", event_id="discovered-on-captured-manager"
+                )
+            ),
+            enqueue_returned.set(),
+        )
+    )
+    producer.start()
+    try:
+        assert discovery_started.wait(timeout=5.0)
+        assert enqueue_returned.wait(timeout=0.5)
+        assert enqueue_result == [False]
+        assert not delivered.is_set()
+        release_discovery.set()
+        assert discovered.wait(timeout=5.0)
+        assert psh.enqueue_plugin_observer_hook(
+            "memory_prefetch", event_id="discovered-on-captured-manager"
+        ) is True
+        assert delivered.wait(timeout=5.0)
+    finally:
+        release_discovery.set()
+        producer.join(timeout=5.0)
+        reset_hermes_home_override(token)
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert not producer.is_alive()
+
+
+def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "undiscovered-stream-observer"
+    manager = plugins.PluginManager(scope_key=str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    discovery_calls = []
+
+    def discover_and_load():
+        discovery_calls.append(True)
+        manager._discovered = True
+
+    monkeypatch.setattr(manager, "discover_and_load", discover_and_load)
+    monkeypatch.setattr(psh, "stream_reasoning_deltas_enabled", lambda: True)
+    token = set_hermes_home_override(home)
+    try:
+        assert psh.has_stream_observer_hooks() is False
+        assert psh.has_reasoning_stream_observer_hooks() is False
+        assert discovery_calls == []
+        assert manager._discovered is False
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_targeted_unload_retires_observer_before_plugin_teardown(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher()
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "targeted-unload"))
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins, "iter_hook_callbacks", manager.iter_hook_callbacks)
+    manager._discovered = True
+
+    target = plugins.PluginManifest(name="target-observer")
+    survivor = plugins.PluginManifest(name="surviving-observer")
+    running = threading.Event()
+    release_running = threading.Event()
+    state_closed = threading.Event()
+    pending_ran_after_close = threading.Event()
+    survivor_received_after_unload = threading.Event()
+
+    def target_callback(**kwargs):
+        if kwargs["event_id"] == "running":
+            running.set()
+            release_running.wait(timeout=5.0)
+        elif kwargs["event_id"] == "pending" and state_closed.is_set():
+            pending_ran_after_close.set()
+
+    def survivor_callback(**kwargs):
+        if kwargs["event_id"] == "after-unload":
+            survivor_received_after_unload.set()
+
+    plugins.PluginContext(target, manager).register_hook(
+        "memory_prefetch", target_callback
+    )
+    plugins.PluginContext(survivor, manager).register_hook(
+        "memory_prefetch", survivor_callback
+    )
+
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="running")
+        assert running.wait(timeout=5.0)
+        target_dispatcher = next(
+            dispatcher
+            for dispatcher in psh._dispatchers_for("memory_prefetch")
+            if dispatcher.callback is target_callback
+        )
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="pending")
+
+        original_dispose = manager._dispose_registrations
+
+        def close_plugin_state(registrations):
+            original_dispose(registrations)
+            if any(registration.plugin_key == "target-observer" for registration in registrations):
+                state_closed.set()
+                release_running.set()
+                target_dispatcher.events.join()
+
+        monkeypatch.setattr(manager, "_dispose_registrations", close_plugin_state)
+        assert manager.unload(target) is True
+
+        assert not pending_ran_after_close.is_set()
+        assert psh.enqueue_plugin_observer_hook(
+            "memory_prefetch", event_id="after-unload"
+        )
+        assert survivor_received_after_unload.wait(timeout=5.0)
+    finally:
+        release_running.set()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_targeted_unload_retires_dispatcher_for_callback_shared_with_survivor(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher()
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "shared-targeted-unload"))
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    monkeypatch.setattr(plugins, "iter_hook_callbacks", manager.iter_hook_callbacks)
+    manager._discovered = True
+
+    target = plugins.PluginManifest(name="target-shared-observer")
+    survivor = plugins.PluginManifest(name="surviving-shared-observer")
+    running = threading.Event()
+    release_running = threading.Event()
+    state_closed = threading.Event()
+    pending_ran_after_close = threading.Event()
+    after_unload_calls = []
+
+    def shared_callback(**kwargs):
+        if kwargs["event_id"] == "running":
+            running.set()
+            release_running.wait(timeout=5.0)
+        elif kwargs["event_id"] == "pending" and state_closed.is_set():
+            pending_ran_after_close.set()
+        elif kwargs["event_id"] == "after-unload":
+            after_unload_calls.append(kwargs["event_id"])
+
+    plugins.PluginContext(target, manager).register_hook(
+        "memory_prefetch", shared_callback
+    )
+    plugins.PluginContext(survivor, manager).register_hook(
+        "memory_prefetch", shared_callback
+    )
+
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="running")
+        assert running.wait(timeout=5.0)
+        dispatcher = next(
+            item
+            for item in psh._dispatchers_for("memory_prefetch")
+            if item.callback is shared_callback
+        )
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="pending")
+
+        original_dispose = manager._dispose_registrations
+
+        def close_plugin_state(registrations):
+            original_dispose(registrations)
+            if any(
+                registration.plugin_key == "target-shared-observer"
+                for registration in registrations
+            ):
+                state_closed.set()
+                release_running.set()
+                dispatcher.events.join()
+
+        monkeypatch.setattr(manager, "_dispose_registrations", close_plugin_state)
+        assert manager.unload(target) is True
+
+        assert not pending_ran_after_close.is_set()
+        assert psh.enqueue_plugin_observer_hook(
+            "memory_prefetch", event_id="after-unload"
+        )
+        _wait_for(lambda: after_unload_calls)
+        assert len(after_unload_calls) == 1
+    finally:
+        release_running.set()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_manager_unload_from_its_observer_worker_does_not_self_join(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "self-unload-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    unloaded = threading.Event()
+
+    def unload_from_worker(**_kwargs):
+        manager.unload()
+        unloaded.set()
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="self-unload-observer"), manager).register_hook(
+        "memory_prefetch", unload_from_worker
+    )
+    token = set_hermes_home_override(home)
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="unload")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert unloaded.wait(timeout=5.0)
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_observer_enqueue_does_not_wait_for_manager_lifecycle_lock(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "busy-manager-profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    manager._discovered = True
+    plugins.PluginContext(plugins.PluginManifest(name="busy-manager-observer"), manager).register_hook(
+        "memory_prefetch", lambda **_kwargs: None
+    )
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+
+    def hold_manager_lock():
+        with manager._discovery_lock:
+            lock_held.set()
+            release_lock.wait(timeout=10.0)
+
+    holder = threading.Thread(target=hold_manager_lock)
+    emitter = None
+    enqueue_completed = threading.Event()
+    enqueue_result = {}
+    enqueue_errors = []
+
+    def enqueue_during_lifecycle_lock():
+        token = set_hermes_home_override(home)
+        try:
+            enqueue_result["queued"] = psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="during-unload"
+            )
+        except BaseException as exc:
+            enqueue_errors.append(exc)
+        finally:
+            reset_hermes_home_override(token)
+            enqueue_completed.set()
+
+    holder.start()
+    try:
+        assert lock_held.wait(timeout=5.0)
+        emitter = threading.Thread(target=enqueue_during_lifecycle_lock)
+        emitter.start()
+        # Completion must be signalled while the lifecycle lock is still held.
+        assert enqueue_completed.wait(timeout=5.0)
+        assert not enqueue_errors
+        assert enqueue_result["queued"] is False
+    finally:
+        release_lock.set()
+        holder.join(timeout=5.0)
+        if emitter is not None:
+            emitter.join(timeout=5.0)
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    assert not holder.is_alive()
+    assert emitter is not None and not emitter.is_alive()
+
+
+def test_observer_callbacks_keep_signature_and_async_hook_contract(monkeypatch):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    narrow_called = threading.Event()
+    async_called = threading.Event()
+    seen = []
+
+    def narrow_observer(delta):
+        seen.append(("narrow", delta))
+        narrow_called.set()
+
+    async def async_observer(**kwargs):
+        import asyncio
+
+        await asyncio.sleep(0)
+        seen.append(("async", kwargs["delta"]))
+        async_called.set()
+
+    _patch_test_callback_manager(
+        monkeypatch, {"on_stream_delta": [narrow_observer, async_observer]}
+    )
+
+    assert enqueue_plugin_observer_hook("on_stream_delta", delta="kept")
+    assert narrow_called.wait(timeout=5.0)
+    assert async_called.wait(timeout=5.0)
+    shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert sorted(seen) == [("async", "kept"), ("narrow", "kept")]
+
+
+def test_observer_enqueue_drops_during_same_home_plugin_manager_reservation(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = (tmp_path / "reserved-profile").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+        manager._discovered = True
+        callback_calls = []
+        callback_called = threading.Event()
+
+        def observer(**kwargs):
+            callback_calls.append(kwargs["event_id"])
+            callback_called.set()
+    finally:
+        reset_hermes_home_override(token)
+
+    reservation_entered = threading.Event()
+    release_reservation = threading.Event()
+    reservation_errors = []
+
+    def hold_reservation():
+        scoped = set_hermes_home_override(home)
+        try:
+            with reserve_plugin_manager_for_home(home):
+                manager = plugins.get_plugin_manager()
+                manager._discovered = True
+                plugins.PluginContext(
+                    plugins.PluginManifest(name="reservation-observer"), manager
+                ).register_hook("memory_prefetch", observer)
+                reservation_entered.set()
+                assert release_reservation.wait(timeout=10.0)
+        except BaseException as exc:
+            reservation_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+
+    reservation = threading.Thread(target=hold_reservation)
+    emitter = None
+    enqueue_completed = threading.Event()
+    enqueue_result = {}
+    enqueue_errors = []
+
+    def enqueue():
+        scoped = set_hermes_home_override(home)
+        try:
+            enqueue_result["queued"] = psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="during-reservation"
+            )
+        except BaseException as exc:
+            enqueue_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+            enqueue_completed.set()
+
+    try:
+        reservation.start()
+        assert reservation_entered.wait(timeout=5.0)
+        emitter = threading.Thread(target=enqueue)
+        emitter.start()
+        assert enqueue_completed.wait(timeout=2.0)
+        assert not callback_called.is_set()
+        assert not enqueue_errors
+        assert enqueue_result["queued"] is False
+        release_reservation.set()
+        reservation.join(timeout=5.0)
+        assert not reservation.is_alive()
+        assert not reservation_errors
+
+        scoped = set_hermes_home_override(home)
+        try:
+            manager = plugins.get_plugin_manager()
+            manager._discovered = True
+            plugins.PluginContext(
+                plugins.PluginManifest(name="reservation-observer"), manager
+            ).register_hook("memory_prefetch", observer)
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="after-reservation"
+            ) is True
+        finally:
+            reset_hermes_home_override(scoped)
+        assert callback_called.wait(timeout=5.0)
+        assert callback_calls == ["after-reservation"]
+    finally:
+        release_reservation.set()
+        reservation.join(timeout=5.0)
+        if emitter is not None:
+            emitter.join(timeout=5.0)
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert not reservation.is_alive()
+    assert emitter is not None and not emitter.is_alive()
+    assert not reservation_errors
+
+
+def test_observer_enqueue_drops_if_reservation_starts_after_manager_capture(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    psh.shutdown_plugin_observer_dispatcher()
+    home = (tmp_path / "reservation-between-snapshot").resolve()
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    token = set_hermes_home_override(home)
+    try:
+        manager = plugins.get_plugin_manager()
+        manager._discovered = True
+        callback_called = threading.Event()
+
+        def observer(**_kwargs):
+            callback_called.set()
+
+        plugins.PluginContext(
+            plugins.PluginManifest(name="reservation-race-observer"), manager
+        ).register_hook("memory_prefetch", observer)
+    finally:
+        reset_hermes_home_override(token)
+
+    captured = threading.Event()
+    resume_callback_lookup = threading.Event()
+    original_active_manager = psh._active_plugin_manager
+
+    def pause_after_manager_capture():
+        current = original_active_manager()
+        captured.set()
+        assert resume_callback_lookup.wait(timeout=10.0)
+        return current
+
+    monkeypatch.setattr(psh, "_active_plugin_manager", pause_after_manager_capture)
+    reservation_entered = threading.Event()
+    release_reservation = threading.Event()
+    reservation_errors = []
+
+    def reserve_home():
+        scoped = set_hermes_home_override(home)
+        try:
+            with reserve_plugin_manager_for_home(home):
+                reservation_entered.set()
+                assert release_reservation.wait(timeout=10.0)
+        except BaseException as exc:
+            reservation_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+
+    enqueue_completed = threading.Event()
+    enqueue_result = {}
+    enqueue_errors = []
+
+    def enqueue():
+        scoped = set_hermes_home_override(home)
+        try:
+            enqueue_result["queued"] = psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="captured-before-reservation"
+            )
+        except BaseException as exc:
+            enqueue_errors.append(exc)
+        finally:
+            reset_hermes_home_override(scoped)
+            enqueue_completed.set()
+
+    reservation = threading.Thread(target=reserve_home)
+    emitter = threading.Thread(target=enqueue)
+    try:
+        emitter.start()
+        assert captured.wait(timeout=5.0)
+        reservation.start()
+        assert reservation_entered.wait(timeout=5.0)
+        resume_callback_lookup.set()
+        assert enqueue_completed.wait(timeout=3.0)
+        assert not enqueue_errors
+        assert enqueue_result["queued"] is False
+        assert not callback_called.is_set()
+    finally:
+        resume_callback_lookup.set()
+        release_reservation.set()
+        reservation.join(timeout=5.0)
+        emitter.join(timeout=5.0)
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert not reservation.is_alive()
+    assert not emitter.is_alive()
+    assert not reservation_errors
+
+
+def test_blocked_observer_worker_does_not_accumulate_across_manager_reloads(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "observer-reload"))
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    started = threading.Event()
+    release = threading.Event()
+    final_delivered = threading.Event()
+    delivered = []
+    workers = set()
+
+    def observer_for(expected_event):
+        def observer(**payload):
+            if expected_event == "first":
+                started.set()
+            release.wait(timeout=10.0)
+            delivered.append((expected_event, payload["event_id"]))
+            if expected_event == "generation-2":
+                final_delivered.set()
+
+        return observer
+
+    try:
+        for generation in range(3):
+            manager._discovered = True
+            event_id = "first" if generation == 0 else f"generation-{generation}"
+            plugins.PluginContext(
+                plugins.PluginManifest(name="reload-observer"), manager
+            ).register_hook("memory_prefetch", observer_for(event_id))
+            assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
+            if generation == 0:
+                assert started.wait(timeout=5.0)
+
+            active = {
+                thread
+                for thread in threading.enumerate()
+                if thread.name == "plugin-stream-hook:memory_prefetch" and thread.is_alive()
+            }
+            workers.update(active)
+            assert len(active) <= 1
+
+            if generation < 2:
+                manager.unload()
+
+        release.set()
+        assert final_delivered.wait(timeout=5.0)
+        assert set(delivered) == {("first", "first"), ("generation-2", "generation-2")}
+    finally:
+        release.set()
+        manager.unload()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+        for worker in workers:
+            worker.join(timeout=5.0)
+
+    assert all(not worker.is_alive() for worker in workers)
+
+
+def test_blocked_observer_worker_is_reused_across_profile_manager_replacement(
+    monkeypatch, tmp_path
+):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+    from hermes_constants import (
+        hermes_home_key,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    home = tmp_path / "observer-replaced-profile"
+    other_home = tmp_path / "observer-other-profile"
+    old_manager = plugins.PluginManager(scope_key=str(home))
+    other_manager = plugins.PluginManager(scope_key=str(other_home))
+    old_manager._discovered = other_manager._discovered = True
+    managers = {
+        hermes_home_key(home): old_manager,
+        hermes_home_key(other_home): other_manager,
+    }
+
+    def manager_for_current_profile():
+        return managers[hermes_home_key()]
+
+    monkeypatch.setattr(plugins, "get_plugin_manager", manager_for_current_profile)
+    old_started = threading.Event()
+    release_old = threading.Event()
+    successor_received = threading.Event()
+    other_received = threading.Event()
+    old_delivered = []
+    successor_delivered = []
+    other_delivered = []
+
+    def old_callback(**payload):
+        old_started.set()
+        release_old.wait(timeout=10.0)
+        old_delivered.append(payload["event_id"])
+
+    def successor_callback(**payload):
+        successor_delivered.append(payload["event_id"])
+        successor_received.set()
+
+    def other_callback(**payload):
+        other_delivered.append(payload["event_id"])
+        other_received.set()
+
+    plugins.PluginContext(
+        plugins.PluginManifest(name="old-observer"), old_manager
+    ).register_hook("memory_prefetch", old_callback)
+    plugins.PluginContext(
+        plugins.PluginManifest(name="other-observer"), other_manager
+    ).register_hook("memory_prefetch", other_callback)
+
+    try:
+        token = set_hermes_home_override(home)
+        try:
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="old-running"
+            )
+        finally:
+            reset_hermes_home_override(token)
+        assert old_started.wait(timeout=5.0)
+        old_dispatcher = next(
+            item for item in psh._dispatchers.values() if item.callback is old_callback
+        )
+        token = set_hermes_home_override(home)
+        try:
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="old-pending"
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(other_home)
+        try:
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="other-only"
+            )
+        finally:
+            reset_hermes_home_override(token)
+        assert other_received.wait(timeout=5.0)
+
+        old_manager.unload()
+        successor = plugins.PluginManager(scope_key=str(home))
+        successor._discovered = True
+        managers[hermes_home_key(home)] = successor
+        plugins.PluginContext(
+            plugins.PluginManifest(name="successor-observer"), successor
+        ).register_hook("memory_prefetch", successor_callback)
+        token = set_hermes_home_override(home)
+        try:
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="successor-only"
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        successor_dispatcher = next(
+            item for item in psh._dispatchers.values() if item.callback is successor_callback
+        )
+        other_dispatcher = next(
+            item for item in psh._dispatchers.values() if item.callback is other_callback
+        )
+        assert successor_dispatcher.thread is old_dispatcher.thread
+        assert other_dispatcher.thread is not old_dispatcher.thread
+        active_workers = {
+            dispatcher.thread
+            for dispatcher in psh._dispatchers.values()
+            if dispatcher.hook_name == "memory_prefetch"
+            and dispatcher.thread is not None
+            and dispatcher.thread.is_alive()
+        }
+        assert active_workers == {old_dispatcher.thread, other_dispatcher.thread}
+        assert not successor_received.is_set()
+
+        release_old.set()
+        assert successor_received.wait(timeout=5.0)
+        assert old_delivered == ["old-running"]
+        assert successor_delivered == ["successor-only"]
+        assert other_delivered == ["other-only"]
+    finally:
+        release_old.set()
+        for manager in set(managers.values()):
+            manager.unload()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_targeted_unload_generation_rejects_already_dequeued_observer_event(
+    monkeypatch, tmp_path
+):
+    import queue as queue_module
+
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "dequeued-targeted-unload"))
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    dequeued = threading.Event()
+    release_dequeued = threading.Event()
+    fresh_received = threading.Event()
+    stale_callback_events = []
+    replacement_events = []
+
+    class PausingQueue(queue_module.Queue):
+        def get(self, *args, **kwargs):
+            item = super().get(*args, **kwargs)
+            if (
+                isinstance(item, psh._QueuedObserverEvent)
+                and item.payload.get("event_id") == "stale"
+            ):
+                dequeued.set()
+                release_dequeued.wait(timeout=10.0)
+            return item
+
+    monkeypatch.setattr(
+        psh,
+        "queue",
+        SimpleNamespace(
+            Queue=PausingQueue, Empty=queue_module.Empty, Full=queue_module.Full
+        ),
+    )
+    target = plugins.PluginManifest(name="dequeued-target")
+    replacement = plugins.PluginManifest(name="dequeued-replacement")
+
+    def stale_callback(**payload):
+        stale_callback_events.append(payload["event_id"])
+
+    def replacement_callback(**payload):
+        replacement_events.append(payload["event_id"])
+        if payload["event_id"] == "fresh":
+            fresh_received.set()
+
+    plugins.PluginContext(target, manager).register_hook(
+        "memory_prefetch", stale_callback
+    )
+
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="stale")
+        assert dequeued.wait(timeout=5.0)
+        assert manager.unload(target) is True
+        plugins.PluginContext(replacement, manager).register_hook(
+            "memory_prefetch", replacement_callback
+        )
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id="fresh")
+        release_dequeued.set()
+        assert fresh_received.wait(timeout=5.0)
+        assert stale_callback_events == []
+        assert replacement_events == ["fresh"]
+    finally:
+        release_dequeued.set()
+        manager.unload()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_observer_enqueue_does_not_join_retired_callback_worker(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "nonblocking-observer-enqueue"))
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+
+    def blocked_callback(**_kwargs):
+        callback_started.set()
+        release_callback.wait(timeout=10.0)
+
+    target = plugins.PluginManifest(name="blocked-observer")
+    plugins.PluginContext(target, manager).register_hook(
+        "memory_prefetch", blocked_callback
+    )
+
+    try:
+        assert psh.enqueue_plugin_observer_hook(
+            "memory_prefetch", event_id="in-flight"
+        )
+        assert callback_started.wait(timeout=5.0)
+        dispatcher = next(
+            item for item in psh._dispatchers.values() if item.callback is blocked_callback
+        )
+        assert manager.unload(target) is True
+        assert dispatcher.thread is not None and dispatcher.thread.is_alive()
+
+        with monkeypatch.context() as patcher:
+            def reject_blocking_join(*, timeout=None):
+                assert timeout == 0.0
+
+            patcher.setattr(dispatcher.thread, "join", reject_blocking_join)
+            assert psh.enqueue_plugin_observer_hook(
+                "memory_prefetch", event_id="after-unload"
+            ) is False
+    finally:
+        release_callback.set()
+        manager.unload()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)

@@ -100,12 +100,35 @@ class Opaque:
         return f"<opaque {self.type_name}>"
 
 
+class _MalformedMemoryPayload(Opaque):
+    """Transport-owned cost for a payload replaced by an opaque placeholder."""
+
+    def __init__(self, cost: int):
+        super().__init__("malformed memory payload")
+        self.cost = cost
+
+
+def _opaque_wire_value(value: Any) -> Opaque:
+    name = type.__getattribute__(type(value), "__name__")
+    return Opaque(str.__str__(name)[:128])
+
+
+_MEMORY_RECORD_NAMES = {"MemoryObservation", "MemoryPrefetchResult", "MemoryObservationTuple",
+                        "MemoryObservationPayload"}
+
+
 def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _depth: int = 0) -> Any:
     """JSON-safe form of ``value``; ``refs`` may turn callables/objects into reference dicts."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if _depth > 64:
         return {"__opaque__": type(value).__name__, "repr": "<too deep>"}
+    if type(value).__module__ == "agent.memory_provider" or isinstance(value, tuple):
+        from hermes_cli.plugin_host_wire_memory import encode_memory_value
+
+        memory_value = encode_memory_value(value, refs, _depth)
+        if memory_value is not None:
+            return memory_value
     if isinstance(value, enum.Enum):
         return encode(value.value, refs, _depth + 1)
     if isinstance(value, PurePath):
@@ -113,7 +136,11 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
     if isinstance(value, (bytes, bytearray)):
         return {"__bytes__": base64.b64encode(bytes(value)).decode("ascii")}
     if isinstance(value, dict):
-        return {str(k): encode(v, refs, _depth + 1) for k, v in value.items()}
+        fields = {str(k): encode(v, refs, _depth + 1) for k, v in value.items()}
+        if "__record__" in fields:
+            # A list of pairs also decodes as a Record on older peers.
+            return {"__record__": "generic:dict", "fields": list(fields.items())}
+        return fields
     if isinstance(value, (list, tuple, set, frozenset)):
         return [encode(v, refs, _depth + 1) for v in value]
     if isinstance(value, Opaque):
@@ -124,11 +151,15 @@ def encode(value: Any, refs: Optional[Callable[[Any], Optional[dict]]] = None, _
             return ref
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         fields = {f.name: getattr(value, f.name, None) for f in dataclasses.fields(value)}
-        return {"__record__": type(value).__name__, "fields": encode(fields, refs, _depth + 1)}
+        name = type(value).__name__
+        return {"__record__": f"generic:{name}" if name in _MEMORY_RECORD_NAMES else name,
+                "fields": encode(fields, refs, _depth + 1)}
     dump = getattr(value, "model_dump", None)  # pydantic models
     if callable(dump) and not isinstance(value, type):
         try:
-            return {"__record__": type(value).__name__, "fields": encode(dump(), refs, _depth + 1)}
+            name = type(value).__name__
+            return {"__record__": f"generic:{name}" if name in _MEMORY_RECORD_NAMES else name,
+                    "fields": encode(dump(), refs, _depth + 1)}
         except Exception:
             pass
     try:
@@ -145,7 +176,47 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
     if not isinstance(value, dict):
         return value
     if "__record__" in value:
-        return Record(decode(value.get("fields") or {}, resolve))
+        record_name = value["__record__"]
+        if record_name == "MemoryObservationPayload":
+            return value.get("fields")
+        fields = decode(value.get("fields") or {}, resolve)
+        if record_name == "generic:dict":
+            return dict(fields)
+        if record_name == "MemoryObservation":
+            from agent.memory_provider import (
+                MAX_MEMORY_OBSERVATION_OPERATION_NODES,
+                MemoryObservation,
+                _freeze_memory_observation_payload,
+            )
+
+            payload = fields.get("payload")
+            cost = value.get("malformed_traversal_cost")
+            if (isinstance(payload, Opaque) and type(cost) is int
+                    and 0 <= cost <= MAX_MEMORY_OBSERVATION_OPERATION_NODES + 1):
+                payload = _MalformedMemoryPayload(cost)
+            if not isinstance(payload, Opaque):
+                try:
+                    payload, _ = _freeze_memory_observation_payload(payload)
+                except (TypeError, ValueError, OverflowError):
+                    payload = _opaque_wire_value(payload)
+            return MemoryObservation(
+                source_kind=fields.get("source_kind"),
+                schema=fields.get("schema"),
+                version=fields.get("version"),
+                payload=payload,
+                provider=fields.get("provider", ""),
+            )
+        if record_name == "MemoryPrefetchResult":
+            from agent.memory_provider import MemoryPrefetchResult
+
+            return MemoryPrefetchResult(
+                context=fields.get("context", ""),
+                observations=fields.get("observations", ()),
+                _wire_truncated=fields.get("observations_truncated") is True,
+            )
+        if record_name == "MemoryObservationTuple":
+            return tuple(fields.get("items", ()))
+        return Record(fields)
     if "__bytes__" in value:
         return base64.b64decode(value["__bytes__"])
     if "__opaque__" in value:

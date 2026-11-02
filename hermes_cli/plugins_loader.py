@@ -545,6 +545,8 @@ class PluginLoaderMixin:
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
         """Load one plugin with the manager's home bound as current."""
+        if getattr(self, "_retired", False):
+            return
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)

@@ -131,6 +131,7 @@ class HostRuntime:
     def __init__(self, reader, writer):
         self.refs: dict[int, Any] = {}
         self.owners: dict[int, str] = {}
+        self.memory_provider_names: dict[int, Any] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
         self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
@@ -183,7 +184,13 @@ class HostRuntime:
                 # Class-level defaults too: an engine that sets ``context_length`` only later in
                 # ``update_model()`` must not read as the base-class default forever in Hermes.
                 live.append(name)
-        return {"__object__": self._remember(plugin_key, obj), "methods": methods, "live": live,
+        ref = self._remember(plugin_key, obj)
+        from agent.memory_provider import MemoryProvider
+        if isinstance(obj, MemoryProvider):
+            # Both wire validation and the parent proxy must use the same loaded identity.
+            name = obj.name
+            self.memory_provider_names[ref] = str.__str__(name) if isinstance(name, str) else None
+        return {"__object__": ref, "methods": methods, "live": live,
                 "type": type(obj).__name__}
 
     def resolve_from_parent(self, ref: dict) -> Any:
@@ -229,12 +236,18 @@ class HostRuntime:
             return asyncio.run_coroutine_threadsafe(_on_behalf_of(result, serving_request()), self.loop).result()
         return result
 
-    def _encode_result(self, plugin_key: str, value: Any) -> Any:
+    def _encode_result(
+        self, plugin_key: str, value: Any, *, memory_prefetch: bool = False, provider_name: Any = None
+    ) -> Any:
         def refs(obj: Any) -> Optional[dict]:
             if _provider_base(obj) is not None:  # e.g. the engine ``clone_for_agent`` returns
                 return self._describe_object(plugin_key, obj)
             return self.ref_for(plugin_key, obj, allow_objects=False)
 
+        if memory_prefetch:
+            from hermes_cli.plugin_host_wire_memory import encode_memory_prefetch_result
+
+            return encode_memory_prefetch_result(value, refs, 0, provider_name)
         return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
@@ -356,13 +369,31 @@ class HostRuntime:
         base = _provider_base(obj)
         if base is not None:  # the ABC's annotations say what Hermes passed (``home_path: Path``)
             args, kwargs = restore_arguments(declared_member(base, method), args, kwargs)
-        return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
+        memory_prefetch = False
+        if method == "prefetch":
+            from agent.memory_provider import MemoryProvider
+
+            memory_prefetch = isinstance(obj, MemoryProvider)
+        names = getattr(self, "memory_provider_names", {})
+        provider_name = (names[ref] if ref in names else obj.name) if memory_prefetch else None
+        if isinstance(provider_name, str):
+            provider_name = str.__str__(provider_name)
+        else:
+            provider_name = None
+        value = self._run(getattr(obj, method)(*args, **kwargs))
+        return self._encode_result(
+            self.owners.get(ref, ""), value, memory_prefetch=memory_prefetch,
+            provider_name=provider_name,
+        )
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:
         obj = self.refs.get(int(params["ref"]))
         name = str(params["name"])
         if obj is None:
             raise LookupError(f"plugin host object {params['ref']} was released")
+        if name == "name" and int(params["ref"]) in self.memory_provider_names:
+            return self._encode_result(self.owners.get(int(params["ref"]), ""),
+                                       self.memory_provider_names[int(params["ref"])])
         if name.startswith("_") or not hasattr(obj, name):
             return {"__missing__": name}
         return self._encode_result(self.owners.get(int(params["ref"]), ""), getattr(obj, name))
@@ -373,6 +404,7 @@ class HostRuntime:
             for ref in params.get("refs") or ():
                 self.refs.pop(int(ref), None)
                 self.owners.pop(int(ref), None)
+                self.memory_provider_names.pop(int(ref), None)
 
     def op_config_schema(self, params: dict[str, Any]) -> Any:
         """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
@@ -403,6 +435,7 @@ class HostRuntime:
             for ref in [r for r, owner in self.owners.items() if owner == plugin_key]:
                 self.refs.pop(ref, None)
                 self.owners.pop(ref, None)
+                self.memory_provider_names.pop(ref, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
             for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:

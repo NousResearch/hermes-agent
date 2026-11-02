@@ -6,6 +6,13 @@ import json
 from typing import Any, Callable, Optional
 
 
+def _observation_wire_budget() -> int:
+    from agent.memory_provider import MAX_MEMORY_OBSERVATION_BATCH_BYTES, MAX_MEMORY_OBSERVATIONS
+
+    # ASCII JSON expands UTF-8 by at most 3x; allow for per-record wrappers.
+    return MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3 + MAX_MEMORY_OBSERVATIONS * 1024 - 2
+
+
 def _encode_memory_observation(
     value: Any, refs: Optional[Callable], depth: int, budget: list[int]
 ) -> Any:
@@ -83,7 +90,6 @@ def _encode_memory_prefetch_result(
     from hermes_cli.plugin_host_wire import encode
     from agent.memory_manager_prefetch import _builtin_dict_fields
     from agent.memory_provider import (
-        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
         MAX_MEMORY_OBSERVATION_OPERATION_NODES,
         MemoryPrefetchResult,
@@ -117,7 +123,7 @@ def _encode_memory_prefetch_result(
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
     observations_truncated = observations_truncated or source_count > count
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
-    remaining_bytes = MAX_MEMORY_OBSERVATION_BATCH_BYTES - 2
+    remaining_bytes = _observation_wire_budget()
     encoded_observations = []
     for index in range(count):
         encoded = _encode_memory_observation(get_item(index), refs, depth + 1, budget)
@@ -149,10 +155,8 @@ def _encode_memory_observation_tuple(
 ) -> Any:
     from hermes_cli.plugin_host_wire import encode
     from agent.memory_provider import (
-        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
         MAX_MEMORY_OBSERVATION_OPERATION_NODES,
-        MAX_MEMORY_OBSERVATIONS,
         MemoryObservation,
     )
 
@@ -163,14 +167,7 @@ def _encode_memory_observation_tuple(
         return None
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
-    # Manager normalization already caps the trusted tuple at 64 KiB and 16
-    # observations. ASCII-safe host JSON can expand UTF-8 by at most 3x; the
-    # per-record wrapper overhead is below 1 KiB per accepted observation.
-    remaining_bytes = (
-        MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3
-        + MAX_MEMORY_OBSERVATIONS * 1024
-        - 2
-    )
+    remaining_bytes = _observation_wire_budget()
     items = []
     for index in range(count):
         encoded = _encode_memory_observation(

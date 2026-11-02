@@ -52,13 +52,13 @@ MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
     "description": (
         "Connect the user to apps. Two kinds: a hosted connector account (Gmail, Notion, ...) "
-        "served through the tool gateway, and a local MCP server from the bundled catalog. "
+        "served through the tool gateway, and an MCP server already configured in mcp_servers. "
         "Targets go in 'connectors': a bare slug or {\"name\": \"gmail\"} is a hosted connector "
         "account; {\"name\": \"linear\", \"mcp\": true} is a local MCP server. Many names exist on "
         "both sides, so the user's own words decide. Pass \"mcp\": true only when the user asks "
-        "for an MCP server, a local server or an install, or when the name exists only as a "
-        "catalog entry; otherwise the target is hosted. 'connect' and 'reconnect' are hosted "
-        "actions; 'install', 'enable' and 'authorize' are MCP actions. A target the other side "
+        "for an MCP server or a local server, or when the name exists only in mcp_servers; "
+        "otherwise the target is hosted. 'connect' and 'reconnect' are hosted "
+        "actions; 'enable' and 'authorize' are MCP actions. A target the other side "
         "owns is refused with the call that does work. "
         "Hosted actions: 'display' (desktop only; elsewhere returns status) shows every connector and "
         "waits for Continue (300 s); put slugs to suggest in 'connectors'. Returns connected/newly_connected "
@@ -76,8 +76,9 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "USER to open in a browser (never open it yourself); ask them to say when they are done, "
         "then use 'status'. "
         "When a hosted connector tool call returns CONNECTION_REQUIRED, use 'connect'. "
-        "MCP actions (every target must carry \"mcp\": true): 'install' adds a catalog entry, "
-        "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
+        "MCP actions (every target must carry \"mcp\": true): "
+        "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. A new MCP "
+        "server is added by the user with `hermes mcp add`. "
         "They show the user an approval card and block until it settles. Never hand-edit "
         "mcp_servers config — always use this tool. After a skip or a timeout, do not re-ask on "
         "your own: continue without the app or ask in chat. A later request from the USER for that "
@@ -95,7 +96,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                 "enum": list(ALL_ACTIONS),
                 "description": (
                     "Defaults to status. connect, reconnect and rename take hosted connector slugs only. "
-                    "install, enable and authorize take mcp:true targets only."
+                    "enable and authorize take mcp:true targets only."
                 ),
             },
             "connectors": {
@@ -110,7 +111,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                                 "mcp": {
                                     "type": "boolean",
                                     "description": (
-                                        "true = a local MCP server from the catalog; absent or "
+                                        "true = an MCP server configured in mcp_servers; absent or "
                                         "false = a hosted connector account."
                                     ),
                                 },

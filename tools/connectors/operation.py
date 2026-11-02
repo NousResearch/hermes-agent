@@ -39,7 +39,7 @@ class Target:
     # Earliest the watcher may read this target's account again; set from a 429's Retry-After so a
     # rate-limited route is not hammered once per second.
     next_read_at: float = 0.0
-    # The credentials an MCP install still needs ({name, prompt, required}); the card draws a
+    # The credentials a catalog install still needs ({name, prompt, required}); the card draws a
     # field per entry and holds its verb until every required one has text.
     required_env: list[dict[str, Any]] = field(default_factory=list)
     # Fields a transition passes through to the model (``tools`` on a connected MCP target).
@@ -249,7 +249,7 @@ class ConnectionOperation:
         from tools.tool_search_catalog import build_catalog_listing_with_form
 
         for target in result["targets"]:
-            # Setup instructions are the card's text for the user. A catalog entry's notes can be
+            # Setup instructions are the card's text for the user. Their notes can be
             # older than this flow ("restart your session to load the tools"), and the model would
             # repeat them after a result that says the tools are callable now.
             target.pop("instructions", None)

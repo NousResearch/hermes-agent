@@ -1,17 +1,19 @@
 """MCP targets of manage_connections (the fold that retired setup_mcp).
 
 Contracts:
-- the backend owns the work: authorize mints its own URL, install writes credentials and installs,
-  enable flips the flag; the card only says approved / skipped / continue
+- the backend owns the work: authorize mints its own URL, enable flips the flag; the card only
+  says approved / skipped / continue
 - a card claim of any other state moves nothing
 - off the desktop there is no card: the work runs at once and the result carries the link
-- catalog validation: install is catalog-only, enable/authorize need a configured server
+- validation: enable/authorize need a server in mcp_servers, read without the MCP catalog module;
+  an old schema's install gets a pointed error
 - the replay shim keeps an old ``setup_mcp`` call dispatching
 - deadline ownership: fixed operation deadline + sequential-deadline exemption
 """
 
 import contextlib
 import json
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,11 +22,11 @@ import pytest
 
 from tools.connectors.contract import SettleReason, TargetState
 from tools.connectors import live
-from tools.connectors.mcp import apply_answer
+from tools.connectors.mcp import _configured_names as _real_configured_names
+from tools.connectors.mcp import _McpBackend, apply_answer
 from tools.connectors.tool import manage_connections
 from tools.registry import registry
 
-CATALOG = ["figma", "linear", "notion"]
 CONFIGURED = {"paper": {"command": "paper-mcp"}, "linear": {"url": "https://mcp.linear.app/mcp"}}
 
 
@@ -50,23 +52,14 @@ class FakeAttempt:
 
 
 class FakeBackend:
-    """The one fake: the catalog, the installer and the OAuth flow runner behind ``mcp.py``."""
+    """The one fake: the enabler and the OAuth flow runner behind ``mcp.py``."""
 
-    def __init__(self, *, missing_env=(), tools=("read", "write"), registered_tools=(),
-                 install_error="", registration_error="", oauth_error=""):
+    def __init__(self, *, registered_tools=(), registration_error="", oauth_error=""):
         self.calls = []
         self.attempts = {}
-        self.missing_env = list(missing_env)
-        self.tools = list(tools)
         self.registered_tools = list(registered_tools)
-        self.install_error = install_error
         self.registration_error = registration_error
         self.oauth_error = oauth_error
-
-    def required_env(self, name):
-        self.calls.append(("required_env", name))
-        return [{"name": key, "prompt": f"{key}?", "required": True,
-                 "secret": True, "default": ""} for key in self.missing_env]
 
     def start_oauth(self, name):
         self.calls.append(("start_oauth", name))
@@ -75,12 +68,6 @@ class FakeBackend:
         attempt = FakeAttempt(f"https://auth.example/{name}/{len(self.attempts) + 1}")
         self.attempts[name] = attempt
         return attempt
-
-    def install(self, name, env):
-        self.calls.append(("install", name, dict(env)))
-        if self.install_error:
-            raise RuntimeError(self.install_error)
-        return list(self.tools)
 
     def enable(self, name):
         self.calls.append(("enable", name))
@@ -101,7 +88,7 @@ def _clean_live():
 @pytest.fixture(autouse=True)
 def _catalog(backend):
     # The default backend is patched too: a call that cannot be handed one (registry dispatch, the
-    # inline executor) must never reach the real catalog or installer from a test.
+    # inline executor) must never reach a real server from a test.
     registered = []
 
     def register(runner, target, name):
@@ -121,8 +108,7 @@ def _catalog(backend):
             registered.append(tool_name)
         return names, ""
 
-    with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
+    with patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
          patch("tools.connectors.mcp._default_backend", return_value=backend), \
          patch("tools.connectors.mcp._register_connected", side_effect=register):
         yield
@@ -184,23 +170,15 @@ def _mcp(args, callback, **kw):
         return json.loads(manage_connections(args, connection_callback=callback, session_id="s1", **kw))
 
 
-def test_install_waits_for_the_credentials_it_declares_and_installs_with_them():
-    backend = FakeBackend(
-        missing_env=["FIGMA_TOKEN"], tools=["probe_only"],
-        registered_tools=["mcp__figma__get_file", "mcp__figma__list_files"],
-    )
-    answer = json.dumps({"targets": [{"name": "figma", "status": "approved", "env": {"FIGMA_TOKEN": "tok-1"}}]})
-    callback = _answering(answer)
-    out = _mcp({"action": "install", "connectors": [_mcp_target("figma")]}, callback, mcp_backend=backend)
+def test_enable_flips_the_server_and_reports_its_registered_tools():
+    backend = FakeBackend(registered_tools=["mcp__paper__read", "mcp__paper__write"])
+    answer = json.dumps({"targets": [{"name": "paper", "status": "approved"}]})
+    out = _mcp({"action": "enable", "connectors": [_mcp_target("paper")]}, _answering(answer), mcp_backend=backend)
 
-    (offered,) = callback.seen[0]["targets"]
-    assert offered["state"] == TargetState.pending.value
-    assert offered["required_env"] == [{"name": "FIGMA_TOKEN", "prompt": "FIGMA_TOKEN?",
-                                        "required": True, "secret": True, "default": ""}]
-    assert ("install", "figma", {"FIGMA_TOKEN": "tok-1"}) in backend.calls
+    assert ("enable", "paper") in backend.calls
     (settled,) = out["targets"]
     assert settled["state"] == TargetState.connected.value
-    assert settled["tools"] == ["mcp__figma__get_file", "mcp__figma__list_files"]
+    assert settled["tools"] == ["mcp__paper__read", "mcp__paper__write"]
     assert all(name in settled["tools_listing"] for name in settled["tools"])
     assert "tool_describe" in settled["tools_listing"] and "tool_call" in settled["tools_listing"]
 
@@ -218,23 +196,21 @@ def test_a_card_claim_other_than_approved_or_skipped_moves_nothing(backend):
 
 def test_no_answer_settles_by_deadline_and_marks_targets_not_connected(backend):
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
-        out = _mcp({"action": "install", "connectors": [_linear()]}, _answering(None), mcp_backend=backend)
+        out = _mcp({"action": "enable", "connectors": [_linear()]}, _answering(None), mcp_backend=backend)
     assert out["settled_by"] == SettleReason.deadline.value
     assert out["targets"][0]["state"] == TargetState.not_connected.value
     assert "error" not in out
 
 
-def test_mcp_secrets_never_reach_the_model():
-    backend = FakeBackend(missing_env=["LINEAR_API_KEY"], registration_error="sk-secret was rejected")
-    answer = json.dumps({"targets": [{"name": "linear", "status": "approved",
-                                      "env": {"LINEAR_API_KEY": "sk-secret"}}]})
-    out = _mcp({"action": "install", "connectors": [_linear()]}, _answering(answer), mcp_backend=backend)
-    payload = json.dumps(out)
-    assert "sk-secret" not in payload
-    assert "[REDACTED]" in payload
+def test_a_credential_in_a_failure_never_reaches_the_model():
+    secret = "sk-proj-" + "a1B2c3D4e5F6g7H8i9J0" * 2
+    backend = FakeBackend(registration_error=f"{secret} was rejected")
+    answer = json.dumps({"targets": [{"name": "linear", "status": "approved"}]})
+    out = _mcp({"action": "enable", "connectors": [_linear()]}, _answering(answer), mcp_backend=backend)
+    assert secret not in json.dumps(out)
     assert out["targets"][0]["state"] == TargetState.connected.value
     assert out["targets"][0]["tools"] == []
-    assert out["targets"][0]["discovery_error"] == "[REDACTED] was rejected"
+    assert out["targets"][0]["discovery_error"].endswith(" was rejected")
 
 
 # ---------------------------------------------------------------------------
@@ -269,31 +245,52 @@ def test_a_managed_action_never_accepts_mcp_targets_and_vice_versa():
     assert "managed-connector action" in out["error"]
     assert client.calls == []  # rejected before any gateway call
 
-    out = json.loads(manage_connections({"action": "install", "connectors": ["gmail", _linear()]}))
+    out = json.loads(manage_connections({"action": "enable", "connectors": ["gmail", _linear()]}))
     assert "must carry" in out["error"]
 
 
 
 
 def test_unknown_target_fields_are_rejected():
-    out = json.loads(manage_connections({"action": "install", "connectors": [_linear(url="https://evil")]}))
+    out = json.loads(manage_connections({"action": "enable", "connectors": [_linear(url="https://evil")]}))
     assert "unknown target field" in out["error"] and "url" in out["error"]
 
 
 # ---------------------------------------------------------------------------
-# catalog validation
+# validation
 # ---------------------------------------------------------------------------
 
 
-def test_install_is_catalog_only_and_lists_the_catalog_on_a_miss():
-    out = json.loads(manage_connections({"action": "install", "connectors": [{"name": "github", "mcp": True}]}))
-    assert "github" in out["error"]
-    assert "figma, linear, notion" in out["error"]
+def test_install_from_an_old_schema_is_a_pointed_tool_error(backend):
+    """A resumed session's cached schema still lists install; the call must explain, not crash."""
+    out = json.loads(manage_connections({"action": "install", "connectors": [_linear()]}, mcp_backend=backend))
+    assert "enable" in out["error"] and "authorize" in out["error"] and "hermes mcp add" in out["error"]
+    assert backend.calls == []
 
 
 def test_enable_and_authorize_need_a_configured_server():
     out = json.loads(manage_connections({"action": "enable", "connectors": [{"name": "figma", "mcp": True}]}))
-    assert "figma" in out["error"] and "paper" in out["error"]
+    assert "figma" in out["error"] and "paper" in out["error"] and "hermes mcp add" in out["error"]
+
+
+def test_enable_and_authorize_work_for_a_configured_server_without_the_catalog_module(monkeypatch, backend):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["mcp_servers"] = {"mine": {"url": "https://mcp.example.test/mcp", "enabled": False}}
+    save_config(cfg)
+    monkeypatch.setitem(sys.modules, "hermes_cli.mcp_catalog", None)
+    monkeypatch.setattr("tools.connectors.mcp._configured_names", _real_configured_names)
+
+    class RealEnable(_McpBackend, FakeBackend):
+        """The production enable; the fake only keeps the registration bookkeeping."""
+
+    enabled = _off_desktop({"action": "enable", "connectors": [_mcp_target("mine")]}, mcp_backend=RealEnable())
+    assert enabled["targets"][0]["state"] == TargetState.connected.value
+    assert load_config()["mcp_servers"]["mine"]["enabled"] is True
+
+    authorized = _off_desktop({"action": "authorize", "connectors": [_mcp_target("mine")]}, mcp_backend=backend)
+    assert authorized["targets"][0]["connect_url"] == "https://auth.example/mine/1"
 
 
 # ---------------------------------------------------------------------------
@@ -316,15 +313,15 @@ def test_inline_executor_hands_the_agent_callback_to_the_tool(backend):
     assert out["targets"][0]["state"] == TargetState.connected.value
 
 
-def test_setup_mcp_replay_shim_translates_to_an_mcp_target(backend):
+def test_setup_mcp_replay_shim_without_an_action_enables_and_never_installs(backend):
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "skipped"}]}))
     with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(INLINE_TOOL_EXECUTORS["setup_mcp"](
-            _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task", tool_call_id="call-9")))
+            _agent(callback), {"server": "linear", "reason": "old convo"}, InlineToolContext("task", tool_call_id="call-9")))
     (target,) = callback.seen[0]["targets"]
-    assert (target["name"], target["kind"], target["action"], target["state"]) == ("linear", "mcp", "install", "pending")
+    assert (target["name"], target["kind"], target["action"], target["state"]) == ("linear", "mcp", "enable", "pending")
     assert callback.seen[0]["tool_call_id"] == "call-9"
     assert out["targets"][0]["state"] == TargetState.skipped.value
 

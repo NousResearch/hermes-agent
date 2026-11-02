@@ -2187,8 +2187,8 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("drive_preview", {"action": "elements"}),
         ("annotate_preview", {"action": "clear"}),
         ("read_window_below", {}),
-        ("manage_connections", {"action": "install", "connectors": [{"name": "linear", "mcp": True}]}),
-        ("setup_mcp", {"server": "linear", "action": "install"}),
+        ("manage_connections", {"action": "enable", "connectors": [{"name": "linear", "mcp": True}]}),
+        ("setup_mcp", {"server": "linear"}),
         ("manage_catalog", {"action": "search", "query": "blender"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
@@ -2246,16 +2246,9 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
-        # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
-        # backend at once; pin the catalog and the backend so the run is hermetic.
-        monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
+        # manage_connections / setup_mcp shim: nothing is configured, so the MCP leg answers with
+        # the validation error and never reaches a backend.
         monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
-
-        class _NoInstallBackend:
-            def required_env(self, name):
-                return [{"name": "LINEAR_API_KEY", "prompt": "API key", "required": True}]
-
-        monkeypatch.setattr("tools.connectors.mcp._default_backend", _NoInstallBackend)
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,

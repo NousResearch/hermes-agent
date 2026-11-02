@@ -244,7 +244,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
     return _manage_connections(agent, {
-        "action": args.get("action", "install"),
+        "action": args.get("action", "enable"),
         "connectors": [{"name": args.get("server", ""), "mcp": True}],
     }, ctx)
 

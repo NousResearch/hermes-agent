@@ -33,7 +33,7 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
 
 
 @pytest.mark.parametrize("flatten_probe", [False, True])
-def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe):
+def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_path, flatten_probe, monkeypatch):
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
     from hermes_state import SessionDB
@@ -45,6 +45,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     from gateway.session_context import reset_session_vars, set_session_vars
 
     # A desktop session: the MCP card exists only there.
+    monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: ["linear"])
     set_session_vars(source="desktop", session_key="current-session", session_id="current-session")
 
     db = SessionDB(tmp_path / "recall.db")
@@ -72,7 +73,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         {"name": "session_search", "arguments": {"session_id": "past-session"}},
         {"name": "todo_list", "arguments": {"todos": [{"id": "a", "content": "live-store-proof", "status": "pending"}]}},
         {"name": "manage_connections", "arguments": {
-            "action": "install", "connectors": [{"name": "linear", "mcp": True}]}},
+            "action": "enable", "connectors": [{"name": "linear", "mcp": True}]}},
     ]
     results = []
     try:
@@ -89,7 +90,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
         assert "live-db-proof" in json.dumps(results[0])
         assert agent._todo_store.read()[0]["content"] == "live-store-proof"
         assert results[2]["targets"][0] == {
-            "name": "linear", "kind": "mcp", "action": "install", "state": "skipped"}
+            "name": "linear", "kind": "mcp", "action": "enable", "state": "skipped"}
         assert [(c["tool_call_id"], [t["name"] for t in c["targets"]]) for c in callbacks] == [("call", ["linear"])]
     finally:
         db.close()

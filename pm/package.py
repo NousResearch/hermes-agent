@@ -89,6 +89,15 @@ class Package:
     # Windows ARM64 built-in emulation (no native arm64 artifact exists).
     # The arch guard accepts the x64 PE on these targets.
     emulated_arch_targets: frozenset[str] = frozenset()
+    # Exact, entry-relative regular files produced by the runtime, per target.
+    # Links and directories remain payload even at a declared runtime path.
+    runtime_files: dict[str, frozenset[str]] = {}
+
+    def digest(self, entry: Path, target: str) -> str:
+        """Bind published payload bytes, excluding this target's declared runtime files."""
+        from pm.store import tree_digest
+
+        return tree_digest(entry, runtime_files=self.runtime_files.get(target, frozenset()))
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)

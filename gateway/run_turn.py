@@ -89,8 +89,6 @@ def _unexpected_silence_reply() -> str:
     return t("gateway.errors.unexpected_silence")
 
 
-
-
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
     (#1630 skip) and the user-facing reply so the two can never disagree.
@@ -430,7 +428,6 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(t("gateway.session.info_endpoint", url=base_url))
         return "\n".join(lines)
-
 
     def _resolve_enabled_toolsets_for_source(
         self, user_config: dict, source: SessionSource, platform_key: str,

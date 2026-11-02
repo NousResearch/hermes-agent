@@ -43,7 +43,8 @@ def test_dead_cwd_runs_in_fallback_and_reports_it_once(tmp_path):
 
 
 def test_terminal_tool_recovers_a_dead_session_cwd_with_a_model_notice(tmp_path, monkeypatch):
-    """The session record carries the dead path on every call; the tool must run, warn, then heal."""
+    """The session record carries the dead path on every call; the tool must run, warn, then heal.
+    An explicit ``workdir`` that does not exist is refused instead."""
     from tools.terminal_tool import terminal_tool
     from tools.terminal_tool_lifecycle import cleanup_vm
 
@@ -60,6 +61,11 @@ def test_terminal_tool_recovers_a_dead_session_cwd_with_a_model_notice(tmp_path,
         assert recovered["exit_code"] == 0, recovered
         assert recovered["output"].strip() == str(sub.parent)
         assert str(sub) in recovered["cwd_fallback"] and str(sub.parent) in recovered["cwd_fallback"]
+
+        # A workdir the model names itself never falls back: a typo must not run one level up.
+        refused = json.loads(terminal_tool(command="touch marker", workdir=str(sub), task_id=task))
+        assert refused["exit_code"] == 126 and "did not run" in refused["error"], refused
+        assert not (sub.parent / "marker").exists()
 
         healed = json.loads(terminal_tool(command="pwd", task_id=task))
         assert healed["exit_code"] == 0 and "cwd_fallback" not in healed

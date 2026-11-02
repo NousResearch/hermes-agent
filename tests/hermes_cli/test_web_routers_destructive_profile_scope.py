@@ -264,6 +264,15 @@ SPAWNING = {
 
 
 @pytest.mark.parametrize("route", sorted(SPAWNING))
+def test_spawned_action_rejects_an_unknown_profile_as_not_found(client, seams, tmp_path, route):
+    """Profile validation errors must reach clients instead of becoming spawn failures."""
+    resp = SPAWNING[route](client, "does-not-exist", tmp_path)
+
+    assert resp.status_code == 404, resp.text
+    assert seams["spawn"] == []
+
+
+@pytest.mark.parametrize("route", sorted(SPAWNING))
 def test_spawned_action_carries_the_named_profile(client, homes, seams, tmp_path, route):
     resp = SPAWNING[route](client, "worker_beta", tmp_path)
 

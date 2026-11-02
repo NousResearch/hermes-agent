@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Any
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
 from gateway.session_detached import detached_route_of
-from gateway.session_identity import transport_profile_of
+from gateway.session_identity import known_transport_profile, transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
@@ -1053,6 +1053,11 @@ class SessionStore(
                 decision.entry = entry
                 decision.needs_save = touch_activity or healed
                 decision.metadata_only_save = touch_activity and not healed
+                # Only creation wrote the receiving bot, and /reset, /new and switches copy it, so a
+                # route saved before the column existed stays NULL and its completions stay pending
+                # after a restart. Its next inbound turn records the bot that verifiably received it.
+                if touch_activity and entry.transport_profile is None:
+                    entry.transport_profile = known_transport_profile(source)
         return decision
 
     def _route_recover(

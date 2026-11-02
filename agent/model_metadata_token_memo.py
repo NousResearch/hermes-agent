@@ -19,7 +19,6 @@ conversations hold anyway, so the overshoot costs only fingerprint structure.
 
 from __future__ import annotations
 
-import contextlib
 import sys
 import threading
 import time
@@ -47,11 +46,15 @@ class MemoPins(list):
 
 
 def lookup_message_tokens(key: Any) -> tuple[list, int, int] | None:
-    """Return the entry for ``key`` (or None), marking it most recently used."""
-    entry = _MSG_TOKENS_CACHE.get(key)
-    if entry is not None:
-        entry[0].touched = _clock()
-        with contextlib.suppress(KeyError):  # another thread may have evicted it since the get
+    """Return the entry for ``key`` (or None), marking it most recently used.
+
+    The stamp and reorder share eviction's lock: a hit landing between the evictor's idle check of the
+    oldest entry and its pop would otherwise move that entry to the end, so the pop took a different,
+    active one."""
+    with _lock:
+        entry = _MSG_TOKENS_CACHE.get(key)
+        if entry is not None:
+            entry[0].touched = _clock()
             _MSG_TOKENS_CACHE.move_to_end(key)
     return entry
 

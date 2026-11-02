@@ -78,3 +78,35 @@ def test_a_running_conversation_larger_than_both_bounds_never_misses_then_sheds_
     now[0] += 3600  # the conversation goes idle; the next insert sheds it back under the bounds
     mm.estimate_messages_tokens_rough([{"role": "user", "content": "next " + "w" * 1000}])
     assert len(mm._MSG_TOKENS_CACHE) <= 1000 and memo.retained_bytes() <= 1_000_000
+
+
+def test_a_hit_racing_eviction_never_makes_it_drop_a_different_active_entry(monkeypatch):
+    """A writer checks the oldest entry is idle, then pops the oldest. A concurrent hit on that entry in
+    between must not reorder the memo under the writer, or the pop takes the next, recently used entry."""
+    import threading
+    from collections import OrderedDict
+
+    reader_done = threading.Event()
+
+    class HitDuringPop(OrderedDict):
+        armed = False
+
+        def popitem(self, last=True):
+            if self.armed:  # the writer has checked the oldest entry is idle and is about to pop it
+                self.armed = False
+                threading.Thread(target=lambda: (memo.lookup_message_tokens("idle"), reader_done.set()),
+                                 daemon=True).start()
+                reader_done.wait(1.0)
+            return super().popitem(last=last)
+
+    cache = HitDuringPop()
+    monkeypatch.setattr(memo, "_MSG_TOKENS_CACHE", cache)
+    monkeypatch.setattr(memo, "_MSG_TOKENS_CACHE_MAX", 2)
+    now = _fake_clock(monkeypatch)
+    memo.remember_message_tokens("idle", (memo.MemoPins(["idle text"]), 1, 0))
+    now[0] += 3600
+    memo.remember_message_tokens("active", (memo.MemoPins(["active text"]), 1, 0))
+    cache.armed = True
+    memo.remember_message_tokens("new", (memo.MemoPins(["new text"]), 1, 0))
+    assert reader_done.wait(5)
+    assert "active" in cache and "new" in cache

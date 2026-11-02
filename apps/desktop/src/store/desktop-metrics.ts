@@ -70,6 +70,7 @@ export type DesktopFeatureArea =
   | 'bot_mode'
   | 'browser_pane'
   | 'capabilities'
+  | 'classic_sidebar'
   | 'command_center'
   | 'command_palette'
   | 'cron'
@@ -106,6 +107,8 @@ export type DesktopFeatureArea =
   | 'settings_providers'
   | 'settings_sessions'
   | 'settings_vault'
+  | 'simplified_sidebar'
+  | 'simplified_sidebar_offer'
   | 'skins'
   | 'starmap'
   | 'terminal_pane'
@@ -268,7 +271,12 @@ export type DesktopOnboardingEvent = 'abandoned' | 'completed' | 'reached'
 export const DESKTOP_BUTTON_ACTIONS = {
   composerAttach: 'composer.attach',
   messageCopy: 'message.copy',
-  messageRetry: 'message.retry'
+  messageRetry: 'message.retry',
+  sidebarEnableOffer: 'sidebar.simplified.enable_offer',
+  sidebarEnableSettings: 'sidebar.simplified.enable_settings',
+  sidebarDecline: 'sidebar.simplified.decline',
+  sidebarDismiss: 'sidebar.simplified.dismiss',
+  sidebarDisable: 'sidebar.simplified.disable'
 } as const
 
 export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut'
@@ -284,7 +292,13 @@ const ACTION_IDS: ReadonlySet<string> = new Set(
 )
 
 export type DesktopDislikeSignal =
-  'cancelled' | 'feature_disabled' | 'quick_close' | 'rage_click' | 'setting_off_default' | 'undo'
+  | 'cancelled'
+  | 'feature_disabled'
+  | 'quick_close'
+  | 'rage_click'
+  | 'setting_off_default'
+  | 'sidebar_disabled_reason'
+  | 'undo'
 
 export type DesktopFlowId =
   | 'command_palette'
@@ -304,6 +318,7 @@ export type DesktopFeatureToggle =
   | 'native_notifications'
   | 'notification_kind'
   | 'reactions'
+  | 'simplified_sidebar'
   | 'thread_timeline'
   | 'tips'
   | 'tours'

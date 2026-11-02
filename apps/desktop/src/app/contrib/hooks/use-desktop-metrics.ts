@@ -39,6 +39,7 @@ import {
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -206,6 +207,7 @@ export function useDesktopMetrics({
         if (now - last >= INTERACTION_THROTTLE_MS) {
           last = now
           noteInteraction(now)
+          recordFeatureUse($simplifiedAgentMode.get() ? 'simplified_sidebar' : 'classic_sidebar', now)
         }
       }
     })()

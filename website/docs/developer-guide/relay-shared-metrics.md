@@ -520,8 +520,8 @@ profile's collection switch is on. With it off the app keeps no local record
 local record per gateway connection and profile, shared by that profile's
 windows; after a profile switch nothing is kept or sent until the new profile's
 switch has been read, and the switch is re-read whenever a window regains focus
-(so an opt-out from the CLI or another window takes effect there). There is no rating
-prompt or other new UI; each fact comes from an interaction the app already has.
+(so an opt-out from the CLI or another window takes effect there). Simplified sidebar users can optionally choose a fixed reason after switching
+back in settings; there is no required rating or free-text feedback.
 Every value is a closed id defined in the app's code (area, action, notice, flow,
 toggle, step), a published config key, or a bucket. Message text, toast text,
 session/bot/profile names, paths and setting values never leave.
@@ -534,6 +534,41 @@ session/bot/profile names, paths and setting values never leave.
 | `hermes.desktop.friction` | kind (`notice_dismissed`, `error_toast`, `renderer_crash`, `backend_disconnect`, `slow_frame`), detail (notice id, error category, crash reason, drop reason, frame-duration bucket) | What gets in the way. Error toasts carry only their code-defined category; renderer crashes are recorded by the app shell only when the crashed window's own profile collects, and reported by a window of that profile after it comes back; slow frames are long frames while the window is visible, capped per day. |
 | `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
 | `hermes.desktop.onboarding` | step (first-run steps: provider picker, sign-in, API key, local endpoint, model pick, choose later, free-tier screen, guided setup cards, consent, first message), event (`reached`/`completed`/`abandoned`) | Where first run stops. Each step event once per profile (latched in a small per-profile file); `abandoned` is a step still open when the app next starts. First run happens before the consent question, so until it is answered the app holds the step events in memory only (never on disk, never sent) and records them if the user opts in during that app session; a "no" or quitting first discards them. Switching collection off in the Desktop deletes those latches with the app's own copy. |
+
+##### Simplified sidebar rollout
+
+These metrics use the existing consenting profile `install_id`, not an account
+or person identifier. A person using several profiles can count several times;
+the sidebar preference itself is shared across profiles in the renderer.
+Restrict reports to releases where both the client and gateway support these
+ids: older gateways normalize unknown ids to `other` or discard unknown signals.
+
+- **Active adoption:** distinct profiles with `feature_use.area=simplified_sidebar`
+  divided by profiles with either `classic_sidebar` or `simplified_sidebar`
+  in the same window. These require a real app interaction and are recorded
+  once per UTC day. This includes profiles inheriting an enabled preference.
+- **Offer acceptance:** profiles with action `sidebar.simplified.enable_offer`
+  divided by profiles shown `feature_use.area=simplified_sidebar_offer`.
+  Settings enables use `sidebar.simplified.enable_settings`; declining and
+  dismissing use `sidebar.simplified.decline` and `sidebar.simplified.dismiss`.
+- **D7/D30 retention:** among profiles first observed enabling in a cohort,
+  the fraction with simplified use on UTC day 7/30 after that enable. Include
+  only cohorts old enough to observe the entire day. This means used again,
+  not continuously enabled. Not returning is not a confirmed switch-off.
+  Report inherited-preference profiles separately using first observed use.
+- **Switch-offs:** `sidebar.simplified.disable` and
+  `dislike(signal=feature_disabled, target=simplified_sidebar)` record an
+  enabled-to-disabled transition. Optional inline feedback emits
+  `dislike(signal=sidebar_disabled_reason)` with only `missing_chats`,
+  `hard_to_navigate`, `missing_features`, `prefer_classic`, `performance`, or
+  `other`. Report response rate alongside reasons; silence is not a reason.
+  Feedback is hidden when collection is off.
+
+Use distinct profile presence, not action count buckets, for percentages.
+Actions arrive with the next finished-day report and can be delayed until the
+app runs again; use event period rather than upload date and allow for lag.
+Consent withdrawal stops observation and must not count as sidebar rejection.
+No profile names, gateway addresses, session content, or new identity fields are added.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

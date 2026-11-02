@@ -214,3 +214,23 @@ def test_v3_schema_accepts_exactly_the_desktop_contract_values():
         dims = by_name[metric]["properties"]["dimensions"]["properties"]
         assert {f: set(spec["enum"]) for f, spec in dims.items() if "enum" in spec} == {
             f: set(values) for f, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
+
+
+def test_simplified_sidebar_metrics_keep_consent_and_closed_reason_codes(marks):
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    assert [d["area"] for _, d, _ in _stored(contract.DESKTOP_FEATURE_USE_METRIC)] == ["simplified_sidebar"]
+    _rpc("shared_metrics.desktop_dislike", signal="feature_disabled", target="simplified_sidebar")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="missing_chats")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="private free text")
+    assert [(d["signal"], d["target"]) for _, d in marks.rows] == [
+        ("feature_disabled", "simplified_sidebar"),
+        ("sidebar_disabled_reason", "missing_chats"),
+        ("sidebar_disabled_reason", "other"),
+    ]
+    _assert_valid(marks.rows)
+    marks.policy["on"] = False
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="prefer_classic")
+    _rpc("shared_metrics.desktop_feature_use", area="classic_sidebar")
+    assert len(marks.rows) == 3
+    assert len(_stored(contract.DESKTOP_FEATURE_USE_METRIC)) == 1

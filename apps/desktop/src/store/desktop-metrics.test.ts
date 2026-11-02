@@ -31,6 +31,7 @@ import {
   trackArea,
   trackFlow
 } from './desktop-metrics'
+import { $agentSidebarChoice, setSimplifiedAgentMode } from './simplified-agent-mode'
 
 type Call = [string, Record<string, unknown>]
 
@@ -538,4 +539,37 @@ describe('per profile, per window', () => {
     await flush()
     expect(later.calls).toEqual([])
   })
+})
+
+it('records sidebar choices once per transition and distinguishes offer from settings', async () => {
+  const { calls, request } = requester()
+  setDesktopMetricsGate('on')
+  bindDesktopMetrics(request)
+  $agentSidebarChoice.set(null)
+  setSimplifiedAgentMode(false, 'dismiss')
+  $agentSidebarChoice.set(null)
+  setSimplifiedAgentMode(false, 'offer')
+  setSimplifiedAgentMode(true, 'offer')
+  setSimplifiedAgentMode(true, 'offer')
+  setSimplifiedAgentMode(false)
+  setSimplifiedAgentMode(true)
+  vi.setSystemTime(DAY2)
+  tickDesktopMetrics()
+  await flush()
+  const report = calls.find(([method]) => method === 'shared_metrics.desktop_daily')?.[1]
+  expect(report?.actions).toEqual(
+    expect.arrayContaining([
+      { action: 'sidebar.simplified.dismiss', count: 1, via: 'click' },
+      { action: 'sidebar.simplified.decline', count: 1, via: 'click' },
+      { action: 'sidebar.simplified.enable_offer', count: 1, via: 'click' },
+      { action: 'sidebar.simplified.disable', count: 1, via: 'click' },
+      { action: 'sidebar.simplified.enable_settings', count: 1, via: 'click' }
+    ])
+  )
+  expect(
+    calls.filter(
+      ([method, params]) => method === 'shared_metrics.desktop_dislike' && params.signal === 'feature_disabled'
+    )
+  ).toEqual([['shared_metrics.desktop_dislike', { signal: 'feature_disabled', target: 'simplified_sidebar' }]])
+  $agentSidebarChoice.set(null)
 })

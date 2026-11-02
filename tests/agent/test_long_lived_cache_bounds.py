@@ -8,6 +8,7 @@ recently used keeps being served from the cache).
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -33,6 +34,42 @@ def test_endpoint_catalog_memo_drops_expired_credentials_on_write(monkeypatch):
     assert set(mm._endpoint_model_metadata_cache_time) == {live, fresh}
 
 
+class _RefreshDuringPop(dict):
+    """A memo table whose first ``pop`` of ``key`` runs ``refresh`` on another thread before returning,
+    i.e. a concurrent refresh lands between a sweep's paired pops (value, then stamp)."""
+
+    def __init__(self, data, key, refresh):
+        super().__init__(data)
+        self._key, self._refresh, self.workers = key, refresh, []
+
+    def pop(self, key, *default):
+        value = super().pop(key, *default)
+        if key == self._key and self._refresh is not None:
+            refresh, self._refresh = self._refresh, None
+            worker = threading.Thread(target=refresh)
+            self.workers.append(worker)
+            worker.start()
+            worker.join(timeout=1.0)  # unsynchronized writers finish here; a locked one waits for the sweep
+        return value
+
+
+def test_endpoint_memo_refresh_racing_an_expiry_sweep_keeps_its_stamp(monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr(mm.time, "time", lambda: now)
+    stale = ("https://y.example/v1", "fp")
+    monkeypatch.setattr(mm, "_endpoint_model_metadata_cache_time", {stale: now - mm._ENDPOINT_MODEL_CACHE_TTL - 1})
+    table = _RefreshDuringPop({stale: {"old": {}}}, stale, lambda: mm._remember_endpoint_models(stale, {"fresh": {}}))
+    monkeypatch.setattr(mm, "_endpoint_model_metadata_cache", table)
+
+    mm._remember_endpoint_models(("https://x.example/v1", "fp"), {"x": {}})  # sweeps the stale entry
+    for worker in table.workers:
+        worker.join(timeout=5)
+
+    assert table.workers
+    assert mm._endpoint_model_metadata_cache[stale] == {"fresh": {}}
+    assert mm._endpoint_model_metadata_cache_time.get(stale) == now  # fresh entry keeps its own stamp
+
+
 def test_codex_context_memos_keep_the_newest_128_tokens(monkeypatch):
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {f"tok{i}": ({"gpt": 1}, 1000.0 + i) for i in range(128)})
     monkeypatch.setattr(mm, "_codex_oauth_max_context_cache", {f"tok{i}": {"gpt": 2} for i in range(128)})
@@ -52,6 +89,7 @@ def test_skill_command_scopes_are_lru_bounded_and_recent_scope_stays_warm(monkey
     monkeypatch.setattr(sc, "_skill_commands_by_key", {})
     monkeypatch.setattr(sc, "_skill_commands_sig_by_key", {})
     monkeypatch.setattr(sc, "_last_interactive_skill_commands_by_key", {})
+    monkeypatch.setattr(sc, "_scope_recency", {})
     monkeypatch.setattr(sc, "_resolve_skill_commands_platform", lambda: "local")
     monkeypatch.setattr(sc, "_resolve_skill_commands_home", lambda: "/home/profile")
     monkeypatch.setattr(sc, "_resolve_skill_commands_project", lambda: project["value"])
@@ -140,3 +178,31 @@ def test_heal_counters_are_lru_bounded_and_no_session_is_ever_renotified(monkeyp
         arh._log_empty_non_final_heal(1)
         assert arh.consume_pending_sanitizer_heal_notice() is None
     assert arh.get_sanitizer_heal_stats()["busy"]["heal_events"] == 32
+
+
+def test_skill_scope_used_through_dispatch_keeps_its_reload_baseline(monkeypatch):
+    import tools.skills_tool as st
+    project = {"value": "/repo/live"}
+    for name in ("_skill_commands_by_key", "_skill_commands_sig_by_key", "_last_interactive_skill_commands_by_key", "_scope_recency"):
+        monkeypatch.setattr(sc, name, {}, raising=False)
+    monkeypatch.setattr(sc, "_resolve_skill_commands_platform", lambda: "local")
+    monkeypatch.setattr(sc, "_resolve_skill_commands_home", lambda: "/home/profile")
+    monkeypatch.setattr(sc, "_resolve_skill_commands_project", lambda: project["value"])
+    monkeypatch.setattr(sc, "_skill_dirs_signature", lambda: ("sig",))
+    monkeypatch.setattr(sc, "get_plugin_skill_commands", lambda: {"/plugin:stable": {"name": "plugin:stable", "description": "same"}})
+    monkeypatch.setattr(st, "_skill_catalog", list)
+
+    sc.get_interactive_skill_commands()  # the live scope's palette view: its /reload-skills baseline
+    for i in range(sc._MAX_CACHED_SCOPES - 1):
+        project["value"] = f"/repo/{i}"
+        sc.get_interactive_skill_commands()
+    sc.reload_skills()  # another session's /reload-skills empties the command maps, not the baselines
+    project["value"] = "/repo/live"
+    sc.get_skill_commands()  # the live session keeps dispatching
+    project["value"] = "/repo/new"
+    sc.get_interactive_skill_commands()  # one more scope: the least recently used one leaves, not the live one
+
+    project["value"] = "/repo/live"
+    result = sc.reload_skills()
+    assert result["added"] == [] and result["unchanged"] == ["plugin:stable"]
+    assert ("local", "/home/profile", "/repo/0") not in sc._last_interactive_skill_commands_by_key

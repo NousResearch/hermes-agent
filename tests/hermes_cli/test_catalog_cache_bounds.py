@@ -6,7 +6,10 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
+
+import pytest
 
 from agent import models_dev
 import hermes_cli.models_catalog_static as static
@@ -81,3 +84,45 @@ def test_pricing_cache_write_drops_catalogs_past_their_deadline(monkeypatch):
     assert set(pricing._pricing_cache) == {"https://static.example", "https://n.example\x00auth:live", "https://n.example\x00auth:new"}
     assert "https://n.example\x00auth:old" not in pricing._pricing_cache_retry_after
     assert pricing._cached_catalog("https://n.example\x00auth:live") == {"m": {"prompt": "2"}}
+
+
+class _RefreshDuringPop(dict):
+    """``_pricing_cache`` whose first pop of ``key`` runs ``refresh`` on another thread before returning:
+    a refresh landing between an expiry's two pops (catalog, then deadline)."""
+
+    def __init__(self, data, key, refresh):
+        super().__init__(data)
+        self._key, self._refresh, self.workers = key, refresh, []
+
+    def pop(self, key, *default):
+        value = super().pop(key, *default)
+        if key == self._key and self._refresh is not None:
+            refresh, self._refresh = self._refresh, None
+            worker = threading.Thread(target=refresh)
+            self.workers.append(worker)
+            worker.start()
+            worker.join(timeout=1.0)  # an unsynchronized writer finishes here; a locked one waits for the expiry
+        return value
+
+
+@pytest.mark.parametrize("expire", ["sweep_on_other_write", "reader"])
+def test_refresh_racing_an_expiry_keeps_its_ttl(monkeypatch, expire):
+    now = {"t": 200.0}
+    monkeypatch.setattr(pricing.time, "monotonic", lambda: now["t"])
+    key = "https://portal.example\x00auth:fp"
+    refresh = lambda: pricing._cache_catalog(key, {"m": {"prompt": "fresh"}}, ttl_seconds=300)
+    table = _RefreshDuringPop({key: {"m": {"prompt": "old"}}}, key, refresh)
+    monkeypatch.setattr(pricing, "_pricing_cache", table)
+    monkeypatch.setattr(pricing, "_pricing_cache_retry_after", {key: 100.0})  # expired
+
+    if expire == "reader":
+        assert pricing._cached_catalog(key) is None
+    else:
+        pricing._cache_catalog("https://other.example", {"m": {"prompt": "1"}})
+    for worker in table.workers:
+        worker.join(timeout=5)
+
+    assert table.workers and pricing._cached_catalog(key) == {"m": {"prompt": "fresh"}}
+    assert pricing._pricing_cache_retry_after.get(key) == 500.0  # the refresh's own 300 s policy TTL
+    now["t"] = 501.0
+    assert pricing._cached_catalog(key) is None  # and it does expire

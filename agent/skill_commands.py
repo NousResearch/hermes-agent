@@ -566,12 +566,22 @@ _MAX_WATCHED_SCOPES = 32
 _MAX_CACHED_SCOPES = 2 * _MAX_WATCHED_SCOPES
 
 
-def _publish_scope(table: dict, key: tuple, value: Any) -> None:
-    """Store ``key`` as most recently used in ``table``; past the cap, the least recently used scope
-    leaves every per-scope table together. Caller holds ``_publish_lock``."""
-    from agent.cache_bounds import publish_lru
-    scoped = (_skill_commands_by_key, _skill_commands_sig_by_key, _last_interactive_skill_commands_by_key)
-    publish_lru(table, key, value, _MAX_CACHED_SCOPES, *(t for t in scoped if t is not table))
+# One recency order for every per-scope table: separate orders let a scope used recently in one table be
+# the oldest in another, so evicting by either dropped a live scope's /reload-skills baseline.
+_scope_recency: dict[tuple, None] = {}
+
+
+def _publish_scope(table: Optional[dict], key: tuple, value: Any = None) -> None:
+    """Mark ``key`` most recently used (storing ``value`` in ``table`` unless it is None); past the cap,
+    the least recently used scope leaves every per-scope table together. Caller holds ``_publish_lock``."""
+    if table is not None:
+        table[key] = value
+    _scope_recency.pop(key, None)
+    _scope_recency[key] = None
+    while len(_scope_recency) > _MAX_CACHED_SCOPES:
+        stale = next(iter(_scope_recency))
+        for scoped in (_scope_recency, _skill_commands_by_key, _skill_commands_sig_by_key, _last_interactive_skill_commands_by_key):
+            scoped.pop(stale, None)
 
 
 def published_scopes_signature() -> tuple:
@@ -633,7 +643,7 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
         cached = _skill_commands_by_key.get(key)
         scanned_at = _skill_commands_sig_by_key.get(key)
         if cached is not None:
-            _publish_scope(_skill_commands_by_key, key, cached)
+            _publish_scope(None, key)
     if cached is not None:
         # A skill installed or removed from another terminal moves the dir signature: rescan, so the
         # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
@@ -780,6 +790,7 @@ def reload_skills() -> dict[str, Any]:
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         before_commands = _last_interactive_skill_commands_by_key.get(key)
+        _publish_scope(None, key)
     if before_commands is None:
         # Preserve only a previously published view. A first-ever reload has
         # no before-state, so discoveries correctly appear as additions.

@@ -19,7 +19,7 @@ transport:
   command: npx
   args:
     - "-y"
-    - "obsideo-mcp@0.7.2"
+    - "obsideo-mcp@0.7.7"
   # Attribution only. The server sends this label with the signup so Obsideo can
   # tell catalog installs from other MCP clients; it is not a credential and it
   # changes nothing about what the server does.
@@ -71,7 +71,8 @@ post_install: |
   about 7 days. Credentials are written to ~/.obsideo/mcp.json and go nowhere
   else. If you would rather this never happen without you asking, set
   OBSIDEO_NO_AUTO_TRIAL=1 and use the signup_start / signup_verify tools
-  instead (12 GB free tier, email required, no card, no expiry). A trial is
+  instead (8 GB free, email required, no card, no expiry; 16 GB after the
+  account holder answers eight questions in the Drive web app). A trial is
   claimed in place with signup_start: same account, keys and data.
 
   ENCRYPTED BY DEFAULT. Content is encrypted client-side with AES-256-GCM
@@ -87,7 +88,7 @@ post_install: |
   Ed25519 signature locally. It asks Obsideo's coordinator only which providers
   to talk to; nothing the coordinator asserts is trusted for the verdict.
 
-  PAYING IS THE HUMAN'S CLICK, NEVER THE AGENT'S. 12 GB is free. `upgrade`
+  PAYING IS THE HUMAN'S CLICK, NEVER THE AGENT'S. 8 GB is free. `upgrade`
   returns a Stripe checkout link for 200 GB blocks at $5/month each and
   charges nothing; the person opens it and pays on Stripe's page. The server
   cannot resize an existing plan: only the agree link Obsideo emails near the

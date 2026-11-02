@@ -136,6 +136,14 @@ async def _resume_transcript(authority, ref, snapshot, history, omit):
     return {'messages': [], 'messages_omitted': True, 'message_count': count, 'todo_state': todo_state}
 
 
+def _mutation_status_frame(session_id: str, kind: str, text: str) -> dict:
+    """The event envelope tui_gateway `_status_update` writes for the legacy ``session.compress``
+    RPC's phase frames; the desktop renders them as its thread status row."""
+    return {"jsonrpc": "2.0", "method": "event", "params": {
+        "type": "status.update", "session_id": session_id,
+        "payload": {"kind": kind, "text": text}}}
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -878,6 +886,32 @@ class AuthorityConnection:
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
         from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS, busy_refusal
+        # A canonical compress runs its summarizer inline (`prepare_compress`) — for a large
+        # session that is minutes with nothing else moving. The legacy session.compress RPC
+        # narrates the phase via tui_gateway `_status_update`; emit the same frames here so the
+        # desktop (whose /compress travels as session.mutate) gets its status row too. The
+        # compressing text matches the legacy one-shot narration (`⠋ compressing N messages
+        # (~T tok)…`): the compressor itself has no incremental progress to stream, so the row
+        # names the workload instead of pretending to measure it. A preview answers instantly:
+        # no phase to announce. `finally` retires the phase on refusal or failure as well — a
+        # stuck row is worse than no row.
+        compress_phase = params.get('operation') == 'compress' and not (params.get('payload') or {}).get('preview')
+        if compress_phase:
+            text = '⠋ compressing…'
+            try:
+                from agent.model_metadata import estimate_request_tokens_rough
+                history = await asyncio.to_thread(
+                    self.authority.db.get_messages_as_conversation, ref.session_id)
+                narrated = [m for m in history if m.get('role') in {'user', 'assistant', 'tool'}]
+                focus = str(params.get('focus') or '').strip()
+                focus_suffix = f', focus: "{focus}"' if focus else ''
+                text = (f'⠋ compressing {len(narrated)} messages '
+                        f'(~{estimate_request_tokens_rough(narrated):,} tok){focus_suffix}…')
+            except Exception:
+                # Cosmetic workload probe only: any failure falls back to the
+                # static narration, but the fallback must not be silent.
+                logger.debug('compress workload snapshot unavailable', exc_info=True)
+            self.transport.write(_mutation_status_frame(ref.session_id, 'compressing', text))
         try:
             result = await mutate_session(self.authority, self.actor, ref, params)
         except MUTATION_GUARD_REFUSALS as exc:
@@ -891,6 +925,9 @@ class AuthorityConnection:
                 if row is not None:
                     exc.revision, exc.execution_generation = row['runtime_revision'], row['runtime_generation']
             raise
+        finally:
+            if compress_phase:
+                self.transport.write(_mutation_status_frame(ref.session_id, 'ready', 'ready'))
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None

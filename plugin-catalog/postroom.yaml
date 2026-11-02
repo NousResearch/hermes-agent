@@ -1,0 +1,33 @@
+name: postroom
+title: Postroom
+repo: https://github.com/notacompanynameyet/postroom-agent-plugin
+sha: 56e23c3102df0b7d43b360bd7832844ea0d6f2ab
+description: >-
+  Prepare social previews, schedule explicitly approved posts and inspect delivery
+  in your own Postroom workspace. Portable Agent Plugins v1 package with a skill
+  and hosted Streamable HTTP MCP; no local executable code. Disclosure: tool
+  requests go to https://social.notacompanynameyet.com/mcp. Users need a Postroom
+  account and authorize their own workspace. Requested account summaries, brand
+  guidance, drafts, queue states and supported analytics reach the user's model
+  provider. Provider credentials stay on Postroom's server; imported publishing
+  media is publicly accessible. Read and write scopes are distinct. Write tools
+  can import media, save previews, schedule an exactly approved preview or cancel
+  queued posts; they do not delete published posts. The package requests untrusted
+  server access so Hermes asks before write-capable calls. OAuth must be enabled
+  in native Hermes MCP configuration; bundled mcp.json alone returns 401. The
+  remote tool list is dynamic and not covered by this pinned package commit.
+  Hermes stores OAuth tokens. Provider approvals and account eligibility apply.
+  Admission validation passed; live Hermes OAuth and publishing verification are
+  pending. See the pinned README for OAuth setup and limitations.
+maintainer: notacompanynameyet
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/notacompanynameyet/postroom-agent-plugin/blob/56e23c3102df0b7d43b360bd7832844ea0d6f2ab/README.md
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

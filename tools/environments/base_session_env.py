@@ -92,12 +92,26 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     ``curl … | bash #`` smuggled into a Matrix room/display name via ``HERMES_SESSION_CHAT_NAME``) land in
     the snapshot and execute on the next ``source`` (issue #71296). Unsetting first means ``export -p``
     never emits those vars — including any continuation lines.
+
+    Secret-shaped vars (name ends ``_TOKEN``/``_KEY``/``_SECRET``/``_PASSWORD``, case-insensitive) are
+    unset the same way (Viktor credential-exposure Finding 3, CWE-312): the terminal session snapshot
+    lives at-rest on disk (``~/.hermes/cache/scratch/hermes-snap-*.sh``, world-unreadable but
+    agent-readable) and a value left in it would be re-exported into every later command on that
+    backend. "Report names, never values" — the snapshot omits the value entirely rather than
+    redacting it in place, since a shared bash snapshot sourced by a LATER command must never
+    re-assert a stale secret an outer harness no longer wants live.
     """
     # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are ignored
     # under 2>/dev/null. Caller names are quoted so malformed config can never
     # become shell syntax (valid names stay unquoted by shlex.quote()).
     safe_names = {name for name in excluded_names if isinstance(name, str) and name}
     extra_unset = "".join(f" {shlex.quote(name)}" for name in sorted(safe_names))
+    secret_scrub = (
+        "for __hermes_sv in $(compgen -A export 2>/dev/null); do "
+        'case "${__hermes_sv^^}" in '
+        "*_TOKEN|*_KEY|*_SECRET|*_PASSWORD) unset \"$__hermes_sv\" ;; "
+        "esac; done; "
+    )
     return (
         "{ ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers re-exported
@@ -113,6 +127,7 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # on the backend and outlive the private dir it protects.
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        f"{secret_scrub}"
         "export -p; ) || true; } "
         f"> {tmp_path}")
 

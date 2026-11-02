@@ -122,6 +122,14 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
   try {
     await composer.waitFor({ state: 'visible', timeout: timeoutMs })
     await expect(composer).toBeEditable({ timeout: timeoutMs })
+    // Wait out the boot/onboarding overlay with a hit test that does not scroll.
+    // Playwright retries a blocked click by calling scrollIntoView with
+    // end/center/start alignment, which scrolls the app's overflow-hidden
+    // ancestors; older desktops (v0.19.1) keep the composer editable behind
+    // "Starting Hermes…", so every retry displaced the layout and the composer
+    // was never hittable again once the overlay cleared.
+    await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), { timeout: timeoutMs })
+      .toBe(true)
     // Trial input checks hit testing, not merely a non-zero box behind the boot overlay.
     await composer.click({ trial: true, timeout: timeoutMs })
   } catch (error) {
@@ -131,6 +139,14 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
   }
 
   return composer
+}
+
+/** Runs in the page: the composer's centre hits the composer, not an overlay. */
+function composerIsTopmost(el: Element): boolean {
+  const box = el.getBoundingClientRect()
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+
+  return hit !== null && el.contains(hit)
 }
 
 /** What the composer actually contains, for a failure that explains itself. */

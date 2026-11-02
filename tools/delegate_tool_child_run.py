@@ -701,13 +701,21 @@ def _entry_api_calls(entry: dict[str, Any]) -> int:
         return 0
 
 
+def _parent_stop_reaches(child: Any, parent_agent: Any) -> bool:
+    """A parent turn's stop ends the chain of a child attached for its interrupt fan-out (a foreground task); a
+    detached background unit outlives the turn that spawned it on purpose, so only an explicit stop of the unit or
+    subagent (``_delegate_unit_cancelled``) ends its chain."""
+    return (getattr(parent_agent, "_interrupt_requested", False) is True
+            and child in getattr(parent_agent, "_active_children", ()))
+
+
 def _next_escalation_effort(child: Any, entry: dict[str, Any], parent_agent: Any) -> Optional[str]:
     """The level the retry runs at, or None when this attempt ends the chain. Triggers on ``exit_reason`` only (a
     budget stop with no summary is ``status: failed`` and still retries); a 0-call timeout never reached the model.
     Steps one rung up from what the child ran, never past the ceiling, and only while the provider's clamp sends a
     strictly stronger level than the last attempt's."""
     ceiling = _escalation_ceiling(child)
-    if (ceiling is None or getattr(parent_agent, "_interrupt_requested", False) is True
+    if (ceiling is None or _parent_stop_reaches(child, parent_agent)
             or getattr(child, "_delegate_unit_cancelled", False) is True):
         return None
     exit_reason = entry.get("exit_reason")

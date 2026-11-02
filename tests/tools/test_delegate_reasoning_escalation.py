@@ -299,10 +299,24 @@ def test_never_retries_on_completion_interrupt_or_error(monkeypatch, kind, statu
     assert "attempts" not in entry
 
 
-def test_never_retries_once_the_parent_was_interrupted(monkeypatch):
-    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": D()}, effort="low", ceiling="high",
-                                parent=_parent(_interrupt_requested=True))
-    assert len(log) == 1 and entry["exit_reason"] == "max_iterations" and "attempts" not in entry
+@pytest.mark.parametrize("attached", [True, False])
+def test_a_parent_turn_stop_ends_only_a_chain_attached_to_the_parent(monkeypatch, attached):
+    """A turn's stop fans out to the children attached for interrupt propagation; a detached (background) unit
+    survives it on purpose, so its budget-stopped attempt still escalates."""
+    parent = _parent()
+
+    def low(child, *_):
+        if attached:
+            parent._active_children.append(child)
+        parent._interrupt_requested = True  # the parent's turn was stopped while this attempt ran
+        return M()
+
+    entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="high",
+                                parent=parent)
+    if attached:
+        assert len(log) == 1 and entry["exit_reason"] == "max_iterations" and "attempts" not in entry
+    else:
+        assert _efforts(log) == ["low", "medium"] and entry["status"] == "completed"
 
 
 @pytest.mark.parametrize("stop_at", ["after_last_iteration", "during_retry_build"])

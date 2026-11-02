@@ -1,0 +1,26 @@
+name: photo-to-part
+repo: https://github.com/mojomast/hermes-photo-to-part
+sha: 8c43322669854fd781bba3b1d1b95d815a31cbf4
+version: "0.1.0"
+description: >-
+  Turn photos, a few measurements, or a messy scan into a parametric printable
+  part and check the mesh locally. No network, credentials, or printer
+  connection. Scripts read only the paths you pass and write STL, PNG, and JSON
+  beside them. PyPI packages install only after Hermes dependency consent.
+maintainer: mojomast
+tier: community
+category: tools
+title: Photo to Part
+docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/8c43322669854fd781bba3b1d1b95d815a31cbf4/README.md
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/8c43322669854fd781bba3b1d1b95d815a31cbf4/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/8c43322669854fd781bba3b1d1b95d815a31cbf4/docs/screenshot-views.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/8c43322669854fd781bba3b1d1b95d815a31cbf4/examples/plate-clip/renders/compare_front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/8c43322669854fd781bba3b1d1b95d815a31cbf4/examples/plate-clip/renders/front.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

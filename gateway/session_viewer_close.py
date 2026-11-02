@@ -316,6 +316,8 @@ async def settle_viewer_close(authority, session_id):
     from gateway.session_vault_prompt import release_unlocks
     release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
+    if not live.subscribers:  # ended: no viewer is left to replay to; a resume refetches history
+        live.event_stream.release()
 
 
 async def _resolve_abandoned_unknown(authority, session_id, live, close):

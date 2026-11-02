@@ -657,10 +657,17 @@ tool_loop_guardrails:
     exact_failure: 2
     same_tool_failure: 3
     idempotent_no_progress: 2
+    read_only_loop: 3
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    read_only_loop: 6
+  # Read-only-loop guard: a run of read-only calls (file reads, inspection commands)
+  # with no mutating call in between. Off by default; when on it warns after
+  # warn_after.read_only_loop calls and refuses the next one, telling the model to
+  # edit the target file or report the blocker. A mutating call resets the streak.
+  read_only_loop_enabled: false
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

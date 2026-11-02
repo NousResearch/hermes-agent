@@ -40,6 +40,16 @@ logger = logging.getLogger(__name__)
 _DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
 _DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Raster image MIME types the image cache can actually sniff and store. Vector/other
+# image types (image/svg+xml, image/heic, image/avif, image/tiff, ...) are NOT
+# raster-sniffable, so the image cacher falls back to a CDN URL that native-media
+# admission rejects as "not a local regular file" (invalid_params). Treat them as
+# documents so they stay local and reach the agent (see _collect_attachment_media and
+# _attachment_message_type).
+_RASTER_IMAGE_CONTENT_TYPES = frozenset({
+    "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/bmp",
+})
+
 
 def _voice_mixer_module():
     """Sibling ``voice_mixer`` module: flat import (plugin dir on sys.path) else package-relative."""
@@ -5993,12 +6003,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         pending_text_injection: Optional[str] = None
         for att in all_attachments:
             content_type = att.content_type or "unknown"
-            if content_type.startswith("image/"):
+            # Only true raster images route through the image cache. Vector/other image
+            # types (image/svg+xml, image/heic, image/avif, ...) are not raster-sniffable,
+            # so the image cacher falls back to a CDN URL and native-media admission rejects
+            # that as "not a local regular file" (invalid_params). Route them to the
+            # document/attachment path so they stay local and reach the agent.
+            _ctype = content_type.split(";")[0].strip().lower()
+            if _ctype in _RASTER_IMAGE_CONTENT_TYPES:
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "image", {".jpg", ".jpeg", ".png", ".gif", ".webp"}, ".jpg"))
                 media_types.append(content_type)
                 media_text_inlined.append(False)
-            elif content_type.startswith("audio/"):
+            elif _ctype.startswith("audio/"):
                 media_urls.append(await self._cache_simple_media(
                     att, content_type, "audio", {".ogg", ".mp3", ".wav", ".webm", ".m4a"}, ".ogg"))
                 media_types.append(content_type)
@@ -6062,7 +6078,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
         is a DOCUMENT regardless of extension — authorization is the gate, not the file type."""
         content_type = att.content_type or ""
-        if content_type.startswith("image/"):
+        if content_type.split(";")[0].strip().lower() in _RASTER_IMAGE_CONTENT_TYPES:
             return MessageType.PHOTO
         if content_type.startswith("video/"):
             return MessageType.VIDEO

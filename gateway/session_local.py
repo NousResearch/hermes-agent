@@ -134,6 +134,15 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return None
 
 
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None and live.source is not None:
+        local.forget(live.source, live.route)
+
+
 def authorize_local_source(runner, source):
     """None for legacy/nonlocal routes and history mounts; registered local adapters fail closed."""
     if source is None or source.platform != Platform.LOCAL:

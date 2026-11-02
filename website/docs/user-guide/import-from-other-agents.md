@@ -1,18 +1,18 @@
 ---
 sidebar_position: 9
 title: "Import from Other Agents"
-description: "One-command import of an OpenClaw (~/.openclaw), Claude Code (~/.claude), OpenAI Codex CLI (~/.codex), Cursor (~/.cursor) or Grok Bot setup into Hermes — instructions, rules, allowlists, MCP servers, skills, memories and Grok Bot routines."
+description: "One-command import of an OpenClaw (~/.openclaw), Claude Code (~/.claude), OpenAI Codex CLI (~/.codex), Cursor (~/.cursor), Grok Bot or OpenBot setup into Hermes — instructions, rules, allowlists, MCP servers, skills, memories and Grok Bot / OpenBot routines."
 ---
 
 # Import from Other Agents
 
-`hermes import-agent` imports your existing **OpenClaw**, **Claude Code**, **OpenAI Codex CLI**, **Cursor** or **Grok Bot** setup into Hermes with one command. You always see a per-item plan before anything is written, and `--dry-run` never touches disk.
+`hermes import-agent` imports your existing **OpenClaw**, **Claude Code**, **OpenAI Codex CLI**, **Cursor**, **Grok Bot** or **OpenBot** setup into Hermes with one command. You always see a per-item plan before anything is written, and `--dry-run` never touches disk.
 
 The command comes from the official **`agent-importers` plugin** from the [plugin catalog](./features/plugins.md), maintained by Nous Research in [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/agent-importers).
 
 ## The easy way: `hermes setup`
 
-On a fresh install, `hermes setup` checks for `~/.openclaw` (or legacy `~/.clawdbot` / `~/.moltbot`), `~/.claude`, `~/.codex`, `~/.cursor` and the Grok Bot desktop app (or a `grok-bot-export*` file in `~/Downloads`) before anything else. When it finds one it asks **"Import your setup from Claude Code?"** (naming what it found); with several found you then pick which from a checklist, all checked. Say yes and setup installs the `agent-importers` plugin from the catalog, unless you already have it, and runs the import below for each pick, preview and confirmation included. For OpenClaw it passes `--migrate-secrets`, as Hermes' old built-in OpenClaw step did, so your API keys and bot tokens come over and the provider and messaging sections that follow are already filled in. If you then pick Quick Setup and the import brought a model along with its key, setup asks whether to keep that model (the default) or switch to Nous Portal. Say no, or have none of these folders, and nothing is installed. Already set up? Run `hermes migrate` for the same offer, `hermes migrate <agent>` (`openclaw`, `claude-code`, `codex`, `cursor`, `grok-bot`) to import from one agent, installing the plugin when it is missing, or use the commands below.
+On a fresh install, `hermes setup` checks for `~/.openclaw` (or legacy `~/.clawdbot` / `~/.moltbot`), `~/.claude`, `~/.codex`, `~/.cursor` and the Grok Bot desktop app (or a `grok-bot-export*` file in `~/Downloads`) and OpenBot before anything else. When it finds one it asks **"Import your setup from Claude Code?"** (naming what it found); with several found you then pick which from a checklist, all checked. Say yes and setup installs the `agent-importers` plugin from the catalog, unless you already have it, and runs the import below for each pick, preview and confirmation included. For OpenClaw it passes `--migrate-secrets`, as Hermes' old built-in OpenClaw step did, so your API keys and bot tokens come over and the provider and messaging sections that follow are already filled in. If you then pick Quick Setup and the import brought a model along with its key, setup asks whether to keep that model (the default) or switch to Nous Portal. Say no, or have none of these folders, and nothing is installed. Already set up? Run `hermes migrate` for the same offer, `hermes migrate <agent>` (`openclaw`, `claude-code`, `codex`, `cursor`, `grok-bot`, `openbot`) to import from one agent, installing the plugin when it is missing, or use the commands below.
 
 ## By hand
 
@@ -86,6 +86,10 @@ Grok Bot keeps your Bots, routines and skills in its cloud account and has no ex
 | Apps with a remote MCP URL | `mcp_servers` in `config.yaml` |
 
 Routines arrive paused so they don't run twice while the Grok copy is still on: turn it off in Grok Bot, then `hermes cron resume <id>` (the import prints each id), or pass `--activate-routines`. Point a job's output somewhere with `hermes cron edit <id> --deliver telegram`. An export carrying credential-looking keys is refused, and token-shaped text is redacted.
+
+### OpenBot
+
+`hermes migrate openbot` (or `hermes import-agent openbot`) reads the OpenBot desktop app's local database (`openbot.db` in `~/Library/Application Support/OpenBot`, `~/.config/OpenBot` or `%APPDATA%\OpenBot`; read-only, so OpenBot can stay open) and each agent's workspace under `~/OpenBot/Agents`. Routines become paused cron jobs with the same schedule and time zone, the agent's description becomes `SOUL.md` (or memory entries), its memories go to `memories/MEMORY.md`, its workspace skills to `skills/openbot-imports/`, and MCP servers to `config.yaml` with secret-looking env vars stripped. `--bot <name>` picks agents; `hermes -p <profile> ...` gives an agent its own profile. Chats and provider accounts stay in OpenBot.
 
 ## What is never imported
 

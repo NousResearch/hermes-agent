@@ -10,7 +10,7 @@ def build_migrate_parser(subparsers) -> None:
     migrate_parser = subparsers.add_parser(
         "migrate", help="Move over from another agent, or migrate retired models and deprecated settings",
         description="With no type: find another agent's setup on this computer (OpenClaw, Claude Code, "
-            "Codex CLI, Cursor, Grok Bot) and offer to import it. Name an agent to import from it; "
+            "Codex CLI, Cursor, Grok Bot, OpenBot) and offer to import it. Name an agent to import from it; "
             "xai and relay rewrite deprecated settings in the active config.yaml.")
     migrate_subparsers = migrate_parser.add_subparsers(dest="migrate_type")
 
@@ -60,11 +60,11 @@ def _add_agent_import_parsers(migrate_subparsers) -> None:
         sub.add_argument("--dry-run", action="store_true", help="Preview only")
         sub.add_argument("--overwrite", action="store_true", help="Replace existing items on name conflicts")
         sub.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt")
-        if source.name == "grok-bot":
+        if source.name in ("grok-bot", "openbot"):
             sub.add_argument("--activate-routines", action="store_true",
                              help="Create the imported cron jobs running instead of paused")
             sub.add_argument("--bot", action="append", metavar="NAME",
-                             help="Only this Bot from an export holding several (repeatable)")
+                             help="Only this Bot or agent, by name (repeatable)")
         sub.set_defaults(func=cmd_migrate_agent, migrate_agent=source.name)
 
 

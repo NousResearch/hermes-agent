@@ -42,6 +42,9 @@ IMPORT_SOURCES: tuple[ImportSource, ...] = (
                                           "Applications/Grok Bot.app", ".config/Grok Bot",
                                           "AppData/Roaming/Grok Bot", "AppData/Local/Programs/Grok Bot"),
                  exports=("Downloads/grok-bot-export*",)),
+    # OpenBot (nightly-labs/openbot): Electron user data with openbot.db, per OS, or its agent workspaces.
+    ImportSource("openbot", "OpenBot", ("Library/Application Support/OpenBot", ".config/OpenBot",
+                                        "AppData/Roaming/OpenBot", "OpenBot/Agents")),
 )
 
 

@@ -600,17 +600,17 @@ Pull API keys from an external secret manager at process startup instead of stor
 
 ```bash
 hermes migrate                 # find another agent's setup here and offer to import it
-hermes migrate <agent>         # openclaw, claude-code, codex, cursor or grok-bot
+hermes migrate <agent>         # openclaw, claude-code, codex, cursor, grok-bot or openbot
 hermes migrate <type>          # xai, relay
 ```
 
-Bare `hermes migrate` looks for OpenClaw, Claude Code, Codex CLI, Cursor and Grok Bot on this computer and offers to import what it finds, the same step a first `hermes setup` runs. `hermes migrate <agent>` imports from that agent even when nothing is detected: it installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog when it is missing, then runs `hermes import-agent <agent>` (preview, then confirmation). It takes `--source`, `--dry-run`, `--overwrite` and `-y`; `grok-bot` also takes `--activate-routines` and `--bot <name>`.
+Bare `hermes migrate` looks for OpenClaw, Claude Code, Codex CLI, Cursor, Grok Bot and OpenBot on this computer and offers to import what it finds, the same step a first `hermes setup` runs. `hermes migrate <agent>` imports from that agent even when nothing is detected: it installs the [`agent-importers`](../user-guide/import-from-other-agents.md) plugin from the catalog when it is missing, then runs `hermes import-agent <agent>` (preview, then confirmation). It takes `--source`, `--dry-run`, `--overwrite` and `-y`; `grok-bot` and `openbot` also take `--activate-routines` and `--bot <name>`.
 
 The `xai` and `relay` types diagnose and (optionally) rewrite the active `config.yaml` to replace references to retired models or deprecated settings. A timestamped backup of the original `config.yaml` is taken before any rewrite (skip with `--no-backup`).
 
 | Subcommand | Description |
 |------------|-------------|
-| `openclaw`, `claude-code`, `codex`, `cursor`, `grok-bot` | Import that agent's setup (see above). |
+| `openclaw`, `claude-code`, `codex`, `cursor`, `grok-bot`, `openbot` | Import that agent's setup (see above). |
 | `xai` | Scan `config.yaml` for references to xAI models scheduled for retirement on May 15, 2026 and (with `--apply`) rewrite them in-place to the official replacements per the xAI migration guide. Defaults to dry-run. |
 
 Common flags for migration subcommands:

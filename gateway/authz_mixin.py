@@ -245,23 +245,38 @@ class GatewayAuthorizationMixin:
         satellite cannot write to an arbitrary chat through the primary's credentials.
         """
         from gateway.delivery import resolve_delivery_transport
-        from gateway.profile_routing import match_profile_route
         platform = getattr(source, "platform", None)
         profile = (getattr(source, "profile", None) or "").strip()
         if platform is None or not profile or not self._is_shared_bot_satellite(profile, platform):
             return None
         if platform in (self._profile_adapters_map().get(profile) or {}):
             return None
-        config = self.config
+        if not self._default_bot_routes_to(source, profile):
+            return None
+        transport = resolve_delivery_transport(platform, self.config, self._primary_adapters())
+        return transport.adapter if transport is not None else None
+
+    def _default_bot_routes_to(self, source: SessionSource, profile: str) -> bool:
+        """Whether the most specific default-bot route matching *source*'s chat names *profile*."""
+        from gateway.profile_routing import match_profile_route
         route = match_profile_route(
-            config.profile_routes, platform.value, guild_id=getattr(source, "scope_id", None),
+            self.config.profile_routes, source.platform.value, guild_id=getattr(source, "scope_id", None),
             chat_id=getattr(source, "chat_id", None), thread_id=getattr(source, "thread_id", None),
             parent_chat_id=getattr(source, "parent_chat_id", None), user_id=getattr(source, "user_id", None),
         )
-        if route is None or route.profile != profile:
-            return None
-        transport = resolve_delivery_transport(platform, config, self._primary_adapters())
-        return transport.adapter if transport is not None else None
+        return route is not None and route.profile == profile
+
+    def _restored_transport_trusted(self, source: SessionSource, identity) -> bool:
+        """Whether a persisted receiving bot can stand in for the live one. Routes saved before inferred
+        transports stopped being persisted may hold the primary-profile GUESS, indistinguishable on disk
+        from a primary bot that really received the chat; for another runtime that is only genuine
+        where a default-bot route sends the chat to that runtime. A live transport is always trusted."""
+        if identity.transport is not None:
+            return True
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if identity.transport_profile != primary or identity.runtime_profile == primary:
+            return True
+        return self._default_bot_routes_to(source, identity.runtime_profile)
 
     def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
         """A served profile that a ``profile_routes`` entry targets through the default profile's bot

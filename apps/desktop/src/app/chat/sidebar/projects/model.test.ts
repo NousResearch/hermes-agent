@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import { orderProjectsByIds, sortProjectsAlphabetically, sortProjectsForOverview } from './model'
 import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
@@ -74,5 +74,36 @@ describe('sortProjectsForOverview', () => {
     const projects = [makeProject('scanned', 0), active, home()]
 
     expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
+  })
+})
+
+describe('sortProjectsAlphabetically', () => {
+  it('puts Home first, then every project A→Z by name, ignoring activity and auto/explicit', () => {
+    const zeta = { ...makeProject('zeta', 9), isAuto: false, label: 'Zeta', lastActive: 999 }
+    const alpha = { ...makeProject('alpha', 0), label: 'alpha' }
+    const v10 = { ...makeProject('v10', 3), label: 'Project 10' }
+    const v9 = { ...makeProject('v9', 3), label: 'Project 9' }
+
+    expect(ids(sortProjectsAlphabetically([zeta, v10, home(), alpha, v9]))).toEqual([
+      NO_PROJECT_ID,
+      'alpha',
+      'v9',
+      'v10',
+      'zeta'
+    ])
+  })
+
+  it('breaks equal labels by id and does not mutate its input', () => {
+    const input = [{ ...makeProject('b', 1), label: 'Same' }, { ...makeProject('a', 1), label: 'Same' }]
+
+    expect(ids(sortProjectsAlphabetically(input))).toEqual(['a', 'b'])
+    expect(ids(input)).toEqual(['b', 'a'])
+  })
+
+  it('differs from the stock overview sort, which leads with the active project', () => {
+    const projects = [{ ...makeProject('alpha', 1), label: 'alpha' }, { ...makeProject('zeta', 1), isAuto: false, label: 'zeta' }]
+
+    expect(ids(sortProjectsForOverview(projects, 'zeta'))).toEqual(['zeta', 'alpha'])
+    expect(ids(sortProjectsAlphabetically(projects))).toEqual(['alpha', 'zeta'])
   })
 })

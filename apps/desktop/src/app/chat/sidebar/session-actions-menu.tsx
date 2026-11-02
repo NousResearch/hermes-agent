@@ -61,9 +61,12 @@ import {
   requestForOwnedSession
 } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import { $sidebarAlphabetical } from '@/store/sidebar-alphabetical'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { sortByLabel } from './alphabetical'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -223,7 +226,11 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
-  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+  const alphabetical = useStore($sidebarAlphabetical)
+
+  const candidates = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+  // "Sort sidebar alphabetically" lists the targets A→Z instead of in tree order.
+  const targets = alphabetical ? sortByLabel(candidates) : candidates
 
   // The flat (non-grouped) sidebar view only warms $projectTree on a
   // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening

@@ -34,3 +34,7 @@ export function filterToSessionBearingProjects<
 >(projects: readonly T[]): T[] {
   return projects.filter(project => !project.isAuto || project.isNoProject || (project.sessionCount ?? 0) > 0)
 }
+
+/** True when at least one of the sidebar's active filter lists is non-empty. */
+export const anyFilterNarrows = (...filters: readonly (readonly unknown[])[]): boolean =>
+  filters.some(filter => filter.length > 0)

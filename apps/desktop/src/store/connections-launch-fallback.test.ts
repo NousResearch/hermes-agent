@@ -95,11 +95,17 @@ beforeEach(() => {
 
 afterEach(() => vi.unstubAllGlobals())
 
-function stubBridge(getAgentRoster: () => Promise<DesktopAgentRoster>) {
+function stubBridge(
+  getAgentRoster: () => Promise<DesktopAgentRoster>,
+  {
+    api = vi.fn(async () => ({ profiles: [] })),
+    list = registry
+  }: { api?: (request: { path: string }) => Promise<unknown>; list?: DesktopConnectionsRegistry } = {}
+) {
   vi.stubGlobal('window', {
     hermesDesktop: {
-      api: vi.fn(async () => ({ profiles: [] })),
-      connections: { list: vi.fn(async () => registry), setLastUsed },
+      api,
+      connections: { list: vi.fn(async () => list), setLastUsed },
       getAgentRoster
     },
     localStorage,
@@ -167,5 +173,23 @@ describe('launch restore onto the last-used gateway', () => {
 
     expect($connection.get()?.connectionId).toBe('local')
     expect(setLastUsed).not.toHaveBeenCalled()
+  })
+  it('a cached down row never cancels a profile repair on the gateway already in front', async () => {
+    // The window is already on homelab with a profile it does not serve; the
+    // fresh profile reads just succeeded there, so an older failed roster row
+    // is not evidence the window has fallen back anywhere.
+    const { refreshFleetRoster } = await import('./fleet-roster')
+    $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'windows-only', registryScoped: true })
+    $activeGatewayProfile.set('windows-only')
+    stubBridge(async () => roster({ reachable: false, error: 'roster enumeration timed out' }), {
+      api: async request =>
+        request.path === '/api/status' ? { gateway_shared_with: ['default'] } : { profiles: [{ name: 'default' }] },
+      list: { ...registry, launchMode: 'primary', primary: 'homelab' }
+    })
+    await refreshFleetRoster()
+
+    await initializeConnectionsRegistry()
+
+    expect($connection.get()).toMatchObject({ connectionId: 'homelab', profile: 'default' })
   })
 })

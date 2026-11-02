@@ -113,3 +113,41 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_tag", [
+    "![chart](https://example.test/chart.png)",
+    '<img src="https://example.test/chart.png">',
+])
+async def test_rejected_file_receipt_does_not_drop_streamed_url_image(tmp_path, monkeypatch, image_tag):
+    """Integrate rejection receipts with #141806's explicit URL-image delivery."""
+    from gateway.media_delivery_feedback import MEDIA_REJECTION_NOTICE
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    forbidden = tmp_path / "unavailable-private.txt"
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (allowed,))
+    adapter = _adapter()
+    adapter.emit_warning = AsyncMock()
+    runner = _fake_runner({"thread_id": "thread-1"})
+    runner.async_session_store = SimpleNamespace(
+        get_or_create_session=AsyncMock(return_value=SimpleNamespace(session_id="owning-session")),
+        append_to_transcript=AsyncMock(),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        runner, f"{image_tag}\nMEDIA:{forbidden}", _event(), adapter,
+    )
+
+    adapter.send_document.assert_not_awaited()
+    adapter.send_multiple_images.assert_awaited_once_with(
+        chat_id="C123CHAN", images=[("https://example.test/chart.png", "chart" if image_tag.startswith("![") else "")],
+        metadata={"thread_id": "thread-1"},
+    )
+    adapter.emit_warning.assert_awaited_once_with(
+        "C123CHAN", MEDIA_REJECTION_NOTICE, metadata={"thread_id": "thread-1"},
+    )
+    runner.async_session_store.append_to_transcript.assert_awaited_once_with(
+        "owning-session", {"role": "user", "content": MEDIA_REJECTION_NOTICE},
+    )
+
+

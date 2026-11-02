@@ -250,18 +250,19 @@ def _record_pinned_snapshot(agent, session_id) -> None:
                 _PINNED_SNAPSHOTS.popitem(last=False)
 
 
-def _pin_restore_held(agent, registered: set) -> frozenset:
-    """Names a restore from this session's pin holds back: those the freeze holds when the pin was written
-    by this process and neither the registry nor the agent's toolset selection has moved since."""
+def _pin_restore_held(agent, registered: set) -> tuple[bool, frozenset]:
+    """(pinned here, held) for a restore from this session's pin: whether this process wrote the pin (the
+    rebuild is the same conversation), and the names it holds back: those the freeze holds when neither the
+    registry nor the agent's toolset selection has moved since."""
     from tools.registry import registry
     session_id = getattr(agent, "session_id", None)
     if not session_id:
-        return frozenset()
+        return False, frozenset()
     with _agent_tools_lock:
         pinned_against = _PINNED_SNAPSHOTS.get(_pinned_snapshot_key(session_id))
     if pinned_against != (registry._generation, getattr(agent, "_tool_snapshot_selection", None)):
-        return frozenset()
-    return _frozen_tool_names(registered)
+        return pinned_against is not None, frozenset()
+    return True, _frozen_tool_names(registered)
 
 
 def _config_permitted_names(agent) -> set:
@@ -329,8 +330,10 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     catalog, per-surface dynamic parameters, the ``-q`` footprint): tools[] heads every request.
     Pinned by other code (``hermes update``, a legacy name list) a tool's contract may have moved,
     so each takes its current definition. A pinned tool this process did not build is carried
-    only while its toolset config allows it here; deregistered tools drop, new tools append, except, in
-    the process that wrote the pin, one new only because its ``check_fn`` flipped (``_pin_restore_held``)."""
+    only while its toolset config allows it here; deregistered tools drop, new tools append. In the
+    process that wrote the pin a pinned Tool Search bridge tool keeps its slot (it is synthesized, never
+    registered, exactly as the between-turns refresh keeps it) and a tool new only because its ``check_fn``
+    flipped stays out (``_pin_restore_held``)."""
     pinned, same_code, pinned_defs = _pinned_tool_defs(saved, {_def_name(t): t for t in _agent_tool_defs(agent)})
     if not pinned:
         return False
@@ -340,9 +343,12 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     registered_names = {entry.name for entry in registry.get_all_entries()}
     carried = {_def_name(d) for d in pinned_defs if _def_name(d) not in fresh and _def_name(d) in registered_names}
     carried &= _config_permitted_names(agent) if carried else set()
+    pinned_here, held = _pin_restore_held(agent, registered_names)
+    if pinned_here:  # same conversation: the synthesized bridge keeps its slot, as in _merge_preserving_prefix
+        from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+        carried |= {_def_name(d) for d in pinned_defs if _def_name(d) in BRIDGE_TOOL_NAMES}
     merged = [d for d in pinned_defs if _def_name(d) in fresh or _def_name(d) in carried]
     pinned_names = {_def_name(d) for d in merged}
-    held = _pin_restore_held(agent, registered_names)
     merged.extend(t for t in fresh_defs if _def_name(t) not in pinned_names and _def_name(t) not in held)
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}

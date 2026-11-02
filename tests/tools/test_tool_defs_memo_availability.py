@@ -459,3 +459,39 @@ def test_pin_restore_still_appends_a_late_registration_and_a_restore_in_a_new_pr
     rebuilt = _session_agent(store, "resumed-session")
     restore_agent_tool_prefix(rebuilt, pin)
     assert rebuilt.tools[:-1] == pin["tools"] and rebuilt.tools[-1]["function"]["name"] == MAIL
+
+
+def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outage(
+        mail_state, clock, tool_search_on, tmp_path):
+    """A session pinned with the Tool Search bridge, rebuilt in the same process (agent-cache eviction,
+    ``/model``, a fresh agent per turn) while its only deferrable tools are down: the bridge is
+    synthesized, never registered, so the restore must carry it like the between-turns refresh does.
+    Otherwise tools[] shrinks to the fresh build, the narrowed pin is persisted, and recovery keeps it."""
+    from hermes_state import SessionDB
+    from tools.mcp_tool_agent import persist_agent_tool_names, restore_agent_tool_prefix
+
+    selection = ["mcp-probe-mail", "clarify"]
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("bridge-session", source="cli")
+
+    def rebuild():
+        agent = _agent(selection)
+        agent._session_db, agent.session_id = db, "bridge-session"
+        return agent
+
+    mail_state["up"] = True
+    clock.now += registry_mod._CHECK_FN_TTL_SECONDS + 1
+    healthy = rebuild()
+    assert BRIDGE <= _names(healthy.tools)
+    persist_agent_tool_names(healthy)
+    sent = json.dumps(healthy.tools)
+
+    mail_state["up"] = False
+    clock.now += registry_mod._CHECK_FN_FAILURE_GRACE_SECONDS + 1
+    down = rebuild()
+    assert not BRIDGE & _names(down.tools)  # the fresh build drops the bridge
+    restore_agent_tool_prefix(down, json.loads(db.get_session("bridge-session")["tool_names"]))
+    assert json.dumps(down.tools) == sent
+    assert BRIDGE <= down.valid_tool_names
+    assert json.dumps(json.loads(db.get_session("bridge-session")["tool_names"])["tools"]) == sent
+

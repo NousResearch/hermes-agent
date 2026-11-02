@@ -170,6 +170,19 @@ def _normalize_observation(
         if observation_provider not in ("", provider_name):
             raise ValueError("observation provider does not match its source provider")
 
+        from hermes_cli.plugin_host_wire import _MalformedMemoryPayload
+
+        if type(candidate.payload) is _MalformedMemoryPayload:
+            from agent.memory_provider import MAX_MEMORY_OBSERVATION_OPERATION_NODES
+            from hermes_cli.plugin_host import _is_hosted_object
+
+            cost = candidate.payload.cost
+            if (_is_hosted_object(provider) and type(cost) is int
+                    and 0 <= cost <= MAX_MEMORY_OBSERVATION_OPERATION_NODES + 1
+                    and traversal_budget is not None):
+                traversal_budget[0] -= min(cost, max(1, traversal_budget[0] + 1))
+                raise ValueError("observation payload is malformed")
+
         frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
             candidate.payload, operation_budget=traversal_budget
         )

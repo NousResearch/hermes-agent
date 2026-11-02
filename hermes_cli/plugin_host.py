@@ -43,6 +43,15 @@ from hermes_cli.plugin_host_wire import (
 
 logger = logging.getLogger("hermes_cli.plugins")
 
+# Identity registry is populated only when the host constructs a proxy; provider
+# attributes (including __hermes_plugin_host_ref__) are not proof of origin.
+_hosted_objects: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
+
+
+def _is_hosted_object(value: Any) -> bool:
+    return _hosted_objects.get(id(value)) is value
+
+
 _HOST_MODULE = "hermes_cli.plugin_host_child"
 _START_TIMEOUT_SECS = 30.0
 _SHUTDOWN_GRACE_SECS = 3.0
@@ -530,6 +539,7 @@ class PluginHost:
         cls.__abstractmethods__ = frozenset()
         proxy = object.__new__(cls)
         slot.track(proxy)
+        _hosted_objects[id(proxy)] = proxy
         return proxy
 
 

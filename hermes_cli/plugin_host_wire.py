@@ -100,6 +100,14 @@ class Opaque:
         return f"<opaque {self.type_name}>"
 
 
+class _MalformedMemoryPayload(Opaque):
+    """Transport-owned cost for a payload replaced by an opaque placeholder."""
+
+    def __init__(self, cost: int):
+        super().__init__("malformed memory payload")
+        self.cost = cost
+
+
 def _opaque_wire_value(value: Any) -> Opaque:
     name = type.__getattribute__(type(value), "__name__")
     return Opaque(str.__str__(name)[:128])
@@ -176,11 +184,16 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
             return dict(fields)
         if record_name == "MemoryObservation":
             from agent.memory_provider import (
+                MAX_MEMORY_OBSERVATION_OPERATION_NODES,
                 MemoryObservation,
                 _freeze_memory_observation_payload,
             )
 
             payload = fields.get("payload")
+            cost = value.get("malformed_traversal_cost")
+            if (isinstance(payload, Opaque) and type(cost) is int
+                    and 0 <= cost <= MAX_MEMORY_OBSERVATION_OPERATION_NODES + 1):
+                payload = _MalformedMemoryPayload(cost)
             if not isinstance(payload, Opaque):
                 try:
                     payload, _ = _freeze_memory_observation_payload(payload)

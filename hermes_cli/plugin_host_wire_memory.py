@@ -81,9 +81,11 @@ def _encode_memory_observation(
             return _opaque_wire_value(field)
         return str.__str__(field)
 
+    budget_before = budget[0]
+    malformed_cost = None
     try:
         frozen_payload, _ = _freeze_memory_observation_payload(
-            payload, operation_budget=budget
+            payload, operation_budget=budget if metadata_valid else None
         )
         if metadata_valid:
             _observation_envelope_size(
@@ -96,10 +98,12 @@ def _encode_memory_observation(
             "fields": _thaw_json_value(frozen_payload),
         }
     except (TypeError, ValueError, OverflowError):
+        malformed_cost = budget_before - budget[0] if metadata_valid else None
         payload = encode(_opaque_wire_value(payload), refs, depth + 1)
 
     return {
         "__record__": "MemoryObservation",
+        "malformed_traversal_cost": malformed_cost,
         "fields": {
             "source_kind": encode(bounded_text(source_kind), refs, depth + 1),
             "schema": encode(bounded_text(schema), refs, depth + 1),
@@ -189,9 +193,12 @@ def _encode_memory_observation_tuple(
     if not isinstance(value, tuple):
         return None
     count = tuple.__len__(value)
-    if not count or type(tuple.__getitem__(value, 0)) is not MemoryObservation:
+    if not count:
         return None
-    count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
+    if count > MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1:
+        raise ValueError("MemoryObservationTuple exceeds plugin-host candidate bound")
+    if any(type(tuple.__getitem__(value, index)) is not MemoryObservation for index in range(count)):
+        return None
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
     remaining_bytes = _observation_wire_budget()
     items = []

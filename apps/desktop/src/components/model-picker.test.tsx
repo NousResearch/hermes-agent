@@ -296,8 +296,8 @@ describe('ModelPickerDialog plan usage', () => {
 
     // Only the top-tier row draws on the spent top-tier allowance: it dims; Medium and Free still have room.
     const large = await screen.findByText('example/model-b')
-    expect(large.closest('span')?.className).toContain('text-muted-foreground')
-    expect(screen.getByText('example/model-free:free').closest('span')?.className).not.toContain(
+    expect(large.closest('.hover-marquee')?.className).toContain('text-muted-foreground')
+    expect(screen.getByText('example/model-free:free').closest('.hover-marquee')?.className).not.toContain(
       'text-muted-foreground'
     )
     expect(screen.queryByText('used up', { exact: false })).toBeNull()

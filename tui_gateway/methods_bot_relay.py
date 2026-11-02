@@ -140,10 +140,40 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         return _err(rid, 5095, str(e))
 
 
+@method("bot_delivery.list")
+def _(rid, params: dict, _root=_relay_root) -> dict:
+    """Read-only list of the ``profile`` bot's unsettled teammate deliveries (contract:
+    ``bot_delivery.list``). This sidecar holds no target authority, so rows carry the durable
+    admission state only; ``waiting_on_you`` needs the owner (``gateway/session_teammate_waits.py``).
+    Each target's store is read under that target's own profile scope, never this process's."""
+    from tools.bot_delivery_status import list_sender_deliveries, stored_live_state
+    from tools.bot_mode_probe import _roster
+
+    profile = params.get("profile") or "default"
+    resolved = "default" if profile.lower() == "hermes" else profile
+    root = _root()
+    roster = _roster(root)
+    if resolved not in dict(roster):
+        return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={"reason": "unknown_profile"})
+
+    def scoped_state(name, home, record):
+        from gateway.run import _profile_runtime_scope
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            return stored_live_state(name, home, record)
+
+    try:
+        rows = list_sender_deliveries(root, resolved, live_state=scoped_state, profiles=roster)
+    except Exception as exc:  # the RPC boundary: answer the error, keep the traceback
+        logging.getLogger(__name__).debug("bot_delivery.list for %s failed", resolved, exc_info=True)
+        return _err(rid, 5096, str(exc))
+    return _ok(rid, {"sender": resolved, "deliveries": rows})
+
+
 def register(server) -> None:
     _registry.install(server)
     from . import methods_groups
-    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
+    # ``bot_delivery.list`` opens every teammate's store: off the RPC reader like its relay siblings.
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS | {"bot_delivery.list"}
     for name in (
         "get_hosted_room_service", "_WORKER_UNAVAILABLE", "_profile_name", "_requested_profile",
         "_api_server_key", "_room_link_run_storage_durable"):

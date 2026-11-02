@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type TeammateWaitMessages } from './teammate-wait-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** The "Waiting on teammates" strip above a Bot Chat composer (`teammate-waits.tsx`). */
+  waiting: TeammateWaitMessages
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string

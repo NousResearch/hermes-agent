@@ -6,9 +6,17 @@ const released: string[] = []
 const keepRoute = vi.fn((connectionId: string, _profile: string) => () => released.push(connectionId))
 const openGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const live = new Set<string>()
+// `live`: the gateway's kept default-profile route is open. This set: only a
+// named profile's socket on that gateway is open.
+const liveNamedProfile = new Set<string>()
 
 vi.mock('@/store/gateway', () => ({
-  liveSecondaryConnectionIds: () => new Set(live),
+  gatewayRouteState: (connectionId: string, profile: string) => ({
+    key: `${connectionId}:${profile}`,
+    open: profile === 'default' && live.has(connectionId)
+  }),
+  // Not read by the keeper; the pre-fix keeper did, so the redial test fails there on its assertion.
+  liveSecondaryConnectionIds: () => new Set([...live, ...liveNamedProfile]),
   openGatewayForAgent
 }))
 vi.mock('@/store/gateway-kept-routes', () => ({ keepRoute }))
@@ -42,6 +50,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   released.length = 0
   live.clear()
+  liveNamedProfile.clear()
   keepRoute.mockClear()
   openGatewayForAgent.mockClear()
   $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' })
@@ -95,4 +104,17 @@ it('with a remote primary, keeps This device only where Hermes is installed (nev
     ['vps', 'default'],
     ['local', 'default']
   ])
+})
+
+it('redials a dropped kept route even while a named profile on the same gateway stays open', () => {
+  live.add('homelab')
+  live.add('vps')
+  stop = startPersistentGateways()
+  expect(openGatewayForAgent).not.toHaveBeenCalled()
+
+  live.delete('homelab')
+  liveNamedProfile.add('homelab')
+  vi.advanceTimersByTime(30_000)
+
+  expect(openGatewayForAgent.mock.calls).toEqual([['homelab', 'default']])
 })

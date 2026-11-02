@@ -1056,18 +1056,33 @@ def _(rid, params: dict) -> dict:
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
 
+# ``pdf.attach`` rasterisation.  A fixed ``-png -r 150`` is a trap on camera scans: an
+# iOS scan records its MediaBox in *pixels as points* (2497x3467 pt = 34.7x48.1 in), so
+# 150 dpi upscales it ~2.08x into ~40 MP bitmaps -- measured 154 s of poppler CPU and
+# 31.4 MB of PNG for a 2-page, 4 MB scan.  Rendering to a long-edge-capped JPEG takes
+# ~2 s for the same file (0.25 MB), so the render is bounded by *output size*, not by a
+# longer timeout.  Plain raster and embedded-image extraction are the fallbacks.
+_PDF_RENDER_CAP_PX = 1600
+_PDF_RENDER_JPEG_QUALITY = 80
+_PDF_RENDER_BUDGET_S = 120.0  # unchanged: the pre-existing flat timeout
+_PDF_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".jpx", ".jp2", ".jb2", ".jbig2", ".tif", ".tiff", ".ccitt"}
+
+
 @method("pdf.attach")
 def _(rid, params: dict) -> dict:
-    """Attach a PDF by rendering each page to PNG (``pdftoppm``; 5028 if missing) and
-    queuing the pages as images.  Host ``path`` or base64 ``content_base64``."""
+    """Attach a PDF by rasterising each page to capped JPEG (``pdftoppm``) and queuing
+    the pages as images, falling back to plain raster then to ``pdfimages`` embedded
+    extraction.  5028 if no renderer is available.  Host ``path`` or base64
+    ``content_base64``."""
     import shutil
     import subprocess
     import tempfile
+    import time
     session, err = _sess_building(params, rid)
     if err:
         return err
-    if shutil.which("pdftoppm") is None:
-        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
+    if shutil.which("pdftoppm") is None and shutil.which("pdfimages") is None:
+        return _err(rid, 5028, "pdftoppm/pdfimages not installed (poppler-utils package required)")
     raw_path = str(params.get("path", "") or "").strip()
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
     if not raw_path and not raw_b64:
@@ -1080,24 +1095,62 @@ def _(rid, params: dict) -> dict:
         first_page, last_page, err = _pdf_page_range(rid, params)
         if err is not None:
             return err
-        argv = [
-            "pdftoppm", "-png", "-r", "150", "-f", str(first_page), "-l", str(last_page),
-            str(pdf_path), str(td_path / "page")]
         from hermes_cli._subprocess_compat import windows_hide_flags
-        try:
-            # UTF-8 + lossy decode: non-UTF-8 child output must not crash the gateway
-            # thread on locale-mismatched Windows.
-            res = subprocess.run(
-                argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
-                encoding="utf-8", errors="replace", creationflags=windows_hide_flags(), check=False)
-        except subprocess.TimeoutExpired:
-            return _err(rid, 5028, "pdftoppm timed out (>120s)")
-        if res.returncode != 0:
-            tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
-            return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
-        rendered = sorted(td_path.glob("page-*.png"))
+        page_args = ["-f", str(first_page), "-l", str(last_page)]
+        # Attempt chain, cheapest first, sharing one wall-clock budget so a
+        # pathological doc degrades instead of hanging the turn.
+        attempts = (
+            # 1. rasterise to JPEG capped at the long edge: ~2 s / 0.25 MB for a
+            #    2-page 4 MB scan, and OCR-identical to native resolution.
+            ("capped jpeg", ["pdftoppm", "-jpeg",
+                             "-jpegopt", f"quality={_PDF_RENDER_JPEG_QUALITY}",
+                             "-scale-to", str(_PDF_RENDER_CAP_PX)], "page-*.jpg"),
+            # 2. plain raster for older poppler without -scale-to, or a PDF the
+            #    scaler trips over: bigger payload, but pages still come out.
+            ("jpeg r150", ["pdftoppm", "-jpeg", "-r", "150"], "page-*.jpg"),
+            # 3. pull the embedded page images out verbatim — zero re-encode, and
+            #    it works when pdftoppm chokes on the page geometry.
+            ("embedded images", ["pdfimages", "-all", "-p"], None),
+            # 4. same extraction forced to PNG: a jbig2/jpx-only scan comes out of
+            #    -all in a format the image pipeline rejects, and this is the only
+            #    way to get page pixels when rasterisation is unusable.
+            ("embedded png", ["pdfimages", "-png", "-p"], None),
+        )
+        rendered: list[Path] = []
+        why = "no renderer available (poppler-utils package required)"
+        deadline = time.monotonic() + _PDF_RENDER_BUDGET_S
+        for label, head, pattern in attempts:
+            if shutil.which(head[0]) is None:
+                continue
+            left = deadline - time.monotonic()
+            if left <= 0:
+                why = f"render budget of {_PDF_RENDER_BUDGET_S:.0f}s exhausted"
+                break
+            argv = head + page_args + [str(pdf_path), str(td_path / "page")]
+            try:
+                # UTF-8 + lossy decode: non-UTF-8 child output must not crash the
+                # gateway thread on locale-mismatched Windows.
+                res = subprocess.run(
+                    argv, capture_output=True, text=True, timeout=left,
+                    stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace",
+                    creationflags=windows_hide_flags(), check=False)
+            except subprocess.TimeoutExpired:
+                why = f"{label} timed out (>{left:.0f}s)"
+                continue
+            if res.returncode != 0:
+                tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
+                why = f"{label} failed: " + " | ".join(tail)
+                continue
+            rendered = (sorted(td_path.glob(pattern)) if pattern
+                        else sorted(p for p in td_path.iterdir()
+                                    if p.suffix.lower() in _PDF_IMAGE_EXTS
+                                    and p.suffix.lower() in _allowed_image_extensions()))
+            if not rendered:
+                why = f"{label} produced no pages (corrupt PDF?)"
+                continue
+            break
         if not rendered:
-            return _err(rid, 5028, "pdftoppm produced no pages (corrupt PDF?)")
+            return _err(rid, 5028, why)
         attached_pages = []
         for src in rendered:
             page_num = src.stem.split("-", 1)[-1]
@@ -1106,7 +1159,8 @@ def _(rid, params: dict) -> dict:
             except ValueError:
                 page_int = first_page + len(attached_pages)
             dst = _queue_attached_image(
-                session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
+                session, src.read_bytes(), src.suffix.lower() or ".jpg",
+                prefix=f"pdf_p{page_num}")
             attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
         return _ok(rid, {
             "attached": True, "filename": display_name, "pages_attached": len(attached_pages),

@@ -89,6 +89,11 @@ class Package:
     # Windows ARM64 built-in emulation (no native arm64 artifact exists).
     # The arch guard accepts the x64 PE on these targets.
     emulated_arch_targets: frozenset[str] = frozenset()
+    # Directory names inside the entry that stay writable AFTER publication
+    # (python's site-packages: pip installs into it, bundles preinstall deps
+    # into it). tree_digest() excludes them, so recorded digests never take
+    # a user `pip install` as corruption to repair away.
+    digest_skip_dirs: tuple[str, ...] = ()
 
     def missing_reason(self, target: str) -> Optional[str]:
         return self.gaps.get(target)

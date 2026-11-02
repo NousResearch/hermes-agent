@@ -8,6 +8,7 @@ import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
 
 import { penWebEditorUrl, setPenLibraryHome } from '../pen-host'
 
+import { setPenDocumentSwitcher } from './dashboard'
 import {
   closeOtherPenDocuments,
   describeDocument,
@@ -27,7 +28,14 @@ import {
   sessionIdByCanvasPath
 } from './sessions'
 import { onPenEvent } from './state'
-import { attachPenWebGuest, rebindPenWebGuest, runPenTool } from './web-bridge'
+import {
+  attachPenWebGuest,
+  rebindPenWebGuest,
+  runPenTool,
+  savePenCanvas,
+  setPenBridgeHost,
+  setPenWebTheme
+} from './web-bridge'
 import { wirePenImportIpc } from './web-import'
 
 const penDocSessions = new Map<string, string>()
@@ -93,7 +101,12 @@ function wirePenIpc(): void {
     }
   })
 
-  const front = (doc: { docId: string; fileURI?: string }, sessionId: string | undefined, rebind: boolean) => {
+  // A switch reloads the editor: flush its autosave window to the old file first.
+  const front = async (doc: { docId: string; fileURI?: string }, sessionId: string | undefined, rebind: boolean) => {
+    if (rebind) {
+      await savePenCanvas()
+    }
+
     for (const closedId of closeOtherPenDocuments(doc.docId)) {
       penDocSessions.delete(closedId)
     }
@@ -225,7 +238,9 @@ function wirePenIpc(): void {
     }
   })
 
-  ipcMain.handle('hermes:pen:close', (_event, options) => {
+  ipcMain.handle('hermes:pen:close', async (_event, options) => {
+    await savePenCanvas()
+
     // ✕ puts the canvas away; the tie stays so the reopen pill can bring it back.
     if (!options?.keep) {
       for (const sessionId of penDocSessions.values()) {
@@ -237,6 +252,17 @@ function wirePenIpc(): void {
     closeOtherPenDocuments(null)
   })
 
+  // The editor's dashboard (Open / New). The canvas stays with the chat that had
+  // the old one; renderers re-seat the tile on `switch-document`.
+  setPenDocumentSwitcher(async target => {
+    const live = liveDocument()
+    const sessionId = live ? penDocSessions.get(live.docId) : undefined
+    const doc = await openPenCanvas(target)
+    const fronted = await front(doc, sessionId, true)
+
+    broadcastPenEvent('switch-document', fronted)
+  })
+
   ipcMain.handle('hermes:pen:tool', async (_event, name, payload) =>
     runPenTool(String(name || ''), payload && typeof payload === 'object' ? payload : {})
   )
@@ -244,6 +270,8 @@ function wirePenIpc(): void {
 
 export function wirePenCanvas(opts: { hermesHome: string; preloadPath: string }): void {
   setPenLibraryHome(opts.hermesHome)
+  setPenBridgeHost({ openLink: url => shell.openExternal(url) })
+  nativeTheme.on('updated', () => setPenWebTheme(penWebTheme()))
   wirePenWebviewGuests(opts)
   wirePenIpc()
   wirePenImportIpc()

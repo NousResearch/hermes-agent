@@ -8,9 +8,13 @@
 //   - editor → embedder requests are STORAGE (the embedder owns the document):
 //     storage-load / storage-write / storage-{read,write,has}-asset, backed
 //     by the document's .pen file + its assets beside it (assets.ts).
+//     The editor's dashboard asks for documents-* (dashboard.ts) and, because
+//     connect lists the capability, open-link.
 //   - embedder → editor requests are the MCP surface: get-mcp-schema (live
 //     tool list, fetched on open / action=schema) and mcp-tool-call — plus
-//     browser-import, which drops a web capture onto the canvas (web-import.ts).
+//     browser-import, which drops a web capture onto the canvas (web-import.ts),
+//     and save, which flushes autosave before a document switch.
+//   - notifications: selection-changed in, color-theme-changed out.
 //
 // One canvas at a time, so one live bridge.
 
@@ -18,14 +22,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { resolvePenAssetPath } from './assets'
+import { handleDashboardRequest } from './dashboard'
 import { liveDocument, penDocumentFilePath } from './documents'
 import { isPenWebUrl } from './embed-url'
-import { isPenSchemaAction, penToolNames, unknownPenToolError } from './mcp'
+import { isPenSchemaAction, isPenSelectionAction, penToolNames, unknownPenToolError } from './mcp'
 import type { PenDocument } from './state'
 import { documents, events, log } from './state'
 import { importedNodes, parseTopLevelNodes, type PenCanvasNode, starterFrames, topLevelNodesProbe } from './web-import-select'
 
-const CONNECT_RETRY_MS = 1_500
 const REQUEST_TIMEOUT_MS = 120_000
 /** The editor gives a large page import ten minutes; a shorter wait here would call it failed while it is still working. */
 const IMPORT_TIMEOUT_MS = 600_000
@@ -33,6 +37,17 @@ const READY_WAIT_MS = 30_000
 const STARTER_WAIT_MS = 3_000
 const SCHEMA_RETRY_MS = 400
 const SCHEMA_TRIES = 5
+const SAVE_TIMEOUT_MS = 15_000
+/** DocumentSaveResult: Saved / NothingToSave; anything else is a failure. */
+const SAVE_OK = new Set([0, 1])
+/** The cursor pen draws while the agent's tool calls edit the canvas. */
+const AGENT_CURSOR = { clientName: 'Hermes', cursorColor: [0.98, 0.76, 0.2] as [number, number, number] }
+
+export interface PenSelectionNode {
+  id: string
+  type: string
+  name?: string
+}
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -45,12 +60,24 @@ interface WebBridge {
   guest: any
   port: any
   ready: boolean
-  connectTimer: ReturnType<typeof setInterval> | null
   pending: Map<string, PendingRequest>
   counter: number
   theme: 'dark' | 'light'
   /** Names from the last `get-mcp-schema`; the page's list, not ours. */
   toolNames: string[]
+  /** The canvas selection, from the editor's `selection-changed`. */
+  selection: PenSelectionNode[]
+}
+
+/** Host hooks wire.ts installs. */
+interface PenBridgeHost {
+  openLink: (url: string) => Promise<void> | void
+}
+
+let host: PenBridgeHost = { openLink: () => undefined }
+
+export function setPenBridgeHost(next: PenBridgeHost): void {
+  host = next
 }
 
 let bridge: WebBridge | null = null
@@ -135,15 +162,35 @@ async function handleStorageRequest(doc: PenDocument, method: string, payload: a
       }
     }
 
-    default:
-      throw new Error(`unsupported storage request: ${method}`)
+    // Only sent because connect lists the capability; the sandboxed guest has no window.open.
+    case 'open-link': {
+      const url = new URL(String(payload?.url ?? ''))
+
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new Error(`not a web link: ${payload?.url}`)
+      }
+
+      await host.openLink(url.href)
+
+      return undefined
+    }
+
+    default: {
+      const dashboard = await handleDashboardRequest(doc, method, payload)
+
+      if (dashboard.handled) {
+        return dashboard.value
+      }
+
+      throw new Error(`unsupported request: ${method}`)
+    }
   }
 }
 
 /**
  * Bind once the guest origin matches. The editor's own reloads (it reloads
  * itself when a `pen:connect` reaches a page with a document already loaded)
- * are picked up by the port-close reconnect in `bindPenWebGuest`, so a guest
+ * post `pen:ready` again and are answered by `bindPenWebGuest`, so a guest
  * that already carries the bridge is left alone here.
  */
 export function attachPenWebGuest(guestContents: any, theme: 'dark' | 'light', editorUrl: string): void {
@@ -171,14 +218,13 @@ export function attachPenWebGuest(guestContents: any, theme: 'dark' | 'light', e
 }
 
 /**
- * Wire a web-editor guest to the live document. `pen:connect` is posted again
- * only while the page has said nothing back — a connect that reaches a page
- * with its document loaded makes the editor reload, so the retry is spaced
- * wider than the page takes to answer, and the first port the page speaks on
- * becomes the bridge's. When the page side of that port goes away (the editor
- * reloads on a document switch) the connect starts over for the new page.
- * Theme rides along at connect time only; the editor has no live theme
- * message, and a re-connect for a theme would reload it.
+ * Wire a web-editor guest to the live document. The editor posts `pen:ready`
+ * each time its bridge starts listening (first load and every reload);
+ * pen-web-preload relays it and each one gets exactly one `pen:connect` with a
+ * fresh channel. Every connect restarts the editor's document load, so there
+ * is no timer: one connect at bind (the page may have posted `pen:ready`
+ * before the bridge existed), then one per `pen:ready`. The editor adopts the
+ * newest port. Theme changes go over the port as `color-theme-changed`.
  */
 export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'dark'): void {
   const doc = activeDoc()
@@ -198,44 +244,51 @@ export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'd
     guest: guestContents,
     port: null,
     ready: false,
-    connectTimer: null,
     pending: new Map(),
     counter: 0,
     theme,
-    toolNames: []
+    toolNames: [],
+    selection: []
   })
 
   const current = () => bridge === own && !guestContents.isDestroyed?.()
 
-  const stopConnecting = () => {
-    if (own.connectTimer) {
-      clearInterval(own.connectTimer)
-      own.connectTimer = null
-    }
-  }
-
-  const attempt = () => {
+  const connect = () => {
     if (!current()) {
-      stopConnecting()
-
       return
     }
 
     const { port1, port2 } = new MessageChannelMain()
 
+    // The editor adopts the newest port; the older one is dead from here on.
+    if (own.port) {
+      own.port.close()
+      own.ready = false
+      rejectPending('the pen editor reconnected')
+    }
+
+    own.port = port1
+
     port1.on('message', (event: any) => {
-      if (!current()) {
+      if (!current() || own.port !== port1) {
         return
       }
 
-      // First word from the page: this connect landed, the others never will.
-      if (own.port !== port1) {
-        own.port?.close()
-        own.port = port1
-        stopConnecting()
+      const message = event.data
+
+      if (message?.kind === 'error') {
+        log.warn(`pen canvas rejected the connect: ${message.code} ${message.message}`)
+
+        return
       }
 
-      const message = event.data
+      if (message?.kind === 'notification') {
+        if (message.method === 'selection-changed') {
+          own.selection = Array.isArray(message.payload?.nodes) ? message.payload.nodes : []
+        }
+
+        return
+      }
 
       if (message?.kind === 'ready') {
         own.ready = true
@@ -277,7 +330,7 @@ export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'd
     })
 
     // The page went away under the live port (editor reload). Anything in
-    // flight is lost; the reloaded page answers a fresh connect.
+    // flight is lost; the reloaded page posts pen:ready and gets a fresh connect.
     port1.on('close', () => {
       if (!current() || own.port !== port1) {
         return
@@ -285,23 +338,24 @@ export function bindPenWebGuest(guestContents: any, theme: 'dark' | 'light' = 'd
 
       own.port = null
       own.ready = false
+      own.selection = []
       rejectPending('the pen editor reloaded')
-      log.info('pen canvas port closed — reconnecting')
-      startConnecting()
+      log.info('pen canvas port closed — waiting for pen:ready')
     })
 
     port1.start()
 
-    guestContents.postMessage('pen-connect', { theme, fileURI: doc.fileURI }, [port2])
+    guestContents.postMessage(
+      'pen-connect',
+      { theme: own.theme, fileURI: doc.fileURI, capabilities: ['open-link'], ...AGENT_CURSOR },
+      [port2]
+    )
   }
 
-  const startConnecting = () => {
-    stopConnecting()
-    attempt()
-    own.connectTimer = setInterval(attempt, CONNECT_RETRY_MS)
-  }
+  const onPenReady = () => connect()
 
-  startConnecting()
+  guestContents.ipc?.on('pen-ready', onPenReady)
+  connect()
   guestContents.once?.('destroyed', () => {
     // Only the guest this bridge is bound to may take it down: the docked
     // guest dies late when the pane moves to its own window, after the new
@@ -321,6 +375,50 @@ export function rebindPenWebGuest(): void {
   const { guest, theme } = bridge
 
   bindPenWebGuest(guest, theme)
+}
+
+/** Follow the app's light/dark switch without a reconnect (which would reload the editor). */
+export function setPenWebTheme(theme: 'dark' | 'light'): void {
+  if (!bridge || bridge.theme === theme) {
+    return
+  }
+
+  bridge.theme = theme
+
+  if (bridge.ready) {
+    bridge.port?.postMessage({ kind: 'notification', method: 'color-theme-changed', payload: { theme } })
+  }
+}
+
+/** The canvas selection as the editor last reported it. */
+export function penSelection(): PenSelectionNode[] {
+  return bridge?.ready ? [...bridge.selection] : []
+}
+
+/**
+ * Flush the editor's pending edits (autosave runs at most every 5 s) before
+ * the guest reloads for another document or the canvas is put away. A canvas
+ * that is not connected has nothing to flush. Never throws: a failed save is
+ * logged, and the switch goes ahead rather than stranding the chat.
+ */
+export async function savePenCanvas(): Promise<boolean> {
+  if (!bridge?.ready) {
+    return true
+  }
+
+  try {
+    const result = await bridgeRequest('save', undefined, SAVE_TIMEOUT_MS)
+
+    if (SAVE_OK.has(Number(result))) {
+      return true
+    }
+
+    log.warn(`pen canvas save returned ${String(result)}`)
+  } catch (error) {
+    log.warn(`pen canvas save failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  return false
 }
 
 function rejectPending(reason: string): void {
@@ -419,6 +517,12 @@ export async function runPenTool(
       return { success: true, result: await getPenMcpSchema() }
     }
 
+    if (isPenSelectionAction(name)) {
+      await waitForPenReady()
+
+      return { success: true, result: { nodes: penSelection() } }
+    }
+
     if (bridge?.toolNames.length === 0) {
       await getPenMcpSchema()
     }
@@ -496,8 +600,8 @@ export function shutdownPenWebBridge(): void {
     return
   }
 
-  if (bridge.connectTimer) {
-    clearInterval(bridge.connectTimer)
+  if (!bridge.guest.isDestroyed?.()) {
+    bridge.guest.ipc?.removeAllListeners?.('pen-ready')
   }
 
   rejectPending('the pen web canvas connection was closed')

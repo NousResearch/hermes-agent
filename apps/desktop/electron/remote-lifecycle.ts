@@ -1152,11 +1152,12 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const markerAbsent = `[ ! -e ${marker} ]`
 
   // A dev build's renderer is served from HERMES_DESKTOP_DEV_SERVER, an http origin the backend
-  // trusts only when it inherits the variable, exactly as a locally spawned backend does.
+  // trusts only when it inherits the variable, exactly as a locally spawned backend does. A value the
+  // remote login shell exports is cleared first, so a packaged build never hands one on.
   const devServerEnv = opts.devServer ? ` HERMES_DESKTOP_DEV_SERVER=${shq(opts.devServer)}` : ''
 
   const dashCmd =
-    `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
+    `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; unset HERMES_DESKTOP_DEV_SERVER; ` +
     `exec env HERMES_DESKTOP=1${devServerEnv} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`

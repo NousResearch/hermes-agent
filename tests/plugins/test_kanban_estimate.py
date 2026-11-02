@@ -100,3 +100,70 @@ def test_estimate_from_text_no_task(client, monkeypatch):
 
 def test_estimate_from_text_requires_title(client):
     assert client.post("/api/plugins/kanban/estimate", json={"title": "  ", "body": "x"}).json()["ok"] is False
+
+
+def test_estimate_under_multiplex_binds_assignee_profile_scope(client, kanban_home, monkeypatch):
+    """When multiplexing is active, estimate calls must execute within the assigned profile's scope."""
+    from agent import secret_scope as ss
+    import agent.auxiliary_client as aux
+
+    profile_dir = kanban_home / "profiles" / "dev"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / ".env").write_text("DEV_API_KEY=secret-token-123\n", encoding="utf-8")
+
+    task_id = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "refactor auth", "assignee": "dev"}
+    ).json()["task"]["id"]
+
+    seen = {}
+
+    def fake_call_llm(**kwargs):
+        # Under multiplexing with no scope, get_secret raises UnscopedSecretError.
+        # With the worker profile scope active, it resolves the assignee profile's secret.
+        seen["key"] = ss.get_secret("DEV_API_KEY")
+        return _fake_resp('{"est_tokens": 15000, "complexity": "M", "rationale": "auth refactor"}')
+
+    monkeypatch.setattr(aux, "call_llm", fake_call_llm)
+
+    ss.set_multiplex_active(True)
+    try:
+        body = client.post(f"/api/plugins/kanban/tasks/{task_id}/estimate").json()
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert body["ok"] is True
+    assert body["est_tokens"] == 15000
+    assert seen["key"] == "secret-token-123"
+    assert ss.current_secret_scope() is None
+
+
+def test_estimate_from_text_with_assignee_under_multiplex(client, kanban_home, monkeypatch):
+    """The create dialog passing an assignee binds that profile's secret scope under multiplexing."""
+    from agent import secret_scope as ss
+    import agent.auxiliary_client as aux
+
+    profile_dir = kanban_home / "profiles" / "analyst"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / ".env").write_text("ANALYST_KEY=analyst-secret-xyz\n", encoding="utf-8")
+
+    seen = {}
+
+    def fake_call_llm(**kwargs):
+        seen["key"] = ss.get_secret("ANALYST_KEY")
+        return _fake_resp('{"est_tokens": 5000, "complexity": "S", "rationale": "simple analysis"}')
+
+    monkeypatch.setattr(aux, "call_llm", fake_call_llm)
+
+    ss.set_multiplex_active(True)
+    try:
+        body = client.post(
+            "/api/plugins/kanban/estimate",
+            json={"title": "analyze metrics", "body": "quarterly", "assignee": "analyst"},
+        ).json()
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert body["ok"] is True
+    assert seen["key"] == "analyst-secret-xyz"
+    assert ss.current_secret_scope() is None
+

@@ -6637,7 +6637,7 @@ def _build_call_kwargs(
 
 def _validate_llm_response(
     response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
-) -> Any:
+    api_key: Optional[str] = None) -> Any:
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
     Also the single aux-usage accounting chokepoint: every successful non-streaming response
@@ -6655,7 +6655,7 @@ def _validate_llm_response(
         )
     response = _unwrap_data_envelope(response, task)
     from agent.aux_accounting import record_aux_usage
-    record_aux_usage(response, task, provider=provider, base_url=base_url)
+    record_aux_usage(response, task, provider=provider, base_url=base_url, api_key=api_key)
     # Adapter SimpleNamespace responses are fine — they have .choices[0].message.
     try:
         choices = response.choices
@@ -8097,7 +8097,7 @@ def _call_llm_impl(
             ),
             task, **validate_kw,
         )
-    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info)
+    resp, exc = _outcome(_primary, provider=request_provider, base_url=req.base_info, api_key=req.resolved_api_key)
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)
@@ -8251,7 +8251,7 @@ async def _async_call_llm_impl(
         return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(
             client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode, create=_acreate), task, **validate_kw)
     # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()). (PR #16587)
-    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info))
+    resp, exc = await _aoutcome(_primary(provider=request_provider, base_url=req.base_info, api_key=req.resolved_api_key))
     if exc is None:
         return resp
     failure = _primary_failure(req, exc)

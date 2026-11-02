@@ -605,7 +605,7 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
 @dataclass(frozen=True)
 class _Unattended:
     """One non-interactive context and the text every gate uses to explain it."""
-    name: str       # "single_query" | "cron" | "unattended"
+    name: str       # "single_query" | "cron" | "batch" | "unattended"
     cfg_key: str    # approvals.<cfg_key>: approve|deny
     clause: str     # "why nobody can approve" (lower-case sentence fragment)
     scope: str      # "in cron jobs" — completes "To allow ... {scope}"

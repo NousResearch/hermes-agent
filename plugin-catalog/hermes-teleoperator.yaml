@@ -1,0 +1,36 @@
+name: hermes-teleoperator
+title: Hermes Teleoperator
+repo: https://github.com/Tsurgcom/hermes-teleoperator
+sha: "833649aa3eb28042845824b2be775d4788a12e1c"
+description: >-
+  Switch one conversation's native tools, skills and permitted MCP servers between
+  computers over SSH. Disclosure — opens persistent SSH subprocesses to explicitly
+  configured hosts and executes commands and file operations with the destination
+  user's OS authority; this is not a sandbox. Remote credentials stay on the target.
+  The optional, manually invoked destination installer downloads a pinned GitHub
+  revision and adds a dedicated forced-command SSH public key to authorized_keys;
+  it does not run during plugin install or perform automatic updates. Remote
+  enabled-profile plugins can execute code when Hermes' native dispatcher loads.
+maintainer: Tsurgcom
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+version: "0.1.0"
+docs_url: https://github.com/Tsurgcom/hermes-teleoperator#readme
+image: https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/833649aa3eb28042845824b2be775d4788a12e1c/assets/marketplace-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/833649aa3eb28042845824b2be775d4788a12e1c/assets/architecture.svg
+  - https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/833649aa3eb28042845824b2be775d4788a12e1c/assets/switching.svg
+readme: true
+platforms: [linux]
+known_issues:
+  - "Requires SSH key authentication, verified host keys and an existing Hermes Python environment on each destination; no remote interactive approval forwarding."
+  - "Native dispatcher/MCP lifecycle and session-identity imports are private Hermes APIs and can break on upgrades; no core runtime rebinding or monkey-patching."
+  - "Validation retains a caution for the authorized_keys symlink regression fixture in tests/test_install.py; installer key enrolment is explicit and disclosed."
+  - "Remote MCP sampling must be explicitly disabled. Memory, browser tools, cron and delegation do not migrate; unsupported tools fail closed while remote."
+  - "Transfers are regular files up to 8 MiB. Reconnect resets shell state; ambiguous mutations are never retried automatically."
+capabilities:
+  provides_tools: [teleoperator]
+  provides_hooks: [pre_llm_call, on_session_end]
+  provides_middleware: [tool_execution]
+  requires_env: []

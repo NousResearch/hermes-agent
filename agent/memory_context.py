@@ -1,6 +1,7 @@
 """Memory-context fencing: how recalled memory is wrapped for the model and kept out of output.
 
-``build_memory_context_block`` fences prefetched recall for the prompt; ``sanitize_context`` and
+``build_memory_context_block`` fences prefetched recall for the prompt, leaving out bullets that
+``window_recall_lines`` finds already replaying in the window; ``sanitize_context`` and
 ``StreamingContextScrubber`` strip those fences (and anything a provider pre-wrapped) from text that
 leaves the agent. Pure text formatting: no provider calls, no profile state.
 """
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,87 @@ class StreamingContextScrubber:
 # ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
 _RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
 
+def _carries_continuation(lines: list[str], index: int) -> bool:
+    """Whether the line at ``index`` has an indented non-blank line directly beneath it."""
+    following = lines[index + 1] if index + 1 < len(lines) else ""
+    return bool(following.strip()) and following[0].isspace()
+
+
+def _sectioned_lines(lines: list[str]) -> Iterator[tuple[int, tuple[str, str], bool]]:
+    """``(index, (section, line), is_bullet)`` for every column-0 line of ``lines`` that window
+    dedupe can match: each self-contained bullet, and each non-bullet line (heading, rule, prose).
+
+    The section is the last column-0 non-bullet line above (``""`` at the top): the same scope
+    ``_drop_repeated_recall_lines`` dedupes within, so a line is only ever matched against the same
+    text under the same heading. Indented lines and bullets that carry them are never matched.
+    """
+    section = ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or line[0].isspace():
+            continue
+        if not _RECALL_BULLET_RE.match(stripped):
+            yield index, (section, stripped), False
+            section = stripped
+        elif not _carries_continuation(lines, index):
+            yield index, (section, stripped), True
+
+
+def _replayed_texts(msg: dict[str, Any]) -> list[str]:
+    """The text a history user row puts on the wire: its ``api_content`` sidecar when it has one
+    (string content; replay substitutes it), else its string content or list text parts."""
+    sidecar = msg.get("api_content")
+    if isinstance(sidecar, str) and sidecar:
+        return [sidecar]
+    content = msg.get("content")
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [part["text"] for part in content
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)]
+    return []
+
+
+def window_recall_lines(messages: Optional[Iterable[Any]]) -> set[tuple[str, str]]:
+    """The recall lines the context window ALREADY replays, as ``(section, line)`` keys.
+
+    A composed block is stamped into the user row it accompanied (the ``api_content`` sidecar on
+    string content, a durable text part on list content) and replayed verbatim on every later
+    request while that row stays in context. Pass the rows before the current turn's user message,
+    as they will be sent (canonical replay). The set is derived from those rows on every call, never
+    stored: rows that compression, a session switch or ``/new`` removed simply stop contributing,
+    so there is nothing to invalidate.
+    """
+    seen: set[tuple[str, str]] = set()
+    for msg in messages or ():
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        for text in _replayed_texts(msg):
+            for span in _INTERNAL_CONTEXT_RE.findall(text):
+                body = _FENCE_TAG_RE.sub("", _INTERNAL_NOTE_RE.sub("", span))
+                seen.update(key for _index, key, _is_bullet in _sectioned_lines(body.split("\n")))
+    return seen
+
+
+def _drop_window_repeated_recall_lines(text: str, already_in_window: set[tuple[str, str]]) -> tuple[str, bool]:
+    """Drop the self-contained bullets an earlier row's block already states under the same section.
+
+    Returns the kept text and whether the block is now covered: bullets were dropped and every line
+    left (a heading, a rule) is one the window already carries under the same section. Any line it
+    does not carry keeps the block, since it may be the one thing this recall adds: whether a line
+    merely frames the facts or states one cannot be told from its shape.
+    """
+    lines = text.split("\n")
+    keys = {index: (key, is_bullet) for index, key, is_bullet in _sectioned_lines(lines)}
+    drop = {index for index, (key, is_bullet) in keys.items() if is_bullet and key in already_in_window}
+    if not drop:
+        return text, False
+    kept = [index for index in range(len(lines)) if index not in drop]
+    covered = all(
+        index in keys and keys[index][0] in already_in_window for index in kept if lines[index].strip()
+    )
+    return "\n".join(lines[index] for index in kept), covered
+
 
 def _drop_repeated_recall_lines(text: str) -> str:
     """Drop a recalled bullet that an EARLIER line of this same block already states.
@@ -156,9 +239,7 @@ def _drop_repeated_recall_lines(text: str) -> str:
         if stripped and not is_bullet:
             seen.clear()
         if is_bullet:
-            following = lines[index + 1] if index + 1 < len(lines) else ""
-            carries_continuation = bool(following.strip()) and following[0].isspace()
-            if not carries_continuation:
+            if not _carries_continuation(lines, index):
                 if stripped in seen:
                     continue
                 seen.add(stripped)
@@ -166,8 +247,15 @@ def _drop_repeated_recall_lines(text: str) -> str:
     return "\n".join(kept)
 
 
-def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+def build_memory_context_block(
+    raw_context: str, *, already_in_window: Optional[set[tuple[str, str]]] = None,
+) -> str:
+    """Wrap prefetched memory in a fenced block with system note.
+
+    ``already_in_window`` is ``window_recall_lines`` of the rows before this turn. Bullets those
+    rows already replay are dropped instead of being stamped, and paid on every later request, a
+    second time (#136229). A block left with nothing but framing is not injected at all.
+    """
     if not raw_context or not raw_context.strip():
         return ""
     sanitized = sanitize_context(raw_context)
@@ -175,6 +263,10 @@ def build_memory_context_block(raw_context: str) -> str:
         # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
     clean = _drop_repeated_recall_lines(sanitized)
+    if already_in_window:
+        clean, covered = _drop_window_repeated_recall_lines(clean, already_in_window)
+        if covered:
+            return ""
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

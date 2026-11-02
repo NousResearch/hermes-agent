@@ -522,11 +522,15 @@ class GatewayTurnPrepareMixin:
         """Serialize [load history → run → flush] per resolved SESSION_ID so another routing key on
         the same session waits for the prior flush. Fail-closed on timeout (outer dispatch returns
         a resend notice). Released in _handle_message's finally, granted per (routing key, run
-        generation) so a stale unwind can't release a newer turn's."""
+        generation) so a stale unwind can't release a newer turn's.
+
+        Returns False when the turn went stale while waiting: /stop or /new bumped this routing
+        key's generation, or invalidated the session's waiters from an alias routing key. The token
+        is registered first so the dispatch finally still releases it."""
         from gateway.run import _float_env
         _lease_registry = getattr(self, "_turn_leases", None)
         if _lease_registry is None:
-            return
+            return True
         try:
             _lease_token = await _lease_registry.acquire(
                 session_entry.session_id, owner_key=_quick_key, generation=run_generation,
@@ -538,6 +542,9 @@ class GatewayTurnPrepareMixin:
             raise
         if _lease_token is not None:
             self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
+            if not _lease_registry.is_current(_lease_token):
+                return False
+        return self._is_session_run_current(_quick_key, run_generation)
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes, internal=False):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
@@ -692,7 +699,13 @@ class GatewayTurnPrepareMixin:
         if _is_new_session and _auto:
             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
-        await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+        if not await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens):
+            # A turn queued behind the lease before /stop or /new must not resume into transcript
+            # load or compression; the generation-guarded outer finally preserves any successor.
+            logger.info("Dropping stale turn for %s (gen %s) before transcript load: stopped while "
+                        "waiting on the session turn lease", _quick_key or "?", run_generation)
+            self._clear_session_env(_session_env_tokens)
+            return {"final_response": "", "api_calls": 0, "interrupted": True}, _session_env_tokens
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.

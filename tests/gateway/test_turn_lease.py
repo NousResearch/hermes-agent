@@ -485,3 +485,104 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
     _run(scenario())
 
 
+
+
+# ---------------------------------------------------------------------------
+# /stop while a turn is blocked on the resolved-session lease (#79872)
+# ---------------------------------------------------------------------------
+
+
+async def _start_blocked_agent_turn(monkeypatch, tmp_path, waiter_key):
+    from unittest.mock import MagicMock
+
+    from tests.gateway.test_duplicate_user_message import _bootstrap, _event, _source
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    # Use the real generation bookkeeping, not the bootstrap's always-current stubs.
+    for name in ("_is_session_run_current", "_begin_session_run_generation"):
+        runner.__dict__.pop(name, None)
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    runner._session_state(waiter_key).persistent.run_generation = 1
+    holder = await runner._turn_leases.acquire(
+        "sess-dedup", owner_key="key-a", generation=1, timeout=5
+    )
+    runner._session_state("key-a").persistent.run_generation = 1
+    runner._session_state("key-a").turn.lease_tokens[1] = holder
+    session_env_tokens = object()
+    runner._set_session_env = MagicMock(return_value=session_env_tokens)
+    runner._clear_session_env = MagicMock()
+    waiter = asyncio.create_task(
+        runner._handle_message_with_agent(_event(), _source(), waiter_key, 1)
+    )
+    for _ in range(200):
+        lease = runner._turn_leases._leases["sess-dedup"]
+        if lease.pending_acquires:
+            break
+        await asyncio.sleep(0)
+    assert runner._turn_leases._leases["sess-dedup"].pending_acquires == 1
+    return runner, holder, waiter, _source()
+
+
+@pytest.mark.asyncio
+async def test_agent_path_drops_waiter_invalidated_while_blocked_on_lease(
+    monkeypatch, tmp_path
+):
+    """A waiter whose generation /stop bumped must not resume into transcript load."""
+    runner, holder, waiter, _src = await _start_blocked_agent_turn(
+        monkeypatch, tmp_path, "key-b"
+    )
+    runner._invalidate_session_run_generation("key-b", reason="stop_command")
+    assert runner._turn_leases.release(holder) is True
+
+    # On the buggy path the stale turn runs on into the agent and raises; capture it.
+    await asyncio.wait_for(asyncio.gather(waiter, return_exceptions=True), 5)
+    runner.session_store.load_transcript.assert_not_called()
+    assert waiter.result() == {"final_response": "", "api_calls": 0, "interrupted": True}
+    # The dispatch finally still frees the stale generation's token.
+    assert runner._release_turn_lease("key-b", 1) is True
+
+
+@pytest.mark.asyncio
+async def test_agent_path_drops_alias_waiter_when_holder_is_stopped(
+    monkeypatch, tmp_path
+):
+    """/stop on the holder's routing key drops a blocked alias on the same session."""
+    runner, holder, waiter, src = await _start_blocked_agent_turn(
+        monkeypatch, tmp_path, "key-b"
+    )
+    await runner._interrupt_and_clear_session(
+        "key-a", src, interrupt_reason="stop", invalidation_reason="stop_command"
+    )
+    # /stop already frees the holder's lease (releasing again is an idempotent no-op).
+    runner._turn_leases.release(holder)
+
+    # On the buggy path the stale turn runs on into the agent and raises; capture it.
+    await asyncio.wait_for(asyncio.gather(waiter, return_exceptions=True), 5)
+    runner.session_store.load_transcript.assert_not_called()
+    assert waiter.result() == {"final_response": "", "api_calls": 0, "interrupted": True}
+    assert runner._release_turn_lease("key-b", 1) is True
+
+
+def test_invalidate_rejects_only_waiters_that_predate_it():
+    """Invalidation fences pre-/stop waiters, not a replacement turn that queues afterwards."""
+
+    async def scenario():
+        reg = SessionTurnLeaseRegistry()
+        holder = await reg.acquire("sess-i", owner_key="key-a", generation=1, timeout=5)
+        stale = asyncio.create_task(reg.acquire("sess-i", owner_key="key-b", generation=1, timeout=5))
+        await asyncio.sleep(0.02)
+        assert reg.invalidate("sess-i") is True
+        assert reg.invalidate("sess-unknown") is False
+        fresh = asyncio.create_task(reg.acquire("sess-i", owner_key="key-c", generation=1, timeout=5))
+        await asyncio.sleep(0.02)
+
+        assert reg.release(holder) is True
+        stale_token = await stale
+        assert reg.is_current(stale_token) is False
+        assert reg.release(stale_token) is True
+        fresh_token = await fresh
+        assert reg.is_current(fresh_token) is True
+        assert reg.release(fresh_token) is True
+        assert reg.is_current(fresh_token) is False
+
+    _run(scenario())

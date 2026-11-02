@@ -43,11 +43,14 @@ class TurnLeaseToken:
     """Held-lease handle from :meth:`SessionTurnLeaseRegistry.acquire`; ``released`` makes
     release idempotent."""
 
-    __slots__ = ("generation", "lease", "owner_key", "released", "session_id")
+    __slots__ = ("epoch", "generation", "lease", "owner_key", "released", "session_id")
 
     def __init__(self, session_id: str, owner_key: str, generation: int, lease: "_SessionLease") -> None:
         self.session_id, self.owner_key, self.generation = session_id, owner_key, generation
         self.released = False
+        # Snapshot before any wait: /stop or /new may invalidate the session while this acquire
+        # is blocked behind another routing key's holder (see ``invalidate``).
+        self.epoch = lease.epoch
         # The concrete lease, so release resolves by identity even after a rotation re-aliases
         # ``session_id`` (both ids map to this same lease).
         self.lease = lease
@@ -58,12 +61,13 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("acquired_at", "holder", "last_used", "lock", "pending_acquires")
+    __slots__ = ("acquired_at", "epoch", "holder", "last_used", "lock", "pending_acquires")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.holder: Optional[TurnLeaseToken] = None
         self.acquired_at, self.last_used, self.pending_acquires = 0.0, time.time(), 0
+        self.epoch = 0
 
     @property
     def idle(self) -> bool:
@@ -135,6 +139,21 @@ class SessionTurnLeaseRegistry:
         lease.holder = token
         lease.acquired_at = lease.last_used = time.time()
         return token
+
+    def invalidate(self, session_id: str) -> bool:
+        """Mark every acquire already waiting on ``session_id`` stale (/stop, /new). Waiters still
+        get the lock in order (so the dispatch finally releases it normally) but ``is_current``
+        reports False; acquires that start afterwards are unaffected."""
+        lease = self._leases.get(session_id) if session_id else None
+        if lease is None:
+            return False
+        lease.epoch += 1
+        lease.last_used = time.time()
+        return True
+
+    def is_current(self, token: Optional[TurnLeaseToken]) -> bool:
+        """True while ``token`` is unreleased and predates no ``invalidate`` of its lease."""
+        return token is not None and not token.released and token.epoch == token.lease.epoch
 
     def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
         """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation (compression) so the

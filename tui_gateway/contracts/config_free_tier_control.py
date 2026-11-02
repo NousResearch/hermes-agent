@@ -602,6 +602,34 @@ method("image.generate", params=ImageGenerateParams, result=ImageGenerateResult,
        doc="Generate an image through the tool's provider dispatcher and hand the renderer a data URL.")
 
 
+# ── image.render ──────────────────────────────────────────────────────────────────────────────
+
+
+class ImageRenderParams(Params):
+    path: str
+    cols: int  # cell budget; the image keeps its aspect inside it and never upscales
+    rows: int
+    graphics: JsonValue | None = None  # truthy: the client owns a real terminal and can take escapes
+
+
+class ImageRenderResult(Result):
+    """``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint
+    ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``)
+    as half-blocks. ``off``: inline images are disabled or the file is not a readable image."""
+
+    mode: Literal["kitty", "unicode", "off"]
+    cols: int | None = None
+    rows: int | None = None
+    color: str | None = None
+    transmit: str | None = None
+    placeholder: list[str] | None = None
+    cells: list[list[list[int]]] | None = None
+
+
+method("image.render", params=ImageRenderParams, result=ImageRenderResult,
+       doc="Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks).")
+
+
 # ── session.control ───────────────────────────────────────────────────────────────────────────
 
 

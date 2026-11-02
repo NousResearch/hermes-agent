@@ -1,4 +1,5 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
@@ -65,6 +66,10 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
 
   return n
 }
+
+// Until an image row mounts and Yoga measures it, assume full-height images
+// under a one-row gap.
+const imageRows = (msg: Msg) => (msg.images?.length ? 1 + msg.images.length * INLINE_IMAGE_MAX_ROWS : 0)
 
 export const estimatedMsgHeight = (
   msg: Msg,
@@ -133,6 +138,8 @@ export const estimatedMsgHeight = (
       }
     }
   }
+
+  h += imageRows(msg)
 
   if (msg.role === 'user' || msg.kind === 'diff') {
     // Top + bottom blank line.

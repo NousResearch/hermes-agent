@@ -910,6 +910,22 @@ export interface ImageGenerateResult {
   image_data?: string | null
   error?: string | null
 }
+export interface ImageRenderParams {
+  path: string
+  cols: number
+  rows: number
+  graphics?: unknown | null
+}
+/** ``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``) as half-blocks. ``off``: inline images are disabled or the file is not a readable image. */
+export interface ImageRenderResult {
+  mode: 'kitty' | 'unicode' | 'off'
+  cols?: number | null
+  rows?: number | null
+  color?: string | null
+  transmit?: string | null
+  placeholder?: string[] | null
+  cells?: number[][][] | null
+}
 export interface SessionControlReadParams {
   profile?: string | null
   session_id: string
@@ -5819,6 +5835,7 @@ export interface ToolCompletePayload {
   todos?: unknown[] | null
   revision?: number | null
   labels?: ToolLabel[] | null
+  image_path?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {
@@ -6226,6 +6243,8 @@ export interface RpcMethods {
   'image.detach': { params: ImageDetachParams; result: ImageDetachResult }
   /** Generate an image through the tool's provider dispatcher and hand the renderer a data URL. */
   'image.generate': { params: ImageGenerateParams; result: ImageGenerateResult }
+  /** Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks). */
+  'image.render': { params: ImageRenderParams; result: ImageRenderResult }
   /** Recognise a terminal file drop pasted into the composer and turn it into an attachment. */
   'input.detect_drop': { params: InputDetectDropParams; result: InputDetectDropResult }
   /** Session/message counts over the last ``days`` for the (optionally scoped) profile store. */
@@ -6656,6 +6675,7 @@ export const RPC_METHODS = [
   'image.attach_bytes',
   'image.detach',
   'image.generate',
+  'image.render',
   'input.detect_drop',
   'insights.get',
   'learning.delete',

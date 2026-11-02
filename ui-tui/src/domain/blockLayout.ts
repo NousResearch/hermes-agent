@@ -35,6 +35,9 @@ export const messageGroup = (msg: Pick<Msg, 'kind' | 'role'>): BlockGroup => {
     case 'diff':
       return 'diff'
 
+    // A tool's image sits in the trail it came from, without a gap.
+    case 'image':
+
     case 'trail':
       return 'trail'
   }

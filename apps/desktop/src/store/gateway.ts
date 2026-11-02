@@ -1185,7 +1185,7 @@ async function gatewayForProfile(
       if (
         entry.activeRequests === 0 &&
         !entry.retained &&
-        !relayRetained(entry) &&
+        !pinnedOpen(entry) &&
         !foregroundPinned(entry) &&
         g.activeKey !== entry.scope
       ) {
@@ -1331,7 +1331,7 @@ export async function requestGatewayForAgent<T>(
       !drainPendingConnectionRedial(entry) &&
       entry.activeRequests === 0 &&
       !entry.retained &&
-      !relayRetained(entry) &&
+      !pinnedOpen(entry) &&
       !foregroundPinned(entry) &&
       g.activeKey !== entry.scope
     ) {
@@ -1345,14 +1345,12 @@ export async function requestGatewayForAgent<T>(
 }
 
 // ── Bot-relay socket retention (#93594) ─────────────────────────────────────
-// The desktop bot relay RPCs EVERY registered connection on its drain loop.
-// Each of those calls runs through requestGatewayForAgent's per-request lease,
-// so a connection with no other consumer dialed a fresh WebSocket and tore it
-// down again on every tick — a connect/disconnect pair per connection per tick
-// flooding the gateway logs. While the relay is active, its routes hold a
-// counted retention that keeps the pooled socket (and its existing
-// scheduleReconnect/backoff machinery) alive across ticks; stopBotRelay (and
-// plugin dispose) releases it, restoring the dispose-at-refcount-0 behavior.
+// The desktop bot relay RPCs EVERY registered connection on its drain loop. Each of those calls runs
+// through requestGatewayForAgent's per-request lease, so a connection with no other consumer dialed a
+// fresh WebSocket and tore it down again on every tick — a connect/disconnect pair per connection per
+// tick flooding the gateway logs. While the relay is active, its routes hold a counted retention that
+// keeps the pooled socket (and its existing scheduleReconnect/backoff machinery) alive across ticks;
+// stopBotRelay (and plugin dispose) releases it, restoring the dispose-at-refcount-0 behavior.
 
 /**
  * True when a foreground surface (mounted tile / primary thread) is bound to
@@ -1370,9 +1368,12 @@ function foregroundPinned(entry: Secondary): boolean {
   return scopes.has(entry.scope) || (!entry.connectionId && scopes.has(entry.profile))
 }
 
-/** Pinned open: the bot relay holds it, or it is kept connected (gateway-kept-routes). */
-function relayRetained(entry: Secondary): boolean {
-  return entry.relayRetainCount > 0 || isKeptRoute(entry.connectionId, entry.profile)
+/** The bot relay holds a lease on this socket (retainGatewayForRelay); a kept route is not a lease. */
+const relayLeased = (entry: Secondary): boolean => entry.relayRetainCount > 0
+
+/** Pinned open against idle dispose: a relay lease or a kept route (gateway-kept-routes). Edits use relayLeased. */
+function pinnedOpen(entry: Secondary): boolean {
+  return relayLeased(entry) || isKeptRoute(entry.connectionId, entry.profile)
 }
 
 /**
@@ -1383,7 +1384,7 @@ function drainPendingConnectionRedial(entry: Secondary): boolean {
   if (
     entry.pendingConnectionRedial !== true ||
     entry.activeRequests > 0 ||
-    entry.relayRetainCount > 0 ||
+    relayLeased(entry) ||
     foregroundPinned(entry) ||
     g.secondaries.get(entry.scope) !== entry
   ) {
@@ -1465,7 +1466,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
 
     if (
       !drainPendingConnectionRedial(entry) &&
-      !relayRetained(entry) &&
+      !pinnedOpen(entry) &&
       entry.activeRequests === 0 &&
       !entry.retained &&
       !foregroundPinned(entry) &&
@@ -1550,7 +1551,7 @@ export async function retainGatewayForAgent(
     if (
       entry.activeRequests === 0 &&
       !entry.retained &&
-      !relayRetained(entry) &&
+      !pinnedOpen(entry) &&
       !foregroundPinned(entry) &&
       g.activeKey !== entry.scope
     ) {
@@ -2140,7 +2141,7 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
       // request would hang until its per-call timeout. Probe liveness instead —
       // a healthy-but-busy backend answers and keeps its socket; a dead
       // transport is closed and healed by the ordinary reconnect backoff.
-      if (entry.activeRequests > 0 || relayRetained(entry) || foregroundPinned(entry)) {
+      if (entry.activeRequests > 0 || pinnedOpen(entry) || foregroundPinned(entry)) {
         probeSecondaryLiveness(entry)
 
         continue
@@ -2242,10 +2243,10 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       key === g.activeKey ||
       keep.has(key) ||
       (!entry.connectionId && keep.has(entry.profile)) ||
-      // Bot-relay retention (#93594): the relay pins its remote routes for
-      // its whole active lifetime; the live-work pruner must not undo that
-      // pin between drain ticks or the socket churn returns.
-      relayRetained(entry) ||
+      // pinnedOpen: the bot relay pins its remote routes for its active lifetime (#93594) and a
+      // kept route stays connected for the window's lifetime (gateway-kept-routes); the pruner
+      // must undo neither.
+      pinnedOpen(entry) ||
       // A mounted tile / the primary thread is bound to a runtime on this
       // socket (#93892) — pinned for as long as that surface is mounted.
       foregroundPinned(entry) ||
@@ -2402,13 +2403,12 @@ export function retireLocalProfileGateways(profile: string): void {
   }
 }
 
-// Registry lifecycle: a connection was removed or materially edited. Removal
-// disposes every scoped secondary immediately (a removed remote/cloud source
-// has no local process to die, so otherwise its WebSocket streams ghost
-// events). A material edit redials each profile through the normal open path so
-// fresh sockets target the NEW endpoint, but request/relay leases and mounted
-// foreground runtimes keep their old socket until they drain; the active scope
-// re-activates when its replacement is safe to publish.
+// Registry lifecycle: a connection was removed or materially edited. Removal disposes every scoped
+// secondary immediately (a removed remote/cloud source has no local process to die, so otherwise its
+// WebSocket streams ghost events). A material edit redials each profile through the normal open path so
+// fresh sockets target the NEW endpoint, but request/relay leases and mounted foreground runtimes keep
+// their old socket until they drain (a keep pin does not: relayLeased, not pinnedOpen); the active
+// scope re-activates when its replacement is safe to publish.
 export function disposeSecondariesForConnection(connectionId: string, opts: { redial?: boolean } = {}): void {
   const id = String(connectionId || '').trim()
   let activeInvalidated = false
@@ -2438,7 +2438,7 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
     const wasActive = key === g.activeKey
     activeInvalidated ||= wasActive
 
-    if (opts.redial && (entry.activeRequests > 0 || entry.relayRetainCount > 0 || foregroundPinned(entry))) {
+    if (opts.redial && (entry.activeRequests > 0 || relayLeased(entry) || foregroundPinned(entry))) {
       entry.pendingConnectionRedial = true
 
       continue

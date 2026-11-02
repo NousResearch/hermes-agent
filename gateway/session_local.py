@@ -52,6 +52,16 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def register_source(self, source):
         self.sources[self._source_key(source)] = source, self._identity(source)
 
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
+
     async def connect(self, *, is_reconnect=False):
         return True
 

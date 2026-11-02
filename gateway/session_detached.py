@@ -84,6 +84,11 @@ def forget_detached(authority, key) -> None:
     if evict is not None:
         evict(key)
     drop_owner_hints(runner.session_store, key)
+    from gateway.config import Platform
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.sources.pop(key, None)  # what admitted the detached copy's background results
 
 
 def drop_owner_hints(store, key) -> None:

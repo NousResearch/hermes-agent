@@ -190,6 +190,28 @@ async def deliver_resolved(authority, admission_id, *, owed):
     await deliver_settled(authority, admission_id)
 
 
+def _take_post_delivery(authority, admission_id, source, route):
+    """Move the turn's post-delivery callback off its adapter's per-route slot onto this admission."""
+    adapter = authority.runner._delivery_adapter_for(source) if source is not None else None
+    callback = adapter.pop_post_delivery_callback(route) if adapter is not None else None
+    if callback is not None:
+        _registry(authority, 'post_delivery')[admission_id] = callback
+
+
+async def fire_post_delivery(authority, admission_id):
+    """Run a settled turn's post-delivery callbacks (background-review release, temp-bubble cleanup,
+    a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
+    does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
+    and result) in the adapter's slot until restart."""
+    callback = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if callback is None:
+        return
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
+        await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
 async def _release_turn_marker(authority, event):
     if getattr(event, '_gateway_active_turn_token', None):
         await authority.runner._clear_durable_active_turn(event)
@@ -339,6 +361,10 @@ async def execute_admission(authority, ref, row):
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
     finally:
+        if not native:
+            # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
+            # once the turn settled and its reply went out (``fire_post_delivery``).
+            _take_post_delivery(authority, row['admission_id'], event.source, live.route)
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)

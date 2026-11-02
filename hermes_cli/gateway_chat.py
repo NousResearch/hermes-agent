@@ -15,7 +15,7 @@ from hermes_cli.gateway_connection import RESUME_REFUSALS
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
-    "image", "worktree", "w",
+    "worktree", "w",
     "no_restore_cwd",
     "run_budget", "verbose", "compact",
 )
@@ -23,7 +23,6 @@ _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url"
            "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
-    "image": "`hermes --tui` or the Desktop app to attach the image",
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
@@ -243,7 +242,15 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
-        return await view.run(query, oneshot=oneshot)
+        attachments = []
+        if image := getattr(args, "image", None):
+            import base64
+            path = Path(image).expanduser()
+            data = await asyncio.to_thread(path.read_bytes)
+            uploaded = await client.rpc("image.attach_bytes", session_id=view.session_id,
+                                        filename=path.name, content_base64=base64.b64encode(data).decode("ascii"))
+            attachments.append({"path": uploaded["path"], "mime": uploaded["mime"]})
+        return await view.run(query, oneshot=oneshot, **({"attachments": attachments} if attachments else {}))
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."

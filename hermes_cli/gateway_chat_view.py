@@ -340,11 +340,12 @@ class GatewayChatView:
     def _settled(self, admission, payload):
         self.prompts.pop(payload["prompt_id"], None)
 
-    async def submit(self, text):
+    async def submit(self, text, *, attachments=None):
         self.mutations.retire(self.session_id)
         sid, gaps = self.session_id, self.gaps
         receipt = await self.client.rpc("prompt.submit", session_id=self.session_id,
                                         input_id=uuid.uuid4().hex, text=text,
+                                        **({"attachments": attachments} if attachments else {}),
                                         **({"finite": True} if self.finite else {}),
                                         **({"unattended": True} if self.finite and self.unattended else {}))
         if (receipt or {}).get("voice_stopped") is True:
@@ -532,7 +533,7 @@ class GatewayChatView:
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
 
-    async def run(self, query=None, *, oneshot=False):
+    async def run(self, query=None, *, oneshot=False, attachments=None):
         self.quiet = self.quiet or oneshot
         self.finite = oneshot
         self.show_pending()
@@ -546,7 +547,7 @@ class GatewayChatView:
                                 "and /discard the paused turn there; then send it again.")
         renderer = asyncio.create_task(self.render())
         try:
-            receipt = await self.submit(query) if query else None
+            receipt = await self.submit(query, **({"attachments": attachments} if attachments else {})) if query else None
             if oneshot:
                 admission = _oneshot_admission(receipt)
                 if admission is None:

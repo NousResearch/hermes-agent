@@ -1025,13 +1025,19 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
     return pool if pool and pool.has_credentials() else None
 
 
-def _select_pool_entry(provider: str) -> tuple[bool, Optional[Any]]:
-    """Return (pool_exists_for_provider, selected_entry)."""
+def _select_pool_entry(provider: str, *, model: Optional[str] = None) -> tuple[bool, Optional[Any]]:
+    """Return (pool_exists_for_provider, selected_entry).
+
+    Pass *model* whenever the call's model is known: an unscoped select honours every model
+    cooldown on an entry, so one slug's bench (a Codex entitlement bench lasts a year) would
+    otherwise keep the credential from every other model too. Without a model the select is the
+    unscoped one it always was, so callers that do not pass one see no change.
+    """
     pool = _load_pool_with_credentials(provider)
     if pool is None:
         return False, None
     try:
-        return True, pool.select()
+        return True, (pool.select(model=model) if model else pool.select())
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
         return True, None
@@ -2098,13 +2104,14 @@ def _resolve_xai_oauth_for_aux() -> Optional[tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _resolve_codex_credential_and_base() -> tuple[Optional[str], str]:
+def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
-    token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
+    token goes to the ChatGPT default. ``(None, <base>)`` without a usable token. *model* scopes the
+    pool pick, so a bench on another slug does not hide a credential this model can use."""
     override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _select_pool_entry("openai-codex", model=model)
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2921,7 +2928,7 @@ def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base()
+    codex_token, base_url = _resolve_codex_credential_and_base(model)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -4946,13 +4953,14 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base()
+        wire_model = _normalize_resolved_model(model, req.provider)
+        codex_token, base_url = _resolve_codex_credential_and_base(wire_model)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
-        return raw_client, _normalize_resolved_model(model, req.provider)
+        return raw_client, wire_model
     client, default = _build_codex_client(model)
     return _route_or_warn(req, client, default, no_token_msg)
 

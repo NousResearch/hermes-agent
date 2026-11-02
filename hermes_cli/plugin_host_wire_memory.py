@@ -25,7 +25,7 @@ def _encode_memory_observation(
         _freeze_memory_observation_payload,
         _thaw_json_value,
     )
-    from agent.memory_manager_prefetch import _builtin_dict_fields
+    from agent.memory_manager_prefetch import _builtin_dict_fields, _validate_observation_metadata
 
     if type(value) is MemoryObservation:
         source_kind = value.source_kind
@@ -44,6 +44,11 @@ def _encode_memory_observation(
         payload = fields.get("payload")
     else:
         return encode(_opaque_wire_value(value), refs, depth + 1)
+
+    try:
+        _validate_observation_metadata(source_kind, schema, version, provider)
+    except (TypeError, ValueError, OverflowError):
+        payload = None
 
     if type(version) is int:
         try:

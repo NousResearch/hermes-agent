@@ -1187,7 +1187,7 @@ def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
     raw = MemoryPrefetchResult(
         context="hosted provider context",
         observations=(_observation({"ok": True}),) + tuple(
-            MemoryObservation("", "fixture.context", 1, {"text": "x" * 3910})
+            MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 4050 for i in range(4)})
             for _ in range(100)
         ),
     )
@@ -1214,7 +1214,7 @@ def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
     assert result.context == "hosted provider context\n\nlater provider context"
     assert len(result.observations) == hosted_prefix_size
     assert all(item.provider == "builtin" for item in result.observations)
-    assert "plugin-host wire batch bound" in caplog.text
+    assert "plugin-host wire batch bound; keeping the received prefix" in caplog.text
 
 
 def test_memory_manager_module_identity_survives_fresh_agent_fixture():

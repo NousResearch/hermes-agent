@@ -75,6 +75,33 @@ def _invalid_observation(provider: Any, exc: Exception) -> None:
     )
 
 
+def _validate_observation_metadata(source_kind: Any, schema: Any, raw_version: Any, raw_provider: Any):
+    if not isinstance(source_kind, str) or not isinstance(schema, str):
+        raise ValueError("observation source_kind or schema is invalid")
+    source_kind_len = str.__len__(source_kind)
+    if not source_kind_len or source_kind_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+        raise ValueError("observation source_kind is invalid")
+    schema_len = str.__len__(schema)
+    if not schema_len or schema_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+        raise ValueError("observation schema is invalid")
+    source_kind = str.__str__(source_kind)
+    schema = str.__str__(schema)
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, int)
+    ):
+        raise ValueError("observation version is invalid")
+    # Convert int subclasses with the base implementation before comparing or encoding.
+    version = int.__int__(raw_version)
+    if version < 1:
+        raise ValueError("observation version is invalid")
+    if _encoded_json_scalar_size(version) > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation version is too large")
+    if not isinstance(raw_provider, str) or str.__len__(raw_provider) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
+        raise ValueError("observation provider is invalid")
+    return source_kind, schema, version, str.__str__(raw_provider)
+
+
 def _normalize_observation(
     provider: Any, candidate: Any, traversal_budget: Optional[list[int]]
 ) -> Optional[tuple[MemoryObservation, int]]:
@@ -116,27 +143,9 @@ def _normalize_observation(
         schema = candidate.schema
         raw_version = candidate.version
         raw_provider = candidate.provider
-        if not isinstance(source_kind, str) or not isinstance(schema, str):
-            raise ValueError("observation source_kind or schema is invalid")
-        source_kind_len = str.__len__(source_kind)
-        if not source_kind_len or source_kind_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
-            raise ValueError("observation source_kind is invalid")
-        schema_len = str.__len__(schema)
-        if not schema_len or schema_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
-            raise ValueError("observation schema is invalid")
-        source_kind = str.__str__(source_kind)
-        schema = str.__str__(schema)
-        if (
-            isinstance(raw_version, bool)
-            or not isinstance(raw_version, int)
-        ):
-            raise ValueError("observation version is invalid")
-        # Convert int subclasses with the base implementation before comparing or encoding.
-        version = int.__int__(raw_version)
-        if version < 1:
-            raise ValueError("observation version is invalid")
-        if _encoded_json_scalar_size(version) > MAX_MEMORY_OBSERVATION_BYTES:
-            raise ValueError("observation version is too large")
+        source_kind, schema, version, observation_provider = _validate_observation_metadata(
+            source_kind, schema, raw_version, raw_provider
+        )
         provider_name = provider.name
         if not isinstance(provider_name, str):
             raise ValueError("provider name is invalid")
@@ -145,12 +154,7 @@ def _normalize_observation(
             raise ValueError("provider name is invalid")
         if provider_name_len > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
             raise ValueError("provider name is too long")
-        if not isinstance(raw_provider, str):
-            raise ValueError("observation provider is invalid")
-        if str.__len__(raw_provider) > MAX_MEMORY_OBSERVATION_FIELD_CHARS:
-            raise ValueError("observation provider is invalid")
         provider_name = str.__str__(provider_name)
-        observation_provider = str.__str__(raw_provider)
         if observation_provider not in ("", provider_name):
             raise ValueError("observation provider does not match its source provider")
 

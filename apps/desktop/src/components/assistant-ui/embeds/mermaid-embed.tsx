@@ -1,6 +1,8 @@
 'use client'
 
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useStore } from '@nanostores/react'
+import { atom, onMount } from 'nanostores'
+import { useEffect, useState } from 'react'
 
 import { Zoomable } from '@/components/ui/zoomable'
 import { onThemeRepaint } from '@/hooks/use-theme-epoch'
@@ -79,35 +81,21 @@ function resolveTheme(): string {
 }
 
 // One resolved theme shared by every mounted diagram, re-resolved once per
-// theme repaint (mode flip or skin change) rather than once per diagram.
-let sharedTheme: null | string = null
-let stopRepaints: (() => void) | null = null
-const themeListeners = new Set<() => void>()
+// theme repaint (mode flip or skin change) rather than once per diagram. The
+// first read mounts the store (nanostores' get() runs onMount), so a diagram
+// never renders without a palette; unmounting clears it, so a later mount
+// re-resolves instead of drawing with a stale one.
+const $diagramTheme = atom('')
 
-function subscribeTheme(listener: () => void): () => void {
-  if (!stopRepaints) {
-    // Nothing tracked repaints while no diagram was mounted.
-    sharedTheme = null
-    stopRepaints = onThemeRepaint(() => {
-      sharedTheme = null
-      themeListeners.forEach(notify => notify())
-    })
-  }
-
-  themeListeners.add(listener)
+onMount($diagramTheme, () => {
+  $diagramTheme.set(resolveTheme())
+  const stop = onThemeRepaint(() => $diagramTheme.set(resolveTheme()))
 
   return () => {
-    themeListeners.delete(listener)
-
-    if (themeListeners.size === 0) {
-      stopRepaints?.()
-      stopRepaints = null
-      sharedTheme = null
-    }
+    stop()
+    $diagramTheme.set('')
   }
-}
-
-const currentTheme = () => (sharedTheme ??= resolveTheme())
+})
 
 // Pele's root always carries a style attribute; the palette goes in front of
 // it, so Pele's own `var(--pele-*, default)` references pick it up. Colors are
@@ -172,7 +160,7 @@ function svgAccessibleText(svg: string): string {
 // source while the message streams (partial syntax throws) and falls back to
 // source on parse failure.
 export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
-  const theme = useSyncExternalStore(subscribeTheme, currentTheme)
+  const theme = useStore($diagramTheme)
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
 

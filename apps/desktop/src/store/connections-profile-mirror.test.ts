@@ -51,9 +51,11 @@ it('reports single profile changes to main and never pushes its whole map', asyn
 
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = { profile }
 
-  const { _resetConnectionsForTests } = await import('./connections')
+  const { _resetConnectionsForTests, initializeConnectionsRegistry } = await import('./connections')
 
-  // One-time import of this window's pre-mirror record.
+  // Importing the module touches no bridge; boot imports the pre-mirror record once.
+  expect(profile.importConnections).not.toHaveBeenCalled()
+  void initializeConnectionsRegistry().catch(() => undefined)
   expect(profile.importConnections).toHaveBeenCalledTimes(1)
   expect(profile.importConnections).toHaveBeenCalledWith({ homelab: 'work', 'work-vps': 'ops' })
 

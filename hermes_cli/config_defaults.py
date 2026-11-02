@@ -1823,6 +1823,11 @@ DEFAULT_CONFIG = {
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
         # False = fail during the run instead.
         "preflight": True,
+        # Hold a due slot while PM is between dependency generations (`hermes update`, `pm gc`,
+        # `pm repair`): the worker would die in its boot before the ownership acknowledgement and
+        # the fire would be booked FAILED, though the same install commits a generation seconds
+        # later. False = dispatch anyway and let it fail loudly.
+        "defer_uncommitted_dependencies": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
         # cron.model > model.default (the main agent model). An unpinned job follows the main
         # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.

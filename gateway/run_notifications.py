@@ -867,16 +867,22 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
-        # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
-        adapters = self._adapters_for_profile(getattr(source, "profile", None))
+        # A pinned identity names the bot that received the conversation: it answers, as
+        # ``_delivery_adapter_for`` rules (a ``bot_profile`` route's runtime may own no adapter for this
+        # platform, #139726). Otherwise one resolver with authz/kanban/cron: a secondary's own map, or the
+        # primary's for a shared-bot satellite; a disconnected bot fails closed to ``{}``.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        pinned = identity is not None and identity.multiplexed and not identity.transport_inferred
+        adapters = self._adapters_for_profile(
+            identity.transport_profile if pinned else getattr(source, "profile", None))
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:
             _transport = None
         if _transport is not None:
             return _transport.adapter
-        if source is not None and (borrowed := self._routed_primary_adapter(source)) is not None:
+        if not pinned and source is not None and (borrowed := self._routed_primary_adapter(source)) is not None:
             return borrowed
         if source is not None and (relay := self._committed_relay_adapter(source)) is not None:
             return relay

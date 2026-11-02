@@ -228,6 +228,10 @@ def restore_provenance(runner, source, provenance):
         raise RuntimeStoreError('profile_mismatch')
     source.delivered_via_upstream_relay = candidate.delivered_via_upstream_relay
     source._transport_adapter_ref = weakref.ref(adapter)
+    # Re-pin the identity ingress resolved: the drained turn's route records the receiving bot from it
+    # (``SessionEntry.transport_profile``), so after a restart its session still answers through that bot.
+    from gateway.session_identity import canonical_identity
+    canonical_identity(source, runner=runner, adapter=adapter, transport_profile=provenance.get('transport_profile'))
     source._authorization_profile_home = home
     return runtime_home
 

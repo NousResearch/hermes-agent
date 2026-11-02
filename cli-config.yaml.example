@@ -121,6 +121,12 @@ model:
   # only.
   # streaming: true
 
+  # Lock model switching (default: false). For installations where something outside Hermes chooses
+  # the model, such as a gateway that routes requests by policy: /model and every other switch path
+  # (TUI, ACP, messaging gateway, dashboard) refuse with lock_switching_message instead of switching.
+  # lock_switching: false
+  # lock_switching_message: "Model switching is turned off for this installation."
+
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"

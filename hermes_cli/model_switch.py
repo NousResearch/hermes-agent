@@ -1787,6 +1787,10 @@ def switch_model(
     step returns a failure :class:`ModelSwitchResult` to stop the chain, or ``None`` to continue.
     ``user_providers`` / ``custom_providers`` are the config.yaml ``providers:`` dict and
     ``custom_providers:`` list."""
+    from hermes_cli.model_switch_lock import model_switch_lock_message
+    locked = model_switch_lock_message()
+    if locked:
+        return ModelSwitchResult(success=False, new_model=raw_input.strip(), error_message=locked)
     st = _Switch(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,

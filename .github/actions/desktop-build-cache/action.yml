@@ -79,7 +79,7 @@ runs:
 
     # Owners have stopped writing before the caller enters save. No post hook
     # or pruning can race cancellation, and signed products never enter here.
-    # Trusted workflow/token policy, not this key or condition, admits writers.
+    # The caller gates saves by claim policy; this key grants no authorization.
     - name: Save dependency candidates before compilation and signing
       id: save
       if: ${{ !cancelled() && inputs.phase == 'save' && steps.describe.outcome == 'success' }}

@@ -166,14 +166,17 @@ missing or changed dependencies without repairing or downloading them. Stable
 Windows builds can consume one preparation for `--variant bundled` and then
 `--variant store`; light and commit preparations cannot switch to Store.
 
-Release jobs restore candidates, prepare, save reusable inputs, and only then
-build/sign. Job-local environments, credentials, products and signature results
-are not dependency snapshot inputs. The signature cache retains its own lifetime.
-Commit jobs request token-enforced read-only cache access; the conditional YAML
-mode still needs GitHub acceptance (see the
-[cache-policy caveat](../../docs/shared-bundle-builds.md#cache-ownership)). A
-separate key or skipped save alone would not protect release caches. Archival remains an independent
-prerequisite, and R2 upload credentials are not exposed to desktop preparation.
+All claim kinds share the native `cache-mode: write` build legs. They restore
+dependency candidates and re-admit them during preparation before building/signing.
+Stable/canary claims save prepared inputs; `commit.` and `channel.` input-tag
+prefixes skip dependency, bundle-assembly, and payload-signature cache saves.
+Job-local environments, credentials, products and signature results are not
+dependency snapshot inputs. Signature caches retain their own verification and
+lifetime. See [cache ownership](../../website/docs/developer-guide/shared-bundle-builds.md#cache-ownership).
+These save gates express workflow policy, not token-enforced isolation from
+unreviewed build code: preview builds still run in credentialed signing jobs.
+Write/dispatch access remains the trust boundary. Archival is an independent
+prerequisite; restored inputs never bypass preparation.
 
 Strict consumption means no dependency acquisition, not offline signing.
 Timestamp services, Azure signing, Apple notarization and publication remain

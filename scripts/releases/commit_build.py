@@ -1,4 +1,4 @@
-"""Admit and dispatch tagless builds without changing release channels."""
+"""Claim and dispatch commit builds; admit the legacy tagless ones. No release channel moves."""
 from __future__ import annotations
 
 import json
@@ -186,50 +186,102 @@ def resolve_revision(rev: str, remote: str, repo: Path) -> str:
     return commit
 
 
-def dispatch_command(commit: str, repository: str, branch: str,
-                     bundle_env: dict[str, str | None] | None = None) -> list[str]:
+def claim_message(*, version: str, commit: str, lanes, require_green: bool,
+                  bundle_env: dict[str, str | None]) -> str:
+    """The annotated commit claim's message: what stable.stamped_claim validates at admission."""
+    from scripts.releases import lanes as lane_set
     from scripts.releases.bundle_env import validate
 
     require_commit(commit)
-    command = ["gh", "workflow", "run", WORKFLOW, "--ref", branch, "--repo", repository,
-            "-f", f"build_commit={commit}", "-f", "tag=", "-f", "upload_release=false",
-            "-f", "termux_upgrade_from_tag="]
-    if bundle_env:
-        command += ["-f", "bundle_env=" + json.dumps(validate(bundle_env), sort_keys=True)]
-    return command
+    return json.dumps({
+        "schema": 1, "kind": "commit", "version": version, "commit": commit,
+        "lanes": sorted(lanes), "lanesRevision": lane_set.LANES_REVISION,
+        "requireGreen": bool(require_green), "bundleEnv": validate(dict(bundle_env)),
+    }, sort_keys=True, separators=(",", ":"))
+
+
+def dispatch_command(tag: str, repository: str, branch: str) -> list[str]:
+    """Run Stable Release on the commit claim, from the default branch like every release."""
+    from hermes_cli.update_channel import is_commit_tag
+    from scripts.releases.stable import CONTROLLER_WORKFLOW
+
+    if not is_commit_tag(tag):
+        raise ValueError(f"Not a commit build claim tag: {tag!r}")
+    return ["gh", "workflow", "run", CONTROLLER_WORKFLOW, "--ref", branch, "--repo", repository,
+            "-f", f"tag={tag}"]
+
+
+def _unused_claim_tag(release, version: str) -> str:
+    """commit.<now>-v<version>, moved forward a second at a time past any claim already tagged here
+    (two builds started within one second). A claim another clone pushed meanwhile still fails the
+    push rather than being replaced."""
+    from datetime import timedelta
+
+    from hermes_cli.update_channel import commit_tag_for_date
+
+    moment = datetime.now(UTC).replace(microsecond=0)
+    for _ in range(60):
+        tag = commit_tag_for_date(version, moment.strftime("%Y%m%dT%H%M%SZ"))
+        if release.git_result("rev-parse", "-q", "--verify", f"refs/tags/{tag}").returncode != 0:
+            return tag
+        moment += timedelta(seconds=1)
+    raise ValueError("every commit claim stamp for the next minute is already tagged here")
 
 
 def cmd_build_commit(args) -> None:
+    """--build-commit REV: claim a commit build and run the Stable Release pipeline on it.
+
+    The claim is an annotated ``commit.<UTC stamp>-v<pyproject version at REV>`` tag on REV whose
+    message records the lanes (--only/--with/--without, starting from the stable default minus what
+    a commit build can never run) and whether a red suite holds its builds page
+    (--[no-]require-green), plus the bundle defaults (--bundle-env/--bundle-unset). Without
+    --publish nothing is created.
+    """
     from scripts import release
-    from scripts.releases import r2
+    from scripts.releases import lanes as lane_set, r2
     from scripts.releases.bundle_env import parse_assignments
 
     try:
+        lanes = lane_set.select(only=lane_set.parse_list(args.only),
+                                with_=lane_set.parse_list(args.with_lanes) or (),
+                                without=lane_set.parse_list(args.without_lanes) or (), policy="commit")
         bundle_env = parse_assignments(args.bundle_env, args.bundle_unset)
         remote = release.resolve_push_remote(args.remote)
         repository = release.remote_github_repo(remote)
         if not repository:
             raise ValueError("commit builds require an explicit GitHub remote")
         commit = resolve_revision(args.build_commit, remote, release.REPO_ROOT)
+        version = version_at(release.REPO_ROOT, commit)
         branch = release._default_branch(repository)
         if not branch:
             raise ValueError("could not resolve the repository default branch")
-        command = dispatch_command(commit, repository, branch, bundle_env)
-        page = r2.public_url_for(r2.public_base_url(), r2.commit_page_key_for(commit))
-        print(f"Building one-off bundle for commit {commit}")
-        print(f"Builds will be available at: {page}.")
+        tag = _unused_claim_tag(release, version)
+        message = claim_message(version=version, commit=commit, lanes=lanes,
+                                require_green=args.require_green, bundle_env=bundle_env)
+        command = dispatch_command(tag, repository, branch)
+        page = r2.public_url_for(r2.public_base_url(), r2.staging_key_for(tag, "index.html"))
+        print(f"Commit build {tag} of {commit}")
+        print(f"Lanes {lane_set.describe(lanes)}")
+        print("Its builds page waits for every suite." if args.require_green
+              else "Its builds page waits only for the built, smoked candidate; suites report.")
+        print(f"Builds will be available at: {page}")
         print(f"Workflow command, running from {repository}@{branch}")
         print(f"    {shlex.join(command)}")
         if not args.publish:
-            print("Dry run. Add --publish to dispatch.")
+            print("Dry run: no tag was created. Add --publish to claim and dispatch.")
             return
-        print("Starting workflow!")
+        tagged = release.git_result("tag", "-a", tag, commit, "-m", message)
+        if tagged.returncode != 0:
+            raise ValueError(f"could not create {tag}: {tagged.stderr.strip()}")
+        pushed = release.git_result("push", remote, f"refs/tags/{tag}")
+        if pushed.returncode != 0:
+            raise ValueError(f"could not push {tag} to {remote}: {pushed.stderr.strip()}")
+        print(f"✓ Pushed {tag} to {remote}")
         result = subprocess.run(command, cwd=release.REPO_ROOT, capture_output=True, text=True,  # windows-footgun: ok — encoding and replacement policy are on the next line.
                                 encoding="utf-8", errors="replace", check=True, timeout=60)
-        print((result.stdout or "").strip() or f"Dispatched commit build {commit}. No release was created.")
-        print("Wait for that workflow to finish. It builds this commit and uploads the bundles.")
+        print((result.stdout or "").strip() or f"Dispatched Stable Release for {tag}.")
         print(f"The builds page is {page}.")
-        print("This build does not publish a release and does not move a channel.")
+        print("A commit build publishes nowhere: no release, channel, feed, Docker tag or Store.")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         stderr = ""
         if isinstance(exc, subprocess.CalledProcessError):
@@ -242,26 +294,15 @@ def cmd_build_commit(args) -> None:
 def main() -> None:
     import sys
 
-    if sys.argv[1:] not in (["admit"], ["receipt"]):
-        raise SystemExit("usage: python -m scripts.releases.commit_build {admit|receipt}")
+    # Commit builds no longer mint a post-build receipt: their claim tag, made before the build,
+    # is their identity (release.py --build-commit).
+    if sys.argv[1:] != ["admit"]:
+        raise SystemExit("usage: python -m scripts.releases.commit_build admit")
     env = dict(os.environ)
     values = admit(env)
-    if sys.argv[1:] == ["admit"]:
-        with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-            stream.write("".join(f"{key}={value}\n" for key, value in values.items()))
-        print(json.dumps(values, sort_keys=True))
-        return
-
-    from scripts.releases.bundle_env import decode
-    from scripts.releases.stable import require_success
-
-    needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
-    require_success(needs, list(needs))
-    result = publish_receipt(
-        "commit", env, version=values["payload-version"], commit=values["sha"],
-        details={"bundleEnv": decode(env.get("BUNDLE_ENV_JSON", ""))},
-    )
-    print(json.dumps(result, sort_keys=True))
+    with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+        stream.write("".join(f"{key}={value}\n" for key, value in values.items()))
+    print(json.dumps(values, sort_keys=True))
 
 
 if __name__ == "__main__":

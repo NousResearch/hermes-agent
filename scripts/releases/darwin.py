@@ -95,6 +95,10 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
     version = release_version(tag) or ""
     if not is_release_version(version):
         raise ValueError("Invalid macOS release tag")
+    from hermes_cli.update_channel import is_commit_tag
+
+    if is_commit_tag(tag):
+        raise ValueError("Commit builds have no macOS feed")
     selection = _darwin_feed("canary" if is_canary_tag(tag) else "stable", light)
     expected = [f"{arch}-{selection['fileName']}" for arch in arches]
     if sorted(legs.keys()) != sorted(expected):

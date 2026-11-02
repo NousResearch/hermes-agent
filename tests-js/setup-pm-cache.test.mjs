@@ -15,7 +15,8 @@ const value = (expression, { status = {}, ...context } = {}) => {
   const body = String(expression).trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
     .replace(/\b(?:inputs|steps|needs|github)(?:\.[\w-]+)+/g, path => JSON.stringify(lookup(path)))
     .replace(/\b(always|success|failure|cancelled)\(\)/g, (_, name) => String(statuses[name]))
-  return Function(`"use strict"; return (${body})`)()
+  const startsWith = (text, prefix) => String(text).startsWith(prefix)
+  return Function('startsWith', `"use strict"; return (${body})`)(startsWith)
 }
 const evaluate = (expression, context) => Boolean(value(expression, context))
 

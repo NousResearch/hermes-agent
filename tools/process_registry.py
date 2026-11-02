@@ -2581,7 +2581,9 @@ PROCESS_SCHEMA = {
         "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
         "handoff (subagents only): transfer a running process you started to your parent agent, which then "
         "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
-        "killed when the subagent finishes and their notifications never reach the parent."
+        "killed when the subagent finishes and their notifications never reach the parent. "
+        "There is no run/exec action — start a command with the terminal tool "
+        "(background=true for long-running work)."
     ),
     "parameters": {
         "type": "object",
@@ -2727,6 +2729,19 @@ def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
+    # Coerce non-string actions (some models send structured values) and ignore case.
+    if not isinstance(action, str):
+        action = str(action or "")
+    action = action.strip().lower()
+    # Models often invent process(action="run") for what is actually terminal().
+    # Give a pointer instead of the generic unknown-action error (#63477).
+    if action in {"run", "exec", "execute", "start", "command"}:
+        return tool_error(
+            "process has no 'run' action. To execute a command, call the terminal "
+            "tool (set background=true for long-running work, then process "
+            "action=poll/log/wait). Valid process actions: list, poll, log, wait, "
+            "kill, write, submit, close, handoff."
+        )
     if action == "list":
         return json.dumps(_list_processes(kw.get("task_id")), ensure_ascii=False)
     if action == "handoff":

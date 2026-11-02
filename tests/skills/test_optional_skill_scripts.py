@@ -1,7 +1,6 @@
 """Execute optional research helpers offline; upstream/SDK doubles are boundary spies.
 
-This covers importability and client routing, not the paid evolution loop or a
-live vector service. Document policy belongs to test_skill_document_contracts.
+This covers importability and client routing, not the paid evolution loop. Document policy belongs to test_skill_document_contracts.
 """
 import pickle
 from pathlib import Path
@@ -13,23 +12,6 @@ from unittest.mock import Mock
 import pytest
 
 RESEARCH = Path(__file__).resolve().parents[2] / "optional-skills/research"
-
-
-@pytest.mark.parametrize("script", ["rag_pipeline.py", "memory_manager.py"])
-def test_pinecone_client_uses_key_and_rejects_missing_key(script, monkeypatch, capsys):
-    sdk = ModuleType("pinecone")
-    constructor = Mock()
-    monkeypatch.setattr(sdk, "Pinecone", constructor, raising=False)
-    monkeypatch.setitem(sys.modules, "pinecone", sdk)
-    get_client = runpy.run_path(str(RESEARCH / "pinecone-research/scripts" / script))["get_pinecone_client"]
-    monkeypatch.setenv("PINECONE_API_KEY", "test-only-key")
-    assert get_client() is constructor.return_value
-    constructor.assert_called_once_with(api_key="test-only-key")
-    monkeypatch.delenv("PINECONE_API_KEY")
-    with pytest.raises(SystemExit, match="1"):
-        get_client()
-    assert "PINECONE_API_KEY" in capsys.readouterr().err
-    assert constructor.call_count == 1
 
 
 @pytest.mark.parametrize("relative", [

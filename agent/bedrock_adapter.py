@@ -129,12 +129,15 @@ def _require_boto3():
 
 
 def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[float]):
-    """``factory.client(...)``; no ``Config`` at all when no timeout is configured, so the unset
-    case builds exactly the client botocore always built (60s read / 60s connect)."""
-    if read_timeout is None:
-        return factory.client(service, region_name=region)
+    """``factory.client(...)`` with botocore's own timeouts (60s read / 60s connect) unless a
+    request timeout is configured. The model-call client makes one attempt per call: Hermes's
+    retry loop owns retries and backoff (throttles classify as rate_limit there), and botocore's
+    default of 5 attempts re-sends a read timeout, so a hung call took ~5x the timeout to fail.
+    ``total_max_attempts`` counts the first request; ``max_attempts`` would count retries only."""
     from botocore.config import Config
-    config = Config(read_timeout=read_timeout, connect_timeout=_BOTO_CONNECT_TIMEOUT_SECONDS)
+    config = Config(retries={"total_max_attempts": 1}) if service == "bedrock-runtime" else Config()
+    if read_timeout is not None:
+        config = config.merge(Config(read_timeout=read_timeout, connect_timeout=_BOTO_CONNECT_TIMEOUT_SECONDS))
     return factory.client(service, region_name=region, config=config)
 
 

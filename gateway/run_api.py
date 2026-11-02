@@ -459,7 +459,10 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
-        admitted_in_wait = restart_wait_open(self.runner)
+        # Decided here, at admission, not at the mint: a restart wait that opened after the client's
+        # discovery still refuses the machine poller that asked to stay out of it (a Kanban worker),
+        # which would otherwise hold the turn the wait is waiting on.
+        admitted_in_wait = restart_wait_open(self.runner) and not grant.get('refuse_restart_wait')
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining

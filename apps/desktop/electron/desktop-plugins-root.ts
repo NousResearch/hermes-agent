@@ -268,7 +268,7 @@ async function desktopHalfEntry(
  *  the agent half's `__pycache__` (the gateway's `ROOT_LAYOUT_SKIP`). */
 const ROOT_LAYOUT_SKIP = new Set(['.git', '__pycache__'])
 
-const rootLayoutFilter = (src: string) => !ROOT_LAYOUT_SKIP.has(path.basename(src))
+export const rootLayoutFilter = (src: string) => !ROOT_LAYOUT_SKIP.has(path.basename(src))
 
 /** Copy one unified package's desktop half into the app root as
  *  `<appRoot>/<packageName>/`, stamping the marker: its `desktop/` folder, or
@@ -385,10 +385,16 @@ async function assertPlainDesktopTree(
   sourceDir: string,
   filter: (src: string) => boolean = () => true
 ): Promise<void> {
-  const realRoot = await fs.promises.realpath(root)
+  // Each folder from `root` down to `sourceDir` must be a real folder. Checked per folder, not by
+  // comparing realpaths: a case-insensitive filesystem resolves `desktop` to an on-disk `Desktop`.
+  let walked = root
 
-  if ((await fs.promises.realpath(sourceDir)) !== path.join(realRoot, path.relative(root, sourceDir))) {
-    throw new Error('The desktop plugin folder is a symbolic link; it is not installed.')
+  for (const part of path.relative(root, sourceDir).split(path.sep).filter(Boolean)) {
+    walked = path.join(walked, part)
+
+    if ((await fs.promises.lstat(walked)).isSymbolicLink()) {
+      throw new Error('The desktop plugin folder is a symbolic link; it is not installed.')
+    }
   }
 
   let total = 0

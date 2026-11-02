@@ -58,7 +58,9 @@ describe("another gateway's project colours", () => {
       projects: [{ archived: false, color: '#f43f5e', folders: [], icon: null, id: 'p_app', primary_path: '/code/app' }]
     }))
 
-    setPrimaryGateway({ connectionState: 'open', request } as unknown as HermesGateway, 'research')
+    const socket = { connectionState: 'open', onState: () => () => {}, request }
+
+    setPrimaryGateway(socket as unknown as HermesGateway, 'research')
     setPrimaryGatewayConnectionId('studio', 'remote')
 
     const { result } = renderHook(() => useGatewayProjectTree([], [studioChat]))

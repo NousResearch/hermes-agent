@@ -1,10 +1,9 @@
 """Plugin catalog — curated, Nous-approved Hermes plugins shipped with the repo.
 
-Mirrors the ``optional-mcps/`` MCP-catalog pattern: one YAML file per entry under the in-tree
-``plugin-catalog/`` directory, pinned to an exact 40-character commit SHA. Presence in the directory IS
-the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.yaml`` is the kill list
-(installs of a removed name/repo are refused with the recorded reason). Full policy:
-``plugin-catalog/README.md``.
+One YAML file per entry under the in-tree ``plugin-catalog/`` directory, pinned to an exact
+40-character commit SHA. Presence in the directory IS the human-merged approval gate; SHA bumps are
+new, re-reviewed PRs; ``removed.yaml`` is the kill list (installs of a removed name/repo are refused
+with the recorded reason). Full policy: ``plugin-catalog/README.md``.
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so

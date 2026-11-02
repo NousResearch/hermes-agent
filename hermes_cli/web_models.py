@@ -376,12 +376,6 @@ class MCPEnabledToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None
 
-class MCPCatalogInstall(BaseModel):
-    name: str
-    env: dict[str, str] = {}  # KEY=VALUE for entries declaring required env vars
-    enable: bool = True
-    profile: Optional[str] = None
-
 class PairingApprove(BaseModel):
     platform: str
     code: str = ""

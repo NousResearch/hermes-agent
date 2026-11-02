@@ -1129,10 +1129,7 @@ def cmd_mcp_configure(args):
 
 
 _MCP_USAGE = (
-    "hermes mcp                                    Open the catalog picker (default)",
-    "hermes mcp catalog                            List Nous-approved MCPs",
-    "hermes mcp install <name>                     Install a catalog MCP",
-    "hermes mcp add <name> --url <endpoint>        Add a custom MCP server",
+    "hermes mcp add <name> --url <endpoint>        Add an HTTP server (--auth oauth for OAuth)",
     "hermes mcp add <name> --command <cmd>         Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
     "hermes mcp remove <name>                      Remove a server",
@@ -1144,35 +1141,36 @@ _MCP_USAGE = (
 )
 
 
-def mcp_command(args):
-    """Main dispatcher for ``hermes mcp`` subcommands."""
-    action = getattr(args, "mcp_action", None)
-    if action in ("picker", "catalog", "install"):
-        # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
-        from hermes_cli import mcp_picker
-
-        if action == "picker":
-            mcp_picker.run_picker()
-        elif action == "catalog":
-            mcp_picker.show_catalog()
-        else:
-            import sys as _sys
-            rc = mcp_picker.install_by_name(getattr(args, "identifier", "") or "")
-            if rc:
-                _sys.exit(rc)
-        return
-    handler = {
-        "add": cmd_mcp_add, "remove": cmd_mcp_remove, "rm": cmd_mcp_remove, "list": cmd_mcp_list,
-        "ls": cmd_mcp_list, "test": cmd_mcp_test, "configure": cmd_mcp_configure,
-        "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
-    }.get(action)
-    if handler:
-        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
-        return handler(args)
-    # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
-    from hermes_cli.mcp_picker import run_picker
-    run_picker()
+def _print_mcp_usage():
     print(color("  Commands:", Colors.CYAN))
     for line in _MCP_USAGE:
         _info(line)
     print()
+
+
+def _cmd_catalog_removed(args):
+    """``picker`` / ``catalog`` / ``install`` stay one release so old scripts learn the replacement."""
+    name = getattr(args, "identifier", None) or "<name>"
+    print()
+    _warning("The MCP catalog was removed. Add the server directly:")
+    _info(f"  hermes mcp add {name} --url <url> [--auth oauth]")
+    print()
+    _print_mcp_usage()
+    return 1 if args.mcp_action == "install" else None
+
+
+def mcp_command(args):
+    """Main dispatcher for ``hermes mcp`` subcommands."""
+    action = getattr(args, "mcp_action", None)
+    handler = {
+        "add": cmd_mcp_add, "remove": cmd_mcp_remove, "rm": cmd_mcp_remove, "list": cmd_mcp_list,
+        "ls": cmd_mcp_list, "test": cmd_mcp_test, "configure": cmd_mcp_configure,
+        "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
+        "picker": _cmd_catalog_removed, "catalog": _cmd_catalog_removed,
+        "install": _cmd_catalog_removed,
+    }.get(action)
+    if handler:
+        # A handler's int return is the process exit code (``main()`` exits non-zero on it).
+        return handler(args)
+    cmd_mcp_list(args)
+    _print_mcp_usage()

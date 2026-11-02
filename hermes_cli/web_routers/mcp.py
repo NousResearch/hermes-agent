@@ -6,9 +6,7 @@ web_server — reached via the late-binding seam so tests that mutate
 """
 
 import asyncio
-import hashlib
 from contextlib import contextmanager
-import re
 import secrets
 import threading
 import time
@@ -19,11 +17,8 @@ from fastapi.responses import HTMLResponse
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
-from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
-from hermes_cli.web_routers._common import (
-    _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
-    log as _log, scoped_to_thread,
-)
+from hermes_cli.web_models import MCPEnabledToggle, MCPServerCreate, MCPServersReplace
+from hermes_cli.web_routers._common import _profile_scope, config_write_scope, log as _log
 
 router = APIRouter()
 
@@ -32,7 +27,6 @@ _require_token = late("_require_token")
 _run_dashboard_mcp_oauth = late("_run_dashboard_mcp_oauth", "hermes_cli.web_server_mcp")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
-save_env_value = late("save_env_value", "hermes_cli.config")
 
 _mcp_oauth_flows_lock = threading.Lock()
 _MCP_DASHBOARD_OAUTH_TTL = 15 * 60
@@ -77,18 +71,6 @@ def _mcp_oauth_callback_url(request: Request, server_name: str) -> str:
     base = urlparse(str(request.base_url))
     prefix = prefix_from_request(request)
     return urlunparse(base._replace(path=f"{prefix}{suffix}", params="", query="", fragment=""))
-
-
-def _mcp_install_action_name(name: str) -> str:
-    """Unique per-entry mcp-install action name (+ registered log file), so a
-    re-click or a second catalog install doesn't overwrite the first's tracked
-    process/log while its git clone is still running."""
-    from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
-    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
-    action = f"mcp-install-{slug}-{digest}"
-    _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
-    return action
 
 
 @router.get("/api/mcp/servers")
@@ -137,7 +119,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
 
     def _run():
         saved = _save()
-        # Outside the config mutation lock: a cold first metric call costs imports + catalog loads.
+        # Outside the config mutation lock: a cold first metric call costs imports.
         with _profile_scope(body.profile or profile):
             record_mcp_install("url" if server_config.get("url") else "local", None,
                                "success" if saved else "failed", failure_class=None if saved else "config_rejected")
@@ -394,144 +376,16 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     return await asyncio.to_thread(_run)
 
 
-def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> dict[str, Any]:
-    auth = entry.auth
-    transport = entry.transport
-    install = entry.install
-    return {
-        "name": entry.name,
-        "description": entry.description,
-        "connector_slug": entry.connector_slug,
-        "source": entry.source,
-        "transport": transport.type,
-        "auth_type": getattr(auth, "type", "none"),
-        # Env vars the user must supply (names + prompts only, never values).
-        "required_env": [
-            {"name": e.name, "prompt": e.prompt, "required": e.required}
-            for e in getattr(auth, "env", []) or []
-        ],
-        # Transport details surfaced on purpose: the trust model asks users to
-        # inspect command/args/url + bootstrap before installing.
-        "command": transport.command,
-        "args": list(transport.args or []),
-        "url": transport.url,
-        # Git bootstrap (present only for entries that clone + build).
-        "install_url": install.url if install else None,
-        "install_ref": install.ref if install else None,
-        "bootstrap": list(install.bootstrap) if install else [],
-        "default_enabled": list(entry.tools.default_enabled) if entry.tools.default_enabled is not None else None,
-        "post_install": entry.post_install or "",
-        # Composer-suggestion triggers (desktop brand pills), only when the
-        # manifest declares a `suggest` block.
-        "suggest": {
-            "keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts),
-            "applications": list(getattr(entry.suggest, "applications", [])),
-            "examples": list(getattr(entry.suggest, "examples", [])),
-            "requires_app": getattr(entry.suggest, "requires_app", False),
-        } if entry.suggest else None,
-        "needs_install": install is not None,
-        "installed": installed,
-        "enabled": enabled,
-    }
-
-
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None):
-    """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``."""
-    with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
-        from hermes_cli import mcp_catalog
-
-    entries = []
-    try:
-        def _read():
-            with _profile_scope(profile):
-                catalog = list(mcp_catalog.list_catalog())
-                state = {e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name)) for e in catalog}
-            return catalog, state
-
-        catalog_entries, installed_state = await asyncio.to_thread(_read)
-        for entry in catalog_entries:
-            installed, enabled = installed_state.get(entry.name, (False, False))
-            entries.append(_catalog_entry_json(entry, installed, enabled))
-    except HTTPException:  # unknown/invalid profile → 404, not a silently-empty catalog
-        raise
-    except Exception:
-        _log.exception("list_mcp_catalog failed")
-
-    diagnostics = []
-    try:
-        diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
-    except Exception:
-        pass
-    return {"entries": entries, "diagnostics": diagnostics}
+async def list_removed_catalog():
+    """The in-tree MCP catalog is gone; released desktops and dashboards still poll this route."""
+    return {"entries": [], "diagnostics": []}
 
 
 @router.post("/api/mcp/catalog/install")
-async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None):
-    """Install a catalog MCP into config.yaml (declared env vars go to .env
-    first; git-bootstrap entries run via the background CLI action path)."""
-    from hermes_cli import mcp_catalog
-    from hermes_cli.config import validate_env_var_name_for_write
-
-    name = (body.name or "").strip()
-    entry = mcp_catalog.get_entry(name)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
-
-    # Catalog credentials are a closed schema: configuring one MCP must not
-    # become a generic write primitive for unrelated process environment.
-    declared_env = {spec.name for spec in (entry.auth.env or [])}
-    undeclared_env = sorted(set(body.env) - declared_env)
-    if undeclared_env:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Catalog entry '{name}' does not declare environment variable(s): {', '.join(undeclared_env)}",
-        )
-    # Validate the complete map before the first write so a mixed
-    # valid+invalid request cannot partially persist credentials.
-    try:
-        for key in body.env:
-            validate_env_var_name_for_write(key)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    effective_profile = body.profile or profile
-    # Secrets are persisted to .env here (before install_entry runs); non-secret
-    # values ride preloaded_env into install_entry → config.yaml, so .env stays
-    # secrets-only and nothing re-prompts on a non-TTY server.
-    if body.env:
-        def _write_env():
-            with _profile_scope(effective_profile):
-                for spec in entry.auth.env or []:
-                    value = (body.env or {}).get(spec.name)
-                    if spec.secret and value:
-                        save_env_value(spec.name, value)
-
-        await asyncio.to_thread(_write_env)
-
-    # Git-bootstrap entries can take a while to clone — background action so
-    # the request returns immediately (per-entry action name, see helper).
-    if entry.install is not None:
-        action = _mcp_install_action_name(name)
-        try:
-            _spawn_hermes_action(_profile_cli_args(effective_profile) + ["mcp", "install", name], action)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Install failed: {exc}")
-        return {"ok": True, "name": name, "background": True, "action": action}
-
-    # No git step — install synchronously; install_entry goes through the
-    # call-time config/env resolvers so the profile scope covers it.
-    try:
-        await scoped_to_thread(
-            effective_profile,
-            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None),
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.exception("install_mcp_catalog_entry failed")
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "name": name, "background": False}
+async def install_removed_catalog_entry():
+    raise HTTPException(
+        status_code=410,
+        detail="The MCP catalog was removed. Add the server with "
+        "`hermes mcp add <name> --url <url> [--auth oauth]` or POST /api/mcp/servers.",
+    )

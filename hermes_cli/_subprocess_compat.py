@@ -445,8 +445,8 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     ``stdin=subprocess.DEVNULL``. Internal plumbing only — the agent-facing terminal tool has its
     own policy layer and visible PTY.
 
-    Hermes shells out to git from many non-interactive contexts — MCP catalog installs, plugin
-    install/update, profile distribution staging, worktree base fetches, desktop review-pane fetch/push.
+    Hermes shells out to git from many non-interactive contexts — plugin install/update, profile
+    distribution staging, worktree base fetches, desktop review-pane fetch/push.
     When the remote is private, misconfigured, or requires auth, git's default behavior is to prompt on the
     inherited terminal (or via an askpass helper), which silently hangs the operation until its timeout — or
     forever at call sites without one. Ported from openai/codex#34540 / #34612 ("detach non-interactive

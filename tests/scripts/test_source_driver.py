@@ -151,6 +151,9 @@ def test_observer_judges_only_the_live_app_not_rollback_copies_beside_it(tmp_pat
     assert driver["desktop_outputs"](tmp_path / "source") == [
         release / "win-unpacked/resources/app.asar.unpacked/dist"]
     driver["verify_products"](tmp_path / "source", "present")
+    (release / "win-unpacked/Hermes.exe").unlink()
+    with pytest.raises(RuntimeError, match="desktop executable is missing or empty"):
+        driver["verify_products"](tmp_path / "source", "present")
     shutil.rmtree(release / "win-unpacked")
     with pytest.raises(RuntimeError, match="desktop"):
         driver["verify_products"](tmp_path / "source", "present")

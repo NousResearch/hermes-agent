@@ -63,9 +63,25 @@ def test_readonly_source_with_baked_fresh_deps_runs_in_place(
     assert sidecar_paths.resolve_sidecar_dir(source) == source
 
 
+# `from "./x.mjs"`, `import "./x.mjs"`, `export * from "./x.mjs"` and the dynamic
+# `await import("./x.mjs")` form — all four create the same mirror dependency.
 _LOCAL_IMPORT_RE = re.compile(
-    r"""(?:from|import|export\s+[^;]*from)\s+['"]\./([^'"]+\.mjs)['"]"""
+    r"""(?:from|import|export\s+[^;]*from)\s*(?:\(\s*)?['"]\./([^'"]+\.mjs)['"]"""
 )
+
+
+def test_local_import_regex_matches_every_import_form() -> None:
+    """Guard the derivation above: a regex that stops matching would hide the bug."""
+    samples = (
+        'import { a } from "./a.mjs";',
+        "import { b } from './b.mjs';",
+        'import "./c.mjs";',
+        'export { d } from "./d.mjs";',
+        'const e = await import("./e.mjs");',
+    )
+    assert [m.group(1) for m in _LOCAL_IMPORT_RE.finditer("\n".join(samples))] == [
+        "a.mjs", "b.mjs", "c.mjs", "d.mjs", "e.mjs"
+    ]
 
 
 def test_mirror_files_cover_every_local_import_of_index_mjs() -> None:

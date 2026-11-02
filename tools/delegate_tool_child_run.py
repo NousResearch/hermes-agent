@@ -513,17 +513,20 @@ def _defer_close_after_timeout(child: Any, child_future: Any, *, cleanup: Any = 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
     serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
-    released and an endpoint-matching entry is leased by id instead (#68237). Child work, so it runs in the child's
-    profile scope: a lease may refresh that profile's OAuth entries, and ``_swap_credential`` re-reads TLS/header
-    config for the bound endpoint."""
+    released and an endpoint-matching entry is leased by id instead (#68237). Both picks are scoped to the child's model,
+    so an entitlement bench on another model does not exclude an entry that can serve this one. Child work, so it runs
+    in the child's profile scope: a lease may refresh that profile's OAuth entries, and ``_swap_credential`` re-reads
+    TLS/header config for the bound endpoint."""
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
     from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
+    from agent.credential_pool_model_cooldowns import model_cooldown_until
     from tools.delegate_tool_routes import child_profile_scope
     base_url = getattr(child, "base_url", None)
+    model = getattr(child, "model", None)
     with child_profile_scope(child):
-        leased_cred_id = child_pool.acquire_lease()
+        leased_cred_id = child_pool.acquire_lease(model=model)
         if leased_cred_id is not None:
             with _quiet("Failed to bind child to leased credential: %s"):
                 # Resolve the leased entry by id: the pool is shared with the parent/siblings, so current() is a
@@ -532,7 +535,11 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
                 if not _entry_serves_endpoint(leased_entry, base_url):
                     child_pool.release_lease(leased_cred_id)
                     leased_entry = next(
-                        (e for e in child_pool.entries() if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)),
+                        (
+                            e for e in child_pool.entries()
+                            if e.last_status != "dead" and _entry_serves_endpoint(e, base_url)
+                            and model_cooldown_until(e, model) is None
+                        ),
                         None,
                     )
                     leased_cred_id = child_pool.acquire_lease(leased_entry.id) if leased_entry is not None else None

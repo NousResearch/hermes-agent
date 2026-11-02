@@ -136,7 +136,7 @@ def test_secret_missing_from_target_profile_never_falls_back_to_the_launch_env(t
 
 
 def _set_config(home, **sections):
-    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8-sig"))
     cfg.update(sections)
     (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
@@ -213,7 +213,7 @@ def test_profile_child_lease_and_schema_retry_run_inside_the_target_profile(two_
     seen = {}
 
     class _Pool:
-        def acquire_lease(self, credential_id=None):
+        def acquire_lease(self, credential_id=None, *, model=None):
             return "e1"
 
         def entries(self):
@@ -283,7 +283,7 @@ def test_profile_route_is_refused_under_a_managed_worker_config_snapshot(two_pro
     from tools.delegate_tool_routes import _route_to_task_route
 
     launch, _ = two_profiles
-    frozen = yaml.safe_load((launch / "config.yaml").read_text(encoding="utf-8"))
+    frozen = yaml.safe_load((launch / "config.yaml").read_text(encoding="utf-8-sig"))
     monkeypatch.setattr(safe_worker_policy, "_policy", safe_worker_policy._SafeWorkerPolicy(
         os.getpid(), False, False, json.dumps(frozen)))
 

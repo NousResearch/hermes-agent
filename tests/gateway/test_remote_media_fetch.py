@@ -66,6 +66,14 @@ def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remot
     assert remote_env.fetched == []
 
 
+def test_nested_remote_home_only_exempts_its_safe_subtree():
+    home = "/var/lib/hermes"
+
+    assert not media_fetch.remote_path_is_denied(f"{home}/workspace/report.md", home)
+    assert media_fetch.remote_path_is_denied(f"{home}/.ssh/id_rsa", home)
+    assert media_fetch.remote_path_is_denied("/var/lib/postgresql/data", home)
+
+
 class _ScriptedEnv(BaseEnvironment):
     """Runs the fetch command through a real shell so the transport (marker fencing, in-sandbox
     size bound, base64 round-trip) is exercised end to end."""

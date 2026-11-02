@@ -487,10 +487,9 @@ class MemoryManager:
                     if normalized.truncated_reason == "wire":
                         logger.warning(
                             "Memory provider '%s' observations were truncated by the "
-                            "plugin-host wire batch bound of %d bytes; keeping the "
+                            "plugin-host wire batch bound; keeping the "
                             "received prefix",
                             provider.name,
-                            MAX_MEMORY_OBSERVATION_BATCH_BYTES,
                         )
                     else:
                         logger.warning(

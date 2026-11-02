@@ -68,7 +68,7 @@ def test_external_spill_preserves_wire_truncation_for_later_providers(
     raw = MemoryPrefetchResult(
         context=context,
         observations=(_observation({"ok": True}),) + tuple(
-            MemoryObservation("", "fixture.context", 1, {"text": "x" * 3910})
+            MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 4050 for i in range(4)})
             for _ in range(100)
         ),
     )

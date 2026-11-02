@@ -57,6 +57,32 @@ describe('MermaidRenderer', () => {
     expect(container.querySelector('img')?.alt).toBe('Mermaid diagram')
   })
 
+  it('typesets $$TeX$$ labels as MathML instead of showing the source', async () => {
+    // jsdom lays nothing out; give the measured MathML a browser-like size.
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ height: 18, width: 24 } as DOMRect)
+
+    const { container } = render(
+      <MermaidRenderer code={'flowchart LR\n  A["$$x^2$$"] --> B["$$E=mc^2$$"] --> C["$$\\frac{a$$"]'} />
+    )
+
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+    rect.mockRestore()
+
+    const svg = decodeImage(container.querySelector('img'))
+    const doc = parseXml(svg)
+
+    expect(doc.querySelector('parsererror')).toBeNull()
+    expect(doc.querySelectorAll('foreignObject.pele-math math')).toHaveLength(2)
+    expect(doc.querySelector('msup')?.textContent).toBe('x2')
+    expect(svg).not.toContain('$$x^2$$')
+    // Bare MathML: the app stylesheet enlarges `.katex`, and the SVG has none.
+    expect(svg).not.toContain('class="katex"')
+    // TeX KaTeX cannot parse stays readable as its source.
+    expect(svg).toContain('\\frac{a')
+  })
+
   it('resolves the theme once per repaint, not once per diagram', async () => {
     const { container } = render(
       <>

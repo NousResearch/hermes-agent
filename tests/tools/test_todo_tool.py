@@ -73,6 +73,9 @@ class TestFormatForInjection:
         assert "[>]" in text
         assert "Next" in text
         assert "Working" in text
+        # Length-prefixed so strip can consume arbitrary content unambiguously.
+        assert "- [ ] #1:2. #4:Next (pending)" in text
+        assert "- [>] #1:3. #7:Working (in_progress)" in text
 
 class TestMergeMode:
     def test_update_existing_by_id(self):

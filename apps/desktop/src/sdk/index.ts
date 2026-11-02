@@ -671,11 +671,11 @@ export const host = {
       typeof profile === 'string'
         ? null
         : {
-            ...profile,
-            connectionId: String(profile.connectionId || '').trim(),
-            profile: String(profile.profile || '').trim(),
-            targetProfile: String(profile.targetProfile || '').trim()
-          }
+          ...profile,
+          connectionId: String(profile.connectionId || '').trim(),
+          profile: String(profile.profile || '').trim(),
+          targetProfile: String(profile.targetProfile || '').trim()
+        }
 
     const name = typeof profile === 'string' ? profile.trim() : route?.profile || ''
 
@@ -708,7 +708,7 @@ export const host = {
     // backend can't clobber the pill back to the deleted profile).
     const wasActive = route
       ? route.connectionId === ($activeConnectionId.get() || '') &&
-        normalizeProfileKey(route.profile) === normalizeProfileKey($activeGatewayProfile.get())
+      normalizeProfileKey(route.profile) === normalizeProfileKey($activeGatewayProfile.get())
       : normalizeProfileKey(name) === normalizeProfileKey($activeGatewayProfile.get())
 
     // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
@@ -932,9 +932,9 @@ export const host = {
       // connection id. Behavior for a plain local open is unchanged.
       const dial = explicitRoute
         ? () =>
-            openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
-              spawnPriority: 'foreground'
-            })
+          openGatewayForAgent(explicitRoute.connectionId, explicitRoute.profile, {
+            spawnPriority: 'foreground'
+          })
         : plan.switchWorkspace
           ? () => ensureGatewayProfile(plan.switchWorkspace as string)
           : plan.dialWithoutSwitching

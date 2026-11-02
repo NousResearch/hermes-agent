@@ -133,3 +133,21 @@ def test_lease_taken_while_a_peer_pruned_it_is_retaken(tmp_path, monkeypatch):
     finally:
         release()
     assert list(leases.iterdir()) == []
+
+
+def test_dry_run_lists_superseded_generations_without_touching_them(tmp_path):
+    from hermes_cli.runtime_state import lease_directory
+
+    root = tmp_path / "pm-runtime"
+    selected = _generation(root, "selected")
+    idle = _generation(root, "idle")
+    busy = _generation(root, "busy")
+    (root / "selected.json").write_text(json.dumps({"generation": "generations/selected"}), encoding="utf-8")
+    release = lease_directory(busy)
+
+    assert collect_runtime_generations(root, dry_run=True) == [idle]
+    assert idle.is_dir() and selected.is_dir() and busy.is_dir()
+    release()
+    # The real sweep downstream of the same list removes exactly the dry-run's candidates.
+    assert collect_runtime_generations(root) == [busy, idle]
+    assert not idle.exists() and selected.is_dir()

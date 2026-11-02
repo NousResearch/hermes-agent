@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.agent_init_compression import _cfg_dict, _cfg_flag, _merge_platform_overrides
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
@@ -268,17 +269,6 @@ def _parse_config_int(raw: Any, default: int) -> int:
         return int(str(raw).strip())
     except (TypeError, ValueError):
         return default
-
-
-def _cfg_flag(cfg: dict[str, Any], key: str, default: bool) -> bool:
-    """Legacy string-set truthiness used by the ``compression`` section."""
-    return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
-
-
-def _cfg_dict(cfg: dict[str, Any], key: str) -> dict[str, Any]:
-    """``cfg[key]`` if it is a mapping, else ``{}`` (malformed sections are ignored)."""
-    section = cfg.get(key, {})
-    return section if isinstance(section, dict) else {}
 
 
 class CompressionSettings(SimpleNamespace):
@@ -1419,9 +1409,14 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
     return app_server_auto, responses_native, compact_threshold
 
 
-def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
-    """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
-    cfg = _cfg_dict(_agent_cfg, "compression")
+def _parse_compression_config(agent, _agent_cfg, platform: Any = None) -> CompressionSettings:
+    """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG.
+
+    ``compression.platform_overrides.<platform>`` (opt-in) overrides individual keys of this
+    section for one surface, so a single profile can compact at different points on a messaging
+    surface and on the CLI.
+    """
+    cfg = _merge_platform_overrides(_cfg_dict(_agent_cfg, "compression"), platform)
     threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
     # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
     target_ratio = float(cfg.get("target_ratio", 0.20))
@@ -2244,7 +2239,7 @@ def init_agent(
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
-    cs = _parse_compression_config(agent, _agent_cfg)
+    cs = _parse_compression_config(agent, _agent_cfg, platform)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )

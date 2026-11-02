@@ -21,12 +21,12 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
     order, releases = [], []
     release = recovery._release_media
 
-    def slow_release(owner, row):
-        releases.append(row['admission_id'])
+    def slow_release(owner, admission_id):
+        releases.append(admission_id)
         order.append('cleanup')
         started.set()
         assert allow_cleanup.wait(10), 'test did not release the cleanup worker'
-        release(owner, row)
+        release(owner, admission_id)
 
     monkeypatch.setattr(recovery, '_release_media', slow_release)
 
@@ -125,7 +125,7 @@ async def test_resolution_racing_recovery_releases_once(tmp_path, monkeypatch, c
     monkeypatch.setattr(recovery, '_mark_unknown', held_mark)
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
     monkeypatch.setattr(session_results, 'finish_result', fail)
-    monkeypatch.setattr(recovery, '_release_media', lambda owner, row: released.append(row['admission_id']))
+    monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: released.append(admission_id))
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     with db:
         receipt = await _submit(authority, 'photo')
@@ -160,8 +160,8 @@ async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, mon
             assert resume.wait(10)
         return original(*args)
 
-    def release(owner, row):
-        releases.append(row['admission_id'])
+    def release(owner, admission_id):
+        releases.append(admission_id)
         collecting.set()
         assert finish_cleanup.wait(10)
 
@@ -205,7 +205,7 @@ async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, mon
 async def test_cancelled_drain_stays_cancelled_when_its_delivery_fails(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    monkeypatch.setattr(recovery, '_release_media', lambda owner, row: None)
+    monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: None)
     delivering, fail = asyncio.Event(), asyncio.Event()
 
     async def execute(owner, ref, row):
@@ -241,13 +241,13 @@ async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, mon
     allow_cleanup, lock = threading.Event(), threading.Lock()
     running, peak, releases, sent = [0], [0], [], []
 
-    def slow_release(owner, row):
+    def slow_release(owner, admission_id):
         with lock:
             running[0] += 1
             peak[0] = max(peak[0], running[0])
         try:
             assert allow_cleanup.wait(10), 'test did not release the cleanup worker'
-            releases.append(row['admission_id'])
+            releases.append(admission_id)
         finally:
             with lock:
                 running[0] -= 1
@@ -272,6 +272,7 @@ async def test_media_turns_settling_together_collect_one_at_a_time(tmp_path, mon
             assert sent == ids, 'every reply goes out while collection is still held'
             await asyncio.sleep(0)
             assert len(mutation_tasks(authority)) == 1, 'collections for one profile must not stack'
+            assert authority._media_release_queue == ids[1:], 'only admission ids wait, never their payloads'
         finally:
             allow_cleanup.set()
             await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='queued collection')

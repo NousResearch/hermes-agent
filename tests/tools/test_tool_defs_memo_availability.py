@@ -38,6 +38,8 @@ def mail_state():
 
     def mail_connected():
         state["probes"] += 1
+        if state.get("during_probe"):
+            state["during_probe"]()
         return state["up"]
 
     registry.register(name=MAIL, toolset="mcp-probe-mail",
@@ -495,3 +497,25 @@ def test_pin_restore_in_the_same_process_keeps_the_pinned_bridge_through_an_outa
     assert BRIDGE <= down.valid_tool_names
     assert json.dumps(json.loads(db.get_session("bridge-session")["tool_names"])["tools"]) == sent
 
+
+def test_grace_reuse_window_starts_when_a_slow_failing_probe_returns(mail_state, clock):
+    """A probe that fails by timing out spends its timeout before the verdict exists: the reuse
+    window counts from its return, or each read re-runs the slow probe."""
+    ttl = registry_mod._CHECK_FN_TTL_SECONDS
+    kwargs = {"enabled_toolsets": BOTH, **BRIDGE_KW}
+    mail_state["up"] = True
+    start = clock.now
+    assert MAIL in _names(get_tool_definitions(**kwargs))
+
+    mail_state["up"] = False
+
+    def time_out():  # the probe's own timeout elapses before it reports the failure
+        clock.now += 5.1
+
+    mail_state["during_probe"] = time_out
+    clock.now = start + ttl + 1
+    before = mail_state["probes"]
+    for _ in range(3):
+        assert MAIL in _names(get_tool_definitions(**kwargs))
+        clock.now += 0.5
+    assert mail_state["probes"] - before == 1

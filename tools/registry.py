@@ -399,6 +399,9 @@ def _check_fn_cached(fn: Callable) -> bool:
         value, outcome, exc_info = False, "raised", exc
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
+    # Stamped at completion: a probe that fails by timing out has spent its timeout, and a window
+    # measured from its start would already be over when it returns, so every read would re-probe.
+    now = time.monotonic()
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:

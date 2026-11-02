@@ -20,7 +20,7 @@ export interface MissingLocalProfileCheck {
   /** The profile this launch named with --profile; like `hermes -p`, it still fails loudly. */
   launchProfile: null | string
   log: (line: string) => void
-  /** The profile's directory exists under this machine's profiles root. */
+  /** The profile is live on this machine (localProfileIsLive: the CLI's named_profile_is_live). */
   profileExists: (profile: string) => boolean
 }
 

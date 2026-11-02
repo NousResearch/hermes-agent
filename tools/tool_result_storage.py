@@ -187,10 +187,13 @@ def _is_host_side_env(env) -> bool:
     dangle there even though no sandbox is registered right now (never started, or reaped after
     ``TERMINAL_LIFETIME_SECONDS`` idle while the persistent container lives on)."""
     if env is None:
+        from tools.credential_files import _terminal_backend
+        from tools.terminal_scope import TerminalPolicyUnavailable
         try:
-            from tools.credential_files import _terminal_backend
             return _terminal_backend() == "local"
-        except Exception:
+        except TerminalPolicyUnavailable:
+            # The profile's terminal policy can't be read, so the backend is unknown: fail closed
+            # (no host path), the way the terminal tool itself refuses under this scope.
             return False
     from tools.environments.base import env_uses_host_filesystem
 

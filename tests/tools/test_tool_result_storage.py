@@ -436,6 +436,22 @@ class TestSpillover:
         assert str(get_spillover_dir()) not in result
         assert "Full output could not be saved" in result
 
+    def test_env_none_when_the_profile_policy_is_unreadable_never_names_a_host_path(self):
+        """A refusal scope (the profile's terminal policy could not be read) leaves the backend
+        unknown: fail closed to inline truncation, the way the terminal tool refuses there."""
+        from tools.terminal_scope import TerminalPolicyRefusal, reset_terminal_scope, set_terminal_scope
+
+        token = set_terminal_scope(TerminalPolicyRefusal("unreadable config.yaml"))
+        try:
+            result = maybe_persist_tool_result(
+                content="r" * 60_000, tool_name="tw_git", tool_use_id="tc_refused_1", env=None,
+                threshold=30_000,
+            )
+        finally:
+            reset_terminal_scope(token)
+        assert str(get_spillover_dir()) not in result
+        assert "Full output could not be saved" in result
+
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
         from tools.environments.local import LocalEnvironment

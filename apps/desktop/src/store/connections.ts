@@ -41,11 +41,11 @@ import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
-// Every await of a gateway pick is bounded. A wedged spawn, ticket mint,
-// handshake or IPC (the #93454 class) must surface as a failed click — not a
-// spinner that also swallows every later click on the same gateway. A cold
-// dial is the main process's whole remote bring-up chain; see
-// SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
+// A wedged spawn, ticket mint, handshake or IPC (the #93454 class) must
+// surface as a failed click, not a spinner that also swallows every later
+// click on the same gateway. The dial and the commit each get
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS (see lib/with-timeout.ts). Time spent queued
+// on another activation's mutex does not count against that budget.
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
 // this; anything longer means the primary is not coming and the registry
@@ -451,6 +451,15 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
   const draftIntent = currentNewChatIntent()
   const activation = new AbortController()
+  // Resolved from beforeActivate once this pick is allowed to commit. The
+  // dial budget starts then, not while the profile-store mutex still holds
+  // the turn (#147681).
+  let markTurnGranted: () => void = () => undefined
+
+  const turnGranted = new Promise<void>(resolve => {
+    markTurnGranted = resolve
+  })
+
   let rehomed = false
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
@@ -464,6 +473,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
       return false
     }
 
+    markTurnGranted()
     supersedeGatewaySwitch()
 
     if (!restoreOnBoot) {
@@ -518,12 +528,18 @@ export async function selectConnection(connectionId: string, options: SelectConn
     }
 
     try {
-      await withTimeout(
-        ensureGatewayAgent(connectionId, targetProfile, { beforeActivate, signal: activation.signal }),
-        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-        timeoutMessage,
-        error => activation.abort(error)
+      // Queue time belongs to the profile-store mutex. Start the bounded
+      // commit window only once beforeActivate grants this request its turn.
+      const commit = ensureGatewayAgent(connectionId, targetProfile, {
+        beforeActivate,
+        signal: activation.signal
+      })
+
+      const timedCommit = turnGranted.then(() =>
+        withTimeout(commit, SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage, error => activation.abort(error))
       )
+
+      await Promise.race([commit, timedCommit])
     } catch (error) {
       // A timeout after the target already became active has landed.
       if (!isTimeoutError(error) || !targetIsActive()) {

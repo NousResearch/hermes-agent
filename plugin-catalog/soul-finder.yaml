@@ -3,18 +3,7 @@ repo: https://github.com/RegeneratusLabs/Soul-Finder
 sha: deec34636d95f898b084e6e24a19766ecd20acf2
 version: "1.1.0"
 title: Soul Finder
-description: >-
-  Build or refine your agent's SOUL.md — the personality file loaded into every
-  conversation. NEW flow interviews you over a few plain questions and drafts a
-  soul from scratch; REFINE audits an existing one against the gold-standard
-  structure, asks only the gap questions, and ships a diff. Adds a /soul
-  command, the soul_finder_status and soul_finder_complete tools, a
-  once-per-profile first-run offer, and a bundled workflow skill.
-  Disclosure — reads $HERMES_HOME/SOUL.md and writes it only through the
-  agent's own file tools after the user approves the draft; writes two booleans
-  (nudge_sent, flow_complete) to its own plugin-data state file so the offer
-  happens once and never repeats. It performs no network I/O and holds no
-  credentials.
+description: "Build or refine your agent's SOUL.md — the personality file loaded into every conversation. NEW flow interviews you over a few plain questions and drafts a soul from scratch; REFINE audits an existing one against the gold-standard structure, asks only the gap questions, and ships a diff. Adds a /soul command, the soul_finder_status and soul_finder_complete tools, a once-per-profile first-run offer, and a bundled workflow skill. Disclosure — reads $HERMES_HOME/SOUL.md and writes it only through the agent's own file tools after the user approves the draft (its bundled skill can also suggest copying the approved file into other profiles' SOUL.md, again only on approval); on a profile with no real SOUL.md it makes a one-time offer through a system-prompt section and an injected first-run message, and writes two booleans (nudge_sent, flow_complete) to its own plugin-data state file so the offer happens once and never repeats. It performs no network I/O and holds no credentials."
 maintainer: RegeneratusLabs
 tier: community
 category: tools

@@ -12,6 +12,9 @@ import asyncio
 from gateway.config import Platform
 
 _RETIRABLE = frozenset({Platform.LOCAL, Platform.API_SERVER})
+# How long a retired conversation an RPC brought back stays after its last authorize: longer than any
+# handler's unpinned await between authorize and its ``authority.sessions`` read.
+RESTORED_IDLE_S = 30.0
 
 
 def _pinned(authority, session_id, live):
@@ -25,7 +28,14 @@ def _pinned(authority, session_id, live):
             or live.mutation_lock.locked() or live.claim_gate.locked()
             or (task is not None and not task.done() and task is not asyncio.current_task())
             or session_id in authority.executing or session_id in authority.pending_closes
-            or session_id in authority.orphan_closes)
+            or session_id in authority.orphan_closes or _reviewing(live))
+
+
+def _reviewing(live):
+    """A cold ``/refine`` review still running: its run token lives on this ``LiveSession``, so a
+    second /refine joins it and the next turn cancels it (``_execute_claimed``)."""
+    run = getattr(live.review, '_background_review_run', None)
+    return run is not None and not run.request_done.is_set()
 
 
 def retire_idle(authority, session_id, live, target):
@@ -41,6 +51,7 @@ def retire_idle(authority, session_id, live, target):
         return False
     del authority.sessions[session_id]
     authority.launch_sources.pop(session_id, None)  # a cache: re-read from the row on demand
+    authority.retired_routes[session_id] = live.route
     if live.source.platform == Platform.LOCAL:
         authority.retired_local.add(session_id)
     return True
@@ -78,26 +89,61 @@ def restore_retired(authority, session_id):
     if session_id in authority.retired_local:
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, session_id)
+    else:
+        from gateway.session_api import restore_api_session
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            restore_api_session(authority, session_id)
+        except RuntimeStoreError:
+            return  # no binding: the caller's lookup fails exactly as it did before retirement
+    touch_restored(authority, session_id)
+
+
+def touch_restored(authority, session_id):
+    """A conversation retirement let go is back in memory (a rename, a read, a wake): it retires
+    again once ``RESTORED_IDLE_S`` pass with no authorize on it and nothing pinning it. A viewer's
+    close retires a watched one instead (``retire_closed``)."""
+    live = authority.sessions.get(session_id)
+    if live is None or session_id not in getattr(authority, 'retired_routes', ()):
         return
-    from gateway.session_api import restore_api_session
-    from hermes_state_runtime import RuntimeStoreError
     try:
-        restore_api_session(authority, session_id)
-    except RuntimeStoreError:
-        pass  # no binding: the caller's lookup fails exactly as it did before retirement
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # an off-loop authorize: the next on-loop one arms it
+    if live.retire_timer is not None:
+        live.retire_timer.cancel()
+    live.retire_timer = loop.call_later(RESTORED_IDLE_S, _retire_restored, authority, session_id, live)
+
+
+def _retire_restored(authority, session_id, live):
+    live.retire_timer = None
+    if authority.sessions.get(session_id) is not live or live.subscribers or live.source is None:
+        return  # deleted or restored anew, or watched: that viewer's close retires it
+    from gateway.session_contract import SessionRef
+    if live.source.platform == Platform.API_SERVER:
+        target = authority.physical_target(SessionRef(authority.profile_id, session_id))
+    else:
+        from gateway.session_viewer_close import _physical_target
+        target = _physical_target(authority, session_id)
+    if not retire_idle(authority, session_id, live, target):
+        touch_restored(authority, session_id)  # running work pins it: check again later
 
 
 def forget_retired(authority, session_id):
     """A deleted conversation retirement let go: its admission source and frozen policy on the local
     adapter, and its cached agent (``forget_live_session`` for one still in memory)."""
+    local_retired = session_id in authority.retired_local
     authority.retired_local.discard(session_id)
-    from gateway.session_local_recovery import local_adapter_map
-    local = local_adapter_map(authority).get(Platform.LOCAL)
-    saved = local.sources.get(session_id) if local is not None else None
-    if saved is None:
+    route = authority.retired_routes.pop(session_id, None)
+    if route is None:
         return
-    route = authority.runner.session_store._generate_session_key(saved[0])
     evict = getattr(authority.runner, '_evict_cached_agent', None)
     if callable(evict):
         evict(route)
-    local.forget(saved[0], route)
+    if not local_retired:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    saved = local.sources.get(session_id) if local is not None else None
+    if saved is not None:
+        local.forget(saved[0], route)

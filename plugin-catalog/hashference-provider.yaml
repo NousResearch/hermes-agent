@@ -1,7 +1,7 @@
 name: hashference-provider
 title: Hashference
 repo: https://github.com/0xalank/hermes-hashference-provider
-sha: e9b66305a4dd100e11cdaf0f0865fb21b1cdeddf
+sha: 82700f5377a46f0e7bd482c907ed04090b6305be
 subdir: hashference-provider
 version: "1.0.0"
 description: >-

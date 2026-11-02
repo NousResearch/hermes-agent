@@ -38,7 +38,8 @@ def test_scopes_single_profile_gateway_is_root_only():
 def test_scopes_include_root_first_then_every_secondary_home(monkeypatch):
     """Multiplexed → root first, then each SECONDARY profile as (name, home).
 
-    The default profile must NOT be yielded again: its home resolves to the
+    The default profile must NOT be yielded again WHEN its home IS the root
+    home (the launch profile is "default" itself): its home resolves to the
     same ``state.db`` as the unscoped root poll, so repeating it would double
     every tick's query count for zero benefit.
     """
@@ -48,6 +49,7 @@ def test_scopes_include_root_first_then_every_secondary_home(monkeypatch):
         ("medicina", Path("/h/profiles/medicina")),
     ]
     monkeypatch.setattr(run, "_multiplex_profile_homes", lambda _cfg: homes)
+    monkeypatch.setattr(run, "get_hermes_home", lambda: Path("/h"))
 
     runner = types.SimpleNamespace(config=_FakeConfig(multiplex=True))
     scopes = run._handoff_watch_scopes(runner)
@@ -59,6 +61,32 @@ def test_scopes_include_root_first_then_every_secondary_home(monkeypatch):
     ]
     assert not any(name == "default" for name, _h in scopes[1:]), (
         "default profile must not be polled twice per tick"
+    )
+
+
+def test_scopes_include_default_when_launched_under_a_named_profile(monkeypatch):
+    """A ``-p work`` multiplexer's root home is ``work``'s, not ``default``'s — ``default`` must get
+    its OWN scope entry instead of being skipped by name (#N: previously skipped unconditionally,
+    so a `-p work` gateway's `default` profile never had its `/handoff`s, `/loop` wakeups, or queued
+    cron deliveries seen at all)."""
+    homes = [
+        ("default", Path("/h")),
+        ("work", Path("/h/profiles/work")),
+    ]
+    monkeypatch.setattr(run, "_multiplex_profile_homes", lambda _cfg: homes)
+    # The launch profile is "work" — root resolves to work's home, NOT default's.
+    monkeypatch.setattr(run, "get_hermes_home", lambda: Path("/h/profiles/work"))
+
+    runner = types.SimpleNamespace(config=_FakeConfig(multiplex=True))
+    scopes = run._handoff_watch_scopes(runner)
+
+    assert scopes[0] == (None, None), "root store must still be polled first"
+    assert ("default", Path("/h")) in scopes[1:], (
+        "default must be watched in its own right when it is not the launch profile"
+    )
+    # work IS the root home, so it must not be duplicated as a named entry.
+    assert not any(name == "work" for name, _h in scopes[1:]), (
+        "the launch profile's own home must not be polled twice per tick"
     )
 
 

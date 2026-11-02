@@ -280,14 +280,21 @@ class GatewayConfigLoadersMixin:
 
         return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
-    @staticmethod
-    def _load_daybreak(source) -> bool:
+    def _load_daybreak(self, source) -> bool:
         """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``. Read per turn so the
         Desktop switch reaches the next turn of a running chat without rebuilding its cached agent. Only the
-        owner's local surfaces carry it: Daybreak is the approved account's own access (OpenAI: no third-party
-        or downstream use), and a messaging platform's chats can be other people."""
+        owner's own chats carry it: Daybreak is the approved account's own access (OpenAI: no third-party
+        or downstream use), and a messaging platform's chats, a hosted room or an A2A peer can be other people.
+        LOCAL is the canonical transport, not the owner, so the route's frozen launch policy decides."""
         from gateway.run import _load_gateway_config
+        from gateway.session_policy import DAYBREAK_LABELS, policy_for_source
         if getattr(source, "platform", None) != Platform.LOCAL:
+            return False
+        try:
+            policy = policy_for_source(self, source)
+        except Exception:  # health: allow BLE001 -- an unreadable policy fails closed to standard requests
+            return False
+        if getattr(policy, "source", None) not in DAYBREAK_LABELS:
             return False
         return cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 

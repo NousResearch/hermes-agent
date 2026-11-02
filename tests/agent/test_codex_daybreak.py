@@ -107,36 +107,63 @@ def test_offered_only_where_the_account_lists_it(catalog):
                                       access_token=token("A"))
 
 
+def _owner_policies(home, monkeypatch):
+    """Real launch policies, built the way each producer builds them (build_policy, then the hosted-room and
+    A2A rewrites in gateway/session_hosted_rpc.py and gateway/session_a2a.py), keyed by a LOCAL chat id."""
+    from dataclasses import replace
+    from gateway import run as gateway_run
+    from gateway import session_policy
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)  # frozen at import by an earlier test
+    policies = {label: session_policy.build_policy({"source": label}, {}, private_secrets={})
+                for label in ("gui", "cli", "tui", "oneshot", "tool", "acp")}
+    policies["bot_room"] = replace(policies["gui"], source="bot_room", platform="bot_room")
+    policies["a2a"] = replace(policies["cli"], source="a2a", platform="a2a")
+
+    def policy_for_source(runner, source):
+        if source.chat_id == "unreadable":
+            raise RuntimeError("storage_unavailable")
+        return policies[source.chat_id]
+    monkeypatch.setattr(session_policy, "policy_for_source", policy_for_source)
+    return policies
+
+
+def _load(platform, chat_id="gui"):
+    from gateway.run_config_loaders import GatewayConfigLoadersMixin
+    return GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(), SimpleNamespace(platform=platform,
+                                                                                         chat_id=chat_id))
+
+
 def test_gateway_reads_the_profile_switch_each_turn(tmp_path, monkeypatch):
     """The owner's chat turns (Desktop, TUI, ``hermes chat``: ``Platform.LOCAL``) run in the gateway, which copies
     the switch onto the turn's agent from the profile's config.yaml, so a flip reaches the next turn of a running chat."""
     from gateway.config import Platform
-    from gateway.run_config_loaders import GatewayConfigLoadersMixin
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    _owner_policies(home, monkeypatch)
     seen = {}
     for value in ("true", "false", '"yes"', None):
         (home / "config.yaml").write_text("model: {}\n" if value is None else f"agent:\n  daybreak: {value}\n",
                                           encoding="utf-8")
-        seen[value] = GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(platform=Platform.LOCAL))
+        seen[value] = _load(Platform.LOCAL)
     assert seen == {"true": True, "false": False, '"yes"': False, None: False}
 
 
-def test_messaging_platform_turns_never_carry_daybreak(tmp_path, monkeypatch):
-    """Daybreak is the approved account's own access (OpenAI: no third-party or downstream use). A messaging
-    platform's chats can be other people, so with the switch on only the owner's local surfaces carry it."""
-    from gateway import run as gateway_run
+def test_only_the_owners_own_chats_carry_daybreak(tmp_path, monkeypatch):
+    """Daybreak is the approved account's own access (OpenAI: no third-party or downstream use). Messaging
+    chats, hosted rooms, A2A peers, third-party ``tool`` integrations and editor clients can be other people,
+    so with the switch on only the owner's Desktop, TUI and CLI chats carry it."""
     from gateway.config import Platform
-    from gateway.run_config_loaders import GatewayConfigLoadersMixin
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(gateway_run, "_hermes_home", home)  # frozen at import by an earlier test
+    policies = _owner_policies(home, monkeypatch)
     (home / "config.yaml").write_text("agent:\n  daybreak: true\n", encoding="utf-8")
-    loaded = {platform: GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(platform=platform))
-              for platform in (Platform.LOCAL, Platform.TELEGRAM, Platform.DISCORD, Platform.API_SERVER)}
-    assert loaded == {Platform.LOCAL: True, Platform.TELEGRAM: False, Platform.DISCORD: False,
-                      Platform.API_SERVER: False}
+
+    platforms = {platform: _load(platform) for platform in (Platform.TELEGRAM, Platform.DISCORD, Platform.API_SERVER)}
+    assert platforms == {Platform.TELEGRAM: False, Platform.DISCORD: False, Platform.API_SERVER: False}
+    local = {label: _load(Platform.LOCAL, label) for label in [*policies, "unreadable"]}
+    assert local == {"gui": True, "cli": True, "tui": True, "oneshot": True, "tool": False, "acp": False,
+                     "bot_room": False, "a2a": False, "unreadable": False}
 
 
 def test_model_menu_capability_marks_only_listed_subscription_models(catalog, monkeypatch):

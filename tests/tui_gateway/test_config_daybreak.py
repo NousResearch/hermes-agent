@@ -95,3 +95,27 @@ def test_new_agents_read_the_switch_only_for_local_surfaces(monkeypatch, source,
 
     agent = server._make_agent("sid", "session-key", platform_override=source)
     assert agent.daybreak is expected
+
+
+def test_an_isolated_turns_reused_child_agent_follows_the_switch(homes, monkeypatch):
+    """With turn isolation the live agent is in the compute-host child, out of reach of the parent's live
+    flip, so each turn the child re-reads the switch from its profile's config.yaml, in both directions."""
+    from tui_gateway.compute_host import ComputeHost
+    _launch, worker = homes
+    child = object.__new__(ComputeHost)
+    child._transport = object()
+    desktop = SimpleNamespace(daybreak=True, platform="desktop")
+    bot = SimpleNamespace(daybreak=False, platform="telegram")
+    monkeypatch.setitem(server._sessions, "desktop-sid", {"agent": desktop, "profile_home": str(worker)})
+    monkeypatch.setitem(server._sessions, "bot-sid", {"agent": bot, "profile_home": str(worker)})
+    config = worker / "config.yaml"
+
+    config.write_text("agent:\n  daybreak: false\n", encoding="utf-8")
+    child._ensure_server_session(server, {"sid": "desktop-sid", "profile_home": str(worker)})
+    assert desktop.daybreak is False
+
+    config.write_text("agent:\n  daybreak: true\n", encoding="utf-8")
+    for sid in ("desktop-sid", "bot-sid"):
+        child._ensure_server_session(server, {"sid": sid, "profile_home": str(worker)})
+    assert desktop.daybreak is True
+    assert bot.daybreak is False

@@ -271,7 +271,14 @@ _DECISION_MESSAGES: dict[str, str] = {
     ),
     "identical_call_streak_halt": (
         "Stopped {tool_name}: the same call with identical arguments returned the same result "
-        "{count} times in a row. Stop repeating it unchanged; use the result already provided or change strategy."
+        "{count} times in a row. Stop repeating it; if you still need the tool, find its exact "
+        "name in tool_search's description (tool list or server summary) and call tool_describe "
+        "with it, or answer the user now with what you have."
+    ),
+    "identical_call_streak_tool_describe_halt": (
+        "Stopped {tool_name}: the same names were not found {count} times in a row. "
+        "Those names do not exist in this session; stop describing them and answer the "
+        "user now with what you have."
     ),
     "identical_cycle_halt": (
         "Stopped {tool_name}: the same repeating cycle of tool calls (period {period}) with identical "
@@ -479,7 +486,9 @@ class ToolCallGuardrailController:
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
             if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
-                self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
+                code = ("identical_call_streak_tool_describe_halt" if tool_name == "tool_describe"
+                        else "identical_call_streak_halt")
+                self._decide("halt", code, tool_name, count, signature)
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
         # consecutive streak on every alternation, so check the call history for a period-p lap.

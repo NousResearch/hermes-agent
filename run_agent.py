@@ -1290,7 +1290,7 @@ class AIAgent(
         else:
             # observe_call may have raised the identical-call streak or batch-cycle halt (hard_stop_enabled, tool-agnostic).
             streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
+            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_call_streak_tool_describe_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:

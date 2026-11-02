@@ -139,6 +139,14 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+        # Re-subscribing is the operator's re-arm for a delivery-parked row: the
+        # destination's own session asking again proves it is reachable, so the
+        # failure count and backoff window reset (no-op on healthy rows).
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivery_failures = 0, retry_after = NULL "
+            + _SUB_KEY_WHERE,
+            key,
+        )
 
 
 def _notify_profile_filter(
@@ -415,6 +423,49 @@ def record_notify_ping(
             "UPDATE kanban_notify_subs SET last_ping_event_id = MAX(last_ping_event_id, ?) "
             + _SUB_KEY_WHERE,
             (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+        )
+
+
+def record_notify_failure(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, base_delay: float, cap_delay: float,
+) -> tuple[int, float]:
+    """Count one delivery failure durably and park the row on bounded backoff.
+
+    Sets ``delivery_failures = delivery_failures + 1`` and ``retry_after`` to
+    ``now + min(cap_delay, base_delay * 2 ** (failures - 1))`` inside one
+    transaction, returning ``(failures, retry_after)`` for the caller's log
+    line. Parking — not unsubscribing — bounds a dead destination to one claim
+    attempt per backoff step while keeping the row recoverable: claims skip it
+    until ``retry_after`` passes, and a successful delivery or a re-subscribe
+    clears both columns (:func:`clear_notify_failures`).
+    """
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT delivery_failures FROM kanban_notify_subs " + _SUB_KEY_WHERE, key,
+        ).fetchone()
+        if row is None:
+            return 0, 0.0
+        failures = int(row["delivery_failures"] or 0) + 1
+        retry_after = time.time() + min(float(cap_delay), float(base_delay) * (2 ** (failures - 1)))
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivery_failures = ?, retry_after = ? " + _SUB_KEY_WHERE,
+            (failures, retry_after, *key),
+        )
+        return failures, retry_after
+
+
+def clear_notify_failures(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None,
+) -> None:
+    """Reset the durable failure counters (successful delivery / re-subscribe)."""
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_subs SET delivery_failures = 0, retry_after = NULL "
+            + _SUB_KEY_WHERE,
+            _sub_key(task_id, platform, chat_id, thread_id),
         )
 
 

@@ -9,6 +9,7 @@ Covers the wrong-session-wake / silent-loss fixes:
 """
 
 import asyncio
+import time
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
@@ -211,6 +212,21 @@ def test_apiserver_wake_failure_rewinds_then_retries_destination(
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
     assert _unseen_terminal_events(tid, "api_server", "origin-session")
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT delivery_failures, retry_after FROM kanban_notify_subs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["delivery_failures"] == 1, "the failed self-post is counted durably"
+        assert row["retry_after"] is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET retry_after = ? WHERE task_id = ?",
+                (time.time() - 1.0, tid),
+            )
+    finally:
+        conn.close()
 
     runner._running = True
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))

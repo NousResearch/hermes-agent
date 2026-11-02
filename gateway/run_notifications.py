@@ -1001,8 +1001,17 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return None
             if not raise_not_accepted:
                 queued["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
-            logger.warning("Watch notification not admitted for %s chat=%s: %s",
-                           platform_name, source.chat_id, exc)
+            # The refusing branch is not recoverable from the drain's own state later: a null pin, an
+            # unowned pin, a gone pin and a drifted snapshot all surface as the same code. Name the
+            # fields that separate them on the one line a production log keeps (#143720).
+            logger.warning(
+                "Watch notification not admitted for %s chat=%s (type=%s session_id=%s pinned=%s "
+                "route_session=%s retry=%s permanent=%s): %s",
+                platform_name, source.chat_id, evt.get("type") or "?",
+                evt.get("session_id") or "unknown", evt.get("parent_session_id") or "none",
+                self.session_store.peek_session_id(str(evt.get("session_key") or "")) or "none",
+                int(evt.get("_watch_retry_step") or 0), exc.permanent, exc,
+            )
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise

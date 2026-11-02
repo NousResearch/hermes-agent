@@ -5977,10 +5977,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     _BOT_IDENTITY_PROBE_TIMEOUT = 15.0
 
     def _is_reply_to_bot(self, message: Message) -> bool:
-        if not self._bot or not getattr(message, "reply_to_message", None):
-            return False
-        reply_user = getattr(message.reply_to_message, "from_user", None)
-        return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
+        from plugins.platforms.telegram.telegram_context import is_reply_to_bot
+        return is_reply_to_bot(self, message)
 
     @staticmethod
     def _entity_sources(message: Message):

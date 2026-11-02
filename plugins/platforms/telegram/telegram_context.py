@@ -11,6 +11,26 @@ if TYPE_CHECKING:
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
+def is_reply_to_bot(adapter: "TelegramAdapter", message: "Message") -> bool:
+    """Classify replies, optionally excluding a forum's implicit creation anchor."""
+    reply = getattr(message, "reply_to_message", None)
+    if not adapter._bot or not reply:
+        return False
+    # Topic membership can look like a reply to the bot that created the topic.
+    # Keep legacy classification unless this profile explicitly opts in.
+    if (
+        adapter.config.extra.get("ignore_forum_topic_anchors") is True
+        and adapter._is_group_chat(message)
+        and getattr(message, "is_topic_message", False)
+        and getattr(reply, "forum_topic_created", None) is not None
+        and getattr(message, "message_thread_id", None) is not None
+        and getattr(reply, "message_id", None) == message.message_thread_id
+    ):
+        return False
+    reply_user = getattr(reply, "from_user", None)
+    return bool(reply_user and getattr(reply_user, "id", None) == getattr(adapter._bot, "id", None))
+
+
 def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") -> bool:
     """True when a ``mention``/``text_mention`` entity names someone other than this bot."""
     return any(

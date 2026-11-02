@@ -616,13 +616,13 @@ DEFAULT_CONFIG = {
         "micro_compact_every_n_turns": 1,
         # Once the rolling summary exceeds this many tokens, the next pass re-summarizes it.
         "micro_compact_defrag_threshold_tokens": 2000,
+        "hygiene_threshold": 0.85,  # gateway hygiene net, ratio of the window; keep above compression.threshold
         # Gateway session-hygiene force-compress threshold, by message count.
         "hygiene_hard_message_limit": 5000,
         # Max seconds the gateway waits for pre-agent hygiene compression WITHOUT forward progress.
         # Inactivity budget: a slow model still streaming tokens extends the wait.
         "hygiene_timeout_seconds": 30,
-        # Absolute cap on the hygiene wait even while tokens are moving (bounds a trickle stream).
-        # Clamped >= hygiene_timeout_seconds.
+        # Absolute cap on the hygiene wait even while tokens move (trickle stream); >= hygiene_timeout_seconds.
         "hygiene_total_ceiling_seconds": 600,
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
         # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;

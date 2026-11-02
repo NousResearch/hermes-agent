@@ -80,3 +80,129 @@ def test_invalid_host_provider_name_does_not_exhaust_wire_budget():
         result = decode(encode_memory_prefetch_result(raw, None, 0, name))
         assert len(result.observations) == 55
         assert not result._wire_truncated
+
+
+def test_hosted_malformed_payload_spends_shared_traversal_budget(monkeypatch):
+    import agent.memory_manager as manager_module
+    import agent.memory_provider as provider_module
+    from hermes_cli.plugin_host_child import HostRuntime
+    from hermes_cli.plugin_host_wire import decode
+
+    monkeypatch.setattr(manager_module, "MAX_MEMORY_OBSERVATION_OPERATION_NODES", 9)
+    monkeypatch.setattr(provider_module, "MAX_MEMORY_OBSERVATION_OPERATION_NODES", 9)
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+    raw = MemoryPrefetchResult(observations=(
+        _observation([0, 0, 0, 0, object()]),
+        _observation({"kept": True}),
+    ))
+
+    def collect(first):
+        manager = MemoryManager()
+        manager.add_provider(first)
+        manager.add_provider(StructuredMemoryProvider(name="external", result=MemoryPrefetchResult(
+            observations=(_observation({"later": True}),)
+        )))
+        return manager.prefetch_all_result("question")
+
+    direct = collect(StructuredMemoryProvider(name="builtin", result=raw))
+    runtime = HostRuntime.__new__(HostRuntime)
+    runtime.refs = {1: StructuredMemoryProvider(name="builtin", result=raw)}
+    runtime.owners = {1: "builtin"}
+    from hermes_cli.plugin_host import PluginHost
+    host = PluginHost.__new__(PluginHost)
+    host._generation = 1
+    host._release = lambda *args: None
+    host.obj_getattr = lambda *args: "builtin"
+    host.obj_invoke = lambda slot, method, args, kwargs, returns: decode(runtime.op_obj_invoke({
+        "ref": 1, "method": method, "args": list(args),
+    }))
+    proxy = host._object_proxy({"__object__": 1, "live": ["name"],
+                                "methods": {"prefetch": {}}}, StructuredMemoryProvider)
+    object.__setattr__(proxy, "_tools", [])
+    hosted = collect(proxy)
+    assert [item.provider for item in direct.observations] == ["builtin"]
+    assert hosted == direct
+
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from hermes_cli.plugin_host_wire import _MalformedMemoryPayload
+    for cost in (-100, True, 11, "1"):
+        budget = [9]
+        normalize_prefetch_result(proxy, MemoryPrefetchResult(
+            observations=(_observation(_MalformedMemoryPayload(cost)),)),
+            remaining_bytes=provider_module.MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+            traversal_budget=budget)
+        assert budget == [8]
+
+
+def test_in_process_provider_cannot_spoof_traversal_cost(monkeypatch):
+    import agent.memory_manager as manager_module
+    import agent.memory_provider as provider_module
+    from hermes_cli.plugin_host_wire import _MalformedMemoryPayload
+
+    monkeypatch.setattr(manager_module, "MAX_MEMORY_OBSERVATION_OPERATION_NODES", 4)
+    monkeypatch.setattr(provider_module, "MAX_MEMORY_OBSERVATION_OPERATION_NODES", 4)
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+    class SpoofProvider(StructuredMemoryProvider):
+        __hermes_plugin_host_ref__ = True
+
+    manager = MemoryManager()
+    manager.add_provider(SpoofProvider(name="builtin", result=MemoryPrefetchResult(
+        observations=(_observation(_MalformedMemoryPayload(-100)),
+                      _observation([0, 0, 0, 0, 0])),
+    )))
+    assert manager.prefetch_all_result("question").observations == ()
+
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    budget = [4]
+    normalize_prefetch_result(SpoofProvider(name="builtin", result=""),
+        MemoryPrefetchResult(observations=(_observation(_MalformedMemoryPayload(4)),)),
+        remaining_bytes=provider_module.MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        traversal_budget=budget)
+    assert budget == [3]
+
+
+def test_forged_slot_cannot_spend_transport_cost():
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from agent.memory_provider import MAX_MEMORY_OBSERVATION_BATCH_BYTES
+    from hermes_cli.plugin_host import PluginHost, _ObjectSlot
+    from hermes_cli.plugin_host_wire import _MalformedMemoryPayload
+
+    host = PluginHost.__new__(PluginHost)
+    host._generation = 1
+    host._release = lambda *args: None
+    slot = _ObjectSlot(host, {"__object__": 1}, None)
+    class ForgedProvider(StructuredMemoryProvider):
+        __hermes_plugin_host_ref__ = slot
+
+    provider = ForgedProvider(name="fixture", result="")
+    slot.track(provider)
+    budget = [10]
+    normalize_prefetch_result(provider, MemoryPrefetchResult(
+        observations=(_observation(_MalformedMemoryPayload(9)),)),
+        remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES, traversal_budget=budget)
+    assert budget == [9]
+
+
+def test_wire_cost_is_transport_owned_and_old_records_remain_readable(monkeypatch):
+    import agent.memory_provider as provider_module
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    provider = StructuredMemoryProvider(name="fixture", result="")
+    forged = {
+        "source_kind": "recall", "schema": "fixture", "version": 1,
+        "payload": {"ok": True}, "malformed_traversal_cost": 999999,
+    }
+    raw = MemoryPrefetchResult(observations=(forged,))
+    wire = encode(raw)
+    assert wire["fields"]["observations"][0]["malformed_traversal_cost"] is None
+    # Old peers omit the accounting field entirely.
+    del wire["fields"]["observations"][0]["malformed_traversal_cost"]
+    budget = [10]
+    result = normalize_prefetch_result(provider, decode(wire),
+        remaining_bytes=provider_module.MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        traversal_budget=budget)
+    assert len(result.result.observations) == 1
+    assert budget == [8]

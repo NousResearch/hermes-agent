@@ -745,7 +745,9 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
     def on_stream_delta(**kwargs):
         calls.append(kwargs)
 
-    _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
+    manager = _patch_test_callback_manager(monkeypatch, {"on_stream_delta": [on_stream_delta]})
+    manager._discovery_lock = threading.Lock()
+    manager._discovery_lock.acquire()
     monkeypatch.setattr("hermes_cli.config.cfg_get", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         "agent.bedrock_adapter._get_bedrock_runtime_client",
@@ -765,8 +767,11 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
         on_event=None,
         **_kwargs,
     ):
-        # Main's Bedrock path also invokes this as a Relay finalizer with the
-        # intercepted-event replay; only the live pass wires callbacks.
+        # Discovery was busy at setup but completes during the same stream.
+        if manager._discovery_lock.locked():
+            manager._discovery_lock.release()
+        if on_text_delta is not None:
+            on_text_delta("bedrock text")
         if on_reasoning_delta is not None:
             assert on_tool_start is not None
             assert on_interrupt_check() is False
@@ -781,11 +786,12 @@ def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):
     agent.stream_delta_callback = None
 
     agent._interruptible_streaming_api_call({"__bedrock_region__": "us-east-1", "__bedrock_converse__": True})
-    _wait_for(lambda: calls)
+    _wait_for(lambda: len(calls) == 2)
     shutdown_plugin_stream_hook_dispatcher()
 
-    assert calls[0]["kind"] == "reasoning"
-    assert calls[0]["delta"] == "bedrock reasoning"
+    assert [(call["kind"], call["delta"]) for call in calls] == [
+        ("text", "bedrock text"), ("reasoning", "bedrock reasoning"),
+    ]
 
 
 def test_inline_think_reaches_reasoning_pane_unless_native_reasoning_streamed():
@@ -1642,16 +1648,14 @@ def test_blocked_observer_worker_does_not_accumulate_across_manager_reloads(
     delivered = []
     workers = set()
 
-    def observer_for(expected_event):
-        def observer(**payload):
-            if expected_event == "first":
-                started.set()
-            release.wait(timeout=10.0)
-            delivered.append((expected_event, payload["event_id"]))
-            if expected_event == "generation-2":
-                final_delivered.set()
-
-        return observer
+    def observer(**payload):
+        event_id = payload["event_id"]
+        if event_id == "first":
+            started.set()
+        release.wait(timeout=10.0)
+        delivered.append((event_id, event_id))
+        if event_id == "generation-2":
+            final_delivered.set()
 
     try:
         for generation in range(3):
@@ -1659,7 +1663,7 @@ def test_blocked_observer_worker_does_not_accumulate_across_manager_reloads(
             event_id = "first" if generation == 0 else f"generation-{generation}"
             plugins.PluginContext(
                 plugins.PluginManifest(name="reload-observer"), manager
-            ).register_hook("memory_prefetch", observer_for(event_id))
+            ).register_hook("memory_prefetch", observer)
             assert psh.enqueue_plugin_observer_hook("memory_prefetch", event_id=event_id)
             if generation == 0:
                 assert started.wait(timeout=5.0)
@@ -1723,13 +1727,15 @@ def test_blocked_observer_worker_is_reused_across_profile_manager_replacement(
     other_delivered = []
 
     def old_callback(**payload):
-        old_started.set()
-        release_old.wait(timeout=10.0)
-        old_delivered.append(payload["event_id"])
+        if payload["event_id"] == "old-running":
+            old_started.set()
+            release_old.wait(timeout=10.0)
+            old_delivered.append(payload["event_id"])
+        else:
+            successor_delivered.append(payload["event_id"])
+            successor_received.set()
 
-    def successor_callback(**payload):
-        successor_delivered.append(payload["event_id"])
-        successor_received.set()
+    successor_callback = old_callback
 
     def other_callback(**payload):
         other_delivered.append(payload["event_id"])
@@ -1926,5 +1932,41 @@ def test_observer_enqueue_does_not_join_retired_callback_worker(monkeypatch, tmp
             ) is False
     finally:
         release_callback.set()
+        manager.unload()
+        psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
+def test_replacement_observer_does_not_inherit_unrelated_blocked_worker(monkeypatch, tmp_path):
+    from agent import plugin_stream_hooks as psh
+    from hermes_cli import plugins
+
+    psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+    manager = plugins.PluginManager(scope_key=str(tmp_path / "replacement-identity"))
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    started = threading.Event()
+    release = threading.Event()
+    received = threading.Event()
+
+    def blocked(**_payload):
+        started.set()
+        release.wait(timeout=10.0)
+
+    def independent(**_payload):
+        received.set()
+
+    old = plugins.PluginManifest(name="old")
+    plugins.PluginContext(old, manager).register_hook("memory_prefetch", blocked)
+    try:
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch")
+        assert started.wait(timeout=5.0)
+        assert manager.unload(old)
+        plugins.PluginContext(plugins.PluginManifest(name="new"), manager).register_hook(
+            "memory_prefetch", independent
+        )
+        assert psh.enqueue_plugin_observer_hook("memory_prefetch")
+        assert received.wait(timeout=2.0)
+    finally:
+        release.set()
         manager.unload()
         psh.shutdown_plugin_observer_dispatcher(timeout=5.0)

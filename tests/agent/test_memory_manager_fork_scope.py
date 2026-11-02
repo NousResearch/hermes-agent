@@ -87,6 +87,14 @@ def test_subagent_context_suppresses_every_write_and_recall_path():
     assert recall == ""
 
 
+def test_subagent_structured_prefetch_is_suppressed():
+    provider = _RecordingProvider()
+    result = _manager_with(provider, agent_context="subagent").prefetch_all_result("user text")
+    assert result.context == ""
+    assert result.observations == ()
+    assert provider.calls == []
+
+
 def test_primary_and_cron_contexts_still_write_and_recall():
     """The control, and the scope: cron keeps the provider-side contract it had before."""
     for context in ("primary", "cron"):

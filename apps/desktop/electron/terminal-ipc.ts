@@ -31,7 +31,9 @@ export interface TerminalIpcDeps {
   /** The ssh client to spawn for remote terminals (resolveSshBinary). */
   sshBinary: () => string
   ensureBackend: (webContentsId: number) => Promise<unknown>
-  getSshConnectionState: (scope: string) => undefined | { registryConnectionId?: null | string; remotePlatform?: string }
+  getSshConnectionState: (
+    scope: string
+  ) => undefined | { registryConnectionId?: null | string; remotePlatform?: string }
   /** The host of the gateway a tab was opened on. A tab owns its gateway: the
    *  window-backend route (which a Sessions pick never re-points) only serves
    *  tabs that recorded none. */
@@ -340,7 +342,9 @@ export function registerTerminalIpc({
     webContentsId: number
   ): Promise<{ sshTarget: null | SshTerminalTarget } | { unavailable: 'missing' | 'no-shell' }> {
     if (!owner) {
-      return { sshTarget: await resolveTerminalConnectionForSender(webContentsId, activeSshTerminalTarget, ensureBackend) }
+      return {
+        sshTarget: await resolveTerminalConnectionForSender(webContentsId, activeSshTerminalTarget, ensureBackend)
+      }
     }
 
     const target = await resolveTerminalConnection(
@@ -379,7 +383,13 @@ export function registerTerminalIpc({
     // Removed gateway, or one with no shell transport: report it instead of
     // spawning a local shell the tab would label with the remote's name.
     if ('unavailable' in resolved) {
-      return { connectionId: owner?.connectionId ?? null, cwd: null, id: '', shell: '', unavailable: resolved.unavailable }
+      return {
+        connectionId: owner?.connectionId ?? null,
+        cwd: null,
+        id: '',
+        shell: '',
+        unavailable: resolved.unavailable
+      }
     }
 
     const { sshTarget } = resolved

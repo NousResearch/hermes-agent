@@ -1,5 +1,7 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import json
+
 
 import pytest
 
@@ -251,3 +253,15 @@ class TestExtractLocations:
         args = {"command": "echo hi"}
         locs = extract_locations(args)
         assert locs == []
+
+    def test_search_files_pagination_offset_is_not_a_line(self):
+        locs = extract_locations({"path": "src", "pattern": "x", "offset": 50}, "search_files")
+        assert [(loc.path, loc.line) for loc in locs] == [("src", None)]
+
+    def test_completed_patch_points_at_first_changed_line(self):
+        diff = "--- a//repo/f.txt\n+++ b//repo/f.txt\n@@ -2,5 +2,5 @@\n b\n c\n d\n-e\n+E\n f\n"
+        ok = json.dumps({"success": True, "diff": diff, "resolved_path": "/repo/f.txt"})
+        done = build_tool_complete("tc-p", "patch", ok, function_args={"path": "f.txt"})
+        assert [(loc.path, loc.line) for loc in done.locations] == [("/repo/f.txt", 5)]
+        failed = build_tool_complete("tc-p2", "patch", json.dumps({"error": "old_string not found"}))
+        assert failed.locations is None

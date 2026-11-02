@@ -10,7 +10,7 @@ maintainer: kastormdz
 tier: community
 category: tools
 docs_url: https://github.com/kastormdz/obsidian-rag#hermes-plugin
-image: https://raw.githubusercontent.com/kastormdz/obsidian-rag/77bd935ab20a432e2cf01aa4fd5ecf01070c54d7/docs/banner.webp
+image: https://raw.githubusercontent.com/kastormdz/obsidian-rag/8c3bd19ceb5536bb40139f6c1667b0e90e35ddb3/docs/banner.webp
 capabilities:
   provides_tools:
     - vault_search

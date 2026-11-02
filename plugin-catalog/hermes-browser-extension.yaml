@@ -1,0 +1,61 @@
+name: hermes-browser-extension
+title: Hermes Browser Extension
+repo: https://github.com/abundantbeing/hermes-browser-extension
+sha: 381a5d411dd96699044769623d408dddaf7874a6
+subdir: companion-plugin
+version: "0.4.0"
+description: >-
+  Connects Hermes to the separately installed Hermes Browser Extension for
+  user-shared page context and opt-in control of explicitly attached browser
+  tabs. Browser control requires Chromium; Firefox supports chat and page
+  context. Serves authenticated routes on the Hermes API server and stores
+  bounded redacted receipts and screenshots in profile-scoped plugin data.
+maintainer: abundantbeing
+tier: community
+category: web
+requires_hermes: ">=0.22"
+docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/381a5d411dd96699044769623d408dddaf7874a6/companion-plugin/install.md
+image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/381a5d411dd96699044769623d408dddaf7874a6/assets/readme/release-v0.4.0.jpg
+screenshots:
+  - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/381a5d411dd96699044769623d408dddaf7874a6/assets/readme/hermes-browser-control.png
+readme: true
+platforms: []
+known_issues:
+  - Install the browser extension separately; this entry installs only the Hermes-side plugin. The API server must be enabled, and gateway routes load at startup.
+  - Remove the older hermes-browser-companion plugin before installing this renamed plugin to avoid duplicate context-tool registrations.
+  - On a multiplexed gateway, named-profile control needs per-profile plugin-route dispatch. Without it, use the default profile. Host-isolated plugins cannot register the API-server routes.
+capabilities:
+  provides_tools:
+    - browser_context_status
+    - browser_get_context
+    - browser_clear_context
+    - browser_event_log
+    - browser_control_status
+    - browser_context_journal
+    - browser_text_utility
+    - tab_back
+    - tab_batch
+    - tab_click
+    - tab_drag
+    - tab_fill
+    - tab_hover
+    - tab_navigate
+    - tab_press
+    - tab_screenshot
+    - tab_scroll
+    - tab_scroll_to
+    - tab_select
+    - tab_snapshot
+    - tab_activate
+    - tab_close
+    - tab_create
+    - tab_group
+    - tab_ungroup
+    - tab_list
+    - tab_type
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

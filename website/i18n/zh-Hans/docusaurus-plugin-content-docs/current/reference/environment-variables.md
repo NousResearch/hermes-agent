@@ -68,6 +68,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DEEPSEEK_BASE_URL` | 自定义 DeepSeek API base URL |
 | `NOVITA_API_KEY` | NovitaAI API 密钥——面向 Model API、Agent Sandbox 和 GPU Cloud 的 AI 原生云（[novita.ai/settings/key-management](https://novita.ai/settings/key-management)） |
 | `NOVITA_BASE_URL` | 覆盖 NovitaAI base URL（默认：`https://api.novita.ai/openai/v1`） |
+| `SCW_SECRET_KEY` | Scaleway Generative APIs 密钥（与 Scaleway CLI/SDK 使用同一凭证）——欧洲的 OpenAI 兼容推理服务（[console.scaleway.com/iam/api-keys](https://console.scaleway.com/iam/api-keys)） |
+| `SCALEWAY_BASE_URL` | 覆盖 Scaleway base URL（默认：`https://api.scaleway.ai/v1`；按项目限定：`https://api.scaleway.ai/<project_id>/v1`） |
 | `NVIDIA_API_KEY` | NVIDIA NIM API 密钥——Nemotron 及开源模型（[build.nvidia.com](https://build.nvidia.com)） |
 | `NVIDIA_BASE_URL` | 覆盖 NVIDIA base URL（默认：`https://integrate.api.nvidia.com/v1`；本地 NIM 端点设为 `http://localhost:8000/v1`） |
 | `STEPFUN_API_KEY` | StepFun API 密钥——Step 系列模型（[platform.stepfun.com](https://platform.stepfun.com)） |

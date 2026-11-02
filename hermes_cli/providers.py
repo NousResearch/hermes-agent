@@ -78,6 +78,8 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
                             base_url_override="https://api.actual.inc/v1", base_url_env_var="ACTUAL_BASE_URL"),
     "upstage": HermesOverlay(extra_env_vars=("UPSTAGE_API_KEY",), base_url_override="https://api.upstage.ai/v1",
                              base_url_env_var="UPSTAGE_BASE_URL"),
+    "scaleway": HermesOverlay(extra_env_vars=("SCW_SECRET_KEY",), base_url_override="https://api.scaleway.ai/v1",
+                              base_url_env_var="SCALEWAY_BASE_URL"),
     "nebius-token-factory": HermesOverlay(extra_env_vars=("NEBIUS_API_KEY", "NEBIUS_TOKEN_FACTORY_API_KEY"),
                                           base_url_override="https://api.tokenfactory.nebius.com/v1",
                                           base_url_env_var="NEBIUS_BASE_URL"),

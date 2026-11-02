@@ -1083,6 +1083,25 @@ def _compute_lpt_slices(
     return bucket_files
 
 
+def _longest_first(
+    files: list[Path], durations: dict[str, float], repo_root: Path
+) -> list[Path]:
+    """Order files for submission: slowest cached duration first.
+
+    The pool starts files in submission order, so a slow file submitted late
+    runs alone at the end while the other workers sit idle. Starting the slow
+    ones first leaves only short files for the tail. Files without a cached
+    duration get the same 2.0s estimate _compute_lpt_slices uses. Ties keep
+    their original order, so an empty cache leaves the order unchanged.
+    """
+    if not durations:
+        return files
+    return sorted(
+        files,
+        key=lambda f: -float(durations.get(_format_file(f, repo_root), 2.0)),
+    )
+
+
 def _slice_files(
     files: list[Path],
     slice_index: int,
@@ -1726,7 +1745,7 @@ def main() -> int:
         # CI load (see _effective_file_timeout).
         timeout_durations = _load_durations(repo_root)
         futures: list[Future] = []
-        for file in files:
+        for file in _longest_first(files, timeout_durations, repo_root):
             t0 = time.monotonic()
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,

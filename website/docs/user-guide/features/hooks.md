@@ -475,6 +475,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| `post_memory_write` | Observer | After the built-in memory store persists a change to `MEMORY.md` / `USER.md`, from any caller, including approved staged writes; outside the file lock; return ignored. | `action`, `target`, `content`, `entries_before`, `entries_after`, `pending_id` | Full memory entries before and after the write. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1853,6 +1854,18 @@ Auxiliary LLM calls — session titling, context compression, MoA advisors and t
 ### `on_skill_lifecycle`
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
+
+### `post_memory_write`
+
+Fires once for each change the built-in memory store writes to `MEMORY.md` or `USER.md`, whoever made it: the `memory` tool, `/memory approve`, a plugin that replays a staged write with `apply_memory_pending`, or direct `MemoryStore` use. It runs after the file lock is released and is observer-only; a failing callback is logged and never affects the write.
+
+- `action`: `add`, `patch`, `replace`, `remove`, or `batch`.
+- `target`: `memory` or `user`.
+- `content`: the new text for a single add, patch, or replace; `None` for a remove or a batch.
+- `entries_before` / `entries_after`: the target's full entry list around the write. Diff them to see what changed.
+- `pending_id`: the id of the staged record when the write is an approved replay, otherwise `None`. With `memory.write_approval` on, the `memory` tool result carries the same `pending_id` when it stages a write, so a plugin can attribute the change to the chat that proposed it.
+
+Writes that change nothing (a duplicate add, a refused or failed write, a dry-run batch resolve) don't fire it.
 
 ### Kanban lifecycle observers
 

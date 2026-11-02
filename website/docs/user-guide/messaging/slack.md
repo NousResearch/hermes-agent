@@ -1026,6 +1026,8 @@ slack:
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel, including slash-command turns (`/hermes <question>` and native `/<command>`), get the prompt injected as an ephemeral system instruction.
 
+An entry can also point at a markdown file instead of holding the text inline (`"C01RESEARCH": {file: channel-prompts/research.md}`); see [Discord channel prompts](discord.md#discordchannel_prompts) for the full syntax.
+
 ## Per-Channel Skill Bindings
 
 Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.

@@ -197,6 +197,47 @@ def _str_keyed(value: Any) -> Any:
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else value
 
 
+def _channel_prompt_text(channel_id: Any, value: Any, home: Path) -> Any:
+    """A ``{prompt?, file}`` entry → its inline ``prompt`` followed by the file's text (relative paths
+    from *home*); a plain string passes through. An unreadable file keeps only the inline part, so
+    an entry left blank counts as absent and a thread falls back to its parent channel's prompt."""
+    if not isinstance(value, dict):
+        return value
+    inline = str(value.get("prompt") or "").strip()
+    raw_path = value.get("file")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        logger.warning("channel_prompts[%s]: a mapping entry needs a 'file' path; using only its 'prompt'", channel_id)
+        return inline
+    path = Path(raw_path.strip()).expanduser()
+    if not path.is_absolute():
+        path = home / path
+    try:
+        body = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning("channel_prompts[%s]: cannot read prompt file %s: %s", channel_id, path, e)
+        return inline
+    return "\n\n".join(part for part in (inline, body) if part)
+
+
+def expand_channel_prompt_files(platforms_data: Any, home: Path) -> None:
+    """Replace file-backed ``channel_prompts`` entries of every platform block with their text.
+
+    Read once per config load, like an inline prompt, never per message: the channel prompt rides
+    the system prompt, and an edit landing mid-conversation would rewrite the cached prefix. Runs
+    after the plugin hooks, the last site that writes ``extra``, so none can restore the mapping.
+    Both the block and its ``extra`` are expanded: ``PlatformConfig.from_dict`` promotes a block-level
+    key into ``extra`` when ``extra`` has none."""
+    if not isinstance(platforms_data, dict):
+        return
+    for block in platforms_data.values():
+        if not isinstance(block, dict):
+            continue
+        for holder in (block, block.get("extra")):
+            prompts = holder.get("channel_prompts") if isinstance(holder, dict) else None
+            if isinstance(prompts, dict):
+                holder["channel_prompts"] = {cid: _channel_prompt_text(cid, v, home) for cid, v in prompts.items()}
+
+
 _TELEGRAM = frozenset({Platform.TELEGRAM})
 _DISCORD_SLACK = frozenset({Platform.DISCORD, Platform.SLACK})
 
@@ -552,6 +593,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
                             warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+    expand_channel_prompt_files(platforms_data, home)
 
 
 def load_gateway_config_file(gateway_config_file: str):
@@ -560,6 +602,10 @@ def load_gateway_config_file(gateway_config_file: str):
     import hermes_yaml as yaml
     from gateway.config import GatewayConfig
     from hermes_cli.config_backend import require_file_tooling
+    from hermes_constants import get_hermes_home
     require_file_tooling("gateway --config <file>")
     with open(gateway_config_file, encoding="utf-8-sig") as f:
-        return GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        data = yaml.safe_load(f) or {}
+    if isinstance(data, dict):
+        expand_channel_prompt_files(data.get("platforms"), get_hermes_home())
+    return GatewayConfig.from_dict(data)

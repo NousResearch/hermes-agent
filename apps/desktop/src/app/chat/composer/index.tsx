@@ -1094,7 +1094,6 @@ export function ChatBar({
     voiceStatus
   } = useComposerVoice({
     busy,
-    clearDraft,
     disabled,
     focusInput,
     insertText,

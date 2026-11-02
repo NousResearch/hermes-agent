@@ -5,8 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useComposerVoice } from './use-composer-voice'
 
 const mocks = vi.hoisted(() => ({
-  clearDraft: vi.fn(),
   conversationSubmits: [] as Array<(text: string) => Promise<void>>,
+  liveSubmits: [] as Array<(text: string, voiceContext: string) => Promise<void>>,
   onSubmit: vi.fn(async () => true),
   resetBrowseState: vi.fn(),
   triggerHaptic: vi.fn()
@@ -111,6 +111,22 @@ vi.mock('./use-voice-conversation', () => ({
   }
 }))
 
+vi.mock('./use-voice-live-conversation', () => ({
+  useVoiceLiveConversation: ({ onSubmit }: { onSubmit: (text: string, voiceContext: string) => Promise<void> }) => {
+    mocks.liveSubmits.push(onSubmit)
+
+    return {
+      end: vi.fn(async () => undefined),
+      level: 0,
+      muted: false,
+      start: vi.fn(async () => undefined),
+      status: 'idle',
+      stopTurn: vi.fn(),
+      toggleMute: vi.fn()
+    }
+  }
+}))
+
 vi.mock('./use-voice-recorder', () => ({
   useVoiceRecorder: () => ({
     dictate: vi.fn(),
@@ -124,6 +140,7 @@ describe('useComposerVoice voice submission', () => {
     cleanup()
     vi.clearAllMocks()
     mocks.conversationSubmits.length = 0
+    mocks.liveSubmits.length = 0
   })
 
   it('uses live busy state when a retained voice callback submits after barge-in', async () => {
@@ -131,7 +148,6 @@ describe('useComposerVoice voice submission', () => {
       ({ busy }) =>
         useComposerVoice({
           busy,
-          clearDraft: mocks.clearDraft,
           disabled: false,
           focusInput: vi.fn(),
           insertText: vi.fn(),
@@ -149,15 +165,45 @@ describe('useComposerVoice voice submission', () => {
     hook.rerender({ busy: false })
     await act(async () => retainedSubmit('change direction'))
 
-    expect(mocks.onSubmit).toHaveBeenCalledWith('change direction', { voiceTurn: true })
-    expect(mocks.clearDraft).toHaveBeenCalledTimes(1)
-    expect(mocks.resetBrowseState).toHaveBeenCalledWith('session-1')
+    expect(mocks.onSubmit).toHaveBeenCalledWith('change direction', { attachments: [], voiceTurn: true })
+    expect(mocks.resetBrowseState).not.toHaveBeenCalled()
     expect(mocks.triggerHaptic).toHaveBeenCalledWith('submit')
 
     hook.rerender({ busy: true })
     await act(async () => retainedSubmit('do not double-submit'))
 
     expect(mocks.onSubmit).toHaveBeenCalledTimes(1)
-    expect(mocks.clearDraft).toHaveBeenCalledTimes(1)
+  })
+
+  // A voice turn submits the spoken transcript on its own (#142510). It used to clear the
+  // typed draft first, and the submit path also took the staged attachments and the
+  // history-browse snapshot with it. An explicit empty attachment list keeps the staged ones.
+  it('submits a chained voice turn and a live delegation without the typed draft or its attachments', async () => {
+    renderHook(() =>
+      useComposerVoice({
+        busy: false,
+        disabled: false,
+        focusInput: vi.fn(),
+        insertText: vi.fn(),
+        maxRecordingSeconds: 60,
+        onSubmit: mocks.onSubmit,
+        onTranscribeAudio: vi.fn(async () => ''),
+        sessionId: 'session-1',
+        target: 'tile:test'
+      })
+    )
+
+    await act(async () => mocks.conversationSubmits[0]('Zudem läuft im Moment gerade'))
+    await act(async () => mocks.liveSubmits[0]('and then check the logs', 'recent exchange'))
+
+    expect(mocks.onSubmit).toHaveBeenNthCalledWith(1, 'Zudem läuft im Moment gerade', {
+      attachments: [],
+      voiceTurn: true
+    })
+    expect(mocks.onSubmit).toHaveBeenNthCalledWith(2, 'and then check the logs', {
+      attachments: [],
+      surface: 'voice-live',
+      voiceContext: 'recent exchange'
+    })
   })
 })

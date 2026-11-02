@@ -337,10 +337,8 @@ export function useGatewayBoot({
       return () => void (cancelled = true)
     }
 
-    // Store-driven switches (Sessions switcher → selectConnection) commit
-    // through beginGatewaySwitch(), which runs this window's machine-context
-    // reset — the same one a Settings apply (softSwitch below) runs. One owner,
-    // one reset, so the two doors can't drift apart again (#93937).
+    // A Settings apply (softSwitch below) commits through beginGatewaySwitch(),
+    // which runs this window's machine-context reset (#93937).
     const offSwitchLifecycle = registerGatewaySwitchLifecycle({
       beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
       refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)

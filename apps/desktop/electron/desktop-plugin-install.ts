@@ -21,6 +21,7 @@ import {
   writeDesktopHalfMarker
 } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
+import { stripLikePython, WIN_RESERVED_RE } from './plugin-files-guards'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
 
@@ -135,6 +136,30 @@ export function repoNameFromUrl(url: string): string {
   }
 
   return name
+}
+
+/** *name* when it can be one folder directly under the desktop-plugins root, else throw. It comes from
+ *  the repository (a manifest's `name`, a subdirectory's last segment), so it must never reach a path
+ *  unchecked: `..` would make a forced install replace the Hermes home. No separators, no leading dot
+ *  (the root's staging folders use it), and none of the names Windows reads as something else (a colon
+ *  makes `C:..` drive-relative, a device name opens the device, a trailing dot is dropped). The agent
+ *  side's `_checked_name` refuses the same names (#146394). */
+export function checkedDesktopFolderName(name: string): string {
+  const candidate = stripLikePython(name)
+
+  if (
+    !candidate ||
+    candidate.startsWith('.') ||
+    candidate.endsWith('.') ||
+    /[/\\:]/.test(candidate) ||
+    [...candidate].some(char => char.charCodeAt(0) < 32) ||
+    [...candidate].length > 128 ||
+    WIN_RESERVED_RE.test(candidate.split('.', 1)[0].replace(/ +$/, ''))
+  ) {
+    throw new Error(`'${name}' is not a desktop plugin folder name: it must be a plain folder name, not a path.`)
+  }
+
+  return candidate
 }
 
 /** Stable on-disk folder for a desktop plugin. Never the clone temp dir or a generic `desktop/` folder. */
@@ -528,7 +553,7 @@ export async function installDesktopPluginFromGit(
       // and the Plugins page pairs them into one row. A desktop-only repo keeps
       // the git-derived folder name and stays a standalone plugin.
       const packageName = detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null
-      const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
+      const pluginName = checkedDesktopFolderName(packageName ?? desktopPluginFolderName(gitUrl, subdir))
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
@@ -565,7 +590,7 @@ export async function installDesktopPluginFromGit(
             }
 
             await writeDesktopHalfMarker(staged, {
-              package: packageName,
+              package: pluginName,
               repo: gitUrl,
               // The published folder, not the temp clone. The clone is deleted
               // below; a source that disappears is ghost-pruned on the next

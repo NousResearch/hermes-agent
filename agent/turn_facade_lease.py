@@ -109,6 +109,8 @@ class DurableTurnLease:
         in-flight tick finishes before ``clear_interrupt`` runs."""
         for handle in self.timer_handles:
             handle.cancel(wait=timeout)
+        # The watchdog holds this lease's bound methods: drop it so the finished turn frees by refcount.
+        self.timer_handles, self.watchdog = [], None
 
     def release(self) -> None:
         """Release the row and drop the agent's holder attrs (only if they still name this lease)."""

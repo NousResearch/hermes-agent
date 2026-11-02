@@ -158,6 +158,28 @@ class TestSingleQueryDenyMode:
             result = check_dangerous_command("ls -la", "local")
             assert result["approved"]
 
+    def test_block_message_names_file_tool_alternatives(self, monkeypatch):
+        """The deny advice should name the working alternative, not just "find another way".
+
+        Unattended agents (single-query/cron) that hit the dangerous-command guard cannot ask
+        what the guard accepts; with a generic "find an alternative approach" they burn turns
+        guessing and retrying near-identical shell one-liners before discovering the file-tool
+        route. Naming the accepted shapes in the message short-circuits that loop.
+        """
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert not result["approved"]
+            assert "BLOCKED" in result["message"]
+            assert "file tools" in result["message"]
+            assert "write_file" in result["message"]
+            assert "python -c" in result["message"]
+
     def test_block_message_includes_description(self, monkeypatch):
         """The block message should mention what pattern was matched."""
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")

@@ -498,7 +498,10 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     def block(subject: str) -> dict:
         return {"approved": False, "message": ctx.block_message(
             subject, noun="dangerous commands",
-            advice="Find an alternative approach that avoids this command.")}
+            advice="Find an alternative approach that avoids this command "
+                "(file tools such as read_file/write_file/patch instead of "
+                "heredocs or python -c one-liners; scripts as plain files "
+                "run with explicit arguments).")}
 
     is_dangerous, _pk, description = detect_dangerous_command(command)
     if is_dangerous:
@@ -899,7 +902,10 @@ def check_dangerous_command(command: str, env_type: str,
     return _run_approval_gate(
         pattern_key=pattern_key, description=description, display_target=command, approval_callback=approval_callback,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
-        advice="Find an alternative approach that avoids this command.",
+        advice="Find an alternative approach that avoids this command "
+               "(file tools such as read_file/write_file/patch instead of "
+               "heredocs or python -c one-liners; scripts as plain files "
+               "run with explicit arguments).",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
     )
 

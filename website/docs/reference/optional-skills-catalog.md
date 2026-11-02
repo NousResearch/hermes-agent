@@ -174,6 +174,7 @@ hermes skills uninstall <skill-name>
 | [**evaluating-llms-harness**](../user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness.md) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). |
 | [**faiss**](../user-guide/skills/optional/mlops/mlops-faiss.md) | Fast vector similarity search at billion scale. |
 | [**flash-attention**](../user-guide/skills/optional/mlops/mlops-flash-attention.md) | Speed up long-sequence transformer training and inference. |
+| [**gradio-app-development**](../user-guide/skills/optional/mlops/mlops-gradio-app-development.md) | Build and deploy JIT Gradio apps, daggr loops, and Spaces. |
 | [**lambda-labs**](../user-guide/skills/optional/mlops/mlops-lambda-labs.md) | On-demand GPU cloud instances for ML training. |
 | [**llama-cpp**](../user-guide/skills/optional/mlops/mlops-inference-llama-cpp.md) | llama.cpp local GGUF inference + HF Hub model discovery. |
 | [**modal**](../user-guide/skills/optional/mlops/mlops-modal.md) | Serverless GPU cloud for ML jobs and model APIs. |

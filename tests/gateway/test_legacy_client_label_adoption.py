@@ -40,7 +40,8 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
     store, desktop = await _owner(tmp_path, monkeypatch, {'gui': []})
     db = store._db
     for sid, source, user_id in (('phone-mobile', 'mobile', None), ('phone-ios', 'ios', 'basic:admin'),
-                                 ('webui-row', 'webui', None)):
+                                 ('webui-row', 'webui', None), ('teams-row', 'teams', None),
+                                 ('curator-row', 'curator', None)):
         db.create_session(sid, source=source, model='m', cwd=str(tmp_path), user_id=user_id)
         db.append_message(sid, role='user', content='hi from ' + sid)
         db.end_session(sid, 'ws_orphan_reap')
@@ -55,11 +56,13 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
         assert db.get_session(sid)['source'] == 'desktop'
         again = await desktop.dispatch({'id': 20 + i, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert again.get('result', {}).get('session_id') == sid, again
-    await desktop.dispatch({'id': 30, 'method': 'session.resume', 'params': {'session_id': 'webui-row'}})
-    sent = await desktop.dispatch({'id': 31, 'method': 'prompt.submit',
-                                   'params': {'session_id': 'webui-row', 'text': 'go on', 'submission_id': 's-w'}})
-    assert (sent.get('error', {}).get('data') or {}).get('reason') == 'session_read_only', sent
-    assert db.get_session('webui-row')['source'] == 'webui'
+    # A foreign writer's rows, a bundled plugin platform's label and automation stay read-only.
+    for i, sid in enumerate(('webui-row', 'teams-row', 'curator-row')):
+        await desktop.dispatch({'id': 30 + i, 'method': 'session.resume', 'params': {'session_id': sid}})
+        sent = await desktop.dispatch({'id': 40 + i, 'method': 'prompt.submit',
+                                       'params': {'session_id': sid, 'text': 'go on', 'submission_id': 's-' + sid}})
+        assert (sent.get('error', {}).get('data') or {}).get('reason') == 'session_read_only', (sid, sent)
+        assert db.get_session(sid)['source'] == sid.split('-')[0]
 
 
 @pytest.mark.asyncio

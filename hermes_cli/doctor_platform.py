@@ -249,6 +249,39 @@ def check_certificates(should_fix: bool = False, issues: list | None = None) -> 
         check_ok("TLS platform trust store configured; default SSL context available")
     else:
         check_ok("TLS default SSL context available (OpenSSL trust paths)")
+    _check_mtls_identity(issues)
+
+
+def _check_mtls_identity(issues: list[str]) -> None:
+    """Load ``agent.mtls`` for real: a readable pair that OpenSSL accepts.
+
+    Config validation can only see paths; building the context is what proves the key
+    matches the certificate and that the ``password_env`` passphrase opens it. A global
+    certificate is only a warning when broken (Hermes connects without it), so this
+    reports rather than fails.
+    """
+    try:
+        from agent.ssl_verify import MtlsConfigError, client_cert_spec, mtls_context
+    except Exception:
+        return
+    try:
+        spec = client_cert_spec()
+    except MtlsConfigError as exc:
+        check_warn("mTLS client certificate unusable", str(exc))
+        issues.append(
+            f"Fix agent.mtls.cert_file / key_file / password_env, or clear the block: {exc}"
+        )
+        return
+    if spec is None:
+        return
+    cert_path, key = spec[0], spec[1]
+    try:
+        mtls_context(spec)
+    except MtlsConfigError as exc:
+        check_warn("mTLS client certificate unusable", str(exc))
+        issues.append(f"Fix agent.mtls.cert_file / key_file: {exc}")
+        return
+    check_ok("mTLS client certificate loaded", f"({cert_path}{'' if key else ', combined PEM'})")
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:

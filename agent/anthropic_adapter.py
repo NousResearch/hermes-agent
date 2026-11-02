@@ -382,6 +382,39 @@ def _client_timeout(timeout):
     return Timeout(timeout=float(read), connect=10.0)
 
 
+def _mtls_verify_for(base_url) -> Any:
+    """The global mTLS client context for this endpoint, or None when unconfigured.
+
+    Shared TLS resolution lives in ``agent.ssl_verify`` (``agent.mtls``); this module
+    only needs its context because the Anthropic SDK takes an ``http_client`` rather
+    than a ``verify=`` argument.
+    """
+    try:
+        from agent.ssl_verify import mtls_verify_for
+
+        return mtls_verify_for(str(base_url or ""))
+    except Exception:
+        logger.debug("mTLS context unavailable for the Anthropic client", exc_info=True)
+        return None
+
+
+def _mtls_http_client(sdk, verify, timeout):
+    """An httpx client carrying ``verify``, built from the SDK's own default client.
+
+    ``DefaultHttpxClient`` keeps the SDK's transport tweaks (redirects, connection
+    limits); the explicit ``timeout`` matters because the SDK adopts a supplied
+    client's timeout whenever it differs from httpx's 5s default. Passing ``verify``
+    to a plain ``httpx.Client`` instead would silently cut every stream at 5s.
+    """
+    import httpx
+
+    client_cls = getattr(sdk, "DefaultHttpxClient", None) or httpx.Client
+    kwargs: dict[str, Any] = {"verify": verify}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return client_cls(**kwargs)
+
+
 def _base_client_kwargs(base_url, timeout) -> tuple[str, dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
     hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
@@ -416,6 +449,7 @@ def _build_anthropic_client_with_bearer_hook(
     kwargs["http_client"] = build_bearer_http_client(
         token_provider, timeout=kwargs["timeout"],
         sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
+        verify=_mtls_verify_for(base_url) or True,
     )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
@@ -443,6 +477,11 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
     ``with_options()``, which re-runs the constructor and re-reads the environment."""
     merged = dict(headers)
+    if "http_client" not in kwargs:
+        # mTLS (agent.mtls): the SDK takes an http_client, never a verify= argument.
+        _mtls_verify = _mtls_verify_for(route or kwargs.get("base_url"))
+        if _mtls_verify is not None:
+            kwargs["http_client"] = _mtls_http_client(sdk, _mtls_verify, kwargs.get("timeout"))
     if "api_key" in kwargs and "auth_token" not in kwargs:
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:

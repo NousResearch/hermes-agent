@@ -213,11 +213,16 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
 def _resolve_client_cert(server_name: str, config: dict):
     """``client_cert`` / ``client_key`` in httpx's ``cert=`` shape: None, a combined-PEM path,
     ``(cert, key)`` or ``(cert, key, password)``. ``~`` is expanded; missing files raise a
-    server-scoped FileNotFoundError instead of an opaque TLS handshake error."""
+    server-scoped FileNotFoundError instead of an opaque TLS handshake error.
+
+    A server entry that configures no certificate of its own inherits the global
+    ``agent.mtls`` one (see :func:`_resolve_global_client_cert`); a server that names
+    its own keeps it, so per-server identities are never overridden by the global one.
+    """
     raw_cert = config.get("client_cert")
     raw_key = config.get("client_key")
     if raw_cert is None and raw_key is None:
-        return None
+        return _resolve_global_client_cert(server_name)
     prefix = f"MCP server '{server_name}': "
 
     def _expand(path: Any, label: str) -> str:
@@ -240,6 +245,56 @@ def _resolve_client_cert(server_name: str, config: dict):
     if not isinstance(raw_cert[2], str):
         raise ValueError(f"{prefix}client_cert[2] (key passphrase) must be a string")
     return (*pair, raw_cert[2])
+
+
+def _resolve_global_client_cert(server_name: str):
+    """The global ``agent.mtls`` certificate in httpx's ``cert=`` shape, when configured.
+
+    Unusable global config warns instead of raising: it applies to every server, and a
+    broken certificate must not take unrelated (non-mTLS) servers down with it. A server
+    that genuinely needs the certificate still fails its handshake, with this warning
+    naming the setting right above the TLS error.
+    """
+    try:
+        from agent.ssl_verify import MtlsConfigError, client_cert_spec
+    except Exception:  # import-grade skew (older tree): behave exactly as before
+        return None
+    try:
+        spec = client_cert_spec()
+    except MtlsConfigError as exc:
+        logger.warning(
+            "MCP server '%s': agent.mtls client certificate unusable (%s) — connecting "
+            "WITHOUT a client certificate.", server_name, exc,
+        )
+        return None
+    except Exception:
+        logger.debug("MCP server '%s': agent.mtls lookup failed", server_name, exc_info=True)
+        return None
+    if spec is None:
+        return None
+    cert, key, password = spec
+    if not key:
+        return cert  # combined PEM / PKCS#12-extracted single file
+    return (cert, key, password) if password else (cert, key)
+
+
+def _resolve_ssl_verify(server_name: str, config: dict):
+    """This server's ``ssl_verify``, else the global ``agent.mtls.ca_cert`` context, else True.
+
+    An explicit per-server ``ssl_verify`` — ``true``, ``false`` or a CA bundle path — is the
+    more specific statement and always wins; the machine-wide ``agent.mtls.ca_cert`` only
+    fills the gap for servers that say nothing, which is what lets a private-PKI fleet work
+    from one config block without weakening a server that opted out of verification.
+    """
+    if "ssl_verify" in config:
+        return config.get("ssl_verify")
+    try:
+        from agent.ssl_verify import ca_verify_for
+
+        context = ca_verify_for(f"mcp:{server_name}")
+    except Exception:
+        return True
+    return context if context is not None else True
 
 
 def _resolve_identity_header(server_name: str, config: dict):

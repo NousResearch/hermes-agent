@@ -79,7 +79,7 @@ class _AnthropicStreamContext:
     def __enter__(self) -> _BlockingStream:
         return self.stream
 
-    def __exit__(self, *_args: Any) -> None:
+    def __exit__(self, *_args: object) -> None:
         self.stream.close()
 
 
@@ -495,7 +495,7 @@ def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> 
     release = threading.Event()
     runtime_client = _BedrockRuntimeClient(started, release)
     reset_client_cache()
-    _bedrock_runtime_client_cache["us-test-1"] = runtime_client
+    _bedrock_runtime_client_cache[("us-test-1", None)] = runtime_client
     client = aux.BedrockAuxiliaryClient("us-test-1", "bedrock-test")
     try:
         exc, elapsed = _cancel_silent_request(client, started, _invoke_generic)
@@ -549,7 +549,8 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
     assert observed["protected"] is True
     assert observed["thread"] != caller
-    assert progress == ["tick"]
+    # The hook must reach the isolated worker thread; the seam wrapper adds its own dispatch ticks.
+    assert "tick" in progress
 
 
 def test_isolated_provider_worker_inherits_caller_contextvars() -> None:

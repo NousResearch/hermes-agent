@@ -52,9 +52,16 @@ TRANSITIONS: dict[str, set[str]] = {
                 "human_task_queued"},
 }
 
+# A defunct broker (structured `defunct` field in its record: domain seized / NXDOMAIN) cannot
+# hold a listing, so its open case may close as not_found from an in-flight state. Gated on the
+# broker record via `can_transition(..., broker_defunct=True)`: a LIVE broker's in-flight request
+# waits out its processing window and is confirmed by a verifying re-scan instead.
+DEFUNCT_CLOSEOUT_FROM = frozenset({"action_selected", "submitted", "verification_pending",
+                                   "awaiting_processing", "human_task_queued"})
+
 
 def now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def load(subject_id: str) -> dict:
@@ -82,11 +89,14 @@ def get_case(subject_id: str, broker_id: str) -> dict:
     return load(subject_id).get(broker_id) or new_case(subject_id, broker_id)
 
 
-def can_transition(old: str, new: str) -> bool:
-    return new == old or new in TRANSITIONS.get(old, set())
+def can_transition(old: str, new: str, *, broker_defunct: bool = False) -> bool:
+    if new == old or new in TRANSITIONS.get(old, set()):
+        return True
+    return broker_defunct and new == "not_found" and old in DEFUNCT_CLOSEOUT_FROM
 
 
-def transition(subject_id: str, broker_id: str, new_state: str, **fields) -> dict:
+def transition(subject_id: str, broker_id: str, new_state: str, *, broker_defunct: bool = False,
+               **fields) -> dict:
     if new_state not in STATES:
         raise ValueError(f"unknown state {new_state!r}")
     # Lock the whole load-modify-save so a concurrent cron re-scan / other tenant
@@ -95,9 +105,13 @@ def transition(subject_id: str, broker_id: str, new_state: str, **fields) -> dic
         ledger = load(subject_id)
         case = ledger.get(broker_id) or new_case(subject_id, broker_id)
         old = case.get("state", "new")
-        if not can_transition(old, new_state):
+        if not can_transition(old, new_state, broker_defunct=broker_defunct):
             raise ValueError(f"illegal transition {old!r} -> {new_state!r} for broker {broker_id!r}")
         case["state"] = new_state
+        if new_state == "not_found":
+            # not_found schedules no follow-up; a recheck date left by the prior state would
+            # keep `next` waking for a closed case.
+            case.pop("next_recheck_at", None)
         for key, value in fields.items():
             case[key] = value
         stamp = now()
@@ -116,8 +130,8 @@ VERIFICATION_POLL_DAYS = 1     # how soon to re-poll for an unarrived verificati
 
 
 def _plus_days(days: int, start: str | None = None) -> str:
-    base = _dt.datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc) \
-        if start else _dt.datetime.now(_dt.timezone.utc)
+    base = _dt.datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.UTC) \
+        if start else _dt.datetime.now(_dt.UTC)
     return (base + _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

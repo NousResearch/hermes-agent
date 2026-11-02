@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { resolveDesktopConnectionRequest } from './desktop-profile'
 import {
+  appliedPrimaryWindowRoute,
   normalizeWindowConnectionRoute,
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
+  WindowConnectionRouteRegistry,
+  windowRouteVersionScope
 } from './window-connection-route'
 
 test('normalizes an exact registry-scoped connection and profile', () => {
@@ -137,4 +140,91 @@ test('does not match another connection, an unlabelled entry, or a torn-down tun
 
   assert.equal(registrySshPoolScopeByConnectionId(pool, 'source-b'), null)
   assert.equal(registrySshPoolScopeByConnectionId(pool, 'source-c'), null)
+})
+
+test('a primary apply re-points the window route so its re-dial leaves the gateway it just left', () => {
+  // #92352: the window was on a registered remote (registry-scoped) and the
+  // user applied This device. Its recorded route still names the remote, and
+  // the apply re-dial is profile-less, so main answered it from that record and
+  // the renderer kept dialing the gateway it had just left.
+  const stale = { connectionId: 'macmini', profile: 'default', registryScoped: true }
+
+  const registry = {
+    primary: 'local',
+    connections: [
+      { id: 'local', kind: 'local' },
+      { id: 'macmini', kind: 'remote' }
+    ]
+  } as never
+
+  assert.deepEqual(resolveDesktopConnectionRequest(undefined, stale, 'default'), {
+    connectionId: 'macmini',
+    profile: 'default'
+  })
+
+  const applied = appliedPrimaryWindowRoute(registry, stale.profile)
+
+  assert.deepEqual(applied, { connectionId: null, profile: 'default', registryScoped: false })
+  // The same profile-less re-dial now resolves to the freshly applied primary
+  // instead of the source it left.
+  assert.deepEqual(resolveDesktopConnectionRequest(undefined, applied, 'default'), {
+    connectionId: null,
+    profile: 'default'
+  })
+})
+
+test('a remote apply stays registry-scoped to the applied source and keeps the viewed profile', () => {
+  const registry = {
+    primary: 'macmini',
+    connections: [
+      { id: 'local', kind: 'local' },
+      { id: 'macmini', kind: 'remote' }
+    ]
+  } as never
+
+  const applied = appliedPrimaryWindowRoute(registry, 'work')
+
+  assert.deepEqual(applied, { connectionId: 'macmini', profile: 'work', registryScoped: true })
+  // A window launched from this route afterwards inherits the applied source.
+  assert.deepEqual(resolveDesktopConnectionRequest(undefined, applied, 'default'), {
+    connectionId: 'macmini',
+    profile: 'work'
+  })
+})
+
+test('falls back to the canonical profile when the applied window had no route to keep', () => {
+  assert.deepEqual(appliedPrimaryWindowRoute({ primary: 'local' } as never, undefined), {
+    connectionId: null,
+    profile: 'default',
+    registryScoped: false
+  })
+  assert.deepEqual(appliedPrimaryWindowRoute({ primary: '' } as never, '  '), {
+    connectionId: null,
+    profile: 'default',
+    registryScoped: false
+  })
+})
+
+test('about-panel version scope follows the window route, not the primary', () => {
+  assert.deepEqual(windowRouteVersionScope({ connectionId: 'remote-a', profile: 'work', registryScoped: true }), {
+    connectionId: 'remote-a',
+    profile: 'work'
+  })
+  // Legacy/profile-only route: profile only, no registry pin.
+  assert.deepEqual(windowRouteVersionScope({ connectionId: 'x', profile: 'work', registryScoped: false }), {
+    profile: 'work'
+  })
+  // No recorded route: unscoped (primary), same as before.
+  assert.deepEqual(windowRouteVersionScope(null), {})
+})
+
+test('about-panel scope uses the focused window route and falls back to the primary', () => {
+  const routes = new WindowConnectionRouteRegistry()
+  routes.set(7, { connectionId: 'remote-a', profile: 'work', registryScoped: true })
+  const window = (id: number, destroyed = false) => ({ isDestroyed: () => destroyed, webContents: { id } })
+
+  assert.deepEqual(routes.versionScopeFor(window(7)), { connectionId: 'remote-a', profile: 'work' })
+  assert.deepEqual(routes.versionScopeFor(window(7, true)), {})
+  assert.deepEqual(routes.versionScopeFor(window(8)), {})
+  assert.deepEqual(routes.versionScopeFor(null), {})
 })

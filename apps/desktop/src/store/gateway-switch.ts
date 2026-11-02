@@ -5,32 +5,44 @@ import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
+import { resetDeadSessionPrune } from '@/store/dead-session-prune'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { exitProjectScope } from '@/store/project-scope'
+import { clearLiveReactionOverlays } from '@/store/reactions-local'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
+import { clearAllSessionTodos } from '@/store/todos'
+import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
-// True while a connection switch is mid-flight — a Settings → Gateway apply
-// (wipe → re-dial, use-gateway-boot softSwitch) or a Sessions-switcher source
-// change (store/connections selectConnection). Lets the boot hook suppress the
+// True while a Settings → Gateway connection-mode apply is mid-flight (wipe →
+// re-dial, use-gateway-boot softSwitch). Picking a registered gateway in
+// Sessions is not a switch: every gateway stays connected and the pick is a
+// live activation (store/connections selectConnection). Lets the boot hook suppress the
 // backend-exit toast, keeps the cold-boot CONNECTING overlay from resurrecting
 // when startHermes re-emits boot progress, and tells the resume path that a
 // "session not found" mid-switch means "retry once things settle", not "gone".
@@ -73,14 +85,12 @@ export function registerGatewaySwitchLifecycle(lifecycle: GatewaySwitchLifecycle
 }
 
 /**
- * Commit point of every connection switch: raise the barrier and sever every
- * binding to the outgoing backend in ONE synchronous step. Both switch doors —
- * Settings apply (softSwitch) and the Sessions switcher (selectConnection) —
- * must call this BEFORE the next gateway is activated or its descriptor
- * published. The sidebar door used to activate first and wipe afterwards
- * (across an IPC round-trip), so route/session effects saw the new source while
- * $activeSessionId still named the previous backend's runtime and sent that id
- * to a backend that had never minted it — "session not found" (#93937).
+ * Commit point of a connection-mode apply: raise the barrier and sever every
+ * binding to the outgoing backend in ONE synchronous step, BEFORE the next
+ * gateway is activated or its descriptor published. Activating first and
+ * wiping after (across an IPC round-trip) let route/session effects see the new
+ * source while $activeSessionId still named the previous backend's runtime —
+ * "session not found" (#93937).
  */
 export function beginGatewaySwitch(): GatewaySwitchToken {
   const token = ++latestSwitchToken
@@ -118,6 +128,17 @@ export function beginGatewaySwitch(): GatewaySwitchToken {
 }
 
 /**
+ * A gateway pick made while a Settings apply is mid-flight wins: the apply's
+ * token stops owning any later publication, and its barrier comes down.
+ */
+export function supersedeGatewaySwitch(): void {
+  if ($gatewaySwitching.get()) {
+    latestSwitchToken += 1
+    endGatewaySwitch()
+  }
+}
+
+/**
  * Lower the barrier once the switch that owns it has committed (or failed).
  * Switches overlap — a click can supersede one that is mid-commit — and the
  * barrier belongs to the LATEST one: an older switch ending is a no-op while a
@@ -129,6 +150,9 @@ export function endGatewaySwitch(token?: GatewaySwitchToken): void {
   }
 
   $gatewaySwitching.set(false)
+  // The wipe reset the star map while the outgoing source was still active; requests now route
+  // to whichever source the switch left active, so an open view reloads against it.
+  reloadOpenStarmapGraph()
 }
 
 /**
@@ -190,13 +214,27 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
+  // Project ids belong to the outgoing backend's projects.db; a scope left
+  // entered would root the next draft's cwd in the old source's project.
+  exitProjectScope()
   setSessions([])
+  // Reset AFTER the wipe: the wipe's empty payload schedules a sweep, and
+  // resetting first would leave that timer live — sweeping every stored id
+  // against a backend that hasn't answered yet. The reset cancels the timer,
+  // clears the alive cache, and marks the list unloaded, so the next real
+  // payload starts a fresh first-pass window against the new backend.
+  resetDeadSessionPrune()
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
+  setSessionProfilesFailed([])
   setCronSessions([])
   invalidateCronJobsRequests()
+  // The star map is a scan of the outgoing backend's skills and memory; an open view reloads it
+  // when the switch ends (endGatewaySwitch), not here: the outgoing source is still active.
+  resetStarmapGraph()
   setCronJobs([])
   setMessagingSessions([])
+  setMessagingListServer(null)
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
@@ -206,6 +244,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // session-unread.ts are keyed by durable session id and repaint the rows
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
+  // Runtime ids can be reused by the next backend. Retire both the live
+  // checklist and its review snapshot before any new session is bound.
+  clearAllSessionTodos()
   clearAllSessionStates()
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).
@@ -214,6 +255,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
+  setSessionsLoadError(false)
   resetSessionsLimit()
 
   setActiveSessionId(null)
@@ -221,14 +263,35 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
+  // The draft workspace belongs to the outgoing backend. Nothing downstream
+  // clears it: ensureDefaultWorkspaceCwd only seeds a NON-empty remembered
+  // path and seedDefaultCwd only applies the new gateway's default when the
+  // cwd is EMPTY, so a gateway with nothing remembered kept painting (and
+  // sending on session.create) the previous gateway's folder (#114306).
+  // Transient on purpose: the per-backend memory of the old gateway stays.
+  setCurrentCwdTransient('')
+  setCurrentBranch('')
+
+  // Reaction overlays describe the outgoing backend's messages: $agentReactions
+  // is keyed by bare DB row id (per-database, so the next backend's row ids name
+  // different messages) and $localReactions by renderer ids the next transcript
+  // regenerates. The profile-swap boundary is covered by the subscribe inside
+  // reactions-local; a connection switch can keep the profile name, so it needs
+  // this explicit wipe.
+  clearLiveReactionOverlays()
+
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
 
   // Cached transcript tails belong to the PREVIOUS backend's sessions; a
   // different backend can recycle stored ids, and painting another machine's
-  // conversation under a same-named id is worse than a loader. Wipe them.
+  // conversation under a same-named id is worse than a loader. Wipe both the
+  // persisted cache and the in-memory paging entries — the latter are keyed by
+  // owner, so a survivor from the old backend would sit beside the new one and
+  // fail the unique-match lookup that shows "Show earlier".
   clearTranscriptTails()
+  clearTranscriptTailPaging()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

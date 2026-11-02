@@ -29,12 +29,15 @@ MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "session.save": "run-concurrent", "session.compress": "idle-gated",
     "prompt.submit.truncate": "idle-gated", "slash.model": "idle-gated",
     "slash.personality": "idle-gated", "slash.prompt": "idle-gated", "slash.compress": "idle-gated",
+    "slash.refine": "idle-gated",
     "session.reset": "idle-gated", "session.history.reload": "idle-gated",
     "slash.retry": "idle-gated"}
 
 _REGISTRY_NAME = "dashboard-compute-host.json"
 _RESPAWN_WINDOW_SECS = 300.0
 _SHUTDOWN_TIMEOUT_SECS = 10.0
+# A cold host imports the agent stack before its hello (~1.3s idle, 5s+ on a loaded box).
+_HELLO_TIMEOUT_SECS = 10.0
 # Late control-ack handlers: a compress that outlives its RPC waiter can run for the full
 # compression ceiling plus a stall-fallback retry, so keep registrations past that — bounded.
 # See #97948.
@@ -50,6 +53,22 @@ def append_log_record(path: str | Path, record: str) -> None:
     """Append one log record using O_APPEND and exactly one os.write call."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     text = record if record.endswith("\n") else f"{record}\n"
+    if os.name == "nt":
+        # CRT O_APPEND is seek+write, not an atomic append across handles.
+        # FILE_APPEND_DATA without FILE_WRITE_DATA makes the kernel append.
+        import win32con
+        import win32file
+        from ntsecuritycon import FILE_APPEND_DATA
+        handle = win32file.CreateFile(
+            str(path), FILE_APPEND_DATA,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+            None, win32con.OPEN_ALWAYS, win32con.FILE_ATTRIBUTE_NORMAL, None,
+        )
+        try:
+            win32file.WriteFile(handle, text.encode("utf-8", errors="replace"))
+        finally:
+            handle.Close()
+        return
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         os.write(fd, text.encode("utf-8", errors="replace"))
@@ -65,7 +84,7 @@ def _check_output(argv: list[str], **kwargs: Any) -> str:
     """Stripped stdout of a short subprocess, or ``""`` on any failure."""
     with contextlib.suppress(Exception):
         return subprocess.check_output(
-            argv, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+            argv, stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
             timeout=2, **kwargs).strip()
     return ""
 
@@ -238,6 +257,17 @@ class HostSupervisor:
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
 
+    def has_pending_turn(self, sid: str) -> bool:
+        """True when a host completion callback is still registered for ``sid``.
+
+        Read by the serving process to tell "the host still owes this session a
+        terminal frame" from "nothing will ever call back for it". Entries are
+        added in :meth:`submit_turn` and removed by ``turn.end``/``turn.error``
+        handling or :meth:`_fail_pending_turns`, all under ``self._lock``.
+        """
+        with self._lock:
+            return any(s == sid for s, _cb in self._pending_turns.values())
+
     def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
@@ -321,13 +351,14 @@ class HostSupervisor:
         proc = subprocess.Popen(
             self.argv, cwd=str(self.cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
+            # detached-spawn: ok — compute host exits on its own parent-guard (compute_host._parent_guard_loop) and flushes sessions; a supervisor KILL could cut that flush short
             start_new_session=True)
         self._proc = proc
         for target, name in ((self._drain_stdout, "compute-host-stdout"),
                              (self._drain_stderr, "compute-host-stderr"),
                              (self._wait_for_exit, "compute-host-wait")):
             threading.Thread(target=target, args=(proc,), name=name, daemon=True).start()
-        if not self._hello_event.wait(timeout=10.0):
+        if not self._hello_event.wait(timeout=_HELLO_TIMEOUT_SECS):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
         self._validate_hello()

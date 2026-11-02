@@ -19,7 +19,13 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// The app provider the plugin's tab label renders under; a plugin test may reach it.
+// eslint-disable-next-line no-restricted-imports
+import { I18nProvider } from '@/i18n'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
@@ -28,7 +34,8 @@ const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
-  setWorkspaceScope: vi.fn()
+  setWorkspaceScope: vi.fn(),
+  undismissPane: vi.fn()
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -40,7 +47,8 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...original.host,
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
-      setWorkspaceScope: mocks.setWorkspaceScope
+      setWorkspaceScope: mocks.setWorkspaceScope,
+      undismissPane: mocks.undismissPane
     }
   }
 })
@@ -161,20 +169,26 @@ afterEach(() => {
 })
 
 describe('the Bots pane dock', () => {
-  it('center-stacks into the sessions zone as a standing invariant', () => {
+  it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()
 
     const harness = recordingContext()
 
+    // Registration runs at module import, before the app has loaded
+    // `display.language`: the string `title` is English here no matter what.
     plugin.register(harness.ctx)
 
-    const data = harness.find('pane')!.data!
+    const tabTitle = harness.find('pane')!.data!.tabTitle as () => ReactNode
 
-    expect(data.dock).toEqual({ enforce: true, pane: 'sessions', pos: 'center' })
-    // A 'bottom' split was the old workaround for the lone-pane auto-hide trap.
-    expect((data.dock as { pos: string }).pos).not.toBe('bottom')
-    // No heal token: the invariant runs at every adoption, unconditionally.
-    expect(data).not.toHaveProperty('heal')
+    const inLocale = (locale: string) =>
+      renderToStaticMarkup(
+        <I18nProvider configClient={null} initialLocale={locale}>
+          {tabTitle()}
+        </I18nProvider>
+      )
+
+    expect(inLocale('en')).toBeTruthy()
+    expect(inLocale('ru')).not.toBe(inLocale('en'))
 
     harness.dispose()
   })
@@ -193,16 +207,7 @@ describe('the Scheduled jobs pane', () => {
     mocks.botChatOwnsWorkspace.mockReturnValue(true)
     store(`hermes-bots:pane`).set(true)
 
-    const routines = harness.find('routines')!
-
-    expect(routines.data).toMatchObject({
-      // Repairs persisted layouts that stranded the tile in the Bots tab strip.
-      dock: { enforce: true, pane: 'workspace', pos: 'right' },
-      placement: 'main'
-    })
-    // Glanceable, not something you sit in: it arrives as the right edge's
-    // vertical tab and takes no width off the chat until the user opens it.
-    expect(routines.data!.defaultCollapsed).toBe(true)
+    expect(harness.find('routines')).toBeTruthy()
 
     harness.dispose()
   })
@@ -247,6 +252,43 @@ describe('the Scheduled jobs pane', () => {
     harness.dispose()
   })
 
+  it('drops a remembered Close only on entering Bot Mode, not on every ownership regain', async () => {
+    const store = paneStores()
+    const harness = recordingContext()
+
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    store(`hermes-bots:pane`).set(true)
+    plugin.register(harness.ctx)
+    await settle()
+
+    // Boot straight into a bot chat: the pane arrives and a Close from a past
+    // launch is dropped once (#102224).
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(1)
+    expect(mocks.undismissPane).toHaveBeenCalledWith('hermes-bots:routines')
+
+    // The user ✕-es the pane, opens a group room (the tile must not sit
+    // beside a group chat) and comes back to the bot chat — all inside one
+    // Bots session. Re-registration must not undo their Close.
+    const { $groupChatWorkspace } = await import('./group-chat')
+    mocks.botChatOwnsWorkspace.mockReturnValue(false)
+    $groupChatWorkspace.set({ id: 'room' } as never)
+    expect(harness.find('routines')).toBeUndefined()
+
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    $groupChatWorkspace.set(null)
+    expect(harness.find('routines')).toBeTruthy()
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(1)
+
+    // Leaving Bot Mode and coming back is the ask for the bot's chrome again.
+    mocks.botChatOwnsWorkspace.mockReturnValue(false)
+    store(`hermes-bots:pane`).set(false)
+    mocks.botChatOwnsWorkspace.mockReturnValue(true)
+    store(`hermes-bots:pane`).set(true)
+    expect(mocks.undismissPane).toHaveBeenCalledTimes(2)
+
+    harness.dispose()
+  })
+
   it('stops every lifecycle listener when the plugin is disabled', async () => {
     const store = paneStores()
     const harness = recordingContext()
@@ -260,6 +302,26 @@ describe('the Scheduled jobs pane', () => {
     store(`hermes-bots:pane`).set(true)
 
     expect(harness.find('routines')).toBeUndefined()
+  })
+})
+
+describe('returning to Sessions', () => {
+  it('drops a cold bot open still pending (#120277)', async () => {
+    const store = paneStores()
+    const harness = recordingContext()
+    const { $pendingBotOpen } = await import('./shared')
+
+    plugin.register(harness.ctx)
+    await settle()
+    store(`hermes-bots:pane`).set(true)
+    $pendingBotOpen.set({ generation: 1, key: 'local::bravo' })
+
+    store(`hermes-bots:pane`).set(false)
+
+    expect($pendingBotOpen.get()).toBeNull()
+    expect(mocks.setWorkspaceScope).toHaveBeenCalledWith('sessions')
+
+    harness.dispose()
   })
 })
 

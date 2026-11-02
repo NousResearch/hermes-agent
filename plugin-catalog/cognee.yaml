@@ -1,0 +1,25 @@
+name: cognee
+repo: https://github.com/topoteretes/cognee-integrations
+subdir: integrations/hermes-agent
+sha: ccfb0e4e3fa8f3ce09c023d258c205ca972e48a8
+version: "1.3.2"
+description: "Knowledge-graph memory for Hermes, shared with Cognee's Claude Code, Codex and OpenClaw plugins: automatic recall, remember, forget, recaps and code search, on a local cognee server or Cognee Cloud. Disclosure — runs a local cognee server (uvicorn on 127.0.0.1:8011) and a session-close watcher in the background; each turn plus its tool calls and results (redacted, capped) go to that server and on to your configured LLM provider (OpenAI by default), or to Cognee Cloud / COGNEE_BASE_URL in remote mode; turns the server could not take are queued in ~/.cognee-plugin; the store lives in ~/.cognee, outside HERMES_HOME and shared across profiles and with Cognee's Claude Code, Codex and OpenClaw plugins; cognee sends anonymous telemetry unless TELEMETRY_DISABLED=1."
+maintainer: topoteretes
+tier: community
+category: memory
+docs_url: https://github.com/topoteretes/cognee-integrations/tree/main/integrations/hermes-agent#readme
+readme: true
+capabilities:
+  provides_tools:
+    - cognee_recall
+    - cognee_remember
+    - cognee_forget
+    - cognee_switch_dataset
+    - cognee_code_search
+    - cognee_recap
+  provides_hooks:
+    - on_session_end
+    - on_pre_compress
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []

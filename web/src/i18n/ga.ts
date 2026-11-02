@@ -92,9 +92,18 @@ export const ga: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Soláthraí cuimhne gníomhach",
+    noProvider: "dada — ionsuite amháin",
+    builtinLayer: "Ciseal ionsuite",
+    builtinNote: "Is iad MEMORY.md agus USER.md cuimhne Hermes féin, ar leith ó aon soláthraí seachtrach. Luchtaítear an dá cheann i seisiúin de réir réamhshocraithe; múchann na lasca cumraíochta (memory.memory_enabled / memory.user_profile_enabled) gach ceann acu. Cuireann soláthraí leo; ní chuireann sé ina n-áit riamh.",
+  },
+
   status: {
     actionFailed: "Theip ar an ngníomh",
     actionFinished: "Críochnaithe",
+    actionFinishedOwed: "Nuashonraithe, ach fós le críochnú (rith `hermes update` arís chun é a chríochnú)",
     actions: "Gníomhartha",
     agent: "Agent",
     activeSessions: "Seisiúin ghníomhacha",
@@ -162,9 +171,14 @@ export const ga: Translations = {
     deleteSelectedConfirmMessage:
       "Bainfear {count} seisiún roghnaithe agus a dteachtaireachtaí go léir go buan. Ní féidir é seo a chur ar ais.",
     selectedSessionsDeleted: "Scriosadh {count} seisiún",
+    selectedSessionsSkippedActive: "Scriosadh {deleted}; coinníodh {count} mar go bhfuil seal ar siúl",
     failedToDeleteSelected: "Theip ar scriosadh na seisiún roghnaithe",
     resumeInChat: "Lean ar aghaidh sa chomhrá",
     newChat: "Comhrá nua",
+    workspace: "spás oibre",
+    workspaceDefault: "Réamhshocrú",
+    workspaceRescan: "Athscan na stórtha",
+    workspaceCustom: "Cosán eile…",
     previousPage: "Leathanach roimhe seo",
     nextPage: "An chéad leathanach eile",
     roles: {
@@ -332,6 +346,8 @@ export const ga: Translations = {
     disableRuntime: "Díchumasaigh",
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
+    toggleTakesEffectAfterRestart:
+      "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
     headline:
       "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",

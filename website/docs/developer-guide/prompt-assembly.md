@@ -49,8 +49,16 @@ Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conve
 the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
 closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
 The runtime boundary follows all project, operator, memory and plugin text, so examples in those
-blocks do not masquerade as the runtime cwd. Model/provider/platform are read before the runtime
-boundary, excluding embedder descriptions. Legacy prompts retain their original
+blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
+excluding embedder descriptions. `Platform:` is deliberately not an identity field: a surface switch
+(desktop ↔ TUI) keeps the stored bytes and delivers the current surface's guidance as a one-shot note on
+the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). The
+`<available_skills>` index is kept the same way: every turn compares it with the index the session would
+build now (`agent/skills_index_delta.py`, called from `build_turn_context` so long-lived CLI/TUI/Desktop
+agents are covered, not only prompt restores), and a difference (new index rows, removed names) rides
+the same one-shot note channel, sent only when the difference changes. The in-process index cache is
+keyed on the skill files' signatures, so a change written by another process is seen too. The index
+itself converges at the next rebuild boundary (compaction). Legacy prompts retain their original
 host-before-context anchor, so prompts persisted before the reorder still validate.
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
@@ -161,6 +169,14 @@ platform_hints:
   unmodified default, so a bad config value can never break prompt
   assembly or leak across platforms.
 
+Cron jobs run as platform `cron`, but their final response lands on the
+job's `deliver` channel, so a cron agent's prompt also carries that
+channel's hint (built-in text plus its `platform_hints.<channel>`
+override) under a `Delivery destination (<channel>):` line. A
+`platform_hints.slack.append` therefore reaches Slack-delivered scheduled
+jobs as well as live Slack chats; `platform_hints.cron` still governs the
+cron paragraph itself.
+
 The override is resolved when the system prompt is built (session start,
 and again on compaction since that rebuilds the prompt). It produces a
 byte-stable hint for a fixed config, so it lives in the **stable** tier
@@ -178,7 +194,7 @@ def load_soul_md() -> Optional[str]:
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
-    content = _scan_context_content(content, "SOUL.md")  # Security scan
+    content = _scan_context_content(content, "SOUL.md", user_authored=True)  # Security scan: warn + load, never block
     content = _truncate_content(content, "SOUL.md")       # Cap scales with model context window (20k floor); config override wins
     return content
 ```
@@ -248,7 +264,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
 All context files are:
-- **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts)
+- **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts). A hit replaces a project file with a `[BLOCKED: …]` marker; the user's own `SOUL.md` in `HERMES_HOME` is warned about and loaded anyway (it is human-approved on write, so it is the same trust class as `config.yaml`)
 - **Truncated** — capped at `context_file_max_chars` characters using a 70/20 head/tail split with a truncation marker. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
@@ -309,6 +325,23 @@ In other words:
 - if you want different repo rules, edit project context files
 - if you want reusable operating procedures, add or modify skills
 - if you want to change how Hermes assembles prompts for everyone, change Python and treat it as a code contribution
+
+## Reviewing changes to the prompt surface
+
+The **prompt surface** is what a stock install sends before the first user message: the system prompt and the `tools[]` array. A one-line code change can rewrite either without the diff showing it. A guidance constant can move tiers, a toolset can gain a tool, or a schema rewriter can edit a description. So the rendered surface is committed and reviewed like code:
+
+- `scripts/ci/prompt_surface.py render` builds the surface through the production assembly code (`build_system_prompt_parts` and the agent's own `tools[]`) and writes it to `tests/fixtures/prompt_surface/`. It renders nine surfaces: `cli` with four model families (the model name gates guidance and the patch dialect), `cli` inside a code workspace, `desktop`, `telegram`, `discord` and `cron`. The render uses a fresh home. The clock, host OS, network, tool availability and machine paths are pinned, so a laptop and CI produce the same bytes. Every registered tool counts as available, so credential-gated schemas get reviewed too.
+- `tests/ci/test_prompt_surface.py` fails when the committed snapshot is stale. A PR that changes the surface carries the regenerated snapshot, and reviewers read the real prompt text and schemas in the Files tab.
+- The **Prompt surface diff** CI job posts a per-surface summary to the PR review comment: token deltas, prompt hunks, and added or removed tools and parameters.
+- Changes under `tests/fixtures/prompt_surface/` need **an approval from hermes-agent-core** before they can merge.
+
+Regenerate after any change that moves the surface:
+
+```bash
+scripts/run-in-hermes-env python scripts/ci/prompt_surface.py render
+```
+
+User-side customization (`SOUL.md`, context files, skills you install, `platform_hints`, `agent.*` guidance toggles) never touches the snapshot. The render uses stock defaults and only bundled skills.
 
 ## Why prompt assembly is split this way
 

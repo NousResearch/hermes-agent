@@ -49,11 +49,47 @@ async function readOwnerLooks(route: AgentProfileRoute): Promise<Record<string, 
     profile: route.profile
   })
 
-  const looks = looksByFolder(payload.projects ?? [])
+  return looksByFolder(payload.projects ?? [])
+}
 
-  $gatewayProjectLooks.setKey(gatewayRouteKey(route), looks)
+// Every write stamps its folder when it starts and when it settles. A read issued before the
+// latest stamp may predate that write's commit, so it never replaces that folder's look.
+let writeSeq = 0
+const written = new Map<string, Map<string, number>>()
 
-  return looks
+function stampWrite(route: AgentProfileRoute, path: string): void {
+  const key = gatewayRouteKey(route)
+  const folders = written.get(key) ?? new Map<string, number>()
+
+  folders.set(folderKey(path), ++writeSeq)
+  written.set(key, folders)
+}
+
+/** An owner read replaces that owner's looks, except folders written since the read was sent. */
+function publishOwnerLooks(route: AgentProfileRoute, looks: Record<string, GatewayProjectLook>, sentAt: number): void {
+  const key = gatewayRouteKey(route)
+  const current = $gatewayProjectLooks.get()[key] ?? {}
+  const next = { ...looks }
+
+  for (const [folder, seq] of written.get(key) ?? []) {
+    if (seq <= sentAt) {
+      continue
+    }
+
+    if (current[folder]) {
+      next[folder] = current[folder]
+    } else {
+      delete next[folder]
+    }
+  }
+
+  $gatewayProjectLooks.setKey(key, next)
+}
+
+async function loadOwnerLooks(route: AgentProfileRoute): Promise<void> {
+  const sentAt = writeSeq
+
+  publishOwnerLooks(route, await readOwnerLooks(route), sentAt)
 }
 
 const requested = new Set<string>()
@@ -65,7 +101,7 @@ export function loadGatewayProjectLooks(routes: AgentProfileRoute[]): void {
 
     if (!requested.has(key)) {
       requested.add(key)
-      void readOwnerLooks(route).catch(() => undefined)
+      void loadOwnerLooks(route).catch(() => undefined)
     }
   }
 }
@@ -129,10 +165,12 @@ async function writeLook(
       profile: route.profile
     })
 
+  stampWrite(route, path)
   setLook(route, path, patched(before))
 
   try {
     // The owner may hold a record for the folder this window never read (its own window themed it).
+    // Only this folder is taken from the read: a read racing another folder's write is stale there.
     const current = (await readOwnerLooks(route))[folderKey(path)]
     const look = patched(current)
 
@@ -160,5 +198,7 @@ async function writeLook(
     setLook(route, path, before)
 
     throw err
+  } finally {
+    stampWrite(route, path)
   }
 }

@@ -216,7 +216,17 @@ def _select_builtin_engine(provider: str) -> tuple:
         available, _label, _generator, missing_error = entry
         return provider, (_error_json(missing_error) if available is not None and not available() else None)
     if _importable(_import_edge_tts):
-        return provider, None  # Edge default; the reported provider stays as configured
+        # Edge is the default engine and deliberately has no _BUILTIN_DISPATCH entry, so a
+        # configured "edge" lands here legitimately. Anything ELSE reaching this point was NOT
+        # resolved — not built in, and no plugin claimed it. Substituting Edge while still
+        # reporting the configured name makes the substitution invisible: the log reads
+        # "provider: gcloud-tts" over Edge audio, and the only way to catch it is to recognise
+        # the wrong voice (2026-09-11). Say it out loud, but only when it is actually a swap.
+        if provider != "edge":
+            logger.warning(
+                "TTS provider %r is not a built-in engine and no plugin provided it; "
+                "falling back to Edge TTS. The audio will NOT be %r.", provider, provider)
+        return "edge", None
     if _check_neutts_available():
         logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
         return "neutts", None

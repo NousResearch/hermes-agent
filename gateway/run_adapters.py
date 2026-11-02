@@ -1728,14 +1728,24 @@ class GatewayAdapterLifecycleMixin:
         register_transport_home(self, profile_name, transport_home)
 
         async def _handler(_runner, event):
-            self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
+            identity = self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
             if transport_home is not None:
                 event.source._authorization_profile_home = transport_home
             with native_callback(self, event, transport_home, profile_name):
-                async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
+                async with self._async_scope_or_null(
+                        _async_profile_runtime_scope, self._routed_runtime_home(identity, profile_home)):
                     return await self._handle_message(event)
 
         return _handler.__get__(self)
+
+    @staticmethod
+    def _routed_runtime_home(identity, profile_home):
+        """A secondary bot's event runs in its ``bot_profile`` route's runtime scope (as the primary's handler
+        does), so that runtime's authority admits the turn and later completion wakes find it on the same
+        ledger (#139726). Authorization still reads the transport home (``_under_authorization_profile``)."""
+        if identity is None or profile_home is UNRESOLVED_PROFILE_HOME:
+            return profile_home
+        return identity.runtime_home
 
     def _make_profile_busy_session_handler(self, profile_name: str):
         """Busy-path twin: canonicalize FIRST, then resolve busy policy under the profile scope
@@ -1744,8 +1754,9 @@ class GatewayAdapterLifecycleMixin:
         profile_home = self._routed_profile_home(profile_name)
 
         async def _handler(event, _session_key):
-            self._canonicalize(event.source, transport_profile=profile_name)
-            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
+            identity = self._canonicalize(event.source, transport_profile=profile_name)
+            async with self._async_scope_or_null(
+                    _async_profile_runtime_scope, self._routed_runtime_home(identity, profile_home)):
                 return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
         return _handler

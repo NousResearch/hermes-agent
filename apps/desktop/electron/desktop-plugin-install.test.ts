@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -289,7 +290,10 @@ describe('installDesktopPluginFromGit', () => {
   })
 
   it.each([
-    ['a symlinked file inside it', (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))],
+    [
+      'a symlinked file inside it',
+      (repo: string) => fs.symlinkSync('/etc/hostname', path.join(repo, 'desktop', 'leak.txt'))
+    ],
     [
       'a symlinked desktop folder',
       (repo: string, outside: string) => {
@@ -341,9 +345,118 @@ describe('installDesktopPluginFromGit', () => {
     fs.writeFileSync(path.join(repo, 'desktop', 'panel.js'), 'replaced\n')
     git('add', '-A')
     git('-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'plain')
-    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({ ok: true })
+    expect(await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)).toMatchObject({
+      ok: true
+    })
     expect(fs.readdirSync(appRoot)).toEqual([installed.pluginName])
     expect(fs.readFileSync(path.join(appRoot, installed.pluginName!, 'panel.js'), 'utf8')).toBe('replaced\n')
+  })
+
+  it("leaves the clone's .git out of a root-layout half and out of its size cap", async () => {
+    // 36 MB of incompressible payload is under the 64 MB cap; counted twice (files + packed .git) it is over.
+    const repo = mkdtemp('hermes-plugin-install-')
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(repo, appRoot)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' })
+    fs.writeFileSync(path.join(repo, 'plugin.js'), 'export function register() {}\n')
+    fs.writeFileSync(path.join(repo, 'asset.bin'), randomBytes(36 * 1024 * 1024))
+    git('init', '-q')
+    git('add', '.')
+    git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'init')
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true })
+    expect(fs.readdirSync(path.join(appRoot, result.pluginName!)).sort()).toEqual(['asset.bin', 'plugin.js'])
+  }, 60_000)
+
+  it.each(['..', 'C:..', 'a/b', 'nul .js', 'C:foo', '.hidden', 'gizmo.', 'x'.repeat(129)])(
+    'refuses a package named %s on a forced install and deletes nothing',
+    async name => {
+      // The folder name comes from the package's manifest: `..` would make a forced install replace
+      // the Hermes home that holds desktop-plugins/.
+      const repo = pluginRepo(name)
+      const home = mkdtemp('hermes-home-')
+      roots.push(home)
+      const appRoot = path.join(home, 'desktop-plugins')
+      fs.mkdirSync(appRoot)
+      fs.writeFileSync(path.join(home, 'config.yaml'), 'keep\n')
+
+      const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, true)
+
+      expect(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8')).toBe('keep\n')
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('is not a desktop plugin folder name')
+      expect(fs.readdirSync(appRoot)).toEqual([])
+    }
+  )
+
+  it('refuses a plugin.json name with a long inner run of spaces without stalling', async () => {
+    // Stripping the trailing run must stay linear: this name is repository-controlled, and the
+    // check runs synchronously in the main process. A quadratic strip takes about 30 s here.
+    const repo = pluginRepo(null)
+    fs.writeFileSync(path.join(repo, 'plugin.json'), JSON.stringify({ name: 'a' + ' '.repeat(200_000) + 'b' }))
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' })
+    execFileSync('git', ['-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'manifest'], {
+      cwd: repo,
+      stdio: 'pipe'
+    })
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('is not a desktop plugin folder name')
+    expect(fs.readdirSync(appRoot)).toEqual([])
+  }, 10_000)
+
+  it('names the package marker after the folder when a plugin.json name has outer spaces', async () => {
+    // The folder name is trimmed; a marker naming the untrimmed package would not pair with that folder.
+    const repo = pluginRepo(null)
+    fs.writeFileSync(path.join(repo, 'plugin.json'), JSON.stringify({ name: ' spaced ' }))
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' })
+    execFileSync('git', ['-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'manifest'], {
+      cwd: repo,
+      stdio: 'pipe'
+    })
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true, pluginName: 'spaced' })
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'spaced', PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe('spaced')
+  })
+
+  it.each([
+    // 79 code points (the 128 cap counts code points, as Python's len() does), 129 UTF-16 units, 229 UTF-8 bytes.
+    [
+      'a non-BMP name over 128 UTF-16 units',
+      '\u{1F600}'.repeat(50) + 'x'.repeat(29),
+      '\u{1F600}'.repeat(50) + 'x'.repeat(29)
+    ],
+    // Trimmed like Python's str.strip(): U+FEFF is kept, U+0085 and U+001C are stripped.
+    ['a BOM-prefixed name', '\ufeffgizmo', '\ufeffgizmo'],
+    ['a name wrapped in NEL and U+001C', '\x85gizmo\x1c', 'gizmo']
+  ])('installs %s under the folder the agent side picks', async (_label, name, folder) => {
+    const repo = pluginRepo(null)
+    fs.writeFileSync(path.join(repo, 'plugin.json'), JSON.stringify({ name }))
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' })
+    execFileSync('git', ['-c', 'user.email=f@example.com', '-c', 'user.name=F', 'commit', '-qm', 'manifest'], {
+      cwd: repo,
+      stdio: 'pipe'
+    })
+    const appRoot = mkdtemp('hermes-plugin-root-')
+    roots.push(appRoot)
+
+    const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot)
+
+    expect(result).toMatchObject({ ok: true, pluginName: folder })
+    expect(fs.readdirSync(appRoot)).toEqual([folder])
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, folder, PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe(folder)
   })
 
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {

@@ -1062,7 +1062,7 @@ def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
         from hermes_cli.mem_trim import trim_memory
         # Every OTHER session must be idle (#58576).
         if _sessions_quiescent(exclude=sid):
-            trim_memory(reason="tui turn completion")
+            trim_memory(reason="tui turn completion", collect=False)
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.scopes.home is not None:

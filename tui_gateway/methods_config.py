@@ -480,7 +480,8 @@ def _(rid, params: dict) -> dict:
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        from hermes_cli.runtime_readiness import readiness_failure
+        return _ok(rid, readiness_failure(e))
 
 
 def _redact_client_text(text: str, cap: int) -> str:

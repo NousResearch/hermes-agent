@@ -305,7 +305,7 @@ def flatten_single_dir(dest: Path) -> None:
     for item in items:
         target = dest / item.name
         if os.path.lexists(target):
-            target.unlink()  # both entries were verified as regular metadata
+            retry_held(target.unlink)  # both entries were verified as regular metadata
         retry_held(lambda: item.rename(target))
     retry_held(inner.rmdir)
 

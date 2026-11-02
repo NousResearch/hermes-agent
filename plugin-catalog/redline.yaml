@@ -6,7 +6,7 @@ description: "Guided Markdown and source-code review in Hermes Desktop — annot
 maintainer: silentpr0
 tier: community
 category: desktop
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.22.6"
 version: "0.3.0"
 image: "https://raw.githubusercontent.com/silentpr0/hermes-redline/ba52c4e5174710a90ef37fcb1263f9b0798727a7/docs/banner.png"
 screenshots:

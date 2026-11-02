@@ -22,6 +22,12 @@ const QUICK_TARGET_OPTION_STYLE = {
 
 /** Capture stays local; only Enter sends through the existing chat path. */
 export function QuickEntryApp() {
+  const quickEntry = window.hermesDesktop?.quickEntry
+
+  return quickEntry ? <NativeQuickEntryApp quickEntry={quickEntry} /> : null
+}
+
+function NativeQuickEntryApp({ quickEntry }: { quickEntry: NonNullable<Window['hermesDesktop']['quickEntry']> }) {
   const { t } = useI18n()
   const copy = t.quickCapture
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -57,7 +63,7 @@ export function QuickEntryApp() {
     if (send) {
       void handoff(send, event.type === 'submit' ? (event.submitId ?? 0) : 0)
     } else if (!next.visible && current.visible) {
-      window.hermesDesktop.quickEntry.dismiss()
+      quickEntry.dismiss()
     }
   }
 
@@ -76,7 +82,7 @@ export function QuickEntryApp() {
       if (current) {
         const draft = { ...current.draft, text: stateRef.current.draft, handoffAttempted: true }
         // Persist uncertainty before dispatch so a restart cannot silently retry a chat prompt.
-        await window.hermesDesktop.quickEntry.saveThoughtDraft({ token: current.token, draft })
+        await quickEntry.saveThoughtDraft({ token: current.token, draft })
 
         if (request !== generation.current) {
           return
@@ -88,7 +94,7 @@ export function QuickEntryApp() {
 
       setNotice('handoffUnconfirmed')
 
-      const result = await window.hermesDesktop.quickEntry.submit({
+      const result = await quickEntry.submit({
         ...send,
         thoughtOwnerToken: current?.token
       })
@@ -123,7 +129,7 @@ export function QuickEntryApp() {
     const version = draftVersion.current
 
     try {
-      const value = await window.hermesDesktop.quickEntry.readThoughts()
+      const value = await quickEntry.readThoughts()
 
       if (request !== generation.current || version !== draftVersion.current) {
         return
@@ -158,7 +164,7 @@ export function QuickEntryApp() {
     setInbox(inboxRef.current)
     const key = ownerKey(current)
     pendingDrafts.current.set(key, draft)
-    void window.hermesDesktop.quickEntry
+    void quickEntry
       .saveThoughtDraft({ token: current.token, draft })
       .then(() => {
         if (pendingDrafts.current.get(key) === draft) {
@@ -184,7 +190,7 @@ export function QuickEntryApp() {
     const request = generation.current
 
     try {
-      const value = await window.hermesDesktop.quickEntry.saveThought({
+      const value = await quickEntry.saveThought({
         token: current.token,
         draft: { ...current.draft, text: stateRef.current.draft }
       })
@@ -234,7 +240,7 @@ export function QuickEntryApp() {
   }
 
   useEffect(() => {
-    const api = window.hermesDesktop.quickEntry
+    const api = quickEntry
     api.expandThoughts(false)
     void load()
 
@@ -341,7 +347,7 @@ export function QuickEntryApp() {
             aria-expanded={expanded}
             onClick={() => {
               setExpanded(!expanded)
-              window.hermesDesktop.quickEntry.expandThoughts(!expanded)
+              quickEntry.expandThoughts(!expanded)
             }}
             size="xs"
             variant="text"
@@ -407,7 +413,7 @@ export function QuickEntryApp() {
                   onClick={() => {
                     edit(stateRef.current.draft ? `${stateRef.current.draft}\n${thought.text}` : thought.text)
                     setExpanded(false)
-                    window.hermesDesktop.quickEntry.expandThoughts(false)
+                    quickEntry.expandThoughts(false)
                     inputRef.current?.focus()
                   }}
                   size="xs"

@@ -154,6 +154,14 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
 
 
+def test_config_key_aggregator_fields_are_the_slot_fields_clean_slot_keeps():
+    """``config set`` recognizes exactly the aggregator fields the normalizer keeps (no drift)."""
+    from hermes_cli.moa_config import _AGGREGATOR_SLOT_FIELDS, _clean_slot
+
+    slot = {"provider": "p", "model": "m", "reasoning_effort": "high", "extra": "dropped"}
+    assert set(_clean_slot(slot)) == _AGGREGATOR_SLOT_FIELDS
+
+
 def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(capsys):
     """#112359: the aggregator is the acting model billed for the run; when it sits on a
     different provider than the main model, ``hermes moa list``/``configure`` say so."""

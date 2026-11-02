@@ -272,13 +272,12 @@ def settle_unrecovered_error(
     current_turn_user_idx: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
-    non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
+    non-retryable client errors (provider stale-credential self-heal first, then fallback, then a
     terminal result), max-retries exhaustion (primary transport recovery -> fallback -> terminal
     result), else the interruptible error backoff. ``FailoverReason.billing`` (402) is deliberately
     treated as non-retryable (#31273)."""
-    from agent.conversation_loop import (
-        _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
-    )
+    from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
+    from agent.provider_route_hooks import ask_on_error_path
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
@@ -321,22 +320,22 @@ def settle_unrecovered_error(
         # slug is dead for this account, so record it before the fallback walk runs (#106475).
         from agent.fallback_cooldown import _mark_entitlement_rejected_model
         _mark_entitlement_rejected_model(agent, api_error)
-        # Copilot self-heal BEFORE fallback: a stale credential yields a 400
-        # ``model_not_available_for_integrator`` / ``model_not_supported``, not a 401.
-        # Fresh token + client rebuild, one retry, SAME provider.
+        # Provider self-heal BEFORE fallback: some providers surface a stale credential as a
+        # non-auth error (the profile's ``is_stale_credential_error``), not a 401. Fresh
+        # credential + client rebuild, one retry, SAME provider.
         if (
-            _is_copilot_provider(agent)
-            and not _retry.copilot_stale_cred_retry_attempted
-            and _is_stale_copilot_credential_error(
-                status_code, str(getattr(api_error, "message", "") or api_error)
+            not _retry.provider_stale_refresh_attempted
+            and (profile := _credential_refresh_profile(agent)) is not None
+            and ask_on_error_path(
+                profile, "is_stale_credential_error", False,
+                status_code=status_code, message=str(getattr(api_error, "message", "") or api_error),
             )
         ):
-            _retry.copilot_stale_cred_retry_attempted = True
-            if agent._try_recover_stale_copilot_credential():
-                agent._buffer_vprint(
-                    "🔐 Copilot credential re-exchanged after "
-                    "model_not_available 400. Retrying request..."
-                )
+            _retry.provider_stale_refresh_attempted = True
+            if agent._try_refresh_provider_runtime_credentials(reason="stale"):
+                agent._buffer_vprint("🔐 " + (ask_on_error_path(profile, "credential_refresh_notice", "", reason="stale") or (
+                    f"{profile.display_name or profile.name} credential renewed after a "
+                    "stale-credential error. Retrying request...")))
                 retry_count = 0
                 return _verdict("continue")
         # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the

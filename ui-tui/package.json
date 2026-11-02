@@ -26,7 +26,7 @@
     "@nanostores/react": "1.1.0",
     "ink-text-input": "6.0.0",
     "nanostores": "1.4.2",
-    "react": "19.2.7",
+    "react": "19.3.0",
     "undici": "6.29.0",
     "unicode-animations": "1.0.3"
   },
@@ -36,11 +36,11 @@
     }
   },
   "devDependencies": {
-    "@types/node": "22.20.1",
-    "@types/react": "19.2.17",
-    "esbuild": "0.28.1",
-    "prettier": "3.9.5",
-    "tsx": "4.23.1",
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.9",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "vitest": "4.1.12"
   }

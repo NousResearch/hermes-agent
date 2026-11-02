@@ -159,6 +159,9 @@ interface GroupMentionInputProps {
   'aria-label'?: string
   autoFocus?: boolean
   className?: string
+  disabled?: boolean
+  /** The exact token a member's mention inserts, for rooms that resolve only frozen handles. */
+  handleFor?: (member: GroupMember) => string | undefined
   members: GroupMember[]
   onChange: (value: string) => void
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void
@@ -174,7 +177,7 @@ interface GroupMentionInputProps {
  *  the strings parseGroupChatMentions resolves. Keyboard: Up/Down navigate,
  *  Enter/Tab insert (Enter falls through to submit when the popover is
  *  closed), Escape dismisses. */
-export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
+export function GroupMentionInput({ handleFor, members, onChange, onSubmitDraft, value, ...inputProps }: GroupMentionInputProps) {
   const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -196,7 +199,7 @@ export function GroupMentionInput({ members, onChange, onSubmitDraft, value, ...
       const handle = String(botHandle(member.name, member) || '').trim()
       const display = displayName(member, botRosterMeta(member, allMeta))
       // Renamed members complete on their friendly tag; parser resolves both.
-      const tag = String(botMentionTag(member) || handle).trim()
+      const tag = String(handleFor?.(member) ?? (botMentionTag(member) || handle)).trim()
 
       if (!tag) {
         continue

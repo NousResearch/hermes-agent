@@ -1,16 +1,17 @@
 name: commandcode-oauth
 repo: https://github.com/NanamiMio/hermes-commandcode-oauth
-sha: 60bfd24c23c748b05431917c91b4fcbd6a650460
+sha: e51eb61613604aefbcf3203c8fcce531706232ee
 description: Command Code CLI-key model provider with a live OAuth catalog property bridge, plan limits and failover classification. Disclosure — uses the CLI-internal api.commandcode.ai/alpha/generate endpoint and CLI client headers, sends the full conversation, tool schemas, cwd path and OS/Python version, and imports a static key from the read-only CLI credential file or a browser hand-off; no OAuth exchange takes place. Hermes also bundles commandcode for the documented Provider API.
 maintainer: NanamiMio
 tier: community
 category: models
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/NanamiMio/hermes-commandcode-oauth#readme
-version: "0.1.3"
+version: "0.1.4"
 readme: true
 platforms: []
 known_issues:
+  - Model-scoped RPM cooldowns and fail-closed OAuth routing require the companion Hermes core fix; unpatched cores can still exhaust sibling models or resolve an unavailable OAuth route through another provider.
   - Older cores may incorrectly warn about this provider's vendor/model IDs in hermes doctor; generic profile namespace support is proposed in upstream PR 134900.
 capabilities:
   provides_tools: []

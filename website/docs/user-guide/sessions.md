@@ -701,6 +701,47 @@ Database size: 12.4 MB
 
 For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
+### Refresh Prompts After a Profile Update
+
+A continuing session sends the same system prompt on every turn, the bytes it
+built on its first turn. Keeping those bytes fixed is what lets the provider
+reuse its prompt cache across a long conversation. The side effect: changes to
+`SOUL.md`, installed or edited skills, or project context files (`AGENTS.md`
+and friends) do not reach a session that is already running. A gateway
+restart does not change that, because the gateway restores each session's
+stored prompt. Until now the only way in was `/new`, which also drops the
+conversation.
+
+After updating a profile's prompt sources, ask its sessions to adopt them:
+
+```bash
+# Every session in the active profile (add -p <profile> for another one)
+hermes sessions refresh-prompts
+
+# One session (id or unique prefix)
+hermes sessions refresh-prompts --session SESSION_ID
+```
+
+The command records a refresh request in the profile's `state.db` and prints
+how many sessions hold a stored prompt. On each session's next turn, Hermes
+rebuilds the system prompt from the current sources and then sends the
+message. The conversation history, the session id and the session's tool list
+stay as they were. The rebuilt prompt is saved, so every later turn reuses it
+byte for byte.
+
+- **Cost:** each refreshed session pays one prompt-cache miss, on the turn
+  that rebuilds. Later turns are cached again.
+- **No restart needed:** the request is read at the start of every turn, by
+  agents the gateway keeps in memory and by agents it restores from the
+  database. It also survives restarts. Run it once the new files are in
+  place: an update script can call it before or after replacing the gateway.
+- **What gets rebuilt:** the whole system prompt goes through the normal
+  builder, so memory and `USER.md` blocks also pick up their latest saved
+  state on that turn. Tool definitions do not change. A session started after
+  the request already has the new prompt and does not rebuild again.
+- **Without the command** nothing changes: sessions keep replaying their
+  stored prompt as before.
+
 ### Repair Stranded Gateway Sessions
 
 If a gateway conversation ever "jumps back in time" after a restart — resuming
@@ -751,14 +792,14 @@ live session. After the root fix in PR #122825 is installed, use
 `hermes sessions repair-prompts` to find rows that were already degraded.
 
 The scan is conservative: it only proposes a repair when the stored prompt is
-missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+missing the `skill_manage` guidance line **and** the persisted `tools[]` pin
 contains `skill_manage` (which always emits that guidance). Rows with no
 readable pin, or with a `memory`-only pin (which is also a legitimate
 `toolsets: [memory]` setup), are reported as **unverifiable** and are not
 changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
 memory-only row also becomes repairable on its own: once the session is resumed, its
 `tools[]` pin re-pins the full tool surface, after which a scan sees
-`skill_manage` without the Skill Safety guidance and clears it.
+`skill_manage` without that guidance line and clears it.
 
 ```bash
 # Report verified candidates and unverifiable rows; writes nothing
@@ -1193,6 +1234,20 @@ deleted by a *later* pass after a further full retention window. Messaging
 platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
 sessions, and sessions with a live turn or compression in progress are
 never closed by this sweep.
+
+**Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
+viewer disappeared without closing it (a killed terminal, a dropped connection,
+or a gateway stop or restart while it was open) is ended by the gateway
+`sessions.orphan_end_grace_s` seconds later (default `300`; `0` never ends it),
+`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart, no
+sooner than 6 hours after its last activity, since an idle classic CLI only
+reconnects when you next use it). While `orphan_end_grace_s` is unset, the
+legacy `dashboard.ws_orphan_reap_grace_s: 0` turns this off, and
+`dashboard.startup_orphan_sweep: false` turns off the after-restart end. A turn
+still running keeps running, and the session ends once it settles; one paused on
+an interrupted turn stays open until you Discard it. A viewer that reconnects
+within the grace keeps the session open. Ending is non-destructive: the session
+stays resumable, and its next message reopens it on the same id.
 
 ### Oversized-Transcript Guards
 

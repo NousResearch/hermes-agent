@@ -1,0 +1,16 @@
+name: transcription-dashscope
+repo: https://github.com/lgc2333/hermes-plugin-transcription-dashscope
+sha: fe83a514b53b1b50f68e012608741c3fcafcd0ec
+description: "Speech-to-text for Hermes via DashScope (Qwen) — voice messages and live dictation. Needs a Qwen AI Platform API key. Disclosure — voice messages and live dictation audio are uploaded to Alibaba's Qwen AI Platform (DashScope, maas.qianwenaiapi.com by default, or the base URL set in stt.dashscope.base_url / TRANSCRIPTION_DASHSCOPE_BASE_URL / DASHSCOPE_BASE_URL); the API key is TRANSCRIPTION_DASHSCOPE_API_KEY, falling back to the HERMES_CUSTOM_DASHSCOPE_API_KEY custom-provider key or the built-in Alibaba provider's DASHSCOPE_API_KEY; clips are converted with the local ffmpeg into a temporary wav that is deleted afterwards."
+maintainer: lgc2333
+tier: community
+version: "0.1.0"
+category: voice
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/lgc2333/hermes-plugin-transcription-dashscope#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

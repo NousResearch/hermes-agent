@@ -1,3 +1,4 @@
+import { useActionBarReload } from '@assistant-ui/core/react'
 import {
   ActionBarPrimitive,
   BranchPickerPrimitive,
@@ -9,10 +10,15 @@ import {
   useThreadRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useContext, useEffect, useId, useMemo, useState } from 'react'
 import { useInRouterContext, useNavigate } from 'react-router'
 
-import { requestModelMenuToggle } from '@/app/chat/composer/focus'
+import {
+  type ComposerTarget,
+  requestComposerInsert,
+  requestComposerSubmit,
+  requestModelMenuToggle
+} from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
@@ -37,39 +43,47 @@ import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { ActionsMenu, renderActionItem } from '@/components/ui/actions-menu'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
 import {
-  errorRecoveryPlan,
+  ERROR_SETUP_GUIDE_URLS,
+  type ErrorActionId,
+  errorCardActions,
+  errorCardSeverity,
+  errorCardShowsDiagnostics,
   type ErrorSurface,
   formatCountdown,
   formatErrorDiagnostics,
-  formatLimitReset,
   formatResetClock,
   isOAuthReauthSurface,
+  providerSettingsUrl,
   scheduledRetryDelayMs,
   type UsageLimitSuggestion
 } from '@/lib/error-surface'
-import { errorCardText } from '@/lib/error-surface-copy'
+import { errorCardText, errorProviderName } from '@/lib/error-surface-copy'
+import { openExternalLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   AudioLines,
   GitForkIcon,
-  KeyRound,
   Loader2Icon,
+  MoreHorizontal,
   RefreshCwIcon,
   SmilePlusIcon,
-  Upload,
   VolumeXIcon,
   XIcon
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
-import { requestBillingSettings } from '@/store/billing-block'
+import { $billingBlock, requestBillingSettings, runBillingRecovery } from '@/store/billing-block'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -316,27 +330,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
-              <ErrorPrimitive.Root
-                className="mt-1.5 flex flex-col gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--dt-destructive)_35%,transparent)] bg-[color-mix(in_srgb,var(--dt-destructive)_7%,transparent)] px-3 py-2 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
-                role="alert"
-              >
-                <div className="flex items-start gap-1.5">
-                  <div className="min-w-0 flex-1">
-                    <ErrorCardHeadline />
-                  </div>
-                  {onDismissError && (
-                    <TooltipIconButton
-                      className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
-                      onClick={() => onDismissError(messageId)}
-                      side="top"
-                      tooltip={t.assistant.thread.dismissError}
-                    >
-                      <XIcon className="size-3.5" />
-                    </TooltipIconButton>
-                  )}
-                </div>
-                <ErrorRecoveryActions />
-              </ErrorPrimitive.Root>
+              <ErrorCard onDismiss={onDismissError ? () => onDismissError(messageId) : undefined} />
             </MessagePrimitive.Error>
           </div>
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
@@ -604,35 +598,14 @@ const useErrorFailedAt = () =>
     return typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : undefined
   })
 
-const ErrorCardHeadline: FC = () => {
-  const { t } = useI18n()
-  const surface = useErrorSurface()
-  const errorText = useErrorText()
-  const { body, title } = errorCardText(t.assistant.thread, surface)
-
-  return (
-    <>
-      <div className="font-medium">{title}</div>
-      <div>{body}</div>
-      {errorText && (
-        <details className="mt-0.5 min-w-0 text-[0.72rem] opacity-70">
-          <summary className="cursor-pointer select-none">{t.assistant.thread.errorDetails}</summary>
-          <div className="wrap-anywhere mt-0.5 whitespace-pre-wrap font-mono">{errorText}</div>
-        </details>
-      )}
-    </>
-  )
-}
-
 // Isolated because useNavigate() THROWS outside a <Router> (bare test
 // harnesses, embedded panes render threads router-free). The parent gates
 // these children's mount on useInRouterContext(), which is safe anywhere.
-const SettingsLinkAction: FC<{ icon?: ReactNode; label: string; to: string }> = ({ icon, label, to }) => {
+const SettingsLinkAction: FC<{ className: string; label: string; to: string }> = ({ className, label, to }) => {
   const navigate = useNavigate()
 
   return (
-    <button className="aui-error-action" onClick={() => navigate(to)} type="button">
-      {icon}
+    <button className={className} onClick={() => navigate(to)} type="button">
       {label}
     </button>
   )
@@ -646,7 +619,7 @@ const SettingsLinkAction: FC<{ icon?: ReactNode; label: string; to: string }> = 
 // on screen (requestModelMenuToggle returns false), not the first stop.
 // Targeting follows requestModelMenuToggle: the pane under the pointer, else
 // the active composer — a click on this card puts the pointer in its own pane.
-const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
+const SwitchProviderAction: FC<{ className: string; label: string }> = ({ className, label }) => {
   const navigate = useNavigate()
 
   const switchProvider = useCallback(() => {
@@ -658,7 +631,7 @@ const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
   }, [navigate])
 
   return (
-    <button className="aui-error-action" onClick={switchProvider} type="button">
+    <button className={className} onClick={switchProvider} type="button">
       {label}
     </button>
   )
@@ -682,7 +655,7 @@ const updateApiKeyRoute = (surface: ErrorSurface | undefined) => {
 // the edit composer, the same runtime call the bubble's own click performs
 // (user-message.tsx ActionBarPrimitive.Edit). Retry would reproduce the
 // refusal; changing the words is the only way forward.
-const EditPreviousMessageAction: FC<{ label: string }> = ({ label }) => {
+const EditPreviousMessageAction: FC<{ className: string; label: string }> = ({ className, label }) => {
   const threadRuntime = useThreadRuntime()
 
   const previousUserMessageId = useAuiState(s => {
@@ -713,7 +686,7 @@ const EditPreviousMessageAction: FC<{ label: string }> = ({ label }) => {
   }
 
   return (
-    <button className="aui-error-action" onClick={beginEdit} type="button">
+    <button className={className} onClick={beginEdit} type="button">
       {label}
     </button>
   )
@@ -724,7 +697,7 @@ const EditPreviousMessageAction: FC<{ label: string }> = ({ label }) => {
 // session.compress RPC path the typed command takes — slash.ts `compress`),
 // so it inherits the stale-runtime recovery, transcript replacement and
 // progress notice instead of re-implementing them here.
-const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
+const CompressConversationAction: FC<{ className: string; label: string }> = ({ className, label }) => {
   const { t } = useI18n()
   const view = useSessionView()
   const sessionId = useStore(view.$runtimeId)
@@ -746,7 +719,7 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
   }, [sessionId, t.assistant.thread.errorCompressFailed])
 
   return (
-    <button className="aui-error-action" onClick={compress} type="button">
+    <button className={className} onClick={compress} type="button">
       {label}
     </button>
   )
@@ -758,7 +731,10 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
 // only once the switch applied: a guarded target waits for the user's answer,
 // and keeping the current model re-runs nothing. Session-only on purpose: the
 // user's default stays put.
-const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggestion }) => {
+const SwitchToModelAction: FC<{ className: string; suggestion: UsageLimitSuggestion }> = ({
+  className,
+  suggestion
+}) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const aui = useAui()
@@ -790,7 +766,7 @@ const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggest
   }, [aui, copy.errorSwitchModelFailed, sessionId, suggestion.model, suggestion.provider])
 
   return (
-    <button className="aui-error-action" disabled={busy} onClick={() => void switchAndRetry()} type="button">
+    <button className={className} disabled={busy} onClick={() => void switchAndRetry()} type="button">
       {busy && <Loader2Icon className="size-3 animate-spin" />}
       {copy.errorSwitchToModel(suggestion.label, suggestion.note)}
     </button>
@@ -801,7 +777,7 @@ const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggest
 // setting on (the same call as Settings → Billing's switch), then re-runs the
 // turn. A refusal (remote spending not allowed yet, step-up) opens Billing, which
 // explains and fixes it.
-const UseCreditsAction: FC = () => {
+const UseCreditsAction: FC<{ className: string }> = ({ className }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const aui = useAui()
@@ -828,41 +804,19 @@ const UseCreditsAction: FC = () => {
   }, [api, aui, copy.errorUseCreditsFailed])
 
   return (
-    <button className="aui-error-action" disabled={busy} onClick={() => void turnOnCredits()} type="button">
+    <button className={className} disabled={busy} onClick={() => void turnOnCredits()} type="button">
       {busy && <Loader2Icon className="size-3 animate-spin" />}
       {copy.errorUseCredits}
     </button>
   )
 }
 
-// usage_window's own buttons, ahead of the generic ones: switch to the plan's suggested model, or turn
-// on credits. Nothing for any other failure.
-const UsageWindowLeadActions: FC<{ plan: ReturnType<typeof errorRecoveryPlan>; surface?: ErrorSurface }> = ({
-  plan,
-  surface
-}) => {
-  const suggestion = surface?.usageLimit?.suggestions[0]
-
-  return (
-    <>
-      {plan.switchToModel && suggestion && <SwitchToModelAction suggestion={suggestion} />}
-      {plan.useCredits && <UseCreditsAction />}
-    </>
-  )
-}
-
-// A plan limit names the fix as choosing another model; every other failure keeps "switch provider".
-const switchProviderLabel = (
-  copy: { errorChooseModel: string; errorSwitchProvider: string },
-  surface?: ErrorSurface
-) => (surface?.code === 'usage_window' ? copy.errorChooseModel : copy.errorSwitchProvider)
-
 // One client-side retry of THIS turn at the provider's own reset moment (#98852,
 // option B): arm → visible countdown + Cancel → fires `message().reload()` — the
 // exact call behind the Retry button — exactly once. Nothing persists: closing
 // the app, switching sessions or unmounting the card drops the timer, and a
 // retry that 429s again just shows the card (and this button) again.
-const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
+const ScheduledRetryAction: FC<{ className: string; resetsAt: number }> = ({ className, resetsAt }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const aui = useAui()
@@ -911,7 +865,7 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
         <span className="px-1 text-xs text-muted-foreground">
           {copy.errorRetryScheduled(formatResetClock(resetsAt), formatCountdown(fireAt - now))}
         </span>
-        <button className="aui-error-action" onClick={() => setFireAt(null)} type="button">
+        <button className="aui-error-btn aui-error-btn-ghost" onClick={() => setFireAt(null)} type="button">
           {copy.errorRetryScheduledCancel}
         </button>
       </span>
@@ -924,7 +878,7 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
 
   return (
     <button
-      className="aui-error-action"
+      className={className}
       onClick={() => {
         triggerHaptic('submit')
         setNow(Date.now())
@@ -932,213 +886,447 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
       }}
       type="button"
     >
-      <RefreshCwIcon className="size-3" />
-      {copy.errorRetryAtReset(formatResetClock(resetsAt))}
+      {copy.errorRetryAtResetShort(formatResetClock(resetsAt))}
     </button>
   )
 }
 
-// health: allow CC -- usage-window limit card: an Open Billing button, and diagnostics hidden for plan limits; this action bar was over target on main
-const ErrorRecoveryActions: FC = () => {
+// One error card (Error System Overhaul): title, body, a collapsed dark details
+// block that owns the diagnostics (copy / logs / send), then exactly ONE primary
+// button plus at most one text link. Which actions appear comes from one table
+// (lib/error-surface.ts errorCardActions).
+// "square-alert" from the Figma error-card frame (node 426:944), drawn from its six
+// rects so it inherits the severity colour.
+const SquareAlertIcon: FC<{ className?: string }> = ({ className }) => (
+  <svg aria-hidden className={className} fill="currentColor" height="20" viewBox="0 0 20 20" width="20">
+    <rect height="1.667" width="13.333" x="3.333" y="1.667" />
+    <rect height="1.667" width="13.333" x="3.333" y="16.667" />
+    <rect height="13.333" width="1.667" x="16.667" y="3.333" />
+    <rect height="13.333" width="1.667" x="1.667" y="3.333" />
+    <rect height="6.667" width="1.667" x="9.167" y="5" />
+    <rect height="1.667" width="1.667" x="9.167" y="13.333" />
+  </svg>
+)
+
+// One error card (Error System Overhaul, Figma "Error handling" frame): icon + title +
+// body, then one row with the single action on the left and the details toggle on the
+// right. The details open into a dark block with the raw error and the diagnostics as
+// text links. Severity changes only the tint, the icon colour and the button fill.
+const withHaptic = (fn: () => void) => () => {
+  triggerHaptic('submit')
+  fn()
+}
+
+// The profile whose Hermes home this chat runs in (a Bot chat owns its own).
+function useOwnerProfile(): string | null | undefined {
+  const gatewayProfile = useStore($activeGatewayProfile)
+
+  return useComposerScope().profile || gatewayProfile
+}
+
+// Open a folder under the profile's Hermes home in the OS file manager (via its logs root).
+async function openProfileDir(
+  profile: string | null | undefined,
+  resolve: (logsRoot: string) => string,
+  failedMessage: string
+): Promise<void> {
+  try {
+    const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(profile))
+
+    if (!root) {
+      notifyError(new Error('logs root unavailable'), failedMessage)
+
+      return
+    }
+
+    const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+    if (result && !result.ok) {
+      notifyError(new Error(result.error || 'open failed'), failedMessage)
+    }
+  } catch (error) {
+    notifyError(error, failedMessage)
+  }
+}
+
+const ErrorCard: FC<{ onDismiss?: () => void }> = ({ onDismiss }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const surface = useErrorSurface()
   const errorText = useErrorText()
-  const failedAt = useErrorFailedAt()
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const detailsId = useId()
+  const { body, title } = errorCardText(copy, surface)
+  const severity = errorCardSeverity(surface)
+  // A plan limit is not a fault: no diagnostics to bury the actions that fix it.
+  const diagnostics = errorCardShowsDiagnostics(surface)
 
-  // useNavigate() would throw here when no Router is above us; the deep-link
-  // children mount only when one is (see SettingsLinkAction).
-  const inRouter = useInRouterContext()
+  return (
+    <ErrorPrimitive.Root className="aui-error-card" data-severity={severity} data-slot="aui_error-card" role="alert">
+      <div className="aui-error-card-head">
+        <SquareAlertIcon className="aui-error-card-icon" />
+        <div className="aui-error-card-text">
+          <div className="aui-error-card-title">{title}</div>
+          <div className="aui-error-card-body">{body}</div>
+        </div>
+      </div>
+      <div className="aui-error-card-row">
+        <ErrorCardActionRow surface={surface} />
+        {diagnostics && (
+          <button
+            aria-controls={detailsId}
+            aria-expanded={detailsOpen}
+            className="aui-error-card-toggle"
+            onClick={() => setDetailsOpen(open => !open)}
+            type="button"
+          >
+            {detailsOpen ? copy.errorHideDetails : copy.errorDetails}
+          </button>
+        )}
+      </div>
+      {diagnostics && (
+        <ErrorDetailsBlock errorText={errorText} hidden={!detailsOpen} id={detailsId} surface={surface} />
+      )}
+      {severity === 'degraded' && onDismiss && (
+        <button aria-label={copy.dismissError} className="aui-error-card-close" onClick={onDismiss} type="button">
+          <XIcon aria-hidden className="size-4" />
+        </button>
+      )}
+    </ErrorPrimitive.Root>
+  )
+}
+
+// Dark block: the raw error, then Copy / Open logs / Send diagnostics as text links.
+const ErrorDetailsBlock: FC<{ errorText: string; hidden: boolean; id: string; surface?: ErrorSurface }> = ({
+  errorText,
+  hidden,
+  id,
+  surface
+}) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const model = useStore($currentModel)
   const connection = useStore($connection)
-
-  // Open Logs reveals the LOCAL Electron profile's HERMES_HOME/logs. On a
-  // remote/cloud connection the failed turn's gateway+agent logs live on the
-  // remote box — the local folder only holds Desktop-side transport logs, so
-  // the label says "Open Desktop logs" there instead of implying it opens the
-  // runtime's logs.
+  const ownerProfile = useOwnerProfile()
   const remoteConnection = connection?.mode === 'remote'
 
-  // One table decides which buttons this failure gets (lib/error-surface.ts).
-  const plan = errorRecoveryPlan(surface)
-
-  // An expired/revoked OAuth grant (HTTP 401 on nous / openai-codex / ...):
-  // the one-click fix is re-running that provider's sign-in, which the
-  // onboarding overlay already owns end to end (device code → poll →
-  // reload.env → model confirm). Scoped to the gateway profile the failed
-  // session runs on, so a Bot profile's grant is renewed, not the primary's.
-  const gatewayProfile = useStore($activeGatewayProfile)
-
-  const signInAgain = useCallback(() => {
-    if (!isOAuthReauthSurface(surface)) {
-      return
-    }
-
-    triggerHaptic('submit')
-    const key = normalizeProfileKey(gatewayProfile)
-    startManualProviderOAuth(surface.provider, key === 'default' ? undefined : key)
-  }, [gatewayProfile, surface])
-
-  // The free tier's door: the same dialog the status-bar chip and the first-launch
-  // intro open. Signing in is free and lifts every free-tier refusal.
-  const signInFreeTier = useCallback(() => {
-    triggerHaptic('submit')
-    openFreeTierSignIn()
-  }, [])
-
-  // Reveal a local folder through Electron; `logsRoot` is the profile's
-  // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
-  // the user needs to see to free space after a disk-full failure). Resolved
-  // for the profile that OWNS this session (a tile / Bot chat names it in its
-  // composer scope), not the pooled backend's launch profile (#119080).
-  const ownerProfile = useComposerScope().profile || gatewayProfile
-
-  const openLocalDir = useCallback(
-    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-      try {
-        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
-
-        if (!root) {
-          notifyError(new Error('logs root unavailable'), failedMessage)
-
-          return
-        }
-
-        const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-        if (result && !result.ok) {
-          notifyError(new Error(result.error || 'open failed'), failedMessage)
-        }
-      } catch (error) {
-        notifyError(error, failedMessage)
-      }
-    },
-    [ownerProfile]
-  )
-
-  const openLogs = useCallback(
-    () => openLocalDir(root => root, copy.errorOpenLogsFailed),
-    [copy.errorOpenLogsFailed, openLocalDir]
-  )
-
-  const openHermesFolder = useCallback(
-    () => openLocalDir(root => root.replace(/[\\/]+logs[\\/]*$/, ''), copy.errorOpenHermesFolderFailed),
-    [copy.errorOpenHermesFolderFailed, openLocalDir]
-  )
+  const failedAt = useErrorFailedAt()
 
   const diagnosticsText = useCallback(
-    () =>
-      formatErrorDiagnostics({
-        errorText,
-        failedAt,
-        model: model || undefined,
-        surface
-      }),
+    () => formatErrorDiagnostics({ errorText, failedAt, model: model || undefined, surface }),
     [errorText, failedAt, model, surface]
   )
 
-  const startNewSession = useCallback(() => {
-    triggerHaptic('submit')
-    requestFreshSession()
-  }, [])
-
-  const chooseModel = useCallback(() => {
-    triggerHaptic('selection')
-    setModelPickerOpen(true)
-  }, [])
-
-  const localFolders = Boolean(window.hermesDesktop?.logsRoot)
-  // The provider's own reset moment (429 Retry-After / resets_at), so the user knows WHEN
-  // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
-  const limitReset = formatLimitReset(surface?.resetsAt)
-
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <UsageWindowLeadActions plan={plan} surface={surface} />
-      {plan.editMessage && <EditPreviousMessageAction label={copy.editMessage} />}
-      {plan.compress && <CompressConversationAction label={copy.errorCompressConversation} />}
-      {plan.chooseModel && (
-        <button className="aui-error-action" onClick={chooseModel} type="button">
-          {copy.errorChooseModel}
-        </button>
+    <div className="aui-error-details" data-slot="aui_error-details" hidden={hidden} id={id}>
+      {/* Nous DS Copy (portal /ds/components/copy, CommandBlock): the raw error on
+          the dark code slab with the copy glyph at its end. */}
+      {errorText && (
+        <div className="aui-error-details-slab">
+          <code className="aui-error-details-raw" data-selectable-text="true">
+            {errorText}
+          </code>
+          <CopyButton appearance="icon" className="aui-error-copy-glyph" label={copy.errorCopyRaw} text={errorText} />
+        </div>
       )}
-      {plan.startNewSession && (
-        <button className="aui-error-action" onClick={startNewSession} type="button">
-          {copy.errorStartNewSession}
-        </button>
-      )}
-      {plan.signInAgain && isOAuthReauthSurface(surface) && (
-        <button className="aui-error-action" onClick={signInAgain} type="button">
-          <KeyRound className="size-3" />
-          {copy.errorSignInAgain(surface.providerLabel || surface.provider)}
-        </button>
-      )}
-      {plan.signInFreeTier && (
-        <button className="aui-error-action" onClick={signInFreeTier} type="button">
-          <KeyRound className="size-3" />
-          {copy.errorSignInFreeTier}
-        </button>
-      )}
-      {plan.updateApiKey && inRouter && (
-        <SettingsLinkAction
-          icon={<KeyRound className="size-3" />}
-          label={copy.errorUpdateApiKey}
-          to={updateApiKeyRoute(surface)}
+      <div className="aui-error-details-links">
+        <CopyButton
+          appearance="inline"
+          className="aui-error-details-link"
+          iconClassName="hidden"
+          label={copy.errorDetailsCopy}
+          text={diagnosticsText}
         />
-      )}
-      {plan.openHermesFolder && localFolders && (
-        <button className="aui-error-action" onClick={() => void openHermesFolder()} type="button">
-          {copy.errorOpenHermesFolder}
-        </button>
-      )}
-      {plan.retry && (
-        <ActionBarPrimitive.Reload asChild>
+        {window.hermesDesktop?.logsRoot && (
           <button
-            className="aui-error-action"
-            onClick={() => {
-              triggerHaptic('submit')
-              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
-            }}
+            className="aui-error-details-link"
+            onClick={() => void openProfileDir(ownerProfile, root => root, copy.errorOpenLogsFailed)}
             type="button"
           >
-            <RefreshCwIcon className="size-3" />
-            {copy.errorRetry}
+            {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
           </button>
-        </ActionBarPrimitive.Reload>
-      )}
-      {plan.retry && limitReset && (
-        <span className="px-1 text-xs text-muted-foreground" data-testid="error-limit-reset">
-          {copy.errorLimitResets(limitReset)}
-        </span>
-      )}
-      {plan.retry && surface?.resetsAt !== undefined && <ScheduledRetryAction resetsAt={surface.resetsAt} />}
-      {plan.openBilling && (
-        <button className="aui-error-action" onClick={() => requestBillingSettings()} type="button">
-          {copy.errorOpenBillingSettings}
+        )}
+        <button
+          className="aui-error-details-link"
+          onClick={() => requestSendDiagnostics(diagnosticsText())}
+          type="button"
+        >
+          {copy.errorSendDiagnostics}
         </button>
-      )}
-      {plan.switchProvider && inRouter && <SwitchProviderAction label={switchProviderLabel(copy, surface)} />}
-      {plan.diagnostics && (
-        <>
-          {localFolders && (
-            <button className="aui-error-action" onClick={() => void openLogs()} type="button">
-              {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
-            </button>
-          )}
-          <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
-            <Upload className="size-3" />
-            {copy.errorSendDiagnostics}
-          </button>
-          <CopyButton
-            appearance="inline"
-            className="aui-error-action"
-            label={copy.errorCopyDiagnostics}
-            text={diagnosticsText}
-          />
-        </>
-      )}
+      </div>
     </div>
   )
+}
+
+const ErrorCardActionRow: FC<{ surface?: ErrorSurface }> = ({ surface }) => {
+  const inRouter = useInRouterContext()
+  const { primary, secondary } = errorCardActions(surface)
+
+  return (
+    <div className="aui-error-card-actions">
+      {primary && <ErrorActionControl action={primary} inRouter={inRouter} surface={surface} variant="primary" />}
+      {secondary && <ErrorActionControl action={secondary} inRouter={inRouter} surface={surface} variant="link" />}
+    </div>
+  )
+}
+
+interface ErrorActionContext {
+  className: string
+  copy: Translations['assistant']['thread']
+  gatewayProfile: string | null | undefined
+  inRouter: boolean
+  link: boolean
+  ownerProfile: string | null | undefined
+  surface?: ErrorSurface
+  target: ComposerTarget
+}
+
+// Continue a cut-off reply: send "continue" through this chat's composer as if typed. When no
+// composer can take a submit right now, leave the word in the input for the user to send.
+function continueCutOffReply(target: ComposerTarget) {
+  if (!requestComposerSubmit('continue', { target })) {
+    requestComposerInsert('continue', { target })
+  }
+}
+
+const textButton = (className: string, onClick: () => void, label: ReactNode) => (
+  <button className={className} onClick={withHaptic(onClick)} type="button">
+    {label}
+  </button>
+)
+
+// Out of credits runs the same recovery as the banner and toast: the failing provider's own
+// billing page (Nous → Settings → Billing). A plan limit is Nous billing. Without this chat's
+// billing descriptor Hermes doesn't know where a third-party provider bills, so no button.
+const sameProvider = (a?: string | null, b?: string | null) =>
+  Boolean(a && b && a.trim().toLowerCase() === b.trim().toLowerCase())
+
+const OpenBillingAction: FC<{ className: string; label: string; surface?: ErrorSurface }> = ({
+  className,
+  label,
+  surface
+}) => {
+  const runtimeId = useStore(useSessionView().$runtimeId)
+  const wall = useStore($billingBlock)
+
+  // This chat's wall, and only for the provider this card failed on: a later wall from another
+  // provider in the same chat must not retarget an older card.
+  const block =
+    surface?.code !== 'usage_window' &&
+    wall?.sessionId === runtimeId &&
+    sameProvider(wall.block.provider, surface?.provider)
+      ? wall.block
+      : null
+
+  const nousBilling = surface?.code === 'usage_window' || (surface?.provider || 'nous').toLowerCase() === 'nous'
+
+  if (!block && !nousBilling) {
+    return null
+  }
+
+  return textButton(className, () => (block ? runBillingRecovery(block) : requestBillingSettings()), label)
+}
+
+// One renderer per action (Error System Overhaul action table → the app's existing handlers).
+const ERROR_ACTION_RENDERERS: Record<ErrorActionId, (ctx: ErrorActionContext) => ReactNode> = {
+  switch_to_model: ({ className, surface }) => {
+    const suggestion = surface?.usageLimit?.suggestions[0]
+
+    return suggestion ? <SwitchToModelAction className={className} suggestion={suggestion} /> : null
+  },
+  use_credits: ({ className }) => <UseCreditsAction className={className} />,
+  open_billing: ({ className, copy, surface }) => (
+    <OpenBillingAction className={className} label={copy.errorOpenBillingSettings} surface={surface} />
+  ),
+  retry: ({ className, copy }) => (
+    <ActionBarPrimitive.Reload asChild>
+      <button
+        className={className}
+        onClick={() => {
+          triggerHaptic('submit')
+          recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+        }}
+        type="button"
+      >
+        {copy.errorRetry}
+      </button>
+    </ActionBarPrimitive.Reload>
+  ),
+  retry_at_reset: ({ className, surface }) =>
+    surface?.resetsAt !== undefined ? <ScheduledRetryAction className={className} resetsAt={surface.resetsAt} /> : null,
+  update_api_key: ({ className, copy, inRouter, surface }) =>
+    inRouter ? (
+      <SettingsLinkAction className={className} label={copy.errorUpdateApiKey} to={updateApiKeyRoute(surface)} />
+    ) : null,
+  sign_in_again: ({ className, copy, gatewayProfile, surface }) => {
+    if (!isOAuthReauthSurface(surface)) {
+      return null
+    }
+
+    const key = normalizeProfileKey(gatewayProfile)
+
+    return textButton(
+      className,
+      () => startManualProviderOAuth(surface.provider, key === 'default' ? undefined : key),
+      copy.errorSignInAgain(surface.providerLabel || surface.provider)
+    )
+  },
+  sign_in_free_tier: ({ className, copy }) => textButton(className, openFreeTierSignIn, copy.errorSignInFreeTier),
+  switch_provider: ({ className, copy, inRouter }) =>
+    inRouter ? <SwitchProviderAction className={className} label={copy.errorSwitchProvider} /> : null,
+  open_model_settings: ({ className, copy, inRouter }) =>
+    inRouter ? <SwitchProviderAction className={className} label={copy.errorOpenModelSettings} /> : null,
+  choose_model: ({ className, copy, link }) =>
+    textButton(className, () => setModelPickerOpen(true), link ? copy.errorChooseModelLink : copy.errorChooseModel),
+  compress: ({ className, copy }) => (
+    <CompressConversationAction className={className} label={copy.errorCompressConversation} />
+  ),
+  start_new_session: ({ className, copy, link }) =>
+    textButton(className, requestFreshSession, link ? copy.errorStartNewChatLink : copy.errorStartNewSession),
+  edit_message: ({ className, copy }) => <EditPreviousMessageAction className={className} label={copy.editMessage} />,
+  open_hermes_folder: ({ className, copy, ownerProfile }) =>
+    window.hermesDesktop?.logsRoot
+      ? textButton(
+          className,
+          () =>
+            void openProfileDir(
+              ownerProfile,
+              root => root.replace(/[\\/]+logs[\\/]*$/, ''),
+              copy.errorOpenHermesFolderFailed
+            ),
+          copy.errorOpenHermesFolder
+        )
+      : null,
+  continue: ({ className, copy, target }) =>
+    textButton(className, () => continueCutOffReply(target), copy.errorContinue),
+  open_provider_settings: ({ className, copy, surface }) => {
+    const url = providerSettingsUrl(surface)
+
+    return url
+      ? textButton(
+          className,
+          () => openExternalLink(url),
+          copy.errorOpenProviderSettings(errorProviderName(copy, surface))
+        )
+      : null
+  },
+  open_setup_guide_tls: ({ className, copy, link }) =>
+    textButton(
+      className,
+      () => openExternalLink(ERROR_SETUP_GUIDE_URLS.tls),
+      link ? copy.errorSetupGuideLink : copy.errorOpenSetupGuide
+    ),
+  open_setup_guide_local: ({ className, copy, link }) =>
+    textButton(
+      className,
+      () => openExternalLink(ERROR_SETUP_GUIDE_URLS.local),
+      link ? copy.errorSetupGuideLink : copy.errorOpenSetupGuide
+    )
+}
+
+const ErrorActionControl: FC<{
+  action: ErrorActionId
+  inRouter: boolean
+  surface?: ErrorSurface
+  variant: 'link' | 'primary'
+}> = ({ action, inRouter, surface, variant }) => {
+  const { t } = useI18n()
+  const { target } = useComposerScope()
+  const gatewayProfile = useStore($activeGatewayProfile)
+  const ownerProfile = useOwnerProfile()
+  const link = variant === 'link'
+
+  return ERROR_ACTION_RENDERERS[action]({
+    // Nous DS Button (portal /ds/components/button): the one action is `secondary`,
+    // the optional second one is `ghost`.
+    className: link ? 'aui-error-btn aui-error-btn-ghost' : 'aui-error-btn aui-error-btn-secondary',
+    copy: t.assistant.thread,
+    gatewayProfile,
+    inRouter,
+    link,
+    ownerProfile,
+    surface,
+    target
+  })
+}
+
+interface ReadAloudActionState {
+  disabled: boolean
+  isPreparing: boolean
+  isSpeaking: boolean
+  menuLabel: string
+  onActivate: (event?: { shiftKey?: boolean }) => void
+  tooltip: string
+}
+
+function useReadAloudAction({
+  fullResponseAvailable,
+  getFullText,
+  getText,
+  messageId
+}: {
+  fullResponseAvailable: boolean
+  getFullText: () => string
+  getText: () => string
+  messageId: string
+}): ReadAloudActionState {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const voicePlayback = useStore($voicePlayback)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  // A Bot chat's session owns its own (connection, profile) → its own TTS voice.
+  const { connectionId, profile } = useComposerScope()
+
+  const readAloudStatus =
+    voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'
+
+  const isPreparing = readAloudStatus === 'preparing'
+  const isSpeaking = readAloudStatus === 'speaking'
+  const anyPlaybackActive = voicePlayback.status !== 'idle'
+
+  // Default reads the current reply only; Shift-click reads the whole response
+  // group — the read-aloud mirror of the two copy scopes (#118864).
+  const read = useCallback(
+    async (full: boolean) => {
+      const text = full ? getFullText() : getText()
+
+      if (!text || $voicePlayback.get().status !== 'idle') {
+        return
+      }
+
+      try {
+        await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
+        markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
+      } catch (error) {
+        notifyError(error, copy.readAloudFailed)
+      }
+    },
+    [connectionId, copy.readAloudFailed, getFullText, getText, messageId, profile, sessionId, view.$messages]
+  )
+
+  const onActivate = useCallback(
+    (event?: { shiftKey?: boolean }) => {
+      triggerHaptic('selection')
+      void (isSpeaking ? stopVoicePlayback() : read(Boolean(event?.shiftKey)))
+    },
+    [isSpeaking, read]
+  )
+
+  return {
+    disabled: isPreparing || (!isSpeaking && anyPlaybackActive),
+    isPreparing,
+    isSpeaking,
+    menuLabel: isSpeaking ? copy.stopReading : copy.readAloud,
+    onActivate,
+    tooltip: isPreparing
+      ? copy.preparingAudio
+      : isSpeaking
+        ? copy.stopReading
+        : fullResponseAvailable
+          ? `${copy.readAloud} (${copy.readAloudFullResponseHint})`
+          : copy.readAloud
+  }
 }
 
 const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
@@ -1151,9 +1339,28 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const { reload: reloadMessage, disabled: reloadDisabled } = useActionBarReload()
+  const touch = useStore($touchPointer)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
+
+  const readAloud = useReadAloudAction({
+    fullResponseAvailable,
+    getFullText: getFullResponseText,
+    getText: getMessageText,
+    messageId
+  })
+
+  const reload = useCallback(() => {
+    if (reloadDisabled) {
+      return
+    }
+
+    triggerHaptic('submit')
+    recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+    reloadMessage()
+  }, [reloadDisabled, reloadMessage])
 
   const pickEmoji = useCallback(
     (emoji: null | string) => {
@@ -1161,6 +1368,23 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
       react(emoji)
     },
     [react]
+  )
+
+  const branchInNewChat = onBranchInNewChat
+    ? () => {
+        triggerHaptic('selection')
+        onBranchInNewChat(messageId)
+      }
+    : undefined
+
+  const copyButton = (
+    <CopyButton
+      appearance="icon"
+      buttonSize="icon"
+      label={copy.copy}
+      onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
+      text={getMessageText}
+    />
   )
 
   return (
@@ -1187,45 +1411,68 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         }
         data-slot="aui_msg-actions"
       >
-        <MessageHoverTime className="mr-1 px-0.5" />
-        {onBranchInNewChat && (
-          <TooltipIconButton
-            onClick={() => {
-              triggerHaptic('selection')
-              onBranchInNewChat(messageId)
-            }}
-            tooltip={copy.branchNewChat}
-          >
-            <GitForkIcon className="size-3.5" />
-          </TooltipIconButton>
-        )}
-        <CopyButton
-          appearance="icon"
-          buttonSize="icon"
-          label={copy.copy}
-          onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
-          text={getMessageText}
-        />
-        {fullResponseAvailable && (
-          <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
-        )}
-        <ReadAloudButton
-          fullResponseAvailable={fullResponseAvailable}
-          getFullText={getFullResponseText}
-          getText={getMessageText}
-          messageId={messageId}
-        />
-        <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton
-            onClick={() => {
-              triggerHaptic('submit')
-              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
-            }}
-            tooltip={copy.refresh}
-          >
+        <div className="aui-message-actions-desktop flex items-center justify-end gap-1.5">
+          <MessageHoverTime className="mr-1 px-0.5" />
+          {branchInNewChat && (
+            <TooltipIconButton onClick={branchInNewChat} tooltip={copy.branchNewChat}>
+              <GitForkIcon className="size-3.5" />
+            </TooltipIconButton>
+          )}
+          {copyButton}
+          {fullResponseAvailable && (
+            <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
+          )}
+          <ReadAloudButton action={readAloud} />
+          <TooltipIconButton disabled={reloadDisabled} onClick={reload} tooltip={copy.refresh}>
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
-        </ActionBarPrimitive.Reload>
+        </div>
+        {/* Mounted only on touch: each Radix menu root adds a document key
+            listener, and the CSS already hides this cluster everywhere else. */}
+        {touch && (
+          <div className="aui-message-actions-touch items-center justify-end gap-1">
+            {copyButton}
+            <ActionsMenu
+              ariaLabel={copy.moreActions}
+              items={kit => (
+                <>
+                  {branchInNewChat &&
+                    renderActionItem(kit, {
+                      icon: 'git-branch',
+                      key: 'branch',
+                      label: copy.branchNewChat,
+                      onSelect: branchInNewChat
+                    })}
+                  {fullResponseAvailable && (
+                    <CopyButton
+                      appearance={kit.copyAppearance}
+                      label={copy.copyFullResponse}
+                      text={getFullResponseText}
+                    />
+                  )}
+                  {renderActionItem(kit, {
+                    iconNode: <AudioLines className="size-3.5" />,
+                    key: 'read-aloud',
+                    label: readAloud.menuLabel,
+                    onSelect: () => readAloud.onActivate(),
+                    disabled: readAloud.disabled
+                  })}
+                  {renderActionItem(kit, {
+                    iconNode: <RefreshCwIcon className="size-3.5" />,
+                    key: 'refresh',
+                    label: copy.refresh,
+                    disabled: reloadDisabled,
+                    onSelect: reload
+                  })}
+                </>
+              )}
+            >
+              <Button aria-label={copy.moreActions} size="icon" type="button" variant="ghost">
+                <MoreHorizontal className="size-3.5" />
+              </Button>
+            </ActionsMenu>
+          </div>
+        )}
       </ActionBarPrimitive.Root>
       {/* ONE slot, Slack-style: the picker trigger and the landed reaction are
           the same element, so reacting never shifts layout. Empty → ☺, hidden
@@ -1267,66 +1514,12 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   )
 }
 
-const ReadAloudButton: FC<{
-  fullResponseAvailable: boolean
-  getFullText: () => string
-  getText: () => string
-  messageId: string
-}> = ({ fullResponseAvailable, getFullText, getText, messageId }) => {
-  const { t } = useI18n()
-  const copy = t.assistant.thread
-  const voicePlayback = useStore($voicePlayback)
-  const view = useSessionView()
-  const sessionId = useStore(view.$runtimeId)
-  // A Bot chat's session owns its own (connection, profile) → its own TTS voice.
-  const { connectionId, profile } = useComposerScope()
-
-  const readAloudStatus =
-    voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'
-
-  const isPreparing = readAloudStatus === 'preparing'
-  const isSpeaking = readAloudStatus === 'speaking'
-  const anyPlaybackActive = voicePlayback.status !== 'idle'
-  const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : AudioLines
-
-  const tooltip = isPreparing
-    ? copy.preparingAudio
-    : isSpeaking
-      ? copy.stopReading
-      : fullResponseAvailable
-        ? `${copy.readAloud} (${copy.readAloudFullResponseHint})`
-        : copy.readAloud
-
-  // Default reads the current reply only; Shift-click reads the whole response
-  // group — the read-aloud mirror of the two copy scopes (#118864).
-  const read = useCallback(
-    async (full: boolean) => {
-      const text = full ? getFullText() : getText()
-
-      if (!text || $voicePlayback.get().status !== 'idle') {
-        return
-      }
-
-      try {
-        await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
-        markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
-      } catch (error) {
-        notifyError(error, copy.readAloudFailed)
-      }
-    },
-    [connectionId, copy.readAloudFailed, getFullText, getText, messageId, profile, sessionId, view.$messages]
-  )
+const ReadAloudButton: FC<{ action: ReadAloudActionState }> = ({ action }) => {
+  const Icon = action.isPreparing ? Loader2Icon : action.isSpeaking ? VolumeXIcon : AudioLines
 
   return (
-    <TooltipIconButton
-      disabled={isPreparing || (!isSpeaking && anyPlaybackActive)}
-      onClick={event => {
-        triggerHaptic('selection')
-        void (isSpeaking ? stopVoicePlayback() : read(event.shiftKey))
-      }}
-      tooltip={tooltip}
-    >
-      <Icon className={cn('size-3.5', isPreparing && 'animate-spin')} />
+    <TooltipIconButton disabled={action.disabled} onClick={action.onActivate} tooltip={action.tooltip}>
+      <Icon className={cn('size-3.5', action.isPreparing && 'animate-spin')} />
     </TooltipIconButton>
   )
 }

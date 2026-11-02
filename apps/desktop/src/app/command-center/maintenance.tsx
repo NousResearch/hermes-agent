@@ -27,6 +27,8 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type { ActionStatusResponse } from '@/types/hermes'
 
+import { MemoryLayersSummary } from '../settings/memory/memory-layers'
+
 const ACTION_POLL_MS = 1200
 const ACTION_POLL_LIMIT = 240 // ~5 minutes of polling before giving up.
 
@@ -321,11 +323,7 @@ export function MaintenancePanel() {
           <PageLoader className="min-h-16" label={mm.memoryData} />
         ) : (
           <div>
-            <div className="py-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-              {mm.memoryDataDesc}
-              {' · '}
-              {mm.memoryProvider(memory.active || mm.builtinMemory)}
-            </div>
+            <MemoryLayersSummary status={memory} />
             <MemoryFileRow
               busy={memoryBusy}
               label={mm.memoryFile}

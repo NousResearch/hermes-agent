@@ -136,6 +136,7 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     else:
+        # detached-spawn: ok — awaited with a timeout; the gateway restart it runs must not share the updater's group
         kwargs["start_new_session"] = True
     # `--interrupt`: the update owns this restart (drain-first, 31637312899); a live session must not
     # strand the profile on pre-update code the way a refusal would. `--detach`: this bounded call

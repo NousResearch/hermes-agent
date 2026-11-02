@@ -124,7 +124,8 @@ function submitParams(
   item: QueueItem | undefined,
   submitText: string,
   attachments: SubmitPromptOpts['attachments'],
-  voice: boolean
+  voice: boolean,
+  clarifyBatch: boolean
 ) {
   return {
     session_id: sid,
@@ -133,7 +134,9 @@ function submitParams(
     ...(item?.controlMethod ? { execution_generation: item.executionGeneration } : {}),
     ...(item && !item.controlMethod ? { submission_id: item.submissionId, queued: item.queued !== false } : {}),
     // A busy correction (steer/redirect) is not a turn: it never claims the voice route.
-    ...(!item?.controlMethod && voice && { voice_turn: true })
+    ...(!item?.controlMethod && voice && { voice_turn: true }),
+    // Ink renders a whole question set as one form; undeclared, the owner asks one card per question.
+    ...(!item?.controlMethod && clarifyBatch && { clarify_batch: true })
   }
 }
 
@@ -395,7 +398,14 @@ export function submitPrompt(
     deps.gw
       .request<PromptSubmitResponse>(
         item?.controlMethod ?? 'prompt.submit',
-        submitParams(sid, item, submitText, opts.attachments, voiceTranscript === submitText.trim())
+        submitParams(
+          sid,
+          item,
+          submitText,
+          opts.attachments,
+          voiceTranscript === submitText.trim(),
+          deps.gw.clarifyBatch === true
+        )
       )
       .then(r => {
         if (item?.controlMethod) {

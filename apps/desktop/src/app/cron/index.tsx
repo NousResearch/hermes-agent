@@ -74,6 +74,7 @@ import {
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from './blueprints'
+import { CatchUpField } from './catch-up-field'
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
@@ -88,6 +89,9 @@ import {
 } from './cron-job-model'
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT, truncateText } from './job-state'
 import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
+import { catchUpChoice, catchUpValue, jobLastCancelReason, jobRunLive } from './run-control'
+import { LastCancelledNote, RunStopAction } from './run-stop-action'
+import { useCronRunStop } from './use-cron-run-stop'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -324,6 +328,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // the click and the controller guard has no untracked window.
   const pendingTriggersRef = useRef(new Map<string, number>())
   const [pendingTriggers, setPendingTriggers] = useState<ReadonlyMap<string, number>>(() => new Map())
+  // Click time of each Run-now whose request has not returned, by the same key (Stop visibility).
+  const [triggerStarts, setTriggerStarts] = useState<ReadonlyMap<string, number>>(() => new Map())
 
   // eslint-disable-next-line no-restricted-syntax -- controller mount identity, not an atom mirror
   useEffect(() => {
@@ -456,6 +462,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   }, [selectedJob])
 
   const totalCount = jobs.length
+  const selectedJobKey = selectedJob ? `${profile}:${selectedJob.id}` : ''
+
+  const selectedRunLive = selectedJob ? jobRunLive(selectedJob, triggerStarts.get(selectedJobKey)) : false
+
+  const runStop = useCronRunStop({ c, jobs, profile, watch: selectedRunLive })
 
   function beginJobBusy(jobId: string): symbol {
     const token = Symbol(jobId)
@@ -545,6 +556,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     // Ref first so the busy render and the controller guard share one instant.
     pendingTriggersRef.current.set(key, requestedAt)
     setPendingTriggers(current => new Map(current).set(key, requestedAt))
+    setTriggerStarts(current => new Map(current).set(key, requestedAt))
 
     try {
       const run = await controller.run(
@@ -562,7 +574,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         return
       }
 
-      const { refreshError, stale } = run.value
+      const { jobs: refreshed, refreshError, stale } = run.value
 
       if (stale) {
         return
@@ -570,6 +582,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       if (refreshError) {
         notifyError(refreshError, c.failedLoad)
+      }
+
+      // A run stopped mid-flight already got its "cancelled" toast from the Stop flow.
+      const outcome = refreshed?.find(candidate => candidate.id === job.id)
+
+      if (outcome && jobLastCancelReason(outcome) !== null) {
+        return
       }
 
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
@@ -580,6 +599,18 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       // The request never reached the backend; the queued row is a lie.
       settlePendingTrigger(key, requestedAt)
+    } finally {
+      setTriggerStarts(current => {
+        if (current.get(key) !== requestedAt) {
+          return current
+        }
+
+        const next = new Map(current)
+
+        next.delete(key)
+
+        return next
+      })
     }
   }
 
@@ -614,6 +645,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           schedule: values.schedule,
           name: values.name || undefined,
           deliver: values.deliver || DEFAULT_DELIVER,
+          ...(typeof values.catchUp === 'boolean' ? { catch_up: values.catchUp } : {}),
           ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
         })
       )
@@ -754,9 +786,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onPendingRunSettled={settlePendingTrigger}
+              onStop={() => void runStop.stop(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
               pendingJobKey={`${profile}:${selectedJob.id}`}
               pendingRunAt={pendingTriggers.get(`${profile}:${selectedJob.id}`)}
+              runLive={selectedRunLive}
+              stopping={runStop.stoppingJobIds.has(selectedJob.id)}
             />
           ) : query.trim() ? (
             // A search with no selected job: search-flavored copy is right.
@@ -846,9 +881,13 @@ interface CronJobDetailProps {
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
   onPauseResume: () => void
   onPendingRunSettled: (key: string, requestedAt: number) => void
+  onStop: () => void
   onTrigger: () => void
   pendingJobKey?: string
   pendingRunAt?: number
+  /** A run is in flight (ledger) or this window's Run-now is still waiting on it. */
+  runLive: boolean
+  stopping: boolean
 }
 
 function CronJobDetail({
@@ -859,12 +898,17 @@ function CronJobDetail({
   onOpenSession,
   onPauseResume,
   onPendingRunSettled,
+  onStop,
   onTrigger,
   pendingJobKey,
-  pendingRunAt
+  pendingRunAt,
+  runLive,
+  stopping
 }: CronJobDetailProps) {
-  const state = jobState(job)
-  const isPaused = state === 'paused'
+  const state = runLive ? 'running' : jobState(job)
+  // The pill shows the live run; Pause/Resume acts on the saved schedule state, which a running
+  // paused job still has (handlePauseResume reads jobState too).
+  const isPaused = jobState(job) === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
   const scriptOnly = jobIsScriptOnly(job)
@@ -881,6 +925,7 @@ function CronJobDetail({
             <PanelPill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</PanelPill>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            <RunStopAction c={c} onStop={onStop} runLive={runLive} stopping={stopping} />
             <PanelAction disabled={busy} icon={isPaused ? 'play' : 'debug-pause'} onClick={onPauseResume}>
               {isPaused ? c.resumeTitle : c.pauseTitle}
             </PanelAction>
@@ -908,6 +953,8 @@ function CronJobDetail({
             ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
+
+        <LastCancelledNote c={c} reason={runLive ? null : jobLastCancelReason(job)} />
 
         {job.last_error ? (
           <div className="space-y-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
@@ -1234,6 +1281,7 @@ function CronEditorDialog({
   // Per-job model override encoded as an opaque provider/model pair.
   // MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
+  const [catchUp, setCatchUp] = useState(catchUpChoice(null))
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
   const [slotValues, setSlotValues] = useState<Record<string, string>>({})
@@ -1290,6 +1338,7 @@ function CronEditorDialog({
     setModelChoice(
       initial && jobModel(initial) ? cronModelChoiceValue(jobProvider(initial), jobModel(initial)) : MODEL_DEFAULT_VALUE
     )
+    setCatchUp(catchUpChoice(initial?.catch_up))
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -1364,6 +1413,7 @@ function CronEditorDialog({
 
     try {
       await onSave({
+        catchUp: catchUp === catchUpChoice(initial?.catch_up) ? undefined : catchUpValue(catchUp),
         deliver,
         model: override?.model ?? '',
         name: name.trim(),
@@ -1561,6 +1611,8 @@ function CronEditorDialog({
               </Field>
             )}
 
+            <CatchUpField c={c} onChange={setCatchUp} value={catchUp} />
+
             {schedulePreset === 'custom' ? (
               <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
                 <Input
@@ -1611,6 +1663,8 @@ type EditorState =
   | { blueprintKey?: string; mode: 'create' }
 
 interface EditorValues {
+  /** Missed-run policy; undefined = unchanged (not sent). */
+  catchUp?: boolean | null
   deliver: string
   /** Per-job model override ('' = follow the global default). */
   model: string

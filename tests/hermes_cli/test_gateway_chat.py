@@ -31,6 +31,13 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     assert calls == []
 
 
+def test_resume_repeating_source_desktop_matches_the_stored_gui_session():
+    """`--source desktop` creates as `gui`; repeating it on `--resume` is the same session source."""
+    from hermes_cli import gateway_chat
+    frozen = {"info": {"launch_request": {"source": "gui"}}}
+    gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", source="desktop", query="x"), frozen)
+
+
 def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypatch, capsys):
     """An exit-2 refusal tells the user where every refused flag went; the safe-mode
     refusal prints a command they can run as-is."""

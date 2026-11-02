@@ -503,9 +503,40 @@ def _background_session_key(session_id: Optional[str]) -> str:
     return session_key or (str(session_id) if session_id else "")
 
 
+def _run_session_usage(job_id: str, execution_id: Optional[str]) -> dict[str, Any]:
+    """``{"model", "api_calls"}`` the fire's run session recorded in state.db (summed over its
+    compression chain), or ``{}`` when no run session exists (no_agent job, refused fire)."""
+    if not execution_id:
+        return {}
+    import sqlite3
+
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    # A missing or locked state.db costs the notice its usage line, never the completion.
+    try:
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        run = next((r for r in db.list_cron_job_runs(job_id, limit=50)
+                    if r.get("cron_execution_id") == execution_id), None)
+        if run is None:
+            return {}
+        rows = [db.get_session(sid) or {} for sid in db.get_compression_chain(run["id"])]
+    except sqlite3.Error as exc:
+        logger.debug("cronjob run: run-session usage lookup failed for %s: %s", job_id, exc)
+        return {}
+    finally:
+        db.close()
+    model = next((r["model"] for r in reversed(rows) if r.get("model")), None)
+    return {"api_calls": sum(int(r.get("api_call_count") or 0) for r in rows), **({"model": model} if model else {})}
+
+
 def _manual_run_completion(
-    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float) -> dict[str, Any]:
-    """Async-delegation completion block for a finished background manual run."""
+    res: dict[str, Any], job_id: str, job_name: str, deliver: str, started_at: float,
+    execution_id: Optional[str] = None) -> dict[str, Any]:
+    """Async-delegation completion block for a finished background manual run. Model and API
+    calls come from the run's own session; without one they are omitted, never guessed."""
     duration = round(time.time() - started_at, 2)
     refreshed = get_job(job_id) or {}
     lines = [
@@ -521,7 +552,7 @@ def _manual_run_completion(
         lines += ["--- JOB OUTPUT ---", excerpt]
     return {
         "status": "completed" if res.get("success") else "error", "summary": "\n".join(lines),
-        "error": res.get("error"), "api_calls": 0, "duration_seconds": duration,
+        "error": res.get("error"), "duration_seconds": duration, **_run_session_usage(job_id, execution_id),
     }
 
 
@@ -604,13 +635,16 @@ def _try_dispatch_background_run(
 
     def _runner() -> dict[str, Any]:
         res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
-        return _manual_run_completion(res, job_id, job_name, deliver, started_at)
+        # run_one_job stamps the fire's ledger id onto this claimed snapshot.
+        return _manual_run_completion(res, job_id, job_name, deliver, started_at,
+                                      (claimed_job or {}).get("execution_id"))
 
     dispatch = dispatch_async_delegation(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
         context=("Triggered via cronjob(action='run'). The job executed in its own "
                  "fresh cron session; this block reports its outcome."),
-        toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
+        # model=None: the run session (via _runner) is the only source; a pin a refused fire never ran is not.
+        toolsets=None, role="cron_run", model=None, session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         max_async_children=max_async)
@@ -696,8 +730,11 @@ def _action_create(a: dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"], interpreter=a["interpreter"],
+            timezone=_normalize_optional_job_value(a["timezone"]),
+            grace_minutes=a["grace_minutes"],
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            catch_up=a["catch_up"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -840,6 +877,8 @@ def _update_core_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[st
                 return bot_chat_error
             _norm_fd = _resolve_cron_context_deliver(_norm_fd)
         updates["failure_deliver"] = _norm_fd
+    if a["catch_up"] is not None:
+        updates["catch_up"] = a["catch_up"]
     if skills is not None or skill is not None:
         canonical_skills = _canonical_skills(skill, skills)
         updates["skills"] = canonical_skills
@@ -925,6 +964,18 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         repeat_state = dict(job.get("repeat") or {})
         repeat_state["times"] = normalize_repeat_value(a["repeat"])
         updates["repeat"] = repeat_state
+    if a["timezone"] is not None:
+        # '' clears the pin (the job inherits the profile timezone); update_job validates the key.
+        updates["timezone"] = _normalize_optional_job_value(a["timezone"]) or ""
+    if a["grace_minutes"] is not None:
+        # '' / null clears the override; 0 is a real value ("never catch up") and passes through.
+        updates["grace_minutes"] = (
+            None if isinstance(a["grace_minutes"], str) and not a["grace_minutes"].strip()
+            else a["grace_minutes"])
+        if _pick(updates, job, "grace_minutes") is not None:
+            kind = (_pick(updates, job, "schedule") or {}).get("kind")
+            if kind != "cron":
+                return "grace_minutes only applies to cron schedules."
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
@@ -955,11 +1006,22 @@ def _action_update(job: dict[str, Any], a: dict[str, Any]) -> str:
 
 
 _JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
+
+
+def _action_cancel(job: dict[str, Any], a: dict[str, Any]) -> str:
+    """Stop the job's LIVE run. Per-run, not per-schedule: the job keeps its next fire."""
+    from cron.cancellation import cancel_run
+
+    # The schedule is untouched, so no provider notification — nothing about future fires moved.
+    return _dumps({"job": _format_job(job), **cancel_run(job["id"], reason=a.get("reason"))})
+
+
 _JOB_ACTIONS = {
     "remove": _action_remove, "update": _action_update,
     "run": _action_run, "run_now": _action_run, "trigger": _action_run,
     "pause": lambda job, a: _job_state_result(pause_job(job["id"], reason=a["reason"])),
     "resume": lambda job, a: _job_state_result(resume_job(job["id"])),
+    "cancel": _action_cancel,
 }
 
 
@@ -1009,12 +1071,15 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str | list[str]] = None,
+    catch_up: Optional[bool] = None,
     task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: Optional[bool] = None,
-    interpreter: Optional[str] = None) -> str:
+    interpreter: Optional[str] = None,
+    timezone: Optional[str] = None,
+    grace_minutes: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1055,7 +1120,7 @@ def _cronjob_schema_overrides() -> dict:
 
 CRONJOB_SCHEMA = {
     "name": "cronjob_manage",
-    "description": """Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run. action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only).
+    "description": """Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run. action='create' schedules a job from a prompt and/or skills; 'list' inspects jobs; 'update'/'pause'/'resume'/'remove' manage one by job_id (always list first — never guess job IDs); 'run' fires a job immediately in the BACKGROUND (returns a handle at once, outcome re-enters the conversation when done — do not wait or poll; optional 'prompt' adds transient context for that fire only); 'cancel' stops a job's LIVE run without touching its schedule (a no-op when nothing is in flight).
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained, and the agent's FINAL RESPONSE is what gets delivered — cron runs are autonomous and cannot ask questions. Jobs run on the main agent model (whatever `hermes model` is set to when they fire) unless the user pins one. Prefer updating an existing job over creating near-duplicates.""",
     "parameters": {
@@ -1065,11 +1130,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "paused_reason": {"type": "string", "description": "Create only: auditable reason; requires paused=true."},
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run, cancel. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run."
+                "description": "Required for update/pause/resume/remove/run/cancel."
             },
             "pinned": {
                 "type": "boolean",
@@ -1094,7 +1159,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "deliver": {
                 "type": "string",
-                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
+                "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'. From a local chat (CLI, TUI or Desktop) the default writes the result into that chat's history as a note, seen when the chat is reopened and by its next turn, not as a live message."
             },
             "failure_deliver": {
                 "type": "string",
@@ -1104,6 +1169,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Optional ordered skill names loaded before the cron prompt. On update, [] clears."
+            },
+            "catch_up": {
+                "type": "boolean",
+                "description": "Runs missed while the machine was off: true = run once on return, false = skip. Omit for the default (recurring run once, one-shots skip)."
             },
             "script": {
                 "type": "string",
@@ -1135,6 +1204,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
+            },
+            "timezone": {
+                "type": "string",
+                "description": "Optional IANA zone (e.g. 'America/New_York') the cron expression is read in, instead of the profile's. On update, '' clears."
             },
             "attach_to_session": {
                 "type": "boolean",
@@ -1168,7 +1241,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
 
 
 def _cronjob_handler(args, **kw):

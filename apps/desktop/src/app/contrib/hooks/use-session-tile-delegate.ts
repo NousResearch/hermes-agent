@@ -306,10 +306,14 @@ export function useSessionTileDelegate({
       // binding recorded pre-reconnect points at a runtime id the respawned
       // backend no longer knows. Drop the map so resumeTile's warm path can't
       // re-bind a tile to a dead runtime; live bindings re-record from
-      // post-reconnect events and fresh resumes.
+      // post-reconnect events and fresh resumes. A binding whose runtime id IS
+      // the durable id (the canonical gateway's) cannot be re-minted or
+      // recycled into another chat, and the client re-attaches it on its next
+      // request; dropping it made the next send re-resume the open chat, which
+      // blanked its status stack and transcript until the resume answered.
       invalidateRuntimeBindings: preserveStoredSessionIds => {
-        for (const storedSessionId of runtimeIdByStoredSessionIdRef.current.keys()) {
-          if (!preserveStoredSessionIds?.has(storedSessionId)) {
+        for (const [storedSessionId, runtimeId] of runtimeIdByStoredSessionIdRef.current) {
+          if (runtimeId !== storedSessionId && !preserveStoredSessionIds?.has(storedSessionId)) {
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           }
         }

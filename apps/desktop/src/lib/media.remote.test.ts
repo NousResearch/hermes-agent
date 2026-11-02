@@ -22,6 +22,19 @@ describe('filePathFromMediaPath', () => {
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
   })
+
+  // The URL's own `/C:/...` pathname opens nothing on Windows, and dropping a
+  // UNC host named another file.
+  it.each([
+    ['file:///C:/Users/me/a%20b.png', 'C:\\Users\\me\\a b.png'],
+    ['file://nas/share/a%20b.png', '\\\\nas\\share\\a b.png']
+  ])('reads %s as the Windows path %s', (url, path) => {
+    expect(filePathFromMediaPath(url)).toBe(path)
+  })
+
+  it.each(['file:///tmp/..%2f..%2fetc/a.png', 'file:///tmp/100%.png'])('keeps %s undecoded', url => {
+    expect(filePathFromMediaPath(url)).toBe(url.slice('file://'.length))
+  })
 })
 
 describe('mediaExternalUrl', () => {
@@ -32,6 +45,15 @@ describe('mediaExternalUrl', () => {
   it('passes through http(s) URLs untouched', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
     expect(mediaExternalUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
+  })
+
+  // Their bytes are in the URL itself, never a gateway path, so none of them gets a tokened link.
+  it('passes through data: and blob: URLs untouched', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 'SECRET' } as never)
+
+    for (const url of ['data:image/png;base64,AAAA', 'blob:https://app.example/3f1c']) {
+      expect(mediaExternalUrl(url)).toBe(url)
+    }
   })
 
   it('keeps file:// form in local mode', () => {
@@ -48,6 +70,30 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('/tmp/a b.png')).toBe(
       'https://gw/api/files/download?path=%2Ftmp%2Fa%20b.png&token=s%20e%2Fcret'
     )
+  })
+
+  it('downloads a Windows gateway file URL by its native path', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+
+    expect(new URL(mediaExternalUrl('file:///C:/Users/me/a%20b.png')).searchParams.get('path')).toBe(
+      'C:\\Users\\me\\a b.png'
+    )
+    expect(new URL(mediaExternalUrl('file://nas/share/a.png')).searchParams.get('path')).toBe('\\\\nas\\share\\a.png')
+  })
+
+  // #93508 item 5: the browser-hosted Desktop's session token grants host shells. Its gateway files
+  // save through the ticketed bridge, so no URL built here may carry that token.
+  it('never puts the browser-hosted Desktop session token into a URL', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    $connection.set({ mode: 'remote', baseUrl: 'http://127.0.0.1:9119', token: 'SECRET' } as never)
+
+    try {
+      for (const path of ['/home/me/report.pdf', 'file:///tmp/a.png', 'out/render.png']) {
+        expect(mediaExternalUrl(path)).not.toContain('SECRET')
+      }
+    } finally {
+      document.documentElement.removeAttribute('data-hermes-desktop-host')
+    }
   })
 
   it('falls back to file:// when remote connection lacks a token', () => {
@@ -84,7 +130,19 @@ describe('mediaGatewayStreamUrl', () => {
 
   it('rewrites gateway-local media to the main-process remote stream proxy', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
-    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
+
+    for (const path of [
+      '/tmp/a b.mp4',
+      'file:///tmp/a%20b.mp4',
+      'C:/Users/Alice/video.mp4',
+      'file:///C:/Users/Alice/video%20clip.mp4',
+      'file://nas/share/video%20clip.mp4'
+    ]) {
+      const url = new URL(mediaGatewayStreamUrl(path))
+      expect(url.protocol).toBe('hermes-media:')
+      expect(url.hostname).toBe('remote')
+      expect.soft(decodeURIComponent(url.pathname.slice(1)), path).toBe(path)
+    }
   })
 
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
@@ -166,6 +224,29 @@ describe('resolveMediaDisplaySrc', () => {
     )
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/project/a b.png')
   })
+
+  it('reads Windows file URLs from the local desktop shell by their native path', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    $connection.set({ mode: 'local' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png')
+    await resolveMediaDisplaySrc('file://nas/share/a.png')
+    expect(readFileDataUrl.mock.calls).toEqual([['C:\\Users\\me\\a b.png'], ['\\\\nas\\share\\a.png']])
+  })
+
+  it('reads an owner-pinned Windows file URL through the gateway by its native path', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png', { connectionId: 'win-gw', profile: 'work' })
+    expect(api).toHaveBeenCalledWith({
+      connectionId: 'win-gw',
+      path: `/api/fs/read-data-url?path=${encodeURIComponent('C:\\Users\\me\\a b.png')}`,
+      profile: 'work'
+    })
+  })
 })
 
 describe('resolveMediaPlaybackSrc', () => {
@@ -197,6 +278,9 @@ describe('resolveMediaPlaybackSrc', () => {
     $connection.set({ mode: 'local' } as never)
 
     await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
+      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+    )
+    await expect(resolveMediaPlaybackSrc('file:///C:/renders/demo.mp4')).resolves.toBe(
       'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
     )
   })

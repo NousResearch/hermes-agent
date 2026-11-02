@@ -214,6 +214,11 @@ export class JsonRpcGatewayClient {
     return this.state
   }
 
+  /** The connected canonical owner admits `clarify_batch` on `prompt.submit` (`client.capabilities`). */
+  protected get backendClarifyBatch(): boolean {
+    return this.channel.clarifyBatch
+  }
+
   async connect(wsUrl: string): Promise<void> {
     // Refuse garbage; WebSocket coerces non-strings into
     // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).

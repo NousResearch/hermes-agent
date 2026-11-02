@@ -22,7 +22,7 @@ from agent.credential_pool_admin import CredentialNotSavedError
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.auth_plugin_providers import (
-    dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
+    canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -141,8 +141,11 @@ def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
 def _unknown_provider_exit(provider: str) -> SystemExit:
     """Did-you-mean over the known provider ids plus the two commands that list/pick them."""
     import difflib
-    known = sorted(set(PROVIDER_REGISTRY) | {"openrouter"}
+    known = sorted({pid for pid, _ in canonical_registry_rows()} | {"openrouter"}
                    | {entry["name"] for entry in _get_custom_provider_entries()})
+    from hermes_cli.left_core_migration import provider_install_hint
+    if moved := provider_install_hint(provider):
+        return SystemExit(f"Unknown provider '{provider}'. {moved}")
     close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
     hint = f" Did you mean {', '.join(close)}?" if close else ""
     return SystemExit(
@@ -356,7 +359,7 @@ def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
 
 def _unsuppress_provider_sources(provider: str) -> None:
     """Clear ALL suppressions for this provider — re-adding a credential is a strong signal the
-    user wants auth re-enabled. Covers env:* (shell-exported vars), gh_cli (copilot), claude_code,
+    user wants auth re-enabled. Covers env:* (shell-exported vars), provider CLI tokens, claude_code,
     qwen-cli, device_code (codex), etc. — one consistent re-engagement pattern."""
     try:
         suppressed = auth_mod._load_auth_store().get("suppressed_sources", {})
@@ -524,7 +527,7 @@ def auth_list_command(args) -> None:
     else:
         credential_pool = auth_mod._load_auth_store().get("credential_pool")
         providers = sorted({
-            *PROVIDER_REGISTRY.keys(), "openrouter", *list_custom_pool_providers(),
+            *(pid for pid, _ in canonical_registry_rows()), "openrouter", *list_custom_pool_providers(),
             *(e["provider_key"] for e in _get_custom_provider_entries() if e["provider_key"]),
             *(credential_pool.keys() if isinstance(credential_pool, dict) else ())})
     for provider in providers:
@@ -810,7 +813,7 @@ def _interactive_auth() -> None:
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
     from providers import unlisted_provider_names
-    known = sorted((set(PROVIDER_REGISTRY) - unlisted_provider_names()) | {"openrouter"})
+    known = sorted(({pid for pid, _ in canonical_registry_rows()} - unlisted_provider_names()) | {"openrouter"})
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")
     if custom_display:

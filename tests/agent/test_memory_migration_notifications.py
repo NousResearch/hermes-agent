@@ -45,3 +45,16 @@ def test_gateway_start_replays_the_refusal_once_on_first_turn(tmp_path, monkeypa
     agent._replay_startup_warnings()
     assert len(notices) == 1 and notices[0].level == "warn"
     assert "hermes plugins install scout_missing_provider" in notices[0].text
+
+
+def test_a_gateway_hosted_cli_session_prints_the_startup_warning_on_its_first_turn():
+    """``hermes chat`` runs its agent in the gateway: built before the viewer's print sink is wired, a
+    startup line printed during init reached only the gateway's stdout log. It prints on the first turn, once."""
+    agent = StartupAgent("cli")
+    agent._gateway_session_key = "agent:main:cli:dm:local"
+    agent._warning_presentation_enabled = lambda: True
+    agent._emit_startup_warning("✓ Something moved out of core — installed its plugin.")
+    assert agent.printed == []
+    agent._replay_startup_warnings()  # first turn: the viewer's sink is wired now
+    agent._replay_startup_warnings()
+    assert agent.printed == ["✓ Something moved out of core — installed its plugin."]

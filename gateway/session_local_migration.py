@@ -1,7 +1,7 @@
 """Owner-only adoption of pre-authority local transcripts.
 
-An old transcript has no authenticated subject. Only a redeemed same-profile
-native control ticket may adopt it; remote login is not evidence of ownership.
+An old transcript has no authenticated subject. Only the machine owner (a redeemed same-profile
+native control ticket, or the owner signed in to the Webapp: gateway.owner_identity) may adopt it.
 The historical ID becomes the stable logical owner without copying its messages.
 Compression and reset may later advance the physical target, never FIFO identity.
 """
@@ -17,9 +17,11 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def bind_native_transport(authority, actor, identity):
-    if (identity.get('provider') == 'local'
-            and identity.get('profile_id') == authority.profile_id
-            and identity.get('instance_id') == authority.instance_id
+    # The machine owner signed in to the Webapp is the same person native Desktop is (owner_identity).
+    from gateway.owner_identity import host_owner_subject
+    native = (identity.get('provider') == 'local' and identity.get('profile_id') == authority.profile_id
+              and identity.get('instance_id') == authority.instance_id)
+    if ((native or actor.subject == host_owner_subject())
             and actor.profile_id == authority.profile_id
             and 'session:create' in actor.capabilities):
         if not hasattr(authority, '_native_legacy_transports'):
@@ -33,12 +35,16 @@ def unbind_native_transport(authority, actor):
 
 def require_history_claim(authority, conn, actor, sid):
     """Import receipts confer ownership; merely knowing an old ID does not."""
-    from hermes_state_mutation_binding import BINDING_PREFIX
-    row = conn.execute('SELECT session_key,chat_id,origin_json FROM sessions WHERE id=?', (sid,)).fetchone()
-    if row is None or any(row):
+    from gateway.owner_identity import same_owner
+    from hermes_state_mutation_binding import BINDING_PREFIX, _owner_user
+    row = conn.execute('SELECT * FROM sessions WHERE id=?', (sid,)).fetchone()
+    if row is None or row['session_key'] or row['chat_id'] or row['origin_json']:
         return
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone():
         return  # authorize_history checks the already committed importer identity.
+    own_profile = row['profile_name'] in (None, '', authority.db._own_profile_name() or 'default')
+    if own_profile and _owner_user(row) and same_owner(row['user_id'], actor.subject):
+        return  # Its owner (a login stamp is the machine owner's); authorize_history re-checks it.
     if getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor:
         raise RuntimeStoreError('permission_denied')
 
@@ -229,13 +235,32 @@ def _endpoint_owner(saved, config):
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
 
+def adopts_client_history(authority, actor, row):
+    """Whether this resume adopts *row*, a phone app's self-labelled chat
+    (``hermes_state_local_migration.client_history_row``), as a writable conversation: only for the
+    native owner adoption requires, and only when it validates for that owner. A read-only view of it
+    already open (a metadata read came first) is promoted in place (restore_local_session); a session
+    this authority serves any other way is left alone."""
+    from gateway.session_history_mount import is_history_mount
+    from hermes_state_local_migration import client_history_row, validate_legacy_row
+    live = authority.sessions.get(row['id'])
+    if (not client_history_row(row) or (live is not None and not is_history_mount(live))
+            or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
+        return False
+    try:
+        validate_legacy_row(authority.db, row, subject=actor.subject)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
-    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
+    from hermes_state_local_migration import legacy_creation_source, validate_legacy_row
     validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
@@ -247,7 +272,7 @@ def adopt_legacy_session(authority, actor, row):
     request_id = 'legacy:' + row['id']
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
-    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    params['source'] = legacy_creation_source(row)
     private = {}
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)

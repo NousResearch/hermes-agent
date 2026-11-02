@@ -130,7 +130,9 @@ async def standalone_lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
-    # Reap idle/dead keep-alive PTY sessions (30-min TTL).
+    # Reap idle/dead keep-alive PTY sessions (30-min TTL). The registry is process-wide and
+    # close_all() refuses new spawns, so a re-entered lifespan reopens it first.
+    PTY_REGISTRY.reopen()
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -198,19 +200,27 @@ async def standalone_lifespan(app: "FastAPI"):
 @asynccontextmanager
 async def http_lifespan(app: FastAPI):
     """The gateway already owns schema, rooms, scheduler and model services."""
+    from contextlib import AsyncExitStack
+
     from hermes_cli.web_server import _dashboard_selftest_loop
     from hermes_cli.web_server_chat import PTY_REGISTRY
+    from hermes_cli.web_server_surface import policy
 
     app.state.event_channels = {}
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}
     app.state.chat_argv_lock = asyncio.Lock()
+    PTY_REGISTRY.reopen()  # a prior lifespan's close_all() refuses spawns until reopened
     tasks = [
         asyncio.create_task(run_reaper(PTY_REGISTRY), name="gateway-api-pty-reaper"),
         asyncio.create_task(_dashboard_selftest_loop(), name="gateway-api-selftest"),
     ]
     try:
-        yield
+        async with AsyncExitStack() as surface:
+            if policy(app.state).host_terminal:
+                from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+                await surface.enter_async_context(host_terminal_lifespan(app))
+            yield
     finally:
         for task in tasks:
             task.cancel()

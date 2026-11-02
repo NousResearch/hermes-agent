@@ -14,7 +14,10 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from plugins.web._common import document as _page, page_error as _page_error, search_fail, search_ok, web_hit as _row
+from plugins.web._common import (
+    document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
+    search_ok, vendor_error_entry, web_hit as _row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,9 +231,10 @@ def parallel_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
         _page(r.get("url") or "", r.get("title") or "", r.get("full_content") or r.get("content") or "\n\n".join(r.get("excerpts") or []))
         for r in data.get("results") or []
     ]
-    for error in data.get("errors") or []:
-        url = error.get("url") or ""
-        results.append({**_page_error(url, str(error.get("content") or error.get("error_type") or "extraction failed")), "metadata": {"sourceURL": url}})
+    results += [
+        vendor_error_entry(e.get("url") or "", status=e.get("http_status_code"), reason=e.get("error_type"), body=e.get("content"))
+        for e in data.get("errors") or []
+    ]
     # URLs the endpoint silently dropped still get an error entry (per-URL contract).
     seen = {r["url"] for r in results}
     results.extend(_page_error(u, "no content returned") for u in urls if u not in seen)
@@ -276,7 +280,13 @@ def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     """Called per-URL; the tool returns one combined text payload."""
     def _fetch(url: str) -> dict[str, Any]:
-        text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        try:
+            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+        except KeylessMCPError as exc:
+            # ``...: CRAWL_HTTP_429`` is the page's answer, not Exa throttling this client.
+            if origin := origin_http_error(exa_crawl_status(exc)):
+                return _page_error(url, origin)
+            raise
         # Title: first markdown H1 or ``Title:`` line, whichever comes first.
         titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
         return _page(url, next(titles, ""), text)
@@ -292,14 +302,19 @@ def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 
 def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
-    from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_scrape_payload
+    from plugins.web.firecrawl.provider import (
+        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _with_scrape_status,
+    )
     client = _KeylessFirecrawlClient()
 
     def _fetch(url: str) -> dict[str, Any]:
         payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"])) or {}
-        metadata = payload.get("metadata") or {}
-        title = metadata.get("title") if isinstance(metadata, dict) else None
-        return _page(url, title or "", payload.get("markdown") or payload.get("html") or "")
+        metadata = payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        content = payload.get("markdown") or payload.get("html") or ""
+        # Report the post-redirect page as ``url`` so the shared dispatch re-gates it.
+        page = _page(_final_url(metadata, url), metadata.get("title") or "", content, source_url=url)
+        return _with_scrape_status(page, metadata)
 
     return _per_url(urls, _fetch, "firecrawl")
 
@@ -313,7 +328,8 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response).strip()[:300]}")
+        body = _response_text(response).strip()
+        raise KeylessMCPError(keenable_origin_error(response.status_code, body) or f"HTTP {response.status_code}: {body[:300]}")
     return response.json()
 
 
@@ -330,7 +346,12 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
-        data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+        try:
+            data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+        except KeylessMCPError as exc:
+            if is_origin_http_error(str(exc)):  # the target's answer, relayed by Keenable
+                return _page_error(url, str(exc))
+            raise
         return _page(data.get("url") or url, data.get("title") or "", data.get("content") or "", source_url=url)
 
     return _per_url(urls, _fetch, "keenable")
@@ -416,10 +437,14 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> dict[str, Any
 def extract_with_failover(name: str, urls: list[str]) -> list[dict[str, Any]]:
     """Advances to the next ring vendor only when EVERY url in a batch comes
     back with a rate-limit-shaped error — partial failures and HTTP 403s can
-    be page problems, not provider throttling, and return as-is."""
+    be page problems, not provider throttling, and return as-is. A target's own
+    ``HTTP 429 from origin`` is the page's answer, not the vendor's quota."""
+
+    def _throttled(error: str) -> bool:
+        return bool(error) and not is_origin_http_error(error) and _is_rate_limitish(error)
 
     def _all_throttled(results: list[dict[str, Any]]) -> bool:
-        return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)
+        return bool(results) and all(_throttled(r.get("error", "")) for r in results)
 
     order, _vendor, results, _exhausted = _walk_ring(name, "extract", lambda v: _KEYLESS_EXTRACTORS[v](list(urls)), _all_throttled)
     if not order:

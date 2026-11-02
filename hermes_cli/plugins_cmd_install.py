@@ -356,6 +356,33 @@ def scan_blocked_result(exc) -> dict[str, Any]:
     }
 
 
+def _clone_at_reviewed_commit(tmp_clone: Path, git_url: str, requested_revision: Optional[str],
+                              inspected_sha: Optional[str], subdir: Optional[str], *, catalog_pin: bool = False) -> str:
+    """Clone *git_url* and return the checked-out sha. *inspected_sha* is the commit the install dialog's
+    ``inspect`` read and the user reviewed: a branch that moved since is refused, never installed. The
+    clone stays an ordinary checkout of the branch (a detached one at the old commit could not ``git
+    pull`` later), so the install stays unpinned and ``update`` still follows the branch. A retained pin
+    that names another commit is refused too. A *catalog_pin* install clones the catalog's CURRENT pin
+    (possibly an annotated tag), which a re-pin since the dialog opened moves: the commit actually checked
+    out is what must equal the reviewed one."""
+    if not inspected_sha:
+        return _pc()._clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
+    sha = _pc()._normalize_exact_revision(inspected_sha)
+    if not catalog_pin and requested_revision is not None and requested_revision != sha:
+        raise _pc().PluginOperationError(
+            f"This plugin is pinned to commit {requested_revision[:12]}, not the commit {sha[:12]} you reviewed. "
+            "Reinstall it with that pin, or re-open the install dialog.", failure_class="already_installed")
+    head = _pc()._clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
+    git_exe = _pc()._resolve_git_executable()
+    if git_exe:
+        sha = _pc()._git_resolve_commit(tmp_clone, git_exe, sha)
+    if head != sha:
+        raise _pc().PluginSourceMoved(
+            f"The source changed since you reviewed it: it is now at commit {head[:12]}, not {sha[:12]}. "
+            "Re-open the install dialog to review the new version.")
+    return head
+
+
 def _install_plugin_core(
     identifier: str,
     *,
@@ -370,6 +397,7 @@ def _install_plugin_core(
     allow_removed: bool = False,
     before_swap=None,
     app_title: Optional[str] = None,
+    inspected_sha: Optional[str] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -388,7 +416,8 @@ def _install_plugin_core(
     included). It may return the relative paths it merged in, which a scan block then attributes,
     and may raise :class:`PluginOperationError` to abort (re-pin consent). *accept_caution* decides a
     caution scan verdict on its own when *force* only means "replace the existing tree" (an update's
-    re-clone); None lets *force* decide both, as ``install --force`` does."""
+    re-clone); None lets *force* decide both, as ``install --force`` does. *inspected_sha*: see
+    :func:`_clone_at_reviewed_commit`."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -408,7 +437,8 @@ def _install_plugin_core(
 
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
-        installed_revision = _pc()._clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
+        installed_revision = _clone_at_reviewed_commit(tmp_clone, git_url, requested_revision, inspected_sha, subdir,
+                                                       catalog_pin=bool(catalog))
         git_exe = _pc()._resolve_git_executable()
         at_reviewed_pin = bool(reviewed_pin) and installed_revision == (
             _pc()._git_resolve_commit(tmp_clone, git_exe, reviewed_pin) if git_exe and reviewed_pin else reviewed_pin)
@@ -686,6 +716,7 @@ def cmd_install(
 
     # already_active is PM's selection (plugins.enabled): it settles dependency consent, not memory.provider.
     # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
+    activate = bool(enable)  # also set by a "y" at the Enable-now prompt below
     if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
     elif is_memory_provider:
@@ -701,6 +732,7 @@ def cmd_install(
                 "after resolving the conflict.[/dim]"
             )
         else:
+            activate = True
             console.print(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
@@ -716,8 +748,10 @@ def cmd_install(
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _pc()._run_capability_consent(console, installed_name, declared_caps, context="install")
-    if enable and not is_memory_provider:
+    if activate and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
+        # A "y" at the Enable-now prompt counts: without the nudge the gateway never loads the plugin
+        # (its MCP servers stay absent from every session) and nothing tells the user to restart.
         from hermes_cli.plugins_activation import report_activation
         report_activation(console, installed_name)
     console.print()
@@ -763,18 +797,26 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
         f"Run `hermes memory setup {name}` to configure it; new sessions use it.")
 
 
-def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[tuple]:
+def _catalog_install_on_disk(catalog_name: str, ref: Optional[str],
+                             inspected_sha: Optional[str] = None) -> Optional[tuple]:
     """``(target, manifest, installed_name)`` of the installed, not enabled tree whose install record
     names catalog entry *catalog_name*, else None. A refused enable leaves the published clone in
     place (there is no rollback), so the card's Try again, or the model asking again, stopped at
     "already exists" on a second clone and the plugin could never be turned on from the card.
-    Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
-    matches a tree checked out at that commit."""
+    Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref*, or the
+    commit an install dialog reviewed (*inspected_sha*), only matches a tree checked out at that commit.
+    Any other tree is not reused: the fresh install then answers "already exists" instead of enabling
+    code nobody reviewed."""
     from hermes_cli.plugins_cmd_catalog import catalog_install_record
     target = _pc()._catalog_installed_dir(catalog_name)
     if target is None:
         return None
-    if ref and str(catalog_install_record(target)["sha"]).lower() != ref.lower():
+    record = catalog_install_record(target) or {}
+    installed_sha = str(record.get("sha") or "").lower()
+    if ref and installed_sha != ref.lower():
+        return None
+    # The dialog may name the commit or, from the catalog entry, the annotated tag the tree was installed at.
+    if inspected_sha and inspected_sha.lower() not in {installed_sha, str(record.get("pin") or "").lower()} - {""}:
         return None
     manifest = _pc()._read_manifest(target)
     installed_name = manifest.get("name") or target.name
@@ -808,21 +850,25 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
 
 
 def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assume_deps_consent: bool,
-                step: Callable[[InstallPhase], None]) -> tuple | dict:
+                step: Callable[[InstallPhase], None], inspected_sha: Optional[str] = None) -> tuple | dict:
     """``(target, manifest, installed_name)`` of the tree to enable, or the error result. A catalog
     entry already on disk and not enabled (an earlier enable was refused) is used as it is, unless
-    an approved *ref* names another commit; a fresh install clones at *ref* when set, else the pin."""
+    an approved *ref* names another commit; a fresh install clones at *ref* when set, else the pin.
+    With no *ref*, either source is held to *inspected_sha* when given: a catalog entry re-pinned since
+    the dialog read it is refused like a moved branch, and only a tree on disk at that commit is reused."""
     from hermes_cli import plugins_cmd_catalog as catalog
     ref = (ref or "").strip() or None
-    on_disk = _catalog_install_on_disk(entry.name, ref) if entry is not None and not force else None
+    inspected_sha = None if ref else inspected_sha
+    on_disk = _catalog_install_on_disk(entry.name, ref, inspected_sha) if entry is not None and not force else None
     if on_disk is not None:
         return on_disk
 
     def _install() -> tuple:
         if entry is not None:
             return catalog.install_catalog_entry(entry, force=force, ref=ref, allow_removed=False,
-                                                 assume_deps_consent=assume_deps_consent)
-        return _pc()._install_plugin_core(identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent)
+                                                 assume_deps_consent=assume_deps_consent, inspected_sha=inspected_sha)
+        return _pc()._install_plugin_core(identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent,
+                                          inspected_sha=inspected_sha)
 
     step(InstallPhase.downloading)
     try:
@@ -831,7 +877,7 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
     except _pc().PluginScanBlocked as exc:
         return scan_blocked_result(exc)
     except _pc().PluginOperationError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
 
 
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
@@ -852,7 +898,7 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None, assume_deps_consent: Optional[bool] = None,
-    on_step: Optional[Callable[[InstallPhase], None]] = None,
+    on_step: Optional[Callable[[InstallPhase], None]] = None, inspected_sha: Optional[str] = None,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins either source to one full commit SHA (same
@@ -861,14 +907,21 @@ def dashboard_install_plugin(
     None (a user's Install click) is the consent the fresh-install enable already acts on: a plugin
     the config already selects (``memory.provider``) would otherwise be refused every time, while
     the same plugin unselected installs and enables. A forced replacement still needs explicit consent.
-    *on_step* hears each slow phase as it starts (the catalog card draws it under its bar)."""
+    *on_step* hears each slow phase as it starts (the catalog card draws it under its bar). *inspected_sha*
+    is the commit an install dialog reviewed: a custom source whose branch moved since, or a catalog entry
+    re-pinned since, is refused."""
     if assume_deps_consent is None:
         assume_deps_consent = enable and not force
     step = on_step or (lambda _phase: None)
+    if inspected_sha:
+        # The dialog's inspection is spent either way; re-opening it must read the source again.
+        from hermes_cli.plugins_cmd_inspect import forget_inspection
+        forget_inspection(identifier, catalog_name=catalog_name)
     entry, identifier, warnings, error = _resolve_source(identifier, catalog_name)
     if error is not None:
         return error
-    placed = _place_tree(entry, identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent, step=step)
+    placed = _place_tree(entry, identifier, force=force, ref=ref, assume_deps_consent=assume_deps_consent, step=step,
+                         inspected_sha=inspected_sha)
     if isinstance(placed, dict):
         return placed
     target, installed_manifest, installed_name = placed

@@ -616,7 +616,7 @@ def _uninstall_profile(profile) -> None:
     log_info(f"Uninstalling profile '{name}'...")
 
     # 1. Gateway service, via `python -m hermes_cli.main` (the `hermes` wrapper may be half-gone).
-    hermes_invocation = [sys.executable, "-m", "hermes_cli.main", "--profile", name]
+    hermes_invocation = [sys.executable, "-P", "-m", "hermes_cli.main", "--profile", name]
     for subcmd in ("stop", "uninstall"):
         try:
             subprocess.run(

@@ -73,7 +73,7 @@ class _Agent:
 def _settle(agent, err, retry=None):
     retry = retry or TurnRetryState(primary_recovery_attempted=True)
     classified = classify_api_error(err, provider=agent.provider)
-    with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), \
+    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), \
             patch("agent.conversation_loop._arm_fallback_restart", lambda a, m, s, r: s), \
             patch("agent.turn_recovery.interruptible_backoff_sleep", lambda agent, *a, **k: agent.sleep_outcome), \
             patch("agent.turn_api_error.max_retries_exhausted_result", lambda *a, **k: {"failed": True}), \

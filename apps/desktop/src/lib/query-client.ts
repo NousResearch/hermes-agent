@@ -51,6 +51,14 @@ export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
       kept[field] = warm[field]
     }
 
+    // The kept `usage_levels` still say `free` for subscription-billed rows; the ids
+    // that keep the "Free" tag off them ride on `plan_usage` (whose gauges stay fresh), so carry them too.
+    const subscribed = warm.plan_usage?.subscription_model_ids
+
+    if (row.plan_usage && subscribed?.length) {
+      kept.plan_usage = { ...row.plan_usage, subscription_model_ids: subscribed }
+    }
+
     return { ...row, ...kept } as ModelOptionProvider
   })
 

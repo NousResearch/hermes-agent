@@ -305,6 +305,15 @@ export function isCompressionBusyError(error: unknown): boolean {
   return data?.reason === 'session_busy' && data.field === 'compression'
 }
 
+/** prompt.submit refused because this principal's submission id on this session is ALREADY admitted
+ *  with another payload (hermes_state_runtime.ADMITTED_REQUEST_CONFLICT): the send was delivered.
+ *  Every other `admission_conflict` (route, binding, lineage) names no such field and stays an error. */
+export function isAdmittedSubmissionConflict(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { field?: unknown; reason?: unknown } | undefined) : null
+
+  return data?.reason === 'admission_conflict' && data.field === 'request_id'
+}
+
 // prompt.submit refused because another surface (TUI, messaging gateway)
 // holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
 // stamps the machine reason in `error.data.reason`; the prose fallback covers
@@ -336,10 +345,15 @@ function gatewayReason(error: unknown): unknown {
 
 // The error card's surface for an ownership refusal: another surface owns the session (#106217,
 // deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
-// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+// queue the send (#140385, transient: Retry once the turn ends), or the chat is stored history
+// nothing can continue (deterministic). Empty for any other error.
 export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
   if (isSessionNotOwnedError(error)) {
     return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'session_read_only') {
+    return { errorSurface: { layer: 'gateway', code: 'session_read_only', retryable: false } }
   }
 
   if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
@@ -421,6 +435,11 @@ export function isSessionRecentlyInterrupted(sessionId: string, now = Date.now()
   }
 
   return true
+}
+
+/** Milliseconds left on the session's Stop cooldown (0 when none). */
+export function recentInterruptRemainingMs(sessionId: string, now = Date.now()): number {
+  return isSessionRecentlyInterrupted(sessionId, now) ? (_recentlyInterruptedUntil.get(sessionId) ?? now) - now : 0
 }
 
 export function clearSessionRecentlyInterrupted(sessionId?: string): void {

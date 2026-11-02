@@ -22,9 +22,8 @@ file natively.
 Three pieces fit together:
 
 1. **The agent has tools that produce files.** `execute_code` for charts via
-   matplotlib, the `docx` skill for Word documents, the `xlsx` skill for
-   spreadsheets, the `pdf` and `latex-pdf-report` skills for PDFs, the
-   `powerpoint` skill for decks, `image_generate` for images,
+   matplotlib, the `microsoft-office` skill for Word documents, spreadsheets
+   and decks, the `pdf` and `latex-pdf-report` skills for PDFs, `image_generate` for images,
    `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path

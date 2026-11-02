@@ -67,6 +67,17 @@ jobs:
         # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
         run: npm run build
 
+      # webapp-gateway-attach.spec.ts drives the Webapp from a real browser: it needs the
+      # Webapp renderer and a Chromium Playwright can launch.
+      - name: Build the Webapp renderer
+        working-directory: apps/desktop
+        run: npm run build:webapp
+
+      - uses: ./.github/actions/retry
+        with:
+          working-directory: apps/desktop
+          command: npx playwright install --with-deps chromium
+
       # Package the Linux app the way users get it (electron-builder --dir; no
       # installer formats, no publish). The packaging preparer acquires its
       # pinned archive separately. packaged-smoke.spec.ts asserts the asarUnpack contract

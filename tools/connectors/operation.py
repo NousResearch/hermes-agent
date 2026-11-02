@@ -15,7 +15,8 @@ from tools.connectors.contract import Actor, SettleReason, TargetState, allowed,
 logger = logging.getLogger(__name__)
 
 # Not a config key: a user-tunable wait with clamp rails was a foot-gun (PR1 shipped one, unmerged).
-OPERATION_DEADLINE_SECONDS = 300.0
+# As long as a connect link lives (10 minutes), so a slow authorization settles connected, not failed.
+OPERATION_DEADLINE_SECONDS = 600.0
 
 
 class IllegalTransition(ValueError):

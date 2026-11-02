@@ -98,6 +98,20 @@ describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)',
     expect(usageTag(dayFull, 'a/low')).toBeNull()
   })
 
+  it("subscription-billed rows: never dimmed, no Free tag", () => {
+    const subscribed: Provider = {
+      ...dayFull,
+      plan_usage: { ...dayFull.plan_usage!, subscription_model_ids: ['a/zero'] }
+    }
+
+    expect(planBlocks(subscribed, 'a/zero')).toBe(false)
+    expect(usageTag(subscribed, 'a/zero')).toBeNull()
+    expect(usageTag(subscribed, 'a/free:free')).toBe('free')
+    expect(usageTag(subscribed, 'a/large')).toBe('top_tier')
+    // An older backend without the field: unchanged.
+    expect(usageTag(dayFull, 'a/zero')).toBe('free')
+  })
+
   it('formats the reset compactly', () => {
     expect(formatResetsIn(NOW + 30_000, NOW)).toBe('soon')
     expect(formatResetsIn(NOW + 12 * 60_000, NOW)).toBe('12m')

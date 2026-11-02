@@ -1,0 +1,31 @@
+name: ruapi
+title: RuAPI
+repo: https://github.com/RuAPI-ai/hermes-provider-ruapi
+sha: fbefc615d447729ccf85aec05e0ea27ecc6f3bd9
+subdir: ruapi
+description: >-
+  RuAPI as Hermes model providers on one key: `ruapi` serves Claude models over RuAPI's native
+  Anthropic Messages API (so Hermes' Anthropic prompt caching and thinking apply), and
+  `ruapi-openai` serves GPT, Gemini, DeepSeek, GLM, Qwen, Kimi and other chat models over its
+  OpenAI-compatible API. Each /model picker lists that side's chat models from the account's
+  GET /v1/models list, leaving out image and video models, and context windows and image input are
+  declared for the main models. Maintained by RuAPI. Disclosure — registers two model providers at
+  import and nothing else (no tools, hooks, commands or threads). Prompts, tool schemas and
+  RUAPI_API_KEY go to https://www.ruapi.ai (/v1/messages and /v1/chat/completions) through Hermes'
+  own clients, and RuAPI forwards each request to the upstream vendor serving the model. The model
+  list is Hermes' standard GET https://www.ruapi.ai/v1/models request with the key; the plugin makes
+  no network requests of its own, adds no headers, sends no telemetry, reads or writes no files and
+  stores no credentials.
+maintainer: RuAPI
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/RuAPI-ai/hermes-provider-ruapi#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - RUAPI_API_KEY

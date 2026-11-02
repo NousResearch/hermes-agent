@@ -9,12 +9,15 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enCronControl } from './en_cron_control'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
 import { enExternalOpenFailed } from './en_external_open'
 import { enFirstRun } from './en_first_run'
+import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
+import { enMemoryLayers } from './en_memory_layers'
 import { enModelMenu } from './en_model_menu'
 import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
@@ -22,6 +25,7 @@ import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
 import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
+import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
@@ -474,6 +478,8 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
+      microphoneNeedsHttps:
+        'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
@@ -793,8 +799,6 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
-      enable: 'Enable',
-      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       installModal: {
@@ -813,6 +817,17 @@ export const en: Translations = {
         versionLabel: 'Version',
         reviewedPin: sha => (sha ? `Reviewed pin ${sha}` : 'Reviewed pin'),
         latestCommit: 'Latest commit',
+        sourceMoved: sha =>
+          sha
+            ? `The repository changed since you reviewed it. Review the new version (commit ${sha}) before installing it.`
+            : 'The repository changed since you reviewed it. Reading the new version…',
+        legacyBackendConfirm:
+          'This backend is older than this app, so it cannot guarantee that the version you reviewed is the one that gets installed: if the repository changed since, the newer version installs instead. Update the backend to get that guarantee.',
+        installAnyway: 'Install anyway',
+        partialInstall: sha =>
+          sha
+            ? `Only part of this plugin is installed: the agent half is in at commit ${sha}, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.`
+            : 'Only part of this plugin is installed: the agent half is in, but the desktop half could not follow because the repository changed since you reviewed it. Turn on Force reinstall under Advanced to replace both halves with the version shown, or Cancel to keep only the agent half.',
         nothingToInstall: 'This package has nothing to install here.',
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
@@ -1122,6 +1137,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
+    memoryLayers: enMemoryLayers,
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',
@@ -1284,7 +1300,7 @@ export const en: Translations = {
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
-        'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
+        'Every gateway stays connected. Profiles, chats, messaging, and cron jobs stay with their gateway, and Sessions can show all of them at once.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
       launchModeDesc: 'When off, Sessions opens on the Primary gateway.',
       searchPlaceholder: 'Search gateways…',
@@ -1362,9 +1378,7 @@ export const en: Translations = {
     },
     gateway: {
       loading: 'Loading gateway settings...',
-      unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc:
-        'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+      ...enGatewayHost,
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
@@ -1674,12 +1688,11 @@ export const en: Translations = {
       },
       keepGoingOnCredits: {
         title: 'Keep going on credits',
-        description:
-          'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
+        description: 'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
         approveInBrowser: 'Approve Remote Spending in your browser to change this. It applies as soon as you approve.',
         openAgain: 'Open again',
         cancel: 'Cancel',
-        approvedRetry: 'Remote Spending is approved, but the change didn\'t save.',
+        approvedRetry: "Remote Spending is approved, but the change didn't save.",
         tryAgain: 'Try again'
       },
       autoReload: {
@@ -1773,7 +1786,7 @@ export const en: Translations = {
             captionResetsIn: duration => `Resets in ${duration}`,
             captionIncluded: 'Included usage',
             valueUsed: percent => `${percent} used`
-          },
+          }
         },
         planCard: {
           freeTier: 'Free',
@@ -1919,7 +1932,8 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultDirUpdated: shortcut =>
+        `Default project directory updated — start a new chat${shortcut ? ` (${shortcut})` : ''} for it to take effect`,
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -2104,6 +2118,10 @@ export const en: Translations = {
     edit: 'Edit',
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
+    lock: 'Lock',
+    locked: 'Locked',
+    lockHint: "The agent can't change this skill while it's locked. You can still edit it yourself.",
+    unlockedHint: 'Lock to stop the agent from changing this skill. You can still edit it yourself.',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
@@ -2491,9 +2509,6 @@ export const en: Translations = {
       resume: 'Resume',
       runNow: 'Run now',
       memoryData: 'Memory data',
-      memoryDataDesc: 'Built-in memory files injected into every session',
-      memoryProvider: name => `Active provider: ${name}`,
-      builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
       bytes: size => size,
@@ -2791,8 +2806,11 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
+    exportNeedsHost: name =>
+      `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
+    notServedHere: 'Not served here',
     switchToProfile: name => `Switch to ${name}`,
     switchToConnection: name => `Switch to ${name}`,
     switchConnectionFailed: name => `Could not connect to ${name}`,
@@ -2803,14 +2821,10 @@ export const en: Translations = {
       gateway: gateway => `Profiles on ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · unreachable`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      switchTo: (name, gateway) => `Open ${name} on ${gateway}`,
       deleteOn: gateway => ` on ${gateway}`,
       localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
-      switchDeviceTitle: 'Switch to This device?',
-      switchDeviceDesc:
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-      switchDeviceConfirm: 'Switch',
-      installDeviceTitle: 'Switch to This device?',
+      installDeviceTitle: 'Install Hermes on This device?',
       installDeviceDesc:
         'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
       installDeviceConfirm: 'Install locally',
@@ -2941,6 +2955,7 @@ export const en: Translations = {
   },
 
   cron: {
+    control: enCronControl,
     close: 'Close cron',
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
@@ -3256,7 +3271,6 @@ export const en: Translations = {
       backgroundRunning: 'Background task running',
       draftSession: 'Draft — nothing sent yet',
       handoffOrigin: platform => `Handed off from ${platform}`,
-      continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
       ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
@@ -3818,6 +3832,8 @@ export const en: Translations = {
     versionDetailsTitle: 'Version details',
     versionDetailsBody: 'This install is managed outside the app. Update it the same way you installed it.',
     versionDetailsVersion: 'Version',
+    versionDetailsClient: 'This device',
+    versionDetailsBackend: 'Connected backend',
     versionDetailsCommit: 'Commit',
     versionDetailsBuildOrigin: 'Build Origin',
     versionDetailsDistribution: 'Distribution',
@@ -4251,6 +4267,20 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalNewOn: 'New terminal on…',
+    terminalGatewayRemoved: 'Removed gateway',
+    terminalGatewayRemovedBody:
+      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody:
+      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
+    terminalDisconnectedBody:
+      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalDropUploadFailed: name => `Could not upload ${name}`,
+    terminalDropTooLargeTitle: 'Too large to upload',
+    terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,
+    terminalDropControlTitle: 'Not typed into the terminal',
+    terminalDropControl: paths => `These names hold control characters the shell would act on as keys: ${paths}`,
+    terminalDropUnquotable: (shell, paths) => `No safe way to type these names in ${shell}: ${paths}`,
     addToChat: 'Add to chat'
   },
 
@@ -4316,60 +4346,7 @@ export const en: Translations = {
       sentTitle: 'Sent to chat',
       sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
     },
-    web: {
-      appFailedToBoot: 'Preview app failed to boot',
-      serverNotFound: 'Server not found',
-      remoteLoopback:
-        'This address points at the machine running your agent, not this one. The browser pane loads pages locally, so a remote dev server needs a port forward or a reachable hostname.',
-      failedToLoad: 'Preview failed to load',
-      tryAgain: 'Try again',
-      restarting: 'Hermes is restarting...',
-      askRestart: 'Ask Hermes to restart the server',
-      lookingRestart: taskId => `Hermes is looking for a preview server to restart (${taskId})`,
-      restartingTitle: 'Restarting preview server',
-      restartingMessage: 'Hermes is working in the background. Watch the preview console for progress.',
-      startRestartFailed: message => `Could not start server restart: ${message}`,
-      restartFailed: 'Server restart failed',
-      hideConsole: 'Hide preview console',
-      showConsole: 'Show preview console',
-      hideDevTools: 'Hide preview DevTools',
-      openDevTools: 'Open preview DevTools',
-      goBack: 'Back',
-      goForward: 'Forward',
-      reload: 'Reload page',
-      address: 'Address',
-      addressPlaceholder: 'Enter address',
-      blankPageBody: 'Type an address above to browse, or ask Hermes to open a page.',
-      finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Server restart failed: ${message}`,
-      unknownError: 'unknown error',
-      restartedTitle: 'Preview server restarted',
-      reloadingNow: 'Reloading the preview now.',
-      restartFailedTitle: 'Preview restart failed',
-      restartFailedMessage: 'Hermes could not restart the server.',
-      stillWorking:
-        'Hermes is still working, but no restart result has arrived yet. The server command may be running in the foreground.',
-      workspaceReloading: 'Workspace changed, reloading preview',
-      fileChanged: url => `File changed, reloading preview: ${url}`,
-      filesChanged: (count, url) => `${count} file changes, reloading preview: ${url}`,
-      watchFailed: message => `Could not watch preview file: ${message}`,
-      moduleMimeDescription:
-        'Module scripts are being served with the wrong MIME type. This usually means a static file server is serving a Vite/React app instead of the project dev server.',
-      loadFailedConsole: (code, message) => `Load failed${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'The preview page could not be reached.',
-      openTarget: url => `Open ${url}`,
-      fallbackTitle: 'Preview',
-      annotate: 'Annotate',
-      annotateOn: 'Stop annotating',
-      annotateNeedPage: 'Open a page in the in-app browser first.',
-      annotateFailed: 'Could not start annotation mode',
-      commenting: 'Commenting',
-      addComments: count => (count === 1 ? 'Add 1 comment' : `Add ${count} comments`),
-      commentPlaceholder: 'Add a comment...',
-      commentTitle: n => `Comment ${n}`,
-      saveComment: 'Save',
-      cancelComment: 'Cancel comment'
-    }
+    web: enPreviewWeb
   },
 
   interfaceMode: {
@@ -4433,7 +4410,8 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tabs`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`,
+    tabActions: title => `Actions for ${title}`
   },
 
   contextMenu: {
@@ -4490,18 +4468,28 @@ export const en: Translations = {
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} rejected your API key`,
-          body: provider => `The key saved for ${provider} is invalid or was revoked. Update it, then retry.`
+          body: () => 'The saved key is invalid or was revoked. Update it, then send your message again.'
         },
         oauth: {
-          title: provider => `Your ${provider} sign-in expired`
+          title: provider => `Sign in to ${provider} again`
         }
       },
-      errorDetails: 'Details',
+      errorDetails: 'View error details',
+      errorHideDetails: 'Hide error details',
+      errorDetailsCopy: 'Copy details',
+      errorCopyRaw: 'Copy error',
+      errorContinue: 'Continue',
+      errorOpenProviderSettings: provider => `Open ${provider} settings`,
+      errorOpenSetupGuide: 'Open setup guide',
+      errorSetupGuideLink: 'Setup guide',
+      errorOpenModelSettings: 'Open model settings',
+      errorStartNewChatLink: 'Start a new chat',
+      errorChooseModelLink: 'Choose another model',
+      errorRetryAtResetShort: time => `Retry at ${time}`,
+      errorRateLimitResetBody: (provider, time) => `You've hit ${provider}'s rate limit. It resets at ${time}.`,
       errorGenericProvider: 'The AI service',
       errorToastTitle: "Hermes couldn't finish the reply",
       errorRetry: 'Retry',
-      errorLimitResets: time => `Limit resets at ${time}`,
-      errorRetryAtReset: time => `Retry when the limit resets (${time})`,
       errorRetryScheduled: (time, wait) => `Retrying at ${time} — in ${wait}`,
       errorRetryScheduledCancel: 'Cancel',
       errorStartNewSession: 'Start new session',
@@ -4520,12 +4508,10 @@ export const en: Translations = {
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
       errorSignInFreeTier: 'Sign in with a Nous account',
-      errorOauthExpired: provider =>
-        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
+      errorOauthExpired: provider => `Your ${provider} sign-in expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
-      errorCopyDiagnostics: 'Copy error details',
       errorSendDiagnostics: 'Send diagnostics',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',
@@ -4820,6 +4806,7 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    attachFailed: 'Attach failed',
     pastedContent: 'Pasted content',
     pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
@@ -4827,6 +4814,7 @@ export const en: Translations = {
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
     dropFiles: 'Drop files',
+    dropFilesMore: (count: number) => `and ${count} more`,
     handoff: {
       pickPlatform: 'Choose a destination',
       success: platform => `Handed off to ${platform}. Resume here anytime.`,

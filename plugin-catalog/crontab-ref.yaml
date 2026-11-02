@@ -1,0 +1,18 @@
+name: crontab-ref
+repo: https://github.com/olric3015/hermes-plugins
+sha: c5a412f46ab5cc14bb82528481a46c8f8bb3fe2a
+subdir: crontab-ref
+description: "@crontab: context references that explain a cron expression for the model: @crontab:\"0 9 * * 1-5\" (or a shortcut such as @crontab:@daily) attaches a plain-words reading (\"At 09:00 on Monday through Friday.\"), each field on its own row, whether Hermes's /cron takes it as a cron expression (shortcuts, ? and 5#3 are not), its next five runs in Hermes's timezone setting worked out the way cron/jobs.py computes next runs, and notes on day of month OR day of week, * in the minute field, steps that do not divide the hour or day, days 29-31 and 7 as Sunday; the TUI and Desktop composer suggest examples and preview an expression as you type it. The reading comes from croniter, the library Hermes's scheduler uses. Disclosure — reads only the text of the reference itself, the system clock and Hermes's timezone setting (HERMES_TIMEZONE, else timezone from the loaded config through hermes_cli.config), using croniter (already installed with Hermes) and Python's standard library; no network, no files read or written, no subprocess, no credentials read, no cron job created, changed or run; the @crontab: reference and its explanation become part of the message sent to your model provider and saved in the session history; register() only adds the @crontab: reference provider."
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/crontab-ref
+version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/c5a412f46ab5cc14bb82528481a46c8f8bb3fe2a/docs/crontab-ref-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

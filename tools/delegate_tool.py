@@ -687,16 +687,12 @@ def _build_top_level_description(*, independent_completions=None) -> str:
 
     if independent_completions is None:
         independent_completions = _get_independent_completions()
-    delivery = (
-        "each ungrouped task / `group` returns on its own"
-        if independent_completions else "one message per call"
-    )
+    delivery = _DELIVERY_INDEPENDENT if independent_completions else _DELIVERY_JOINED
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
-_DESCRIPTION_HEAD = (
-    "Spawn isolated subagents for parallel or context-heavy work. Each gets its own conversation, terminal "
-    "session, and toolset, and only its final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
-    "(limit in the tasks description).\n\n"
+_DELIVERY_INDEPENDENT, _DELIVERY_JOINED = "each ungrouped task / `group` returns on its own", "one message per call"
+
+_DESCRIPTION_DELIVERY = (
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
@@ -704,6 +700,13 @@ _DESCRIPTION_HEAD = (
     "BETWEEN your turns: finish whatever does not depend on them, then give a one-line status and END YOUR TURN. Never "
     "wait or poll on transcripts, artifact files, or CI for a child. "
     "While children run, `action` (list/steer/stop) controls them live.\n\n"
+)
+_ONESHOT_DESCRIPTION_DELIVERY = "Parallel children are joined and their results return in this tool call.\n\n"
+_DESCRIPTION_HEAD = (
+    "Spawn isolated subagents for parallel or context-heavy work. Each gets its own conversation, terminal "
+    "session, and toolset, and only its final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
+    "(limit in the tasks description).\n\n"
+    + _DESCRIPTION_DELIVERY +
     "USE FOR: reasoning-heavy subtasks, work that would flood your context, or independent parallel workstreams.\n"
     "DO NOT USE FOR (use these instead):\n"
     "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
@@ -852,6 +855,45 @@ DELEGATE_TASK_SCHEMA = {
         "required": [],
     },
 }
+
+
+_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
+
+
+def oneshot_delegate_function(function: dict) -> dict:
+    """A built delegate_task definition minus live control, for a one-shot session (agent/oneshot_footprint.py):
+    its children are joined inside the call, so ``action`` list/steer/stop never has a running child to reach and
+    the background-delivery paragraph never applies. The handler still accepts those arguments."""
+    description = function.get("description") or ""
+    for delivery in (_DELIVERY_INDEPENDENT, _DELIVERY_JOINED):
+        description = description.replace(_DESCRIPTION_DELIVERY.format(delivery=delivery), _ONESHOT_DESCRIPTION_DELIVERY)
+    params = function["parameters"]
+    properties = {k: v for k, v in params["properties"].items() if k not in _LIVE_CONTROL_PARAMS}
+    return {**function, "description": description, "parameters": {**params, "properties": properties}}
+
+
+def session_joins_delegation(agent: Any) -> bool:
+    """Whether *agent*'s top-level delegations join in the call because the ``delegate_task`` the model sees is the
+    joined variant (a gateway session with ``delegation.gateway_mode`` inline). Dispatch follows the schema bytes,
+    which ride the session's tools[] pin: a config change can never leave the model reading "results return in
+    this tool call" while children detach, or the reverse. One-shot sessions keep their own fallback (and note)."""
+    if getattr(agent, "_oneshot_session", None) is True:
+        return False
+    for tool in getattr(agent, "tools", None) or ():
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and function.get("name") == "delegate_task":
+            return _ONESHOT_DESCRIPTION_DELIVERY in (function.get("description") or "")
+    return False
+
+
+def adopt_session_delegation_mode(agent: Any) -> None:
+    """Re-freeze *agent*'s inline decision (``agent_joins_delegation``) from the ``delegate_task`` it carries once a
+    fresh agent has restored its session's tools[] pin, so the pin is authoritative: a later rebuild from fresh
+    definitions (compaction boundary, ``/reload-mcp``, Bot Chat refresh) derives the session's variant, not the one
+    the current config would build."""
+    tools = getattr(agent, "tools", None) or ()
+    if any(isinstance(tool, dict) and (tool.get("function") or {}).get("name") == "delegate_task" for tool in tools):
+        agent._delegation_inline = session_joins_delegation(agent)
 
 
 # --- Registry ---

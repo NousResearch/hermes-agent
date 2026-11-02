@@ -36,6 +36,10 @@
       lastModified = inputs.self.lastModified or null;
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        # Passed explicitly so `override (prev: ...)` sees it: a function form that appends to
+        # `prev.extraDependencyGroups` worked before the shipped groups moved to
+        # defaultDependencyGroups, and an argument default never lands in `prev`.
+        extraDependencyGroups = [ ];
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         inherit pmPackages;
         inherit
@@ -46,9 +50,11 @@
           ;
       };
 
-      # All platform-portable optional integrations pre-built.
+      # All platform-portable optional integrations pre-built. These are the
+      # variant's own groups, not the user's extras, so an
+      # `.override { extraDependencyGroups = ...; }` adds to them.
       full = minimal.override {
-        extraDependencyGroups = [
+        defaultDependencyGroups = [
           "anthropic"
           "azure-identity"
           "bedrock"
@@ -87,11 +93,12 @@
         # `nix profile install .#messaging` connects to Discord/Telegram/Slack
         # on first run — lazy-install can't write to the read-only /nix/store.
         messaging = minimal.override {
-          extraDependencyGroups = [ "messaging" ];
+          defaultDependencyGroups = [ "messaging" ];
         };
 
         tui = full.hermesTui;
         web = full.hermesWeb;
+        webapp = full.hermesWebapp;
         desktop = full.hermesDesktop;
 
         update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;

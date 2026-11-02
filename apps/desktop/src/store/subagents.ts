@@ -336,8 +336,8 @@ export function clearSessionSubagents(sid: string) {
  * from the display while background subagents that outlived the spawning turn
  * remain visible (and still accept late progress/complete events).
  *
- * Distinct from `clearSessionSubagents` (used by the Stop action, which
- * genuinely cancels running subagents and so should drop them all) and from
+ * Also what the Stop action uses: Stop ends the turn, not the background
+ * subagents it spawned. Distinct from `clearSessionSubagents` (drops every row) and from
  * `pruneDelegateFallbackSubagents` (which filters by id prefix to remove
  * placeholder rows once the real native event arrives).
  */

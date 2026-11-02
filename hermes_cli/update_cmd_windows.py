@@ -15,6 +15,7 @@ import time as _time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
+from agent.deadline import poll_until
 from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
@@ -89,7 +90,7 @@ def _wait_for_windows_update_gateway_exit(pids: list[int], *, timeout: float) ->
         remaining = {pid for pid in remaining if _alive(pid)}
         return not remaining
 
-    _poll_until(_all_gone, max(timeout, 0.0), 0.25)
+    poll_until(_all_gone, max(timeout, 0.0), 0.25)
     return {pid for pid in remaining if _alive(pid)}
 
 
@@ -693,16 +694,6 @@ def _original_process_is_alive(psutil, pid: int, create_time: float) -> bool:
     return abs(current - create_time) <= 0.001
 
 
-def _poll_until(condition, timeout: float, interval: float = 0.2) -> bool:
-    """Poll *condition* every *interval* seconds until true (True) or *timeout* elapses (False)."""
-    deadline = _time.monotonic() + timeout
-    while _time.monotonic() < deadline:
-        if condition():
-            return True
-        _time.sleep(interval)
-    return False
-
-
 def _process_create_time(psutil, pid: int, label: str) -> float:
     """``create_time`` of *pid*; unreadable identity aborts the stop (RuntimeError)."""
     try:
@@ -748,7 +739,7 @@ def _stop_windows_gateway_service(
     def _alive() -> list[int]:
         return [pid for pid, create_time in expected_processes if _original_process_is_alive(psutil, pid, create_time)]
 
-    if _poll_until(lambda: service.status() == "stopped" and not _alive(), timeout):
+    if poll_until(lambda: service.status() == "stopped" and not _alive(), timeout, 0.2):
         return
     if service.status() != "stopped":
         raise RuntimeError(f"Windows service {name} did not stop within {timeout:.0f}s; venv mutation unsafe.")
@@ -760,7 +751,7 @@ def _start_windows_gateway_service(name: str, *, timeout: float = 30.0) -> None:
     """Start one previously paused Windows service and verify it is running."""
     service = _win_service(name)[1]
     _sc_exe("start", name, service, "running")
-    if not _poll_until(lambda: service.status() == "running", timeout):
+    if not poll_until(lambda: service.status() == "running", timeout, 0.2):
         raise RuntimeError(f"Windows service {name} did not start within {timeout:.0f}s")
 
 
@@ -775,7 +766,7 @@ def _restore_windows_gateway_service(name: str, *, timeout: float = 60.0) -> Non
             _start_windows_gateway_service(name)
         return status in ("running", "stopped")
 
-    if not _poll_until(_settled, timeout):
+    if not poll_until(_settled, timeout, 0.2):
         raise RuntimeError(f"Windows service {name} did not reach a restorable state within {timeout:.0f}s")
 
 

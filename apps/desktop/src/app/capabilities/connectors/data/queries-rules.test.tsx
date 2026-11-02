@@ -4,9 +4,10 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
-import { noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
+import { $freeTierTurnCompleted, noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 
+import { connectorsListQueryKey } from './keys'
 import { useHostedConnectors } from './queries'
 
 const row = { connected: false, connector: 'notion', enabled: true, gateway_disabled_tools: [] }
@@ -78,5 +79,41 @@ describe('connector rules on the Connectors page', () => {
     await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
     // The accounts read cached while there was no identity is re-read too, or the new account stays hidden.
     expect(request.mock.calls.filter(([name]) => name === 'connectors.accounts')).toHaveLength(2)
+  })
+})
+
+// The backend arms the sign-in offer on the first list read that shows a guest an app connected
+// (an authorization past the watch, a connect by link). The page re-reads the offer timing then.
+describe('a connected app first seen on a list read', () => {
+  it('re-reads the sign-in offer timing', async () => {
+    gateway([{ ...row, connected: true }])
+    const before = $freeTierTurnCompleted.get()
+
+    mount()
+
+    await waitFor(() => expect($freeTierTurnCompleted.get()).toBe(before + 1))
+  })
+
+  it('waits for the backend read when the page starts from saved connected rows', async () => {
+    const request = gateway([{ ...row, connected: true }])
+    queryClient.setQueryData(connectorsListQueryKey('default'), { available: true, connectors: [{ ...row, connected: true }] }, { updatedAt: 1 })
+    const before = $freeTierTurnCompleted.get()
+
+    mount()
+    expect($freeTierTurnCompleted.get()).toBe(before)
+
+    await waitFor(() => expect(asked(request, 'connectors.list')).toBe(true))
+    await waitFor(() => expect($freeTierTurnCompleted.get()).toBe(before + 1))
+  })
+
+  it('does not when nothing is connected', async () => {
+    const request = gateway([row])
+    const before = $freeTierTurnCompleted.get()
+    const { result } = mount()
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'))
+    await waitFor(() => expect(asked(request, 'connectors.policy.get')).toBe(true))
+
+    expect($freeTierTurnCompleted.get()).toBe(before)
   })
 })

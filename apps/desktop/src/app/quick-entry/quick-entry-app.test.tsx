@@ -68,6 +68,13 @@ afterEach(() => {
 })
 
 describe('Quick Entry local thoughts', () => {
+  it('does not mount the native composer when the host has no Quick Entry bridge', () => {
+    vi.stubGlobal('hermesDesktop', {})
+    const { container } = render(<QuickEntryApp />)
+    expect(container.childElementCount).toBe(0)
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
+
   it('saves offline, reopens without sending, and requires an explicit Enter to hand off to chat', async () => {
     const { api, connect, show } = setup()
     render(<QuickEntryApp />)

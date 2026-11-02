@@ -119,6 +119,12 @@ def _hermes_home_points_at_production(value: str) -> bool:
 # system default so the import-time hook stays a no-op. The parallel runner
 # exports its own disk-backed TMPDIR anyway.
 from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
+import hermes_constants
+
+# The hourly scratch prune runs in a detached child process. An import-time boot hook during
+# collection must not start one: mark this process's once-per-process prune done. Tests that
+# reload hermes_constants reset that flag, so the per-test fixture below stubs the spawn itself.
+hermes_constants._scratch_pruned_once = True
 
 _HERMES_EXPORTED_TMP = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
 if _HERMES_EXPORTED_TMP:
@@ -703,6 +709,18 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
 
 
+@pytest.fixture(autouse=True)
+def scratch_prune_spawns(monkeypatch):
+    """No test starts a real detached scratch prune (one would outlive the test, and get any
+    Popen mock the test installed): ``spawn_prune`` only records the scratch dir it was given.
+    A test that needs the real child runs a launcher in a subprocess."""
+    import hermes_constants_scratch_detach
+
+    spawned: list = []
+    monkeypatch.setattr(hermes_constants_scratch_detach, "spawn_prune", spawned.append)
+    return spawned
+
+
 # ── Live state.db write guard ───────────────────────────────────────────────
 # Companion to the kanban guard above, for the MAIN state database.
 # ``hermes_state._ensure_test_isolation`` (the single choke point every
@@ -826,6 +844,12 @@ def _reset_tui_gateway_server_state():
         obj = getattr(mod, name, None)
         if isinstance(obj, dict):
             obj.clear()
+    # Addressed notifications parked for an absent session: a leak would let a
+    # later test's session claim a stale event, or spend the cap and refuse its
+    # own park.
+    park = sys.modules.get("tui_gateway.notification_park")
+    if park is not None:
+        park.clear()
 
     if snapshot is not None:
         mod._methods.clear()
@@ -1375,6 +1399,45 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
+# ── Live Nous services fence ─────────────────────────────────────────────────
+# A test home starts with no Nous identity, so any path that ends in a hosted
+# connector action (connect, rename, status, the tool's first call) mints a REAL
+# guest on the production Portal: up to GUEST_MINT_TIMEOUT_SECONDS per test,
+# red whenever the Portal is slow, and a new guest identity on production on
+# every CI run. The same holds for billing, plan limits, the dashboard OAuth
+# provider and every other client built on a Nous URL. Refusing the name lookup
+# covers all of them at once (httpx, urllib, aiohttp and asyncio all resolve
+# through socket.getaddrinfo), and fails exactly like an offline host, which is
+# the path production already handles. Tests of these clients stub the
+# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), so
+# they never reach the lookup. Live canaries opt in with ``@pytest.mark.live``.
+_NOUS_SERVICE_DOMAINS = ("nousresearch.com", "staging-nousresearch.com")
+
+
+def _is_nous_service_host(host) -> bool:
+    name = (host.decode() if isinstance(host, bytes) else str(host or "")).lower().rstrip(".")
+    return any(name == domain or name.endswith("." + domain) for domain in _NOUS_SERVICE_DOMAINS)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nous_services(request, monkeypatch):
+    if request.node.get_closest_marker("live"):
+        return
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fenced_getaddrinfo(host, *args, **kwargs):
+        if _is_nous_service_host(host):
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"test fence: {host!r} is a live Nous service; stub the HTTP layer "
+                "(tests/hermes_cli/anon_portal.py) or mark the test live")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_computer_use_approval_state():
     """Reset the computer-use explicit approval callback after every test.
@@ -1395,6 +1458,35 @@ def _isolate_computer_use_approval_state():
         _cu_tool.set_approval_callback(None)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _restore_aux_runtime_main():
+    """Restore the auxiliary client's main-runtime binding after every test.
+
+    ``build_turn_context`` binds the turn's main route with
+    ``agent.auxiliary_client.set_runtime_main`` in a ContextVar. Production
+    turns each run in their own context; a single pytest process runs every
+    test in one, so a fake agent's route outlives its test and later tests'
+    auxiliary routing treats it as the main model. For example, after
+    ``test_api_content_row_addressed_backfill.py`` (which drives the prologue
+    with a fake ``test/model`` on OpenRouter), six tests in
+    ``test_auxiliary_main_first.py`` fail in the same process: a patched
+    custom vision main resolves to openrouter. Snapshot/restore keeps bindings
+    made by wider-scoped fixtures; a module first imported during the test
+    goes back to its import-time state; a near no-op otherwise. The binding is
+    compared by identity, so a test that mutates a wider fixture's runtime dict
+    in place (``rotate_runtime_main_api_key``) must restore it itself.
+    """
+    # Hold the real variable: a test may swap a stub into sys.modules for the
+    # module, and that swap is undone only after this teardown runs.
+    var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    before = var.get() if var is not None else None
+    yield
+    if var is None:
+        var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    if var is not None and var.get() is not before:
+        var.set(before)
 
 
 @pytest.fixture(autouse=True)

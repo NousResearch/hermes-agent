@@ -82,33 +82,61 @@ describe('MarkdownTextContent overflow containment', () => {
   // and scroll inside their own cards, so the thread itself stays one column
   // wide. The missing link was min-w-0 on the markdown container.
   it('keeps prose in the column while tables and code scroll inside their own cards', async () => {
-    const longToken = 'x'.repeat(500)
-
-    const text = [
-      longToken,
-      '',
-      '```text',
-      longToken,
-      '```',
-      '',
-      '| Header with a long value | Other |',
-      '| --- | --- |',
-      `| ${longToken} | value |`
-    ].join('\n')
-
-    const { container } = render(<MarkdownTextContent isRunning={false} text={text} />)
-
-    await waitFor(() => expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy())
-
-    const markdown = container.querySelector('.aui-md')!
-    const codeCard = container.querySelector('[data-slot="code-card"]')!
-    // The card's overlay scroller (ExpandableBlock's inner div).
-    const codeScroller = codeCard.querySelector('.scrollbar-overlay')!
-    const tableWrapper = container.querySelector('.aui-md-table')!
+    const { codeCard, codeScroller, fencePre, longToken, markdown, tableWrapper } = await renderWideReply()
 
     expect(markdown.className).toContain('min-w-0')
     expect(codeScroller.className).toContain('overflow-x-auto')
+    // Native Desktop: the fence's <pre> keeps the card's width and scrolls its
+    // long lines itself, as on main.
+    expect(fencePre.className).not.toContain('min-w-max')
     expect(codeCard.textContent).toContain(longToken)
     expect(tableWrapper.className).toContain('overflow-x-auto')
   })
+
+  // The browser host sizes the fence's <pre> to its longest line, so the card's
+  // scroller scrolls it sideways in place and draws the fade at the cut edge.
+  it('sizes the fence to its longest line in browser-hosted Desktop', async () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      const { fencePre } = await renderWideReply()
+
+      expect(fencePre.className).toContain('min-w-max')
+    } finally {
+      delete window.document.documentElement.dataset.hermesDesktopHost
+    }
+  })
 })
+
+async function renderWideReply() {
+  const longToken = 'x'.repeat(500)
+
+  const text = [
+    longToken,
+    '',
+    '```text',
+    longToken,
+    '```',
+    '',
+    '| Header with a long value | Other |',
+    '| --- | --- |',
+    `| ${longToken} | value |`
+  ].join('\n')
+
+  const { container } = render(<MarkdownTextContent isRunning={false} text={text} />)
+
+  await waitFor(() => expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy())
+
+  const codeCard = container.querySelector('[data-slot="code-card"]')!
+  // The card's overlay scroller (ExpandableBlock's inner div).
+  const codeScroller = codeCard.querySelector('.scrollbar-overlay')!
+
+  return {
+    codeCard,
+    codeScroller,
+    fencePre: codeScroller.querySelector('pre')!,
+    longToken,
+    markdown: container.querySelector('.aui-md')!,
+    tableWrapper: container.querySelector('.aui-md-table')!
+  }
+}

@@ -75,7 +75,7 @@ vi.mock('../session/hooks/use-prompt-actions', () => ({
     return { submitText: fixture.submitText }
   }
 }))
-vi.mock('@/components/boot-failure-overlay', () => ({ BootFailureOverlay: () => null }))
+vi.mock('@/components/boot-failure-overlay', () => ({ StartupOverlay: () => null }))
 vi.mock('@/components/confirm-host', () => ({ ConfirmHost: () => null }))
 vi.mock('@/components/desktop-install-overlay', () => ({ DesktopInstallOverlay: () => null }))
 vi.mock('@/components/find-bar', () => ({ FindBar: () => null }))

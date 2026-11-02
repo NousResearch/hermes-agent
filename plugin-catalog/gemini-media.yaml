@@ -1,0 +1,19 @@
+name: gemini-media
+repo: https://github.com/bytecakelake/hermes-gemini-media-generation
+sha: 44bc2dd0349c08cecdcb44333b9fa0000ef01d95
+description: "Google Gemini image (Nano Banana) and video (Gemini Omni) generation backends for image_generate and video_generate, in one plugin built on the google-genai SDK. Image: text-to-image and reference-guided editing (up to 14 images). Video: text-, image- and reference-to-video with native audio. Model picker comes from the key's live models.list. Disclosure — prompts, reference images and the Gemini API key (GEMINI_API_KEY, falling back to GOOGLE_API_KEY, the key Hermes's own Gemini chat provider uses) are sent to generativelanguage.googleapis.com; reference-image URLs are downloaded by the plugin (public hosts only, redirects re-checked) and a local reference path can be any image file the user can read (accepted only after a magic-byte check); generation is billed to the API key's Google project; writes generated media under $HERMES_HOME/cache/generated/ and a model-list cache (key hash only) under $HERMES_HOME/cache/gemini_media/; no telemetry, shell commands, background processes or self-updates. Installs google-genai."
+maintainer: bytecakelake
+tier: community
+category: tools
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/bytecakelake/hermes-gemini-media-generation#readme
+version: "0.1.2"
+known_issues:
+  - The Gemini Omni video endpoint stalls intermittently; calls are bounded by a wall-clock deadline (default 300 s) and return error_type timeout.
+  - Video input (editing, extending, reference videos) is not supported; API-key authentication only.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - GEMINI_API_KEY

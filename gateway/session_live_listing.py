@@ -1,9 +1,10 @@
 """The live session feeds (``session.list`` live scope, ``session.active_list``) read off the loop.
 
-Both feeds cover every session in ``authority.sessions``, and a gateway restart refills that registry
-from receipts, so it can hold thousands of rows (mostly finished cron runs). Walking it one row at a
-time on the loop cost three full hydrations plus a receipt JSON parse per session: the loop stalled
-past 10 s, WS writes and the Telegram adapter's ``updater.stop()`` missed their deadlines (#141236).
+Both feeds cover every session in ``authority.sessions``, which can hold thousands of rows (mostly
+finished cron runs; boot restores only open sessions, an ended one comes back on first touch).
+Walking it one row at a time on the loop cost three full hydrations plus a receipt JSON parse per
+session: the loop stalled past 10 s, WS writes and the Telegram adapter's ``updater.stop()`` missed
+their deadlines (#141236).
 
 Here the loop does only in-memory work (authorization and liveness from ``LiveSession``); the store
 facts for a batch of sessions are ONE worker-thread read: picker columns, runtime revision and

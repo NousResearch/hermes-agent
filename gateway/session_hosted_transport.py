@@ -19,6 +19,7 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import Principal
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
@@ -283,7 +284,7 @@ def _check_remote_hosted_admission(authority, ref, row):
         binding = json.loads(stored[0])
         identity, generation = json.loads(row['request_id'][7:])
         if (not row['request_id'].startswith('hosted:')
-                or row['principal_id'] != _principal(authority, binding).subject
+                or not same_owner(row['principal_id'], _principal(authority, binding).subject)
                 or ref.profile_id != authority.profile_id
                 or binding.get('target_home') != authority.profile_id):
             raise ValueError('binding mismatch')

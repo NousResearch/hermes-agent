@@ -84,7 +84,7 @@ describe('ConnectionsRegistrySection', () => {
     const applyConnectionConfig = vi.fn()
     const select = vi.fn()
     Object.assign(window.hermesDesktop, { applyConnectionConfig })
-    Object.assign(window.hermesDesktop.connections, { select })
+    Object.assign(window.hermesDesktop.connections!, { select })
     render(<ConnectionsRegistrySection />)
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
     const values = screen.getAllByPlaceholderText('Saved — leave blank to keep')

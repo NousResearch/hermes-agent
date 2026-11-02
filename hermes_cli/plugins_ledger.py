@@ -39,6 +39,9 @@ class PluginRegistration:
     # re-discovery when the plugin no longer re-registers it.
     # See #91701.
     persistent: bool = False
+    # A ``transform_llm_output`` registration that must see the reply before the user does
+    # (``register_hook(..., hold_stream=True)``; read by ``PluginDispatchMixin.holds_stream``).
+    hold_stream: bool = False
     _disposed: bool = field(default=False, init=False, repr=False)
     _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
@@ -189,14 +192,15 @@ class PluginLedgerMixin:
                 handle.dispose()
 
     def _register_fallback_hook(self, context: Any, hook_source: Optional[tuple], hook_name: str,
-                                callback: Callable) -> PluginRegistration:
+                                callback: Callable, *, hold_stream: bool = False) -> PluginRegistration:
         """Register ``callback`` unless the same source is already live through general discovery, in
         which case return an inert handle so the provider keeps its disposable-handle contract."""
         if hook_source is None:
-            return context.register_hook(hook_name, callback)
+            return context.register_hook(hook_name, callback, hold_stream=hold_stream)
         owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
                     for loaded in self._plugins.values())
-        handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
+        handle = (context._track("hook", hook_name, lambda: None) if owned
+                  else context.register_hook(hook_name, callback, hold_stream=hold_stream))
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
 

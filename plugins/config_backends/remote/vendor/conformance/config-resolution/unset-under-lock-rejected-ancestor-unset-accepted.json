@@ -1,0 +1,93 @@
+{
+  "fixtureVersion": 1,
+  "name": "unset-under-lock-rejected-ancestor-unset-accepted",
+  "description": "Proves rule-6, rule-3: Unset of a locked path by a lower level is refused; unset of an ancestor of the lock only removes the lower level's own subtree and is accepted.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "model.default"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "model": {
+          "default": "hermes-4-8b",
+          "provider": "nous"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": {
+        "default": "hermes-4-405b",
+        "provider": "nous"
+      }
+    },
+    "provenance": {
+      "model.default": "global",
+      "model.provider": "agent"
+    },
+    "locks": [
+      {
+        "path": "model.default",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "model.default",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model.default",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "unset",
+      "path": "model.default",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model.default",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "unset",
+      "path": "model",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

@@ -384,7 +384,7 @@ Each entry is a skill name. The list is resolved once when a session's system pr
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:
 
 ```
-/gif-search funny cats
+/excalidraw sketch the request flow for our API
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
 

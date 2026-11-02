@@ -246,13 +246,14 @@ async def _peer_minted(headless):
     return session_id
 
 
-def _local_owner(authority):
+def _local_owner(authority, user_id='uid:1000'):
     """The Desktop/CLI's own connection: an interactive ticket redeemed on the loopback socket
-    (``gateway/run_api.py``), the identity ``hermes chat``, the Desktop and ``bot_relay.deliver`` use."""
+    (``gateway/run_api.py``), the identity ``hermes chat``, the Desktop and ``bot_relay.deliver`` use.
+    *user_id*: the login a same-user peer forwards on that ticket (control socket, #138915)."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     from gateway.session_controls import AuthorityConnection
     return AuthorityConnection(authority, object(), {
-        'user_id': 'uid:1000', 'provider': 'local', 'profile_id': authority.profile_id,
+        'user_id': user_id, 'provider': 'local', 'profile_id': authority.profile_id,
         'instance_id': authority.instance_id, 'capabilities': sorted(_PURPOSE_CAPABILITIES['interactive']),
         'native_bootstrap': True, 'profile_scope': 'profile'}, operator=True)
 

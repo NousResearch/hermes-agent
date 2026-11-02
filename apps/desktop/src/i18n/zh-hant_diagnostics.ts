@@ -53,6 +53,7 @@ export const zhHantDiagnostics = {
       microphoneConstraintsUnsupported: '此裝置不支援目前的麥克風限制條件。',
       microphoneFailed: '麥克風發生錯誤',
       microphoneInUse: '麥克風正被其他應用程式使用中。',
+      microphoneNeedsHttps: '麥克風需要安全連線。請透過 HTTPS 或到 127.0.0.1 的 SSH 通道開啟 Webapp 後使用。',
       microphonePermissionDenied: '麥克風權限被拒絕。',
       microphoneStartFailed: '無法開始麥克風錄音。',
       microphoneUnsupported: '目前執行環境不支援麥克風錄音。',

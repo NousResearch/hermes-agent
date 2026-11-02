@@ -1,0 +1,100 @@
+{
+  "fixtureVersion": 1,
+  "name": "lock-under-upper-locked-prefix-rejected",
+  "description": "Proves rule-4: A level cannot add a lock equal to or under an upper lock; it may add a lock on a path no upper level has locked.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "web": {
+          "backend": "firecrawl",
+          "use_gateway": true
+        }
+      },
+      "locks": [
+        "web"
+      ]
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "web": {
+        "backend": "firecrawl",
+        "use_gateway": true
+      }
+    },
+    "provenance": {
+      "web.backend": "global",
+      "web.use_gateway": "global"
+    },
+    "locks": [
+      {
+        "path": "web",
+        "level": "global"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "lock",
+      "path": "web.backend",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "lock",
+      "path": "web",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web",
+        "lockedBy": "global"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "lock",
+      "path": "tts",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "lock",
+      "path": "web.use_gateway",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "web",
+        "lockedBy": "global"
+      }
+    }
+  ]
+}

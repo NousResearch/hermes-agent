@@ -19,10 +19,9 @@ const $connection = atom<null | {
   registryScoped?: boolean
 }>(null)
 
-// The runtime session id minted by the CURRENT backend — the binding a switch
-// must sever before the next source is published (#93937).
+// The runtime session id minted by the CURRENT backend — the binding a pick
+// must drop before the next gateway is published (#93937).
 const $activeSessionId = atom<null | string>(null)
-const $gatewaySwitching = atom(false)
 
 interface ActivationOptions {
   beforeActivate?: () => boolean
@@ -36,39 +35,17 @@ const ensureGatewayAgent = vi.fn(
 const openGatewayAgent = vi.fn(async (_connectionId: string, _profile: string): Promise<void> => undefined)
 const refreshActiveProfile = vi.fn(async () => undefined)
 const requestFreshSession = vi.fn()
-const beforeConnectionSwitch = vi.fn()
-const wipeSessionListsForGatewaySwitch = vi.fn(() => $activeSessionId.set(null))
+const exitProjectScope = vi.fn()
 
-// Test double for the store's commit point with the real one's contract
-// (barrier → machine-context reset → wipe, synchronously; the barrier is
-// owned by the latest token); the real implementation is covered by
-// gateway-switch.test.ts.
-let latestSwitchToken = 0
-
-const beginGatewaySwitch = vi.fn(() => {
-  $gatewaySwitching.set(true)
-  beforeConnectionSwitch()
-  wipeSessionListsForGatewaySwitch()
-
-  return ++latestSwitchToken
-})
-
-const endGatewaySwitch = vi.fn((token?: number) => {
-  if (token === undefined || token === latestSwitchToken) {
-    $gatewaySwitching.set(false)
-  }
-})
-
-const recoverActiveSourceAfterFailedGatewaySwitch = vi.fn()
-
-vi.mock('@/store/session', () => ({ $connection, $activeSessionId, $selectedStoredSessionId: atom(null) }))
-vi.mock('@/store/gateway-switch', () => ({
-  $gatewaySwitching,
-  beginGatewaySwitch,
-  endGatewaySwitch,
-  recoverActiveSourceAfterFailedGatewaySwitch,
-  wipeSessionListsForGatewaySwitch
+vi.mock('@/store/session', () => ({
+  $connection,
+  $activeSessionId,
+  $selectedStoredSessionId: atom(null),
+  setActiveSessionId: (id: null | string) => $activeSessionId.set(id),
+  setSelectedStoredSessionId: vi.fn()
 }))
+vi.mock('@/store/project-scope', () => ({ exitProjectScope }))
+vi.mock('@/store/gateway-switch', () => ({ supersedeGatewaySwitch: vi.fn() }))
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
   $freshSessionRequest,
@@ -119,7 +96,7 @@ beforeEach(() => {
   $newChatProfile.set(null)
   $showAllProfiles.set(false)
   ensureGatewayAgent.mockReset()
-  // Mirrors the real door: the commit hook runs right before the activation
+  // Mirrors the real door: beforeActivate runs right before the activation
   // publishes, and a declined hook publishes nothing.
   ensureGatewayAgent.mockImplementation(async (connectionId, profile, options) => {
     if (options?.beforeActivate && !options.beforeActivate()) {
@@ -140,13 +117,8 @@ beforeEach(() => {
   openGatewayAgent.mockResolvedValue(undefined)
   refreshActiveProfile.mockClear()
   requestFreshSession.mockClear()
-  beforeConnectionSwitch.mockClear()
-  beginGatewaySwitch.mockClear()
-  endGatewaySwitch.mockClear()
-  recoverActiveSourceAfterFailedGatewaySwitch.mockClear()
-  wipeSessionListsForGatewaySwitch.mockClear()
+  exitProjectScope.mockClear()
   $activeSessionId.set(null)
-  $gatewaySwitching.set(false)
   list.mockClear()
   setLastUsed.mockClear()
   api.mockReset()
@@ -271,18 +243,17 @@ describe('connection registry cache', () => {
 })
 
 describe('selectConnection', () => {
-  it('dials a secondary source and starts a fresh source-scoped draft', async () => {
+  it('activates the picked gateway in place and starts a fresh draft there, with no wipe', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
 
     await selectConnection('homelab')
 
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect(api).not.toHaveBeenCalled()
-    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
-    expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
+    expect(exitProjectScope).toHaveBeenCalledTimes(1)
     expect($newChatProfile.get()).toBe('default')
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
@@ -306,41 +277,6 @@ describe('selectConnection', () => {
 
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
     expect(api).not.toHaveBeenCalled()
-  })
-
-  it('lets a later source choice win while an earlier dial is still pending', async () => {
-    let releaseDials!: () => void
-
-    const dialGate = new Promise<void>(resolve => {
-      releaseDials = resolve
-    })
-
-    setConnectionsRegistry(registry)
-    $connection.set({ connectionId: 'local', mode: 'local' })
-    openGatewayAgent.mockImplementation(async () => {
-      await dialGate
-    })
-
-    const openHomelab = selectConnection('homelab')
-    await Promise.resolve()
-    const stayLocal = selectConnection('local')
-
-    releaseDials()
-    await Promise.all([openHomelab, stayLocal])
-
-    expect(openGatewayAgent.mock.calls).toEqual([
-      ['homelab', 'default'],
-      ['local', 'default']
-    ])
-    // The superseded dial never activates: the user doesn't flip through
-    // homelab on the way back to local, and only the winner commits.
-    expect(ensureGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual([['local', 'default']])
-    expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
-    // Only the latest intent repaints the profile list.
-    expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
-    expect($connection.get()?.connectionId).toBe('local')
-    expect($gatewaySwitching.get()).toBe(false)
   })
 
   it('lands on an explicit profile instead of the one last used on that source', async () => {
@@ -394,7 +330,7 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
   })
 
-  it('keeps the current source usable when a dial fails: nothing is severed before the target is reachable', async () => {
+  it('a gateway that is down fails at the open and touches nothing in front', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
     $activeSessionId.set('a93bb39d')
@@ -402,14 +338,8 @@ describe('selectConnection', () => {
 
     await expect(selectConnection('homelab')).rejects.toThrow('offline')
 
-    // The dial failed in phase 1 — the switch never committed, so the open
-    // transcript, its runtime binding and the session lists are all intact.
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
-    expect(beginGatewaySwitch).not.toHaveBeenCalled()
-    expect(beforeConnectionSwitch).not.toHaveBeenCalled()
-    expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
     expect($activeSessionId.get()).toBe('a93bb39d')
-    expect($gatewaySwitching.get()).toBe(false)
     expect(requestFreshSession).not.toHaveBeenCalled()
     expect($newChatProfile.get()).toBeNull()
     expect($pendingConnectionId.get()).toBeNull()
@@ -418,7 +348,7 @@ describe('selectConnection', () => {
   })
 
   it.each(['remote', 'cloud'] as const)(
-    'requires protected REST auth on a warm %s socket before discarding the current workspace',
+    'requires protected REST auth on a warm %s socket before replacing the current chat',
     async kind => {
       const oauthRegistry: DesktopConnectionsRegistry = {
         ...registry,
@@ -433,126 +363,85 @@ describe('selectConnection', () => {
       $activeGatewayProfile.set('research')
       $activeSessionId.set('source-runtime')
       $newChatProfile.set('research')
-      $showAllProfiles.set(true)
       setApiRequestConnection('work-vps')
       setApiRequestProfile('research')
       setLastUsed.mockImplementationOnce(async id => ({ ok: true, registry: { ...oauthRegistry, lastUsed: id } }))
 
-      // A retained socket already passed its handshake; opening it succeeds
-      // even though fresh REST requests no longer authenticate. Connectivity
-      // errors must also preserve the workspace, without being called sign-in.
+      // A kept socket already passed its handshake; opening it succeeds even
+      // though fresh REST requests no longer authenticate.
       const expired = new Error(kind === 'remote' ? '401 Unauthorized: no_cookie' : '403 Forbidden: session expired')
-      const offline = new Error('net::ERR_CONNECTION_RESET')
-      api.mockRejectedValueOnce(expired).mockRejectedValueOnce(offline)
+      api.mockRejectedValueOnce(expired)
 
-      for (const error of [expired, offline]) {
-        await expect(selectConnection('homelab', { profile: 'scout' })).rejects.toBe(error)
-        expect($connection.get()).toBe(source)
-        expect($activeConnectionId.get()).toBe('work-vps')
-        expect($activeGatewayProfile.get()).toBe('research')
-        expect($activeSessionId.get()).toBe('source-runtime')
-        expect($newChatProfile.get()).toBe('research')
-        expect($showAllProfiles.get()).toBe(true)
-        expect($pendingConnectionId.get()).toBeNull()
-        expect($gatewaySwitching.get()).toBe(false)
-        expect(ensureGatewayAgent).not.toHaveBeenCalled()
-        expect(beginGatewaySwitch).not.toHaveBeenCalled()
-        expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
-        expect(requestFreshSession).not.toHaveBeenCalled()
-        expect(refreshActiveProfile).not.toHaveBeenCalled()
-        expect(setLastUsed).not.toHaveBeenCalled()
-      }
+      await expect(selectConnection('homelab', { profile: 'scout' })).rejects.toBe(expired)
+      expect($connection.get()).toBe(source)
+      expect($activeSessionId.get()).toBe('source-runtime')
+      expect($newChatProfile.get()).toBe('research')
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+      expect(requestFreshSession).not.toHaveBeenCalled()
+      expect(exitProjectScope).not.toHaveBeenCalled()
+      expect(setLastUsed).not.toHaveBeenCalled()
 
-      // Auth is refreshed externally; the very next click must work with the
-      // same module and warm socket, without a cached failed readiness result.
+      // Auth refreshed externally: the next click proves the read again and lands.
       await selectConnection('homelab', { profile: 'scout' })
-      expect(api.mock.calls.map(call => (call as unknown[])[0])).toEqual(
-        Array.from({ length: 3 }, () =>
-          expect.objectContaining({ connectionId: 'homelab', profile: 'scout', path: '/api/profiles' })
-        )
-      )
-      expect(openGatewayAgent.mock.calls).toEqual(Array.from({ length: 3 }, () => ['homelab', 'scout']))
-      expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
-      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect(api.mock.invocationCallOrder[2]).toBeLessThan(beginGatewaySwitch.mock.invocationCallOrder[0])
+      expect(api).toHaveBeenCalledTimes(2)
       expect($activeConnectionId.get()).toBe('homelab')
-      expect($newChatProfile.get()).toBe('scout')
-      expect($showAllProfiles.get()).toBe(false)
       expect($activeSessionId.get()).toBeNull()
-      expect(setLastUsed).toHaveBeenCalledWith('homelab')
     }
   )
 
-  it('an activation that does not land after the wipe lowers the barrier and repaints the still-active source', async () => {
+  it("leaves the old gateway's project before the fresh draft is requested", async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
-    // The dial opened the socket but the activation was declined (source
-    // edited/removed mid-switch): the commit hook ran (wipe done), yet
-    // $connection never moves to homelab.
-    ensureGatewayAgent.mockImplementationOnce(async (_connectionId, _profile, options) => {
-      options?.beforeActivate?.()
-    })
 
-    await expect(selectConnection('homelab')).rejects.toThrow('did not become active')
+    await selectConnection('homelab')
 
-    expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect(endGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect($gatewaySwitching.get()).toBe(false)
-    // The lists were wiped for a commit that never happened; the source that
-    // is still active gets repainted and the user lands on a fresh draft there.
-    expect(recoverActiveSourceAfterFailedGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect(requestFreshSession).toHaveBeenCalledTimes(1)
-    expect(setLastUsed).not.toHaveBeenCalled()
-    expect($newChatProfile.get()).toBeNull()
-    expect($pendingConnectionId.get()).toBeNull()
-    expect($connection.get()?.connectionId).toBe('local')
+    expect(exitProjectScope.mock.invocationCallOrder[0]).toBeLessThan(requestFreshSession.mock.invocationCallOrder[0])
   })
 
-  it("#93937: severs the previous source's runtime session binding BEFORE the new source is published, behind the barrier", async () => {
+  it("#93937: the previous gateway's runtime is unbound BEFORE the picked gateway is published", async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
     // Runtime id minted by the local backend; only local has ever heard of it.
     $activeSessionId.set('a93bb39d')
 
-    // Phase 1 (the dial) must not touch the current workspace at all.
-    openGatewayAgent.mockImplementationOnce(async () => {
-      expect($activeSessionId.get()).toBe('a93bb39d')
-      expect($gatewaySwitching.get()).toBe(false)
-      expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
-    })
-
-    // Every publication of the new source, with what a session-scoped effect
-    // would read at that instant.
-    const published: Array<{ activeSessionId: null | string; connectionId?: string; switching: boolean }> = []
+    const published: Array<{ activeSessionId: null | string; connectionId?: string; drafted: number }> = []
 
     const off = $connection.listen(next => {
       published.push({
         activeSessionId: $activeSessionId.get(),
         connectionId: next?.connectionId,
-        switching: $gatewaySwitching.get()
+        drafted: requestFreshSession.mock.calls.length
       })
     })
 
     await selectConnection('homelab')
     off()
 
-    // The old runtime id was already gone when homelab became visible, and
-    // the barrier was up — nothing could pair 'a93bb39d' with the new backend.
-    expect(published).toEqual([{ activeSessionId: null, connectionId: 'homelab', switching: true }])
-    // dial → commit (barrier + reset + wipe, inside the activation's commit
-    // hook) → publish, in that order.
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
-    expect(openGatewayAgent.mock.invocationCallOrder[0]).toBeLessThan(ensureGatewayAgent.mock.invocationCallOrder[0])
-    expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
-    expect(endGatewaySwitch).toHaveBeenCalledTimes(1)
-    expect($gatewaySwitching.get()).toBe(false)
-    expect($activeSessionId.get()).toBeNull()
+    expect(published).toEqual([{ activeSessionId: null, connectionId: 'homelab', drafted: 1 }])
   })
 
-  it('a click that supersedes a QUEUED commit wins: the superseded switch neither wipes nor activates', async () => {
-    // Both activations sit behind an in-flight profile/agent switch (the
-    // profile store's mutex); their commit hooks only run once it settles.
+  it('a failed activation leaves the gateway in front usable and points the draft back at it', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+    // The pick reached its turn (draft rehomed), then the dial failed.
+    ensureGatewayAgent.mockImplementationOnce(async (_connectionId, _profile, options) => {
+      options?.beforeActivate?.()
+
+      throw new Error('offline')
+    })
+
+    await expect(selectConnection('homelab')).rejects.toThrow('offline')
+
+    expect($connection.get()?.connectionId).toBe('local')
+    expect($newChatProfile.get()).toBe('default')
+    expect(requestFreshSession).toHaveBeenCalledTimes(2)
+    expect(setLastUsed).not.toHaveBeenCalled()
+    expect($pendingConnectionId.get()).toBeNull()
+  })
+
+  it('a pick superseded while queued neither drafts nor activates', async () => {
+    // Both activations sit behind an in-flight profile/agent activation (the
+    // profile store's mutex); their beforeActivate hooks only run once it settles.
     const mutex = deferred()
 
     setConnectionsRegistry(registry)
@@ -581,71 +470,23 @@ describe('selectConnection', () => {
     const second = selectConnection('work-vps')
     await vi.waitFor(() => expect(ensureGatewayAgent).toHaveBeenCalledTimes(2))
 
-    // Nothing is severed while both are still queued.
-    expect(beginGatewaySwitch).not.toHaveBeenCalled()
+    // Nothing is touched while both are still queued.
     expect($activeSessionId.get()).toBe('a93bb39d')
+    expect(requestFreshSession).not.toHaveBeenCalled()
 
     mutex.resolve()
     await Promise.all([first, second])
     off()
 
-    // homelab stepped aside at its turn: no wipe, no publication, no error
-    // UI; work-vps wiped once and is the only source ever published.
-    expect(ensureGatewayAgent.mock.calls.map(call => call[0])).toEqual(['homelab', 'work-vps'])
-    expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
+    // homelab stepped aside at its turn: no draft, no publication, no error.
     expect(published).toEqual(['work-vps:active=null'])
-    expect($connection.get()?.connectionId).toBe('work-vps')
-    expect(recoverActiveSourceAfterFailedGatewaySwitch).not.toHaveBeenCalled()
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledWith('work-vps')
-    expect($gatewaySwitching.get()).toBe(false)
     expect($pendingConnectionId.get()).toBeNull()
   })
 
-  it('does not spend the activation timeout while waiting for the serialized commit turn', async () => {
-    vi.useFakeTimers()
-
-    try {
-      const mutex = deferred()
-
-      setConnectionsRegistry(registry)
-      $connection.set({ connectionId: 'local', mode: 'local' })
-      ensureGatewayAgent.mockImplementationOnce(async (connectionId, _profile, options) => {
-        await mutex.promise
-
-        if (options?.beforeActivate && !options.beforeActivate()) {
-          return
-        }
-
-        $connection.set({
-          connectionId: connectionId ?? undefined,
-          mode: 'remote',
-          profile: 'default',
-          registryScoped: true
-        })
-      })
-
-      const attempt = selectConnection('homelab')
-      await vi.waitFor(() => expect(ensureGatewayAgent).toHaveBeenCalledTimes(1))
-
-      // Queue ownership belongs to the shared mutex, not the actual activation
-      // attempt, so waiting here must not consume its 20-second commit budget.
-      await vi.advanceTimersByTimeAsync(20_000)
-      expect(beginGatewaySwitch).not.toHaveBeenCalled()
-
-      mutex.resolve()
-      await attempt
-
-      expect($connection.get()?.connectionId).toBe('homelab')
-      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect($gatewaySwitching.get()).toBe(false)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a slow-but-healthy dial is not a failed switch: the source caps only past the ssh layer budget, and the click lands', async () => {
+  it('a slow-but-healthy cold dial is not a failed pick: it caps only past the ssh layer budget', async () => {
     vi.useFakeTimers()
 
     try {
@@ -653,7 +494,10 @@ describe('selectConnection', () => {
 
       setConnectionsRegistry(registry)
       $connection.set({ connectionId: 'local', mode: 'local' })
-      openGatewayAgent.mockImplementationOnce(() => dial.promise)
+      ensureGatewayAgent.mockImplementationOnce(async (connectionId, profile) => {
+        await dial.promise
+        $connection.set({ connectionId: connectionId ?? undefined, mode: 'remote', profile, registryScoped: true })
+      })
 
       let outcome = 'pending'
 
@@ -666,11 +510,8 @@ describe('selectConnection', () => {
         }
       )
 
-      // A cold remote dial is a chain of main-process stages (ssh connect, the
-      // platform/locate/version execs, the spawned backend's ready sentinel, the
-      // forward) that routinely outruns the 20 s reconnect-class budget: measured
-      // 37-64 s against a small VPS. The switch must keep waiting instead of
-      // toasting "Could not connect to <source>" for a source that is arriving.
+      // A cold remote dial (ssh connect, locate/version execs, the spawned
+      // backend's ready sentinel, the forward) routinely runs 37-64 s.
       await vi.advanceTimersByTimeAsync(60_000)
       expect(outcome).toBe('pending')
       expect($pendingConnectionId.get()).toBe('homelab')
@@ -680,197 +521,12 @@ describe('selectConnection', () => {
 
       expect(outcome).toBe('resolved')
       expect($connection.get()?.connectionId).toBe('homelab')
-      expect($gatewaySwitching.get()).toBe(false)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('a dial that never answers times out: nothing severed, the click fails visibly, and the source can be retried', async () => {
-    vi.useFakeTimers()
-
-    try {
-      setConnectionsRegistry(registry)
-      $connection.set({ connectionId: 'local', mode: 'local' })
-      $activeSessionId.set('a93bb39d')
-      openGatewayAgent.mockImplementationOnce(() => new Promise<void>(() => undefined))
-
-      const outcome = selectConnection('homelab').then(
-        () => 'resolved',
-        (error: Error) => error.message
-      )
-
-      await vi.advanceTimersByTimeAsync(SOURCE_SWITCH_DIAL_TIMEOUT_MS)
-
-      expect(await outcome).toMatch(/Timed out connecting to "Homelab"/)
-      expect(ensureGatewayAgent).not.toHaveBeenCalled()
-      expect(beginGatewaySwitch).not.toHaveBeenCalled()
-      expect($activeSessionId.get()).toBe('a93bb39d')
-      expect($gatewaySwitching.get()).toBe(false)
-      expect($pendingConnectionId.get()).toBeNull()
-
-      // The stalled click does not poison the source: a retry is a real switch,
-      // not a duplicate of the pending one.
-      await selectConnection('homelab')
-
-      expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
-      expect($connection.get()?.connectionId).toBe('homelab')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('an activation that published the new source but never settled counts as committed', async () => {
-    vi.useFakeTimers()
-
-    try {
-      setConnectionsRegistry(registry)
-      $connection.set({ connectionId: 'local', mode: 'local' })
-      // The socket activates and publishes synchronously; only the trailing
-      // descriptor resync (an IPC) stalls.
-      ensureGatewayAgent.mockImplementationOnce((connectionId, _profile, options) => {
-        options?.beforeActivate?.()
-        $connection.set({
-          connectionId: connectionId ?? undefined,
-          mode: 'remote',
-          profile: 'default',
-          registryScoped: true
-        })
-
-        return new Promise<void>(() => undefined)
-      })
-
-      const attempt = selectConnection('homelab')
-      await vi.advanceTimersByTimeAsync(20_000)
-      await attempt
-
-      expect($connection.get()?.connectionId).toBe('homelab')
-      expect($gatewaySwitching.get()).toBe(false)
-      expect(setLastUsed).toHaveBeenCalledWith('homelab')
-      expect(requestFreshSession).toHaveBeenCalledTimes(1)
-      expect(recoverActiveSourceAfterFailedGatewaySwitch).not.toHaveBeenCalled()
-      expect($pendingConnectionId.get()).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a timed-out activation that already published cannot republish after a newer source wins', async () => {
-    vi.useFakeTimers()
-
-    try {
-      let releaseDescriptor: () => void = () => undefined
-
-      setConnectionsRegistry(registry)
-      // Seed A's remembered profile through the real source/profile observer,
-      // then restore the currently active local source.
-      $activeGatewayProfile.set('research')
-      $connection.set({ connectionId: 'homelab', mode: 'remote', profile: 'research', registryScoped: true })
-      $activeGatewayProfile.set('default')
-      $connection.set({ connectionId: 'local', mode: 'local', profile: 'default', registryScoped: true })
-
-      ensureGatewayAgent
-        .mockImplementationOnce((connectionId, profile, options) => {
-          options?.beforeActivate?.()
-
-          // Low-level activation publishes synchronously. The trailing descriptor
-          // promise remains alive beyond selectConnection's commit timeout.
-          $activeGatewayProfile.set(profile)
-          $connection.set({
-            connectionId: connectionId ?? undefined,
-            mode: 'remote',
-            profile,
-            registryScoped: true
-          })
-
-          return new Promise<void>(resolve => {
-            releaseDescriptor = () => {
-              // Mirrors ensureGatewayAgent's publication seam: a revoked owner
-              // observes its signal and must not publish its late descriptor.
-              if (!options?.signal?.aborted) {
-                $activeGatewayProfile.set(profile)
-                $connection.set({
-                  connectionId: connectionId ?? undefined,
-                  mode: 'remote',
-                  profile,
-                  registryScoped: true
-                })
-              }
-
-              resolve()
-            }
-          })
-        })
-        .mockImplementationOnce(async (connectionId, profile, options) => {
-          if (options?.beforeActivate && !options.beforeActivate()) {
-            return
-          }
-
-          $activeGatewayProfile.set(profile)
-          $connection.set({
-            connectionId: connectionId ?? undefined,
-            mode: 'remote',
-            profile,
-            registryScoped: true
-          })
-        })
-
-      const timedOutOwner = selectConnection('homelab')
-      await vi.advanceTimersByTimeAsync(20_000)
-      await timedOutOwner
-
-      // Fail open: A really did become active before its trailing descriptor
-      // work timed out, so the commit remains successful.
-      expect($activeGatewayProfile.get()).toBe('research')
-      expect($connection.get()?.connectionId).toBe('homelab')
-
-      await selectConnection('work-vps')
-      expect($activeGatewayProfile.get()).toBe('default')
-      expect($connection.get()?.connectionId).toBe('work-vps')
-
-      releaseDescriptor()
-      await vi.advanceTimersByTimeAsync(0)
-
-      expect($activeGatewayProfile.get()).toBe('default')
-      expect($connection.get()?.connectionId).toBe('work-vps')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('an activation that stalls AFTER the wipe times out: barrier down, still-active source repainted', async () => {
-    vi.useFakeTimers()
-
-    try {
-      setConnectionsRegistry(registry)
-      $connection.set({ connectionId: 'local', mode: 'local' })
-      ensureGatewayAgent.mockImplementationOnce((_connectionId, _profile, options) => {
-        options?.beforeActivate?.()
-
-        return new Promise<void>(() => undefined)
-      })
-
-      const outcome = selectConnection('homelab').then(
-        () => 'resolved',
-        (error: Error) => error.message
-      )
-
-      await vi.advanceTimersByTimeAsync(20_000)
-
-      expect(await outcome).toMatch(/Timed out activating "Homelab"/)
-      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect($gatewaySwitching.get()).toBe(false)
-      expect(recoverActiveSourceAfterFailedGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect(requestFreshSession).toHaveBeenCalledTimes(1)
-      expect(setLastUsed).not.toHaveBeenCalled()
-      expect($connection.get()?.connectionId).toBe('local')
-      expect($pendingConnectionId.get()).toBeNull()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a timed-out activation cannot publish the target after it eventually settles', async () => {
+  it('a dial that never answers times out visibly, cannot publish later, and the gateway can be retried', async () => {
     vi.useFakeTimers()
 
     try {
@@ -879,11 +535,9 @@ describe('selectConnection', () => {
       setConnectionsRegistry(registry)
       $connection.set({ connectionId: 'local', mode: 'local' })
       ensureGatewayAgent.mockImplementationOnce(async (connectionId, _profile, options) => {
-        options?.beforeActivate?.()
         await activation.promise
 
-        // Mirrors the real activation door: cancellation ownership is checked
-        // immediately before publishing after the async activation work.
+        // Mirrors the real door: ownership is checked right before publishing.
         if (options?.signal?.aborted) {
           return
         }
@@ -901,19 +555,48 @@ describe('selectConnection', () => {
         (error: Error) => error.message
       )
 
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(SOURCE_SWITCH_DIAL_TIMEOUT_MS)
 
-      expect(await outcome).toMatch(/Timed out activating "Homelab"/)
-      expect($connection.get()?.connectionId).toBe('local')
-      expect($gatewaySwitching.get()).toBe(false)
+      expect(await outcome).toMatch(/Timed out connecting to "Homelab"/)
+      expect($pendingConnectionId.get()).toBeNull()
 
       activation.resolve()
       await vi.advanceTimersByTimeAsync(0)
-
       expect($connection.get()?.connectionId).toBe('local')
-      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect(endGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect($gatewaySwitching.get()).toBe(false)
+
+      await selectConnection('homelab')
+      expect($connection.get()?.connectionId).toBe('homelab')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an activation that published but never settled counts as landed', async () => {
+    vi.useFakeTimers()
+
+    try {
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      // The socket activates and publishes; only a trailing descriptor resync stalls.
+      ensureGatewayAgent.mockImplementationOnce((connectionId, _profile, options) => {
+        options?.beforeActivate?.()
+        $connection.set({
+          connectionId: connectionId ?? undefined,
+          mode: 'remote',
+          profile: 'default',
+          registryScoped: true
+        })
+
+        return new Promise<void>(() => undefined)
+      })
+
+      const attempt = selectConnection('homelab')
+      await vi.advanceTimersByTimeAsync(SOURCE_SWITCH_DIAL_TIMEOUT_MS)
+      await attempt
+
+      expect($connection.get()?.connectionId).toBe('homelab')
+      expect(setLastUsed).toHaveBeenCalledWith('homelab')
+      expect(requestFreshSession).toHaveBeenCalledTimes(1)
       expect($pendingConnectionId.get()).toBeNull()
     } finally {
       vi.useRealTimers()
@@ -930,13 +613,11 @@ describe('selectConnection', () => {
     const restoring = initializeConnectionsRegistry()
 
     await new Promise(resolve => setTimeout(resolve, 0))
-    expect(openGatewayAgent).not.toHaveBeenCalled()
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
 
     $connection.set({ connectionId: 'homelab', mode: 'remote' })
     await restoring
 
-    expect(openGatewayAgent).not.toHaveBeenCalled()
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
     expect($showAllProfiles.get()).toBe(true)
@@ -1004,14 +685,13 @@ describe('selectConnection', () => {
 
     // A later resync republishes a profile-less primary descriptor (the
     // startHermes shape). The remembered pair is the authority for "what was
-    // last used here" — switching away and back must still restore 'mac',
-    // and the commit must not die in targetIsActive() on the descriptor gap.
+    // last used here" — picking away and back must still restore 'mac', and
+    // the pick must not die in targetIsActive() on the descriptor gap.
     await selectConnection('homelab')
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'default', expect.anything())
 
     await selectConnection('local')
 
-    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect($newChatProfile.get()).toBe('mac')
   })
@@ -1027,7 +707,6 @@ describe('selectConnection', () => {
     await initializeConnectionsRegistry()
 
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
-    expect(wipeSessionListsForGatewaySwitch).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
   })
 })

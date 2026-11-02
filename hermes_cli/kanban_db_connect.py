@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from agent.deadline import poll_until
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from pathlib import Path
 from typing import Any
@@ -131,15 +132,13 @@ def _cross_process_init_lock(path: Path):
     handle = lock_path.open("a+b")
     acquired = False
     try:
-        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
-        while True:
+        def _try_lock() -> bool:
             try:
-                acquired = _try_lock_nb(handle)
+                return _try_lock_nb(handle)
             except OSError:
-                acquired = False
-            if acquired or time.monotonic() >= deadline:
-                break
-            time.sleep(_INIT_LOCK_POLL_SECONDS)
+                return False
+
+        acquired = poll_until(_try_lock, _INIT_LOCK_TIMEOUT_SECONDS, _INIT_LOCK_POLL_SECONDS)
         if not acquired:
             _kb._log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "

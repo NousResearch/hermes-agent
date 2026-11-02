@@ -1,0 +1,24 @@
+name: session-relay
+version: "0.3.1"
+repo: https://github.com/ikuro4kin-dev/hermes-session-relay
+sha: c41eaf05d7d421541e12f857e7f5a921a2b120b7
+title: Session Relay
+description: "Hands a long-running conversation over to a fresh session before the context window fills up: a ⚡ chip in the status bar shows live context usage, and at the threshold (45% by default) the agent writes a hand-off note while the plugin opens a new chat, seeded with that note as its first message and named after the current one (+1). On Telegram and other messaging platforms the gateway half provides a session_relay_handoff tool; after /new it attaches that chat's note to the first message of the new session, so the fresh session opens with the hand-off. Disclosure: each relay runs one extra agent turn and therefore uses model tokens."
+maintainer: ikuro4kin-dev
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/ikuro4kin-dev/hermes-session-relay#readme
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/c41eaf05d7d421541e12f857e7f5a921a2b120b7/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/ikuro4kin-dev/hermes-session-relay/c41eaf05d7d421541e12f857e7f5a921a2b120b7/assets/status-bar.png
+capabilities:
+  provides_tools:
+    - session_relay_handoff
+  provides_hooks:
+    - on_session_reset
+    - pre_gateway_dispatch
+  provides_middleware: []
+  requires_env: []

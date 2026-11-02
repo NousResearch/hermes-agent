@@ -1060,6 +1060,33 @@ def test_an_escalated_attempts_terminated_watcher_and_unread_result_reach_the_re
                 registry.kill_process(proc.id, source="test_cleanup", consume_output=True)
 
 
+def test_a_reused_childs_handoff_never_claims_its_still_running_watcher_was_terminated(monkeypatch):
+    """Without a retry builder the same child reruns and is never closed, so its watcher keeps running: the retry
+    must not be told it was TERMINATED (and to relaunch it)."""
+    from tools import process_registry as registry_mod
+    monkeypatch.setattr(registry_mod, "_SYSTEMD_SCOPE_AVAILABLE", False)
+    registry = registry_mod.process_registry
+    spawned, seen = [], []
+
+    def low(child, task_id, _record):
+        spawned.append(registry.spawn_local("sleep 30", task_id=task_id, owner_task_id=task_id))
+        return M("watcher running")
+
+    def medium(child, *_):
+        seen.append((spawned[0].exited, child.messages[-1]))
+        return D()
+
+    try:
+        _run_direct(monkeypatch, {"low": low, "medium": medium}, ceiling="medium", builder=False)
+        ((exited, handoff),) = seen
+        assert not exited and "TERMINATED" not in handoff
+        assert spawned[0].id in handoff and "still running" in handoff
+    finally:
+        for proc in spawned:
+            if not proc.exited:
+                registry.kill_process(proc.id, source="test_cleanup", consume_output=True)
+
+
 def test_a_detached_units_retry_is_never_attached_to_the_parent():
     from tools.delegate_tool_child_run import _detach_child
     attached_at_build = []

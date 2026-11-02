@@ -745,7 +745,7 @@ def _next_escalation_effort(child: Any, entry: dict[str, Any], parent_agent: Any
 
 def _escalation_handoff(
     original_goal: str, *, effort: str, next_effort: str, entry: dict[str, Any], transcript_path: Optional[str],
-    working_dir: Optional[str], processes: dict[str, list[dict[str, Any]]],
+    working_dir: Optional[str], processes: dict[str, list[dict[str, Any]]], still_running: list[dict[str, Any]],
 ) -> str:
     """The retry's goal: the original task, what the stopped attempt left (its summary, or a pointer to the
     transcript when there is none), the transcript path, the working directory to continue in and the runtime's
@@ -779,6 +779,9 @@ def _escalation_handoff(
         from tools.process_registry_notifications import _process_accounting_lines
         lines += ["", "The previous attempt's background processes (runtime facts, not its own claims):",
                   *_process_accounting_lines(processes)]
+    if still_running:
+        lines.append("Background processes it started are still running in this session (do not relaunch them): "
+                     + "; ".join(f"{p.get('session_id')} `{p.get('command', '')[:100]}`" for p in still_running))
     return "\n".join(lines)
 
 
@@ -1072,10 +1075,6 @@ class _ChildRun:
         working_dir = self.working_dir()
         transcript = _str_or_none(getattr(self.child, "_live_transcript_path", None))
         processes = self.background_process_report()  # before teardown kills them
-        retry_goal = _escalation_handoff(
-            chain.original_goal, effort=effort, next_effort=next_effort, entry=entry, transcript_path=transcript,
-            working_dir=working_dir, processes=processes,
-        )
         chain.record(self.child, entry.get("exit_reason"))  # before the build: a reused child's level changes
         try:
             next_child = _build_retry_child(self.child, next_effort)
@@ -1095,6 +1094,12 @@ class _ChildRun:
             chain.attempts.pop()
             chain.costs.pop()
             return False
+        # A reused child is never closed, so what it left running is still running (and reported by its last run).
+        still_running = processes.pop("orphaned_processes", []) if next_child is self.child else []
+        retry_goal = _escalation_handoff(
+            chain.original_goal, effort=effort, next_effort=next_effort, entry=entry, transcript_path=transcript,
+            working_dir=working_dir, processes=processes, still_running=still_running,
+        )
         logger.info(
             "Subagent %d stopped on %s at reasoning effort %s; retrying at %s", self.task_index,
             entry.get("exit_reason"), effort, next_effort,

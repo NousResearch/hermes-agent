@@ -8,7 +8,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
-  MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
+  MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_MENTION_STRICT
+  (default false; body-text fallback then requires a literal '@' before the localpart), MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
@@ -858,6 +859,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
+        self._mention_strict: bool = self._parse_mention_strict(config)
         self._free_rooms: set[str] = _extra_csv_set(config, "free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS")
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
@@ -944,6 +946,12 @@ class MatrixAdapter(BasePlatformAdapter):
     def _parse_thread_require_mention(config) -> bool:
         """MATRIX_THREAD_REQUIRE_MENTION (scoped) → ``thread_require_mention`` in config.extra → false."""
         configured = _extra_or_secret(config.extra, "thread_require_mention", "MATRIX_THREAD_REQUIRE_MENTION", False)
+        return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _parse_mention_strict(config) -> bool:
+        """MATRIX_MENTION_STRICT (scoped) → ``mention_strict`` in config.extra → false."""
+        configured = _extra_or_secret(config.extra, "mention_strict", "MATRIX_MENTION_STRICT", False)
         return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
 
     @staticmethod
@@ -1455,7 +1463,7 @@ class MatrixAdapter(BasePlatformAdapter):
             "policy": {
                 "allowed_user_count": len(self._allowed_user_ids), "allowed_room_count": len(self._allowed_room_ids),
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
-                "require_mention": self._require_mention, "free_response_room_count": len(self._free_rooms),
+                "require_mention": self._require_mention, "mention_strict": self._mention_strict, "free_response_room_count": len(self._free_rooms),
                 "allow_room_mentions": self._allow_room_mentions, "process_notices": self._process_notices,
                 "allow_public_rooms": _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")},
             "media": {"max_media_bytes": self._max_media_bytes}}
@@ -2952,8 +2960,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._user_id and self._user_id in body:
             return True
         localpart = self._user_localpart()
-        if localpart and re.search(r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE):
-            return True
+        if localpart:
+            # Strict mode (MATRIX_MENTION_STRICT): only a literal '@' before the localpart summons the
+            # bot, so ordinary sentences that merely contain its name stay conversation, not summons.
+            # MSC3952 m.mentions pills and full-mxid matches above are authoritative either way; loose
+            # matching stays the default so IRC-style bridges without mention events can still trigger.
+            prefix = r"(?<!\w)@" if self._mention_strict else r"\b"
+            if re.search(prefix + re.escape(localpart) + r"\b", body, re.IGNORECASE):
+                return True
         return bool(formatted_body and self._user_id and f"matrix.to/#/{self._user_id}" in formatted_body)
 
     def _voice_may_park(self, room_id: str, body: str, content: dict, relates_to: dict,
@@ -3233,7 +3247,8 @@ def interactive_setup() -> None:
 
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
-    ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
+    ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("mention_strict", "MATRIX_MENTION_STRICT", "lower"),
+    ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),

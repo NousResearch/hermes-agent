@@ -2,7 +2,6 @@
 
 import contextvars
 import gc
-import time
 import weakref
 
 from tools import async_delegation as ad
@@ -34,9 +33,9 @@ def test_completed_record_releases_dispatch_context():
     try:
         handle, ref = _dispatch_under_turn_state()
         assert handle["status"] == "dispatched"
-        deadline = time.monotonic() + 10
-        while ad.active_count() and time.monotonic() < deadline:
-            time.sleep(0.02)
+        # Join the worker thread: a finished record only proves bookkeeping ran, not that the
+        # worker has left the Contexts it copied, and those would still hold the state alive.
+        ad._executor.shutdown(wait=True)
         assert ad.active_count() == 0
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()

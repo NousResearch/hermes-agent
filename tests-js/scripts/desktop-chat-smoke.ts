@@ -122,16 +122,15 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
   try {
     await composer.waitFor({ state: 'visible', timeout: timeoutMs })
     await expect(composer).toBeEditable({ timeout: timeoutMs })
-    // Wait out the boot/onboarding overlay with a hit test that does not scroll.
-    // Playwright retries a blocked click by calling scrollIntoView with
-    // end/center/start alignment, which scrolls the app's overflow-hidden
-    // ancestors; older desktops (v0.19.1) keep the composer editable behind
-    // "Starting Hermes…", so every retry displaced the layout and the composer
-    // was never hittable again once the overlay cleared.
+    // Hit-test without scrolling: the composer's centre must reach the composer,
+    // not the boot/onboarding overlay. Never use a Playwright pointer action on
+    // the composer: its actionability step calls scrollIntoView (and its retries
+    // cycle end/center/start alignment), which scrolls the app's overflow-hidden
+    // ancestors. The v0.19.1 desktop's chat surface scrolled that way stays
+    // displaced, so its composer was never hittable again (every retry hit
+    // <html>, the chat surface or the composer dock, with this poll already true).
     await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), { timeout: timeoutMs })
       .toBe(true)
-    // Trial input checks hit testing, not merely a non-zero box behind the boot overlay.
-    await composer.click({ trial: true, timeout: timeoutMs })
   } catch (error) {
     throw new Error(`${(error as Error).message} -- composer not interactable `
       + `(composer-root=${await root.count()}, contenteditable=${await root.locator('[contenteditable]').count()}): `
@@ -147,6 +146,32 @@ function composerIsTopmost(el: Element): boolean {
   const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
 
   return hit !== null && el.contains(hit)
+}
+
+/** Runs in the page: keyboard input will reach the composer. */
+function composerHasFocus(el: Element): boolean {
+  return document.activeElement !== null && el.contains(document.activeElement)
+}
+
+/**
+ * A real pointer click at the composer's hit-tested centre, then proof it took
+ * focus. Unlike locator.click this never scrolls the app (see waitForChatReady).
+ */
+async function focusComposerByPointer(page: Page, composer: Locator): Promise<void> {
+  await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), {
+    timeout: 15_000, message: 'The composer must be the topmost element at its centre before the click',
+  }).toBe(true)
+
+  const box = await composer.evaluate((el: Element): { x: number; y: number } => {
+    const rect = el.getBoundingClientRect()
+
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  })
+
+  await page.mouse.click(box.x, box.y)
+  await expect.poll(async (): Promise<boolean> => composer.evaluate(composerHasFocus), {
+    timeout: 15_000, message: 'The click at the composer must focus it',
+  }).toBe(true)
 }
 
 /** What the composer actually contains, for a failure that explains itself. */
@@ -301,25 +326,27 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit, options.reusedBuildCommit) }
     const beforeIds = (await readTranscript(page)).map((message: TranscriptMessage): string => message.id)
     const before = (await observe()).length
-    await composer.click()
+    await focusComposerByPointer(page, composer)
     // The app persists its composer draft across launches, so a checkpoint that
     // types on top of a restored draft can submit the PREVIOUS checkpoint's text
     // (proved: the update window's turn carried the root checkpoint's prompt) and
     // the witness never matches. Clear it deliberately and refuse to type until
     // the composer is provably empty.
-    await composer.press('ControlOrMeta+A')
-    await composer.press('Delete')
+    // page.keyboard types into the focused composer; locator.press/pressSequentially
+    // would call element.focus() first, which can scroll the old layout too.
+    await page.keyboard.press('ControlOrMeta+A')
+    await page.keyboard.press('Delete')
     await expect.poll(async (): Promise<string> => composerText(composer), {
       timeout: 15_000, message: 'The composer must be empty before the checkpoint types (a restored draft must not survive)',
     }).toBe('')
-    await composer.pressSequentially(prompt)
+    await page.keyboard.type(prompt)
     // The composer clears on submit whether or not a turn was ever started, so
     // the clear-poll below passes vacuously when the editor refused the input.
     // Prove the typing landed before trusting anything downstream of Enter.
     await expect.poll(async (): Promise<string> => composerText(composer), {
       timeout: 15_000, message: 'The composer must hold the typed prompt before Enter (did the editor accept input?)',
     }).toContain(prompt)
-    await composer.press('Enter')
+    await page.keyboard.press('Enter')
     await expect.poll(async (): Promise<string> => composerText(composer),
     { timeout: 90_000, message: 'The submitted draft must clear before the idle control proves completion' }).toBe('')
     let witnessIndex = -1

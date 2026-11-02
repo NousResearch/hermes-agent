@@ -69,3 +69,23 @@ def test_auto_archive_uses_the_swept_profiles_own_retention_config(two_profile_h
 
     assert _archived(home_b / "state.db"), (
         "profile b's store was swept with another profile's sessions.auto_archive_days")
+
+
+def test_auto_archive_floors_a_non_positive_min_interval_hours(tmp_path, monkeypatch):
+    """``sessions.min_interval_hours: 0`` must not reach ``maybe_auto_archive`` un-floored: it
+    would make the DB-level throttle a no-op, re-sweeping the store on every housekeeping tick
+    instead of at most once per interval."""
+    from hermes_state import SessionDB
+
+    home = tmp_path / "a"
+    _write_config(home, auto_archive_days=3)
+    calls: list = []
+    monkeypatch.setattr(
+        SessionDB, "maybe_auto_archive",
+        lambda self, **kw: calls.append(kw) or {"skipped": False, "archived": 0})
+    monkeypatch.setattr(wss, "_session_db_path_for_profile", lambda profile: home / "state.db")
+    monkeypatch.setattr(wss, "_last_auto_archive_check", {})
+
+    wss._maybe_auto_archive_for_profile("a")
+
+    assert calls == [{"idle_days": 3.0, "min_interval_hours": 24}]

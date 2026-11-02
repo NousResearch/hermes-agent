@@ -4,8 +4,10 @@ from hermes_state_search_hybrid import (
     EmbeddingIndex,
     content_search_matches,
     cosine,
+    edit_distance,
     rrf_fuse,
     semantic_enabled,
+    suggest_typo_terms,
 )
 
 
@@ -256,3 +258,154 @@ def test_sidecar_open_or_read_failure_degrades_to_fuzzy(tmp_path, monkeypatch):
         index=_BoomRead(),
     )
     assert [row["session_id"] for row in rows] == ["s1", "s2"]
+
+
+def test_ranked_sessions_drops_weak_cosine_neighbors(tmp_path):
+    db_path = tmp_path / "state.db"
+    db_path.write_text("")
+    store = EmbeddingIndex(db_path)
+    # query ~ [1, 0]; strong ~ aligned; weak ~ near-orthogonal noise that still ranks
+    store.upsert(
+        "m",
+        [
+            (1, "strong", [1.0, 0.0]),
+            (2, "weak", [0.25, 0.97]),
+        ],
+    )
+    ranked = store.ranked_sessions("m", [1.0, 0.0], limit=10)
+    store.close()
+    assert ranked == ["strong"]
+    assert "weak" not in ranked
+
+
+def test_weak_semantic_only_sessions_do_not_dilute_fuzzy_hits(tmp_path):
+    """Drawer keyword search must not fill with low-similarity embedding neighbors."""
+    db_path = tmp_path / "state.db"
+    _seed_state(
+        db_path,
+        sessions=[
+            ("fuzzy-hit", "cli", "m", 1),
+            ("weak-neighbor", "cli", "m", 2),
+        ],
+        messages=[
+            (1, "fuzzy-hit", "user", "talk about logseq graphs"),
+            (2, "weak-neighbor", "user", "unrelated device install note"),
+        ],
+    )
+    db = _FuzzyDB([{"session_id": "fuzzy-hit", "snippet": "logseq"}], db_path=db_path)
+    store = EmbeddingIndex(db.db_path)
+    store.upsert(
+        "m",
+        [
+            (1, "fuzzy-hit", [1.0, 0.0]),
+            # cosine with query [1,0] ≈ 0.25 — below the floor, used to pollute results
+            (2, "weak-neighbor", [0.25, 0.97]),
+        ],
+    )
+
+    rows = content_search_matches(
+        db,
+        "logseq*",
+        limit=10,
+        settings={"model": "m", "base_url": "http://embed", "api_key": "k"},
+        embed=lambda texts: [[1.0, 0.0] for _ in texts],
+        index=store,
+    )
+    store.close()
+    ids = [row["session_id"] for row in rows]
+    assert ids == ["fuzzy-hit"]
+    assert "weak-neighbor" not in ids
+
+
+def test_search_skips_reindex_when_sidecar_already_has_rows(tmp_path):
+    db_path = tmp_path / "state.db"
+    _seed_state(
+        db_path,
+        sessions=[("s1", "cli", "m", 1), ("s2", "cli", "m", 2)],
+        messages=[
+            (1, "s1", "user", "alpha"),
+            # Unindexed newer row — without the warm-sidecar skip, search would embed it.
+            (2, "s2", "user", "brand new message still missing from the sidecar"),
+        ],
+    )
+    db = _FuzzyDB([{"session_id": "s1", "snippet": "alpha"}], db_path=db_path)
+    store = EmbeddingIndex(db.db_path)
+    store.upsert("m", [(1, "s1", [1.0, 0.0])])
+    calls = {"upsert": 0, "embed": 0}
+
+    def embed(texts):
+        calls["embed"] += 1
+        return [[1.0, 0.0] for _ in texts]
+
+    orig_upsert = store.upsert
+
+    def counting_upsert(*args, **kwargs):
+        calls["upsert"] += 1
+        return orig_upsert(*args, **kwargs)
+
+    store.upsert = counting_upsert  # type: ignore[method-assign]
+
+    content_search_matches(
+        db,
+        "alpha*",
+        limit=5,
+        settings={"model": "m", "base_url": "http://embed", "api_key": "k"},
+        embed=embed,
+        index=store,
+    )
+    store.close()
+    # one query embed only — no index batch embed/upsert on a warm sidecar
+    assert calls["upsert"] == 0
+    assert calls["embed"] == 1
+
+
+def test_edit_distance_logfeq_to_logseq_is_one():
+    assert edit_distance("logfeq", "logseq", max_distance=2) == 1
+    assert edit_distance("logfeq", "grocery", max_distance=2) > 2
+
+
+class _PrefixAwareDB:
+    """Prefix FTS stand-in: hit when some snippet word starts with the query stem."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def _words(self, row):
+        blob = " ".join(str(row.get(k) or "") for k in ("snippet", "title", "content"))
+        return blob.replace(">>>", " ").replace("<<<", " ").lower().split()
+
+    def search_messages(self, query, source_filter=None, exclude_sources=None, limit=20, fields=None):
+        self.calls.append(query)
+        needle = (query or "").rstrip("*").lower()
+        if not needle:
+            return [dict(r) for r in self.rows][:limit]
+        out = []
+        for row in self.rows:
+            if any(w.startswith(needle) for w in self._words(row)):
+                out.append(dict(row))
+        return out[:limit]
+
+
+def test_typo_logfeq_rescues_logseq_with_expanded_kind():
+    db = _PrefixAwareDB([
+        {"session_id": "s-log", "snippet": "try the >>>logseq<<< plugin today"},
+        {"session_id": "s-groc", "snippet": "buy grocery milk"},
+    ])
+    terms = suggest_typo_terms(db, "logfeq*")
+    assert "logseq" in terms
+    rows = content_search_matches(
+        db, "logfeq*", limit=10, settings={"model": "", "base_url": "", "api_key": ""},
+    )
+    assert [r["session_id"] for r in rows] == ["s-log"]
+    assert rows[0]["match_kind"] == "expanded"
+    assert ">>>" in (rows[0].get("snippet") or "")
+
+
+def test_direct_fts_hit_is_marked_fts():
+    db = _FuzzyDB([{"session_id": "s1", "snippet": ">>>alpha<<< beta"}])
+    rows = content_search_matches(
+        db, "alpha*", limit=5, settings={"model": "", "base_url": "", "api_key": ""},
+    )
+    assert rows[0]["match_kind"] == "fts"
+

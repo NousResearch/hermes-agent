@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import struct
 import urllib.error
@@ -35,8 +36,137 @@ RRF_K = 60
 _INDEX_BATCH = 24
 _EMBED_TEXT_CAP = 2000
 _SIDECAR_NAME = "session-search-embeddings.db"
+# Drop embedding neighbors below this cosine. text-embedding-3-small keyword
+# queries otherwise surface weak "top-N of everything" rows and the drawer
+# looks like a recent-session dump after a multi-second index stall.
+SEMANTIC_MIN_COSINE = 0.35
+# Single-token typos like "logfeq" → "logseq": FTS prefix alone misses these.
+_TYPO_MIN_TOKEN_LEN = 4
+_TYPO_PREFIX_LEN = 3
+_TYPO_CANDIDATE_HITS = 40
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
 
 EmbedFn = Callable[[Sequence[str]], list[list[float]]]
+
+
+def edit_distance(left: str, right: str, *, max_distance: int = 2) -> int:
+    """Bounded Levenshtein; returns max_distance+1 when farther than the cap."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > max_distance:
+        return max_distance + 1
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    # two-row DP
+    prev = list(range(len(right) + 1))
+    for i, a in enumerate(left, start=1):
+        curr = [i] + [0] * len(right)
+        row_min = curr[0]
+        for j, b in enumerate(right, start=1):
+            cost = 0 if a == b else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            row_min = min(row_min, curr[j])
+        if row_min > max_distance:
+            return max_distance + 1
+        prev = curr
+    return prev[-1] if prev[-1] <= max_distance else max_distance + 1
+
+
+def _strip_fts_markup(query: str) -> str:
+    return re.sub(r"[*\"']+", " ", query or "").strip()
+
+
+def _max_edits_for(token: str) -> int:
+    # Short tokens: one key slip only. Longer: allow two (transpose-ish typos).
+    return 1 if len(token) <= 6 else 2
+
+
+def _words_in(*blobs: Any) -> set[str]:
+    out: set[str] = set()
+    for blob in blobs:
+        if not blob:
+            continue
+        # FTS may wrap hits as >>>term<<< — strip markers before tokenizing.
+        text = re.sub(r">>>+|<<<+", " ", str(blob))
+        out.update(m.group(0).lower() for m in _WORD_RE.finditer(text))
+    return out
+
+
+def suggest_typo_terms(db, query: str, *, limit: int = 5) -> list[str]:
+    """When FTS misses a single-token slip, propose near-neighbor terms from prefix hits.
+
+    Uses a cheap 3-char FTS prefix probe, then keeps words within a small edit
+    distance of the typed token. No external spell dictionary required.
+    """
+    tokens = [
+        t.lower()
+        for t in re.findall(r"[A-Za-z0-9_]+", _strip_fts_markup(query))
+        if len(t) >= _TYPO_MIN_TOKEN_LEN
+    ]
+    if not tokens:
+        return []
+    search = getattr(db, "search_messages", None)
+    if not callable(search):
+        return []
+    rescued: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        prefix = tok[:_TYPO_PREFIX_LEN] + "*"
+        try:
+            rows = search(
+                query=prefix,
+                limit=_TYPO_CANDIDATE_HITS,
+                fields=("session_id", "snippet", "role", "source", "model", "session_started"),
+            )
+        except TypeError:
+            try:
+                rows = search(query=prefix, limit=_TYPO_CANDIDATE_HITS)
+            except Exception:
+                continue
+        except Exception:
+            continue
+        max_d = _max_edits_for(tok)
+        scored: list[tuple[int, str]] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            for word in _words_in(row.get("snippet"), row.get("title"), row.get("content")):
+                if word == tok or word in seen:
+                    continue
+                dist = edit_distance(tok, word, max_distance=max_d)
+                if dist <= max_d:
+                    scored.append((dist, word))
+        scored.sort(key=lambda item: (item[0], item[1]))
+        for _, word in scored:
+            if word in seen:
+                continue
+            seen.add(word)
+            rescued.append(word)
+            if len(rescued) >= limit:
+                return rescued
+    return rescued
+
+
+def _annotate_match_kind(rows: list[dict], kind: str) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        annotated = dict(row)
+        annotated.setdefault("match_kind", kind)
+        out.append(annotated)
+    return out
+
+
+def _highlight_term(snippet: str, term: str) -> str:
+    """Wrap the first case-insensitive whole-ish match in >>>term<<< when missing."""
+    text = (snippet or "").strip()
+    if not text or not term:
+        return text
+    if ">>>" in text and "<<<" in text:
+        return text
+    pattern = re.compile(re.escape(term), re.IGNORECASE)
+    return pattern.sub(lambda m: f">>>{m.group(0)}<<<", text, count=1)
 
 
 def rrf_fuse(rankings: Sequence[Sequence[Any]], *, k: int = RRF_K) -> list[Any]:
@@ -143,12 +273,21 @@ class EmbeddingIndex:
         )
         self._conn.commit()
 
-    def ranked_sessions(self, model: str, query_vector: Sequence[float], limit: int) -> list[str]:
+    def ranked_sessions(
+        self,
+        model: str,
+        query_vector: Sequence[float],
+        limit: int,
+        *,
+        min_score: float = SEMANTIC_MIN_COSINE,
+    ) -> list[str]:
         best: dict[str, float] = {}
         for sid, blob in self._conn.execute(
             "SELECT session_id, vector FROM message_embeddings WHERE model = ?", (model,)
         ):
             score = cosine(query_vector, _unpack(blob))
+            if score < min_score:
+                continue
             if score > best.get(sid, 0.0):
                 best[sid] = score
         ordered = sorted(best, key=lambda sid: (-best[sid], sid))
@@ -336,7 +475,13 @@ def content_search_matches(
     embed: Optional[EmbedFn] = None,
     index: Optional[EmbeddingIndex] = None,
 ) -> list[dict]:
-    """Fuzzy message hits, fused with semantic hits when an embedding model is configured."""
+    """Fuzzy message hits, fused with semantic hits when an embedding model is configured.
+
+    Each row carries ``match_kind``:
+    - ``fts`` — direct lexical hit
+    - ``expanded`` — typo/near-neighbor rescue when primary FTS was empty
+    - ``semantic`` — embedding-only neighbor (no lexical hit for that session)
+    """
     fuzzy = db.search_messages(
         query=query,
         source_filter=source_filter,
@@ -344,6 +489,34 @@ def content_search_matches(
         limit=limit,
         fields=fields,
     )
+    fuzzy_kind = "fts"
+    if not fuzzy:
+        # Primary FTS empty → try 1–2 edit neighbors discovered via a short prefix probe.
+        for term in suggest_typo_terms(db, query):
+            rescue_q = term if term.endswith("*") else f"{term}*"
+            try:
+                rescued = db.search_messages(
+                    query=rescue_q,
+                    source_filter=source_filter,
+                    exclude_sources=exclude_sources,
+                    limit=limit,
+                    fields=fields,
+                )
+            except Exception:
+                continue
+            if not rescued:
+                continue
+            fuzzy = []
+            for row in rescued:
+                annotated = dict(row)
+                annotated["match_kind"] = "expanded"
+                snip = annotated.get("snippet") or ""
+                annotated["snippet"] = _highlight_term(str(snip), term)
+                fuzzy.append(annotated)
+            fuzzy_kind = "expanded"
+            break
+    fuzzy = _annotate_match_kind(list(fuzzy or []), fuzzy_kind)
+
     cfg = settings if settings is not None else embedding_settings()
     if not semantic_enabled(cfg):
         return fuzzy
@@ -362,7 +535,15 @@ def content_search_matches(
                 logger.debug("session search sidecar open failed; fuzzy only", exc_info=True)
                 return fuzzy
         try:
-            _index_batch(store, db, cfg["model"], embed_fn)
+            # Warm sidecars: rank what is already embedded. Re-index is deferred so a
+            # drawer keyword search is not blocked on a 24-row OpenRouter batch
+            # (multi-second stall → empty UI → then a polluted result list).
+            # Cold sidecars still bootstrap one batch so semantic can come online.
+            try:
+                if not store.stored_ids(cfg["model"]):
+                    _index_batch(store, db, cfg["model"], embed_fn)
+            except Exception:
+                logger.debug("session search warm-check/index failed; continue", exc_info=True)
             try:
                 query_vec = embed_fn([query])[0]
             except Exception:
@@ -396,14 +577,19 @@ def content_search_matches(
         fuzzy_sessions.append(sid)
     fused = rrf_fuse([fuzzy_sessions, semantic_sessions])[:limit]
     missing = [sid for sid in fused if sid not in by_session]
-    by_session.update(
-        _session_rows(
-            db,
-            missing,
-            source_filter=source_filter,
-            exclude_sources=exclude_sources,
-        )
+    semantic_only = _session_rows(
+        db,
+        missing,
+        source_filter=source_filter,
+        exclude_sources=exclude_sources,
     )
+    for sid, row in semantic_only.items():
+        annotated = dict(row)
+        annotated["match_kind"] = "semantic"
+        # No lexical snippet — clients render a "Semantically similar" chip.
+        if not (annotated.get("snippet") or "").strip():
+            annotated["snippet"] = ""
+        by_session[sid] = annotated
     ordered = [by_session[sid] for sid in fused if sid in by_session]
     return ordered or fuzzy
 

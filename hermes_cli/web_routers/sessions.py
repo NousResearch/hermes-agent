@@ -395,14 +395,18 @@ async def search_sessions(
                     payload["id"] = sid
                 seen[root] = payload
 
-            def hit_payload(row: dict, snippet: str, role, session_started) -> dict:
+            def hit_payload(row: dict, snippet: str, role, session_started, *, match_kind: str | None = None) -> dict:
                 # `last_active` rides only on id-match rows (sessions table); FTS
                 # hits have no row recency and leave it null so the desktop can
                 # fall back to session_started instead of inventing one.
+                # `match_kind`: fts | expanded | semantic | title | id — drawer uses
+                # this for highlight vs "Semantically similar" chrome.
+                kind = match_kind or row.get("match_kind") or "fts"
                 return {
                     "snippet": snippet, "role": role, "source": row.get("source"),
                     "model": row.get("model"), "session_started": session_started,
-                    "last_active": row.get("last_active")}
+                    "last_active": row.get("last_active"),
+                    "match_kind": kind}
 
             # Direct ID matches first (pasted ids never appear in message text).
             for row in db.search_sessions_by_id(
@@ -411,7 +415,8 @@ async def search_sessions(
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
-                add_lineage_result(sid, hit_payload(row, snippet, None, row.get("started_at")))
+                add_lineage_result(
+                    sid, hit_payload(row, snippet, None, row.get("started_at"), match_kind="id"))
 
             # Prefix wildcards so partial words match ("nimb" -> "nimb*");
             # quoted phrases and existing wildcards are kept as-is.
@@ -433,7 +438,9 @@ async def search_sessions(
                     break
                 add_lineage_result(
                     m["session_id"],
-                    hit_payload(m, m.get("snippet", ""), m.get("role"), m.get("session_started")))
+                    hit_payload(
+                        m, m.get("snippet", ""), m.get("role"), m.get("session_started"),
+                        match_kind=m.get("match_kind") or "fts"))
 
             # Title matches fill any remaining slots (#66242): the FTS index
             # only covers message content, so a term that lives solely in a
@@ -460,10 +467,10 @@ async def search_sessions(
                         continue
                     preview = (row.get("preview") or "").strip()
                     add_lineage_result(
-                        sid, hit_payload(row, preview or f"Session title matched: {q.strip()}",
-                                         None, row.get("started_at")))
+                        sid, hit_payload(
+                            row, preview or f"Session title matched: {q.strip()}",
+                            None, row.get("started_at"), match_kind="title"))
             return {"results": list(seen.values())}
-
         # FTS over a large state.db is the slowest read here; keep it off the loop (#60747).
         return await asyncio.to_thread(_with_db, profile, _search, read_only=True)
 

@@ -1258,6 +1258,12 @@ Reached through a port forward (`ssh -L 8000:localhost:9119`, `docker -p 8080:91
 dashboard's own page still opens its WebSocket upgrades: an Origin that names exactly the host and
 port the upgrade was sent to is that page.
 
+A reverse proxy on another loopback port that rewrites `Host` to the backend's address (nginx on
+`https://localhost:8443` in front of `127.0.0.1:9119`) needs its address in `dashboard.public_url`
+(`webapp.public_url` for the Webapp). That exact origin (scheme, host and port) is then trusted
+too; other loopback ports still are not. The same rules apply on a `0.0.0.0` or `::` bind: sign-in
+cookies are `SameSite=Lax`, and browsers send them from a page on another port of the same host.
+
 A desktop dev build passes the variable to the backends it starts over SSH, and replaces a backend
 it started earlier for a different renderer URL. The sockets Desktop opens to a gateway on the same
 machine are one-use, ticketed native dials that carry no Origin, so a dev build can use a local

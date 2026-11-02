@@ -354,11 +354,13 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
+    _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
     public_url_hosts,
+    public_url_origins,
     should_require_auth,
 )
 
@@ -976,6 +978,8 @@ def _configure_auth_gate(
     own_url = getattr(app.state, "listener_public_url", None)
     app.state.trusted_public_hosts = (
         _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+    app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
+        _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
     if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):

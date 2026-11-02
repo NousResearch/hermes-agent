@@ -491,3 +491,78 @@ def test_token_page_and_route_map_are_not_cors_readable_from_another_local_port(
     for origin, granted in (("http://localhost:3999", False), ("http://127.0.0.1:9119", True)):
         r = client.get(url, headers={"Host": "127.0.0.1:9119", "Origin": origin})
         assert (r.headers.get("access-control-allow-origin") == origin) is granted, (origin, r.status_code)
+
+
+@pytest.mark.parametrize("bound_host", ["0.0.0.0", "::"])
+@pytest.mark.parametrize("host, origin, allowed", [
+    ("localhost:9119", "http://localhost:9119", True),       # the page itself, opened on this host
+    ("192.168.1.5:9119", "http://192.168.1.5:9119", True),   # from the LAN: not a loopback origin
+    ("localhost:9119", "http://localhost:3000", False),       # another local page on this host
+])
+def test_all_interfaces_binds_keep_the_loopback_port_check(bound_host, host, origin, allowed):
+    """Sign-in cookies are SameSite=Lax, and http://localhost:3000 is same-site with
+    http://localhost:9119 (ports do not split sites), so a browser sends them on that page's
+    upgrade. Sign-in alone therefore does not stop another local page on a 0.0.0.0 / :: bind; the
+    port check applies there too."""
+    import types
+
+    from hermes_cli.web_server_boundary import ws_host_origin_reason
+
+    state = types.SimpleNamespace(bound_host=bound_host, bound_port=9119, auth_required=True)
+    sock = types.SimpleNamespace(headers={"host": host, "origin": origin})
+    assert (ws_host_origin_reason(sock, state) is None) is allowed
+
+
+@pytest.mark.parametrize("listener_url, dashboard_url, origin, trusted", [
+    # webapp.public_url: a proxy on https://localhost:8443 that rewrites Host to the backend's.
+    ("https://localhost:8443", None, "https://localhost:8443", True),
+    ("https://localhost:8443/", None, "https://localhost:8443", True),     # trailing slash
+    ("https://localhost", None, "https://localhost:443", True),            # default port spelled out
+    ("https://localhost:8443", None, "https://localhost:8444", False),     # another loopback port
+    ("https://localhost:8443", None, "http://localhost:8443", False),      # another scheme
+    ("https://localhost:8443", None, "https://127.0.0.1:8443", False),     # another loopback host
+    ("https://localhost:8443", None, "http://localhost:3000", False),
+    # dashboard.public_url does the same for `hermes dashboard` / `hermes serve`.
+    (None, "https://localhost:8443", "https://localhost:8443", True),
+    (None, "https://localhost:8443", "http://localhost:3000", False),
+    (None, None, "https://localhost:8443", False),                         # nothing configured
+])
+def test_a_loopback_public_url_behind_a_host_rewriting_proxy(
+        monkeypatch, listener_url, dashboard_url, origin, trusted):
+    """A reverse proxy on another loopback port that rewrites Host to the backend's address sends
+    the page's Origin (the public URL) with Host 127.0.0.1:<bound>: neither the bound port nor
+    Origin == Host. The configured public URL's exact origin (scheme, host, port) is trusted for
+    CORS and sockets; any other loopback origin is still refused."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from hermes_cli.dashboard_auth import prefix
+    import hermes_cli.web_server as ws
+
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    monkeypatch.setattr(prefix, "resolve_public_url", lambda *a, **k: dashboard_url or "")
+    for name in ("trusted_public_hosts", "trusted_public_origins", "auth_required"):
+        monkeypatch.setattr(ws.app.state, name, None, raising=False)
+    if listener_url is not None:  # what GatewayDashboardMount sets from webapp.public_url
+        monkeypatch.setattr(ws.app.state, "listener_public_url", listener_url, raising=False)
+    elif hasattr(ws.app.state, "listener_public_url"):
+        monkeypatch.delattr(ws.app.state, "listener_public_url")
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9120, raising=False)
+    monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+    ws._configure_auth_gate("127.0.0.1", False, None, None)
+    assert ws.app.state.auth_required is False  # a loopback public URL does not turn on sign-in
+    client = TestClient(ws.app)
+
+    headers = {"Host": "127.0.0.1:9120", "Origin": origin}
+    grant = client.get("/api/status", headers=headers)
+    assert (grant.headers.get("access-control-allow-origin") == origin) is trusted
+    url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+    if trusted:
+        with client.websocket_connect(url, headers=headers):
+            pass
+    else:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert exc.value.code == 4403

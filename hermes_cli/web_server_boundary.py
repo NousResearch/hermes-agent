@@ -206,7 +206,7 @@ def ws_client_reason(ws, state) -> Optional[str]:
 
 
 def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
-    """``(scheme, host, port)`` of an http(s) loopback origin, else None."""
+    """``(scheme, host, port)`` of an http(s) loopback origin (default port filled in), else None."""
     try:
         parsed = urllib.parse.urlparse(origin)
         port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
@@ -217,14 +217,33 @@ def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
     return parsed.scheme, parsed.hostname, port
 
 
+def public_url_origins(public_url: str) -> frozenset[tuple[str, str, int]]:
+    """The loopback origin a ``public_url`` declares (a reverse proxy on another local port), as the
+    set :func:`is_trusted_local_origin` reads from ``state.trusted_public_origins``; empty for an
+    unset, malformed or non-loopback URL (a non-loopback Origin never meets the port check)."""
+    origin = _loopback_origin(public_url) if public_url else None
+    return frozenset({origin}) if origin else frozenset()
+
+
+def _dashboard_public_origins() -> frozenset[tuple[str, str, int]]:
+    """:func:`public_url_origins` of ``dashboard.public_url``."""
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+
+    return public_url_origins(resolve_public_url())
+
+
 def is_trusted_local_origin(origin: str, state) -> bool:
-    """True for a loopback origin on *state*'s bound port, or the desktop dev renderer this backend
-    serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down to the backend it spawns, and
-    worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
+    """True for a loopback origin on *state*'s bound port, the exact origin of the configured public
+    URL (``state.trusted_public_origins``: a proxy at ``https://localhost:8443`` that rewrites Host to
+    the backend's), or the desktop dev renderer this backend serves. Electron hands its
+    ``HERMES_DESKTOP_DEV_SERVER`` down to the backend it spawns, and worktree-ui-dev.md's ``hgui``
+    slots run that renderer on 5174+N."""
     loopback = _loopback_origin(origin)
     if loopback is None:
         return False
     if loopback[2] == getattr(state, "bound_port", None):
+        return True
+    if loopback in (getattr(state, "trusted_public_origins", None) or frozenset()):
         return True
     return _loopback_origin(os.environ.get("HERMES_DESKTOP_DEV_SERVER", "")) == loopback
 

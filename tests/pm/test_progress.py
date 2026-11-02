@@ -16,18 +16,24 @@ def test_ci_streams_and_an_explicit_choice_overrides_it():
     assert verbose_output({"HERMES_VERBOSE": "1"})
 
 
-@pytest.mark.parametrize("fails", [False, True])
-def test_contained_run_shows_output_only_when_the_child_fails(monkeypatch, fails):
+def test_contained_run_hides_output_when_child_succeeds(monkeypatch):
     monkeypatch.setenv("HERMES_VERBOSE", "0")
     stream = io.StringIO()
-    script = f"import sys\nfor i in range(200): print('noise', i)\nprint('the real error')\nsys.exit({fails:d})"
-    command = [sys.executable, "-c", script]
-    if fails:
-        with pytest.raises(subprocess.CalledProcessError):
-            run_contained(command, "Installing things", stream=stream)
-    else:
-        run_contained(command, "Installing things", stream=stream)
+    script = "import sys\nfor i in range(200): print('noise', i)\nprint('the real error')\nsys.exit(0)"
+    run_contained([sys.executable, "-c", script], "Installing things", stream=stream)
     text = stream.getvalue()
     assert "→ Installing things" in text
-    assert ("the real error" in text) is fails
+    assert "the real error" not in text
+    assert "noise 0" not in text, "the failure tail stays bounded"
+
+
+def test_contained_run_shows_output_when_child_fails(monkeypatch):
+    monkeypatch.setenv("HERMES_VERBOSE", "0")
+    stream = io.StringIO()
+    script = "import sys\nfor i in range(200): print('noise', i)\nprint('the real error')\nsys.exit(1)"
+    with pytest.raises(subprocess.CalledProcessError):
+        run_contained([sys.executable, "-c", script], "Installing things", stream=stream)
+    text = stream.getvalue()
+    assert "→ Installing things" in text
+    assert "the real error" in text
     assert "noise 0" not in text, "the failure tail stays bounded"

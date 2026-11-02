@@ -76,6 +76,20 @@ def _track(root: Path, relpath: str, body: str) -> None:
 
 
 
+@pytest.mark.parametrize("relpath, body", [
+    ("pkg/other.py", "from . import lazy_deps\n"),
+    ("app.py", '# tools.lazy_deps\n"""tools.lazy_deps.ensure"""\nx=1\n'),
+    ("app.py", "x = 1\n"),
+])
+def test_checker_success_outcomes(fixture_repo, relpath, body):
+    _track(fixture_repo, "tools/__init__.py", "")
+    _track(fixture_repo, "pkg/__init__.py", "")
+    _track(fixture_repo, relpath, body)
+    result = _run_checker(fixture_repo)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == ""
+
+
 @pytest.mark.parametrize("relpath, body, code, site", [
     ("app.py", "from tools.lazy_deps import install_specs\n", 1, "app.py:1"),
     ("app.py", "from tools import lazy_deps\n", 1, "app.py:1"),
@@ -87,20 +101,15 @@ def _track(root: Path, relpath: str, body: str) -> None:
     ("tools/helper.py", "from .lazy_deps import ensure\n", 1, "tools/helper.py:1"),
     ("tools/sub/mod.py", "from .. import lazy_deps\n", 1, "tools/sub/mod.py:1"),
     ("tools/__init__.py", "from . import lazy_deps\n", 1, "tools/__init__.py:1"),
-    ("pkg/other.py", "from . import lazy_deps\n", 0, ""),
-    ("app.py", '# tools.lazy_deps\n"""tools.lazy_deps.ensure"""\nx=1\n', 0, ""),
     ("broken.py", "def f(:\n", 2, "broken.py"),
-    ("app.py", "x = 1\n", 0, ""),
 ])
-def test_checker_outcomes(fixture_repo, relpath, body, code, site):
+def test_checker_failure_outcomes(fixture_repo, relpath, body, code, site):
     _track(fixture_repo, "tools/__init__.py", "")
     _track(fixture_repo, "pkg/__init__.py", "")
     _track(fixture_repo, relpath, body)
     result = _run_checker(fixture_repo)
     assert result.returncode == code, result.stdout + result.stderr
     assert site in result.stdout + result.stderr
-    if code == 0:
-        assert result.stdout.strip() == ""
 
 
 

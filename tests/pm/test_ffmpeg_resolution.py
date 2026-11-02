@@ -45,6 +45,19 @@ def indexes(monkeypatch):
     return version, tag, paths
 
 
+def _expected_ffmpeg_url(version, tag, paths, target):
+    btbn = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}"
+    urls = {
+        "win32-x64": f"{btbn}/ffmpeg-n{version}-1-gabcdef-win64-gpl-9.1.zip",
+        "win32-arm64": f"{btbn}/ffmpeg-n{version}-1-gabcdef-winarm64-gpl-9.1.zip",
+        "linux-x64": f"{btbn}/ffmpeg-n{version}-1-gabcdef-linux64-gpl-9.1.tar.xz",
+        "linux-arm64": f"{btbn}/ffmpeg-n{version}-1-gabcdef-linuxarm64-gpl-9.1.tar.xz",
+        "darwin-x64": f"https://ffmpeg.martin-riedl.de/download/{paths.get('darwin-x64', '')}",
+        "darwin-arm64": f"https://ffmpeg.martin-riedl.de/download/{paths.get('darwin-arm64', '')}",
+    }
+    return urls[target]
+
+
 @pytest.mark.parametrize("target", [
     "win32-x64", "win32-arm64", "linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64",
 ])
@@ -54,21 +67,14 @@ def test_resolved_version_fetches_its_exact_target_asset(indexes, target):
     # URL resolution and update discovery must agree about target identities.
     url = package.fetch_url(version, target)
     assert version in package.latest_versions(target)
-    if target.startswith(("win32", "linux")):
-        arch = "64" if target.endswith("-x64") else "arm64"
-        if target.startswith("win32"):
-            expected = f"ffmpeg-n{version}-1-gabcdef-win{arch}-gpl-9.1.zip"
-        else:
-            expected = f"ffmpeg-n{version}-1-gabcdef-linux{arch}-gpl-9.1.tar.xz"
-        assert url == f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{expected}"
-    else:
-        assert url == f"https://ffmpeg.martin-riedl.de/download/{paths[target]}"
+    assert url == _expected_ffmpeg_url(version, tag, paths, target)
 
 
 @pytest.mark.parametrize("target", ["win32-x64", "win32-arm64", "linux-x64", "darwin-arm64"])
 def test_unadvertised_version_refuses_instead_of_relabelling_old_bytes(indexes, target):
-    with pytest.raises(InstallError, match="9.9.9"):
+    with pytest.raises(InstallError, match="9.9.9") as exc_info:
         Ffmpeg().fetch_url("9.9.9", target)
+    assert "9.9.9" in str(exc_info.value)
 
 
 def test_only_retained_month_end_builds_are_pinned(indexes):

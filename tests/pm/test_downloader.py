@@ -34,8 +34,7 @@ def _sha(data: bytes) -> str:
 # ── parallelism ───────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("connections", [2, 8])
-def test_parallel_requests_overlap_without_exceeding_limit(tmp_path, connections):
+def _run_parallel_download(tmp_path, connections):
     from http.server import ThreadingHTTPServer
 
     total = 8 * (4 << 20)  # 32 MiB -> 8 x 4 MiB ranges
@@ -81,6 +80,12 @@ def test_parallel_requests_overlap_without_exceeding_limit(tmp_path, connections
     assert peak == connections and active == 0
     expected = [(i * total // connections, (i + 1) * total // connections - 1) for i in range(connections)]
     assert sorted((s, e) for _, s, e in ConcurrentHandler.ranges_seen) == expected
+    return dest
+
+
+@pytest.mark.parametrize("connections", [2, 8])
+def test_parallel_requests_overlap_without_exceeding_limit(tmp_path, connections):
+    assert _run_parallel_download(tmp_path, connections).read_bytes() == _payload(8 * (4 << 20))
 
 
 def test_progress_carries_overall_and_ranges(dl_server, tmp_path):
@@ -206,6 +211,7 @@ def test_refuses_non_https_non_loopback(tmp_path):
                   partials_dir=tmp_path / "partials")
     with pytest.raises(ValueError):
         dl.run()
+    assert not (tmp_path / "x.bin").exists()
 
 
 # ── edge cases: no-Range fallback, multi-source resume, pause mid-plan ──

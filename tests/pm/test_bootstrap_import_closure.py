@@ -15,8 +15,8 @@ def test_minimal_bootstrap_closure_reaches_pm_paths_and_locks(tmp_path):
     shutil.copytree(repo / "pm", stage / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy2(repo / "hermes_constants.py", stage / "hermes_constants.py")
     (stage / "hermes_cli").mkdir()
-    for name in ("__init__.py", "runtime_state.py"):
-        shutil.copy2(repo / "hermes_cli" / name, stage / "hermes_cli" / name)
+    shutil.copy2(repo / "hermes_cli" / "__init__.py", stage / "hermes_cli" / "__init__.py")
+    shutil.copy2(repo / "hermes_cli" / "runtime_state.py", stage / "hermes_cli" / "runtime_state.py")
     store = stage / "tools"
     env = dict(os.environ, HERMES_HOME=str(tmp_path / "home"),
                HERMES_RUNTIME_DIR=str(store), PYTHONPATH=str(stage))

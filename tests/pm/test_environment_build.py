@@ -380,20 +380,51 @@ build_editable = build_wheel
 
 
 @pytest.mark.parametrize("diagnostic", ["No solution found", "Connection timed out", "Failed to build wheel"])
-def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic):
+def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnostic, monkeypatch):
+    import socket
     import tracemalloc
     from pm.environment import PythonEnvironment
     from pm.workspace import classify_uv_failure
 
-    # Separate writes split the resolver marker across pipe reads; subsequent
-    # verbose output evicts it from the retained tail without changing its class.
-    script = (
-        f"import os, time; os.write(2, {diagnostic[:4].encode()!r}); time.sleep(.15); "
-        f"os.write(2, {diagnostic[4:].encode()!r}); "
-        "[os.write(2, b'x' * 65536) for _ in range(128)]; "
-        "os.write(2, b'final diagnostic'); raise SystemExit(1)"
-    )
-    with open(os.devnull, "w", encoding="utf-8") as output:
+    monkeypatch.setenv("HERMES_VERBOSE", "1")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sync_server:
+        sync_server.bind(("127.0.0.1", 0))
+        sync_server.listen(1)
+        port = sync_server.getsockname()[1]
+
+        class AcknowledgingOutput:
+            def __init__(self, prefix):
+                self.prefix = prefix
+                self.released = False
+
+            def write(self, text):
+                if not self.released and self.prefix in text:
+                    self.released = True
+                    try:
+                        conn, _ = sync_server.accept()
+                        conn.sendall(b"1")
+                        conn.close()
+                    except OSError:
+                        pass
+                return len(text)
+
+            def flush(self):
+                pass
+
+        output = AcknowledgingOutput(diagnostic[:4])
+        # Separate writes split the resolver marker across pipe reads; subsequent
+        # verbose output evicts it from the retained tail without changing its class.
+        script = (
+            f"import os, socket; "
+            f"sock = socket.create_connection(('127.0.0.1', {port}), timeout=10); "
+            f"os.write(2, {diagnostic[:4].encode()!r}); "
+            "sock.recv(1); "
+            "sock.close(); "
+            f"os.write(2, {diagnostic[4:].encode()!r}); "
+            "[os.write(2, b'x' * 65536) for _ in range(128)]; "
+            "os.write(2, b'final diagnostic'); raise SystemExit(1)"
+        )
         environment = PythonEnvironment(uv=Path(sys.executable), python=Path(sys.executable),
             destination=tmp_path / "venv", cache=tmp_path / "cache", env=dict(os.environ), output=output)
         tracemalloc.start()
@@ -412,43 +443,53 @@ def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnost
 
 def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path, monkeypatch):
     import io
+    import socket
     from pm.environment import PythonEnvironment
 
     monkeypatch.setenv("HERMES_VERBOSE", "1")  # CI's streamed log, not the contained view
 
-    released = tmp_path / "release-child"
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sync_server:
+        sync_server.bind(("127.0.0.1", 0))
+        sync_server.listen(1)
+        port = sync_server.getsockname()[1]
 
-    class AcknowledgingLog(io.StringIO):
-        def write(self, text):
-            if "child-started" in text:
-                released.touch()
-            return super().write(text)
+        class AcknowledgingLog(io.StringIO):
+            def write(self, text):
+                if "child-started" in text:
+                    try:
+                        conn, _ = sync_server.accept()
+                        conn.sendall(b"OK")
+                        conn.close()
+                    except OSError:
+                        pass
+                return super().write(text)
 
-    output = AcknowledgingLog()
-    child_env = dict(os.environ, UV_INDEX_PRIVATE_USERNAME="fixture-user",
-                     UV_INDEX_PRIVATE_PASSWORD="fixture-secret",
-                     UV_DEFAULT_INDEX="https://fixture.invalid/simple",
-                     UV_PROJECT="/poison/project", UV_VENV_SEED="true", UV_SYSTEM_PYTHON="true",
-                     UV_PYTHON="/poison/python", UV_CACHE_DIR="/poison/cache")
-    environment = PythonEnvironment(
-        uv=Path(sys.executable), python=Path(sys.executable), destination=tmp_path / "venv",
-        cache=tmp_path / "cache", env=child_env, output=output,
-    )
-    script = (
-        "import os, time; from pathlib import Path; "
-        "print('child-started', flush=True); "
-        f"release = Path({str(released)!r}); deadline = time.monotonic() + 5\n"
-        "while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
-        "assert release.exists(), 'log was hidden until process exit'\n"
-        "assert os.environ['UV_INDEX_PRIVATE_USERNAME'] == 'fixture-user'\n"
-        "assert os.environ['UV_INDEX_PRIVATE_PASSWORD'] == 'fixture-secret'\n"
-        "assert os.environ['UV_DEFAULT_INDEX'] == 'https://fixture.invalid/simple'\n"
-        "assert not {'UV_PROJECT', 'UV_VENV_SEED', 'UV_SYSTEM_PYTHON'} & os.environ.keys()\n"
-        f"assert os.environ['UV_PYTHON'] == {sys.executable!r}\n"
-        f"assert os.environ['UV_CACHE_DIR'] == {str(tmp_path / 'cache')!r}\n"
-        "print('child-complete', flush=True)\n"
-    )
-    result = environment._run(["-c", script], cwd=tmp_path, timeout=10)
+        output = AcknowledgingLog()
+        child_env = dict(os.environ, UV_INDEX_PRIVATE_USERNAME="fixture-user",
+                         UV_INDEX_PRIVATE_PASSWORD="fixture-secret",
+                         UV_DEFAULT_INDEX="https://fixture.invalid/simple",
+                         UV_PROJECT="/poison/project", UV_VENV_SEED="true", UV_SYSTEM_PYTHON="true",
+                         UV_PYTHON="/poison/python", UV_CACHE_DIR="/poison/cache")
+        environment = PythonEnvironment(
+            uv=Path(sys.executable), python=Path(sys.executable), destination=tmp_path / "venv",
+            cache=tmp_path / "cache", env=child_env, output=output,
+        )
+        cache_dir = str(tmp_path / "cache")
+        script = (
+            "import os, socket; "
+            "print('child-started', flush=True); "
+            f"sock = socket.create_connection(('127.0.0.1', {port}), timeout=5); "
+            "ack = sock.recv(2); sock.close(); "
+            "assert ack == b'OK', 'log was hidden until process exit'\n"
+            "assert os.environ['UV_INDEX_PRIVATE_USERNAME'] == 'fixture-user'\n"
+            "assert os.environ['UV_INDEX_PRIVATE_PASSWORD'] == 'fixture-secret'\n"
+            "assert os.environ['UV_DEFAULT_INDEX'] == 'https://fixture.invalid/simple'\n"
+            "assert not {'UV_PROJECT', 'UV_VENV_SEED', 'UV_SYSTEM_PYTHON'} & os.environ.keys()\n"
+            f"assert os.environ['UV_PYTHON'] == {sys.executable!r}\n"
+            f"assert os.environ['UV_CACHE_DIR'] == {cache_dir!r}\n"
+            "print('child-complete', flush=True)\n"
+        )
+        result = environment._run(["-c", script], cwd=tmp_path, timeout=10)
     assert result.returncode == 0, result.stderr
     assert "child-started" in output.getvalue()
     assert "child-complete" in output.getvalue()
@@ -484,20 +525,25 @@ def streaming_runner(request, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("parent_exits", [True, False])
 def test_streaming_deadline_includes_inherited_stdout(tmp_path, parent_exits, streaming_runner):
+    import socket
     import threading
     import time
 
     run, output, timeout_error = streaming_runner
-    release = tmp_path / "release-descendant"
-    finished = tmp_path / "descendant-finished"
+    sync_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sync_server.bind(("127.0.0.1", 0))
+    sync_server.listen(1)
+    port = sync_server.getsockname()[1]
+
     # The descendant inherits stdout even when the direct child has already exited.
     # Its finite lifetime also bounds this regression on the broken implementation.
     descendant = (
-        "import time; from pathlib import Path; "
+        "import socket; "
         "print('inherited-output', flush=True); "
-        f"release = Path({str(release)!r}); deadline = time.monotonic() + 10\n"
-        "while not release.exists() and time.monotonic() < deadline: time.sleep(.01)\n"
-        f"Path({str(finished)!r}).touch()\n"
+        f"sock = socket.create_connection(('127.0.0.1', {port}), timeout=15); "
+        "sock.recv(1); "
+        "sock.sendall(b'DONE'); "
+        "sock.close()\n"
     )
     parent = (
         "import subprocess, sys; "
@@ -515,14 +561,21 @@ def test_streaming_deadline_includes_inherited_stdout(tmp_path, parent_exits, st
         assert set(threading.enumerate()) <= threads_before, "timeout leaked an output reader"
     finally:
         # Cooperatively stop the orphan: its parent is no longer in the test subtree.
-        release.touch()
-        deadline = time.monotonic() + 5
-        while not finished.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
-        assert finished.exists(), "descendant did not acknowledge cleanup"
-        # Clean up even a broken implementation's reader after closing its writer.
-        for thread in set(threading.enumerate()) - threads_before:
-            thread.join(timeout=5)
+        try:
+            sync_server.settimeout(5.0)
+            conn, _ = sync_server.accept()
+            try:
+                conn.settimeout(5.0)
+                conn.sendall(b"X")
+                ack = conn.recv(4)
+            finally:
+                conn.close()
+            assert ack == b"DONE", "descendant did not acknowledge cleanup"
+        finally:
+            sync_server.close()
+            # Clean up even a broken implementation's reader after closing its writer.
+            for thread in set(threading.enumerate()) - threads_before:
+                thread.join(timeout=5)
 
 
 def test_streaming_eof_does_not_restart_process_wait_timeout(tmp_path, streaming_runner):

@@ -94,12 +94,8 @@ def test_bash_setup_failure_preserves_caller(tmp_path, already_active):
     assert json.loads(calls[-1])["python_env"] == dict.fromkeys(("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"))
 
 
-@pytest.mark.platforms("windows")
-def test_powershell_cold_sync_changed_input_warm_and_failure(tmp_path):
+def _run_powershell_cold_sync_changed_input_warm_and_failure(tmp_path, root, env, ps):
     # Native child-process and venv semantics cannot be reproduced by faking win32.
-    root, env = sync_checkout(tmp_path)
-    ps = powershell()
-    assert ps, "native Windows test requires PowerShell"
     script = tmp_path / "run.ps1"
     script.write_text(f'''
         $ErrorActionPreference = 'Stop'
@@ -152,3 +148,11 @@ def test_powershell_cold_sync_changed_input_warm_and_failure(tmp_path):
             "-noprofile", "-noninteractive", "-executionpolicy", "bypass", "-file",
             str(root / "setup-hermes.ps1").lower(), "-runtimeonly",
         ]
+
+
+@pytest.mark.platforms("windows")
+def test_powershell_cold_sync_changed_input_warm_and_failure(tmp_path):
+    root, env = sync_checkout(tmp_path)
+    ps = powershell()
+    assert ps, "native Windows test requires PowerShell"
+    _run_powershell_cold_sync_changed_input_warm_and_failure(tmp_path, root, env, ps)

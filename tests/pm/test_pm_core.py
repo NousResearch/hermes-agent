@@ -118,6 +118,7 @@ def test_bad_hash_rejected(pm_env):
     _pin(lockfile_path, "faketool", "1.0", "0" * 64)
     with pytest.raises(InstallError, match="install failed"):
         ensure("faketool", base_env={})
+    assert Facts(paths.facts_path()).get("faketool") is None
 
 
 

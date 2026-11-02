@@ -7,8 +7,7 @@ from pm.downloader import Download, DownloadError, HashError, Source
 from tests.pm._range_server import RangeHandler, dl_server, url
 
 
-@pytest.mark.parametrize("phase", ["probe", "body"])
-def test_fallback_retains_hash_destination_and_progress(tmp_path, dl_server, monkeypatch, phase):
+def _assert_fallback_retains_hash_destination_and_progress(tmp_path, dl_server, monkeypatch, phase):
     payload = b"the same pinned bytes" * 100
     RangeHandler.payloads = {"/primary": payload, "/mirror": payload, "/other": b"other"}
     requests = []
@@ -36,6 +35,14 @@ def test_fallback_retains_hash_destination_and_progress(tmp_path, dl_server, mon
     assert ticks[-1][:2] == (expected, expected)
     assert set(ticks[-1][2]) == {str(source.dest) for source in sources}
     assert requests.index("/primary") < requests.index("/mirror")
+    return destination
+
+
+@pytest.mark.parametrize("phase", ["probe", "body"])
+def test_fallback_retains_hash_destination_and_progress(tmp_path, dl_server, monkeypatch, phase):
+    assert _assert_fallback_retains_hash_destination_and_progress(
+        tmp_path, dl_server, monkeypatch, phase
+    ).read_bytes() == b"the same pinned bytes" * 100
 
 
 def test_bad_hash_is_not_a_mirror_miss(tmp_path, dl_server):
@@ -50,8 +57,7 @@ def test_bad_hash_is_not_a_mirror_miss(tmp_path, dl_server):
     assert all(path != "/mirror" for path, *_ in RangeHandler.ranges_seen)
 
 
-@pytest.mark.parametrize("mirror_status", [401, 403, 404])
-def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypatch, mirror_status):
+def _assert_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypatch, mirror_status):
     original = RangeHandler.do_GET
 
     def respond(handler):
@@ -68,6 +74,15 @@ def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypa
     assert primary in str(failure.value) and mirror in str(failure.value)
     assert "404" in str(failure.value) and str(mirror_status) in str(failure.value)
     assert not (tmp_path / "absent").exists()
+    return failure.value
+
+
+@pytest.mark.parametrize("mirror_status", [401, 403, 404])
+def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypatch, mirror_status):
+    failure = _assert_exhausted_mirrors_name_each_attempted_url(
+        tmp_path, dl_server, monkeypatch, mirror_status
+    )
+    assert "also-missing" in str(failure)
 
 
 @pytest.mark.parametrize("failure", ["503", "521", "dns", "tls", "disk", "pause"])

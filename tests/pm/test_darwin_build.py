@@ -12,8 +12,7 @@ import pytest
 from tests.pm._fixtures import build_worker as build_worker, client as client, isolated_python as isolated_python  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
-@pytest.mark.platforms("macos")
-def test_managed_build_archives_native_code(tmp_path, build_worker):
+def _build_native_archive_probe(tmp_path):
     from pm import build_requirements_environment
 
     source = tmp_path / "native_archive_probe-1.0"
@@ -71,6 +70,12 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         [str(executable), "-I", "-c", "import native_archive_probe; print(native_archive_probe.value())"],
         check=True, capture_output=True, text=True, timeout=30,
     )
+    return probe
+
+
+@pytest.mark.platforms("macos")
+def test_managed_build_archives_native_code(tmp_path, build_worker):
+    probe = _build_native_archive_probe(tmp_path)
     assert probe.stdout.strip() == "42"
 
 

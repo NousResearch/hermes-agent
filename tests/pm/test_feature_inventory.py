@@ -13,7 +13,7 @@ from pm import features
 from pm.environments import site_packages
 
 
-def test_inventory_uses_the_target_and_requires_every_anchor(tmp_path, monkeypatch):
+def _setup_inventory_fixture(tmp_path, monkeypatch):
     target_root = tmp_path / "target"
     subprocess.run(
         [sys.executable, "-m", "venv", "--without-pip", str(target_root)],
@@ -57,6 +57,11 @@ def test_inventory_uses_the_target_and_requires_every_anchor(tmp_path, monkeypat
         encoding="utf-8",
     )
     monkeypatch.setattr(extras, "ANCHORS", mapping)
+    return target, dependencies, repo, site, witness, launches
+
+
+def test_inventory_uses_the_target_and_requires_every_anchor(tmp_path, monkeypatch):
+    target, dependencies, repo, site, witness, launches = _setup_inventory_fixture(tmp_path, monkeypatch)
     before_path = list(sys.path)
     before_env = dict(os.environ)
     assert packaging.__file__ and "packaging" in sys.modules

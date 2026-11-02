@@ -17,3 +17,4 @@ capabilities:
     - pre_llm_call
   provides_middleware: []
   requires_env: []
+version: 0.5.5

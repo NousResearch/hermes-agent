@@ -51,8 +51,9 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
 
 @pytest.mark.parametrize("reasoning", [
     "scripted reasoning about gamma zeta-reason",
-    # A longer multi-sentence block: still never excerpted into the summary.
+    # Long and multi-sentence blocks must not add an excerpt to the summary either.
     "scripted reasoning about gamma zeta-reason that keeps going well past any short title length here",
+    "I will check the failure first. Then I will compare it with main.",
 ])
 def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
     """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""

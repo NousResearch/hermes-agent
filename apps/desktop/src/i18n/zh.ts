@@ -1090,6 +1090,9 @@ export const zh: Translations = {
       cloudConnectedTo: name => `已连接到 ${name}。`,
       cloudAgentProvisioning: '正在配置…',
       cloudStatusLabel: status => `状态：${status}`,
+      remoteComputerUseBridgeTitle: '使用这台 Mac 进行 Computer Use',
+      remoteComputerUseBridgeDesc:
+        '连接远程网关时，Desktop 会启动一个私有本地桥接，让 Computer Use 捕获和控制这台机器，而不是远程主机。',
       remoteUrlTitle: '远程 URL',
       remoteUrlDesc: '远程 dashboard 后端的基础 URL。支持路径前缀，例如 /hermes。',
       probing: '正在检查此网关的认证方式…',

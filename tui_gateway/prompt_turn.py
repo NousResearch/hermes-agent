@@ -144,6 +144,7 @@ class _TurnScopes:
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
     terminal: Any = None
+    bridge_caller: Any = None  # Computer Use bridge scope for this turn
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -446,6 +447,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
+    scopes.bridge_caller = _set_desktop_bridge_caller_for_session(session)
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
     profile_home = session.get("profile_home")
     if profile_home:
@@ -747,6 +749,7 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     if scopes.terminal is not None:
         from tools.terminal_scope import reset_terminal_scope
         reset_terminal_scope(scopes.terminal)
+    _reset_desktop_bridge_caller(scopes.bridge_caller)
     _clear_session_context(scopes.session_tokens)
 
 

@@ -365,7 +365,8 @@ def generate_launchd_plist() -> str:
     working_dir = _gw()._stable_service_working_dir()
     hermes_home = str(_gw().get_hermes_home().resolve())
     log_dir = _gw().get_hermes_home() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        log_dir.mkdir(parents=True, exist_ok=True)
     label = _gw().get_launchd_label()
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
@@ -381,6 +382,22 @@ def generate_launchd_plist() -> str:
     prog_args_xml = "\n        ".join(
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
+
+    # launchd xpcproxy runs without TCC / Removable Volumes permissions.
+    # If log_dir is on an external volume (e.g. /Volumes/...), xpcproxy fails with
+    # EPERM (exit 78) when opening StandardOutPath/StandardErrorPath before osascript executes.
+    # Route launchd's outer handles to ~/Library/Logs instead. Inside osascript,
+    # the shell redirection still writes gateway stdout/stderr to stdout_log/stderr_log.
+    launchd_stdout = stdout_log
+    launchd_stderr = stderr_log
+    try:
+        if str(log_dir.resolve()).startswith("/Volumes/"):
+            launchd_log_dir = Path.home() / "Library" / "Logs"
+            launchd_log_dir.mkdir(parents=True, exist_ok=True)
+            launchd_stdout = launchd_log_dir / f"{label}.log"
+            launchd_stderr = launchd_log_dir / f"{label}.error.log"
+    except OSError:
+        pass
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
@@ -459,10 +476,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
+    <string>{launchd_stdout}</string>
     
     <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
+    <string>{launchd_stderr}</string>
 </dict>
 </plist>
 """

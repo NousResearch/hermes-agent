@@ -7,6 +7,7 @@ development before the first push).
 
 from __future__ import annotations
 
+import contextlib
 import operator
 import os
 import re
@@ -21,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
 
+from agent.skill_utils import DIST_SWAP_DIR
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.profiles import (
@@ -380,14 +382,17 @@ def _replace_entry(src: Path, dest: Path) -> None:
     file<->directory transitions cannot raise or leave stale content behind.
 
     A directory is copied beside *dest* and swapped in, so a copy or swap that fails
-    part-way (a Windows file lock, say) leaves the existing *dest* in place."""
+    part-way (a Windows file lock, say) leaves the existing *dest* in place. Both the
+    copy and the old tree sit in ``DIST_SWAP_DIR``, which skill scanners skip."""
     if not src.is_dir():
         _remove_existing(dest)
         shutil.copy2(src, dest)
         return
+    holder = dest.parent / DIST_SWAP_DIR
     token = uuid.uuid4().hex
-    staging = dest.with_name(f".{dest.name}.hermes-dist-staging-{token}")
-    backup = dest.with_name(f".{dest.name}.hermes-dist-old-{token}")
+    staging = holder / f"{dest.name}.staging-{token}"
+    backup = holder / f"{dest.name}.old-{token}"
+    holder.mkdir(exist_ok=True)
     try:
         shutil.copytree(src, staging)
         if os.path.lexists(dest):
@@ -398,12 +403,12 @@ def _replace_entry(src: Path, dest: Path) -> None:
             if os.path.lexists(backup):
                 backup.rename(dest)
             raise
+        with contextlib.suppress(OSError):
+            _remove_existing(backup)  # the new tree is in place; a locked leftover must not fail the install
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    try:
-        _remove_existing(backup)
-    except OSError:
-        pass  # the new tree is in place; a locked leftover must not fail the install
+        with contextlib.suppress(OSError):
+            holder.rmdir()  # kept while it still holds a leftover
 
 
 def _shipped_cron_store(entries: list[tuple[Path, tuple[str, ...]]]) -> Optional[Path]:

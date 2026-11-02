@@ -278,6 +278,17 @@ def test_provision_failure_log_never_carries_the_identity_token_a_hop_echoed(con
     assert OPAQUE_IDENTITY_TOKEN not in caplog.text
 
 
+def test_provision_failure_log_never_carries_a_token_a_hop_echoed_into_a_header(connector, caplog, monkeypatch):
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: OPAQUE_IDENTITY_TOKEN)
+    connector.provision_script = [lambda token: {
+        "status": 403, "headers": {"Content-Type": "text/html", "Proxy-Status": f"egress; error=denied; token={token}"},
+        "body": b"<html>denied</html>"}]
+    caplog.set_level(logging.INFO)
+    assert relay.self_provision_relay() is False
+    assert "proxy-status=egress" in caplog.text  # the header is still logged
+    assert OPAQUE_IDENTITY_TOKEN not in caplog.text and OPAQUE_IDENTITY_TOKEN[:12] not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_upload_failure_never_carries_the_bearer_a_hop_echoed(connector, tmp_path, caplog):
     adapter = await _provisioned_adapter(connector)

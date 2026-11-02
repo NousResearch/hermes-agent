@@ -80,17 +80,18 @@ def _scrub(text: str, secrets: Iterable[str]) -> str:
 def describe_http_error(exc: urllib.error.HTTPError, body: bytes, *, secrets: Iterable[str] = ()) -> str:
     """``HTTP 403 (server=squid/6.10 x-squid-error=ERR_DNS_FAIL 0 body='<html>…')``.
 
-    The body is reduced to one line, stripped of the exact credentials the caller sent
+    Header values are redacted whole, then cut. The body is reduced to one line, stripped of the exact credentials the caller sent
     (``secrets``) before it is cut, so a token straddling the cut cannot leave a prefix,
     then its first ``BODY_EXCERPT_CHARS`` characters are redacted.
     """
     parts = []
+    secrets = tuple(secrets)
     headers = getattr(exc, "headers", None)
     for name in _ORIGIN_HEADERS:
         value = headers.get(name) if headers is not None else None
         if value:
-            parts.append(f"{name.lower()}={' '.join(str(value).split())[:120]}")
-    secrets = tuple(secrets)
+            # A hop can echo the bearer into a header too: redact the whole value before the cut.
+            parts.append(f"{name.lower()}={redact_excerpt(' '.join(str(value).split()), secrets)[:120]}")
     text = _scrub(" ".join(body.decode("utf-8", "replace").split()), secrets)
     if text:
         excerpt = text[:BODY_EXCERPT_CHARS] + ("…" if len(text) > BODY_EXCERPT_CHARS else "")

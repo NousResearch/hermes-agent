@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -345,6 +346,35 @@ def get_label(provider_id: str) -> str:
         return _LABEL_OVERRIDES[canonical]
     pdef = get_provider(canonical)
     return pdef.name if pdef else canonical
+
+
+def cn_twin_lit_only_by_shared_keys(slug: str, current_provider: Optional[str] = None) -> bool:
+    """True when *slug* is a regional ``-cn`` twin lit only by keys it shares with its sibling.
+
+    A ``-cn`` registry row lists the international vars as ordered fallbacks (documented in
+    ``website/docs/reference/environment-variables.md``), so a home where only the intl key is set
+    makes every credential probe report the twin configured. That row is a phantom: the picker
+    hides it, and ``list_available_providers`` must not mark it authenticated either. It stays
+    listed when it is the current provider — that is the endpoint the user is actually on — and
+    when it has a dedicated var of its own the user could set.
+
+    ``current_provider=None`` resolves the active provider from the auth store, so listings with
+    no session context agree with the picker's explicit ``current_provider``.
+    """
+    if not slug or not slug.endswith("-cn"):
+        return False
+    from hermes_cli.auth import PROVIDER_REGISTRY, get_active_provider
+
+    current = (get_active_provider() if current_provider is None else current_provider) or ""
+    if slug == current.strip().lower():
+        return False
+    twin = PROVIDER_REGISTRY.get(slug)
+    sibling = PROVIDER_REGISTRY.get(slug[:-3])
+    if twin is None or sibling is None or not twin.api_key_env_vars:
+        return False
+    lit = {name for name in twin.api_key_env_vars if os.environ.get(name)}
+    sibling_vars = set(sibling.api_key_env_vars)
+    return bool(lit) and lit <= sibling_vars < set(twin.api_key_env_vars)
 
 
 def is_aggregator(provider: str) -> bool:

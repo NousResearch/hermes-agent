@@ -777,11 +777,11 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  // Recents render in recency order. The hand-picked order is layered on per
-  // date group inside the section (orderRowsWithinGroups) rather than baked
-  // into the list here, so a drag ranks a row among its own day's chats
-  // instead of flattening the whole sidebar into an undated manual mode.
+  // Recents render in recency order. The hand-picked order is layered on per date group inside the
+  // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
+  // among its own day's chats instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
+  const gatewayProjectTree = useGatewayProjectTree(projectTree, agentSessions)
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -985,9 +985,7 @@ export function ChatSidebar({
   // `projects.tree` already unifies explicit projects + auto repos and folds
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
-  // overview sort. Membership is the backend tree's — never re-derived here.
-  const gatewayProjectTree = useGatewayProjectTree(projectTree, agentSessions)
-
+  // overview sort. Membership is the backend tree's (plus other gateways' rows), never re-derived.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
       filterToSessionBearingProjects(filterVisibleProjects(gatewayProjectTree, dismissedAutoProjects))
@@ -1009,8 +1007,7 @@ export function ChatSidebar({
       activeProjectId
     )
 
-    // Layer the user's manual drag-order on the deterministic sort; unordered projects keep their
-    // sorted position. Dedupe by id: backend merge edge cases (Windows path casing across profiles).
+    // Manual drag-order over the sorted list; dedupe by id (Windows path casing across profiles).
     const seen = new Set<string>()
 
     const deduped = sorted.filter(project => {

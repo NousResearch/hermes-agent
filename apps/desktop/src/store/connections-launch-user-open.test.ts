@@ -46,14 +46,17 @@ vi.mock('@/store/gateway-switch', () => ({ supersedeGatewaySwitch: vi.fn() }))
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile,
   $freshSessionRequest,
+  $newChatConnectionId: atom(null),
   $newChatProfile: atom(null),
   $newChatRoute: atom(null),
   $showAllProfiles: atom(false),
   captureNewChatSource: vi.fn(),
   currentNewChatIntent: () => 0,
   ensureGatewayAgent,
+  isLegacyNewChatProfile: () => false,
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   openGatewayAgent,
+  pinLegacyNewChatProfile: vi.fn(),
   refreshActiveProfile: vi.fn(async () => undefined),
   requestFreshSession: vi.fn()
 }))

@@ -454,6 +454,15 @@ async function restorePreferredConnection(
   }
 }
 
+function userActedDuringBoot(freshSessionRequest: number, userOpenSince: number): boolean {
+  return (
+    switchRevision > 0 ||
+    pendingTarget !== null ||
+    $freshSessionRequest.get() !== freshSessionRequest ||
+    currentUserSessionOpen() !== userOpenSince
+  )
+}
+
 /**
  * Load the registry once for Sessions and restore the explicit default route,
  * otherwise the last successfully used source. Later registry refreshes stay
@@ -488,12 +497,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   // drift to "restore" over.
   // The launch preference only decides where a window lands when nobody has
   // said otherwise yet.
-  if (
-    switchRevision > 0 ||
-    pendingTarget !== null ||
-    $freshSessionRequest.get() !== freshSessionRequest ||
-    currentUserSessionOpen() !== userOpenSince
-  ) {
+  if (userActedDuringBoot(freshSessionRequest, userOpenSince)) {
     return registry
   }
 

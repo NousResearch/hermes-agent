@@ -251,7 +251,7 @@ Agent 也可以使用 `skill_manage` 自行创建和更新 skills。解决复杂
 控制哪些 skills 在哪些平台上可用：
 
 ```bash
-hermes skills
+hermes skills config
 ```
 
 这会打开一个交互式 TUI，你可以按平台（CLI、Telegram、Discord 等）启用或禁用 skills。当你希望某些 skills 仅在特定场景下可用时非常有用——例如，在 Telegram 上禁用开发类 skills。

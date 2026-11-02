@@ -315,26 +315,45 @@ class SessionSchemaMixin:
         stored = dict(cursor.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall())
         pending_drop: Optional[str] = None
         statement = ""
-        for line in ddl.splitlines():
-            statement += line + "\n"
-            if not sqlite3.complete_statement(statement):
-                continue
-            statement, current = "", statement.strip()
-            upper = current.upper()
-            if upper.startswith("DROP TRIGGER IF EXISTS "):
-                pending_drop = current
-                continue
-            if upper.startswith("CREATE TRIGGER IF NOT EXISTS "):
-                desired = current.replace("IF NOT EXISTS ", "", 1).rstrip(";")
-                if stored.get(desired.split(None, 3)[2]) == desired:
-                    pending_drop = None
+        owns_transaction = False
+        try:
+            for line in ddl.splitlines():
+                statement += line + "\n"
+                if not sqlite3.complete_statement(statement):
                     continue
-            if pending_drop is not None:
-                cursor.execute(pending_drop)
-                pending_drop = None
-            cursor.execute(current)
-        if statement.strip():
-            raise sqlite3.OperationalError("incomplete DDL statement")
+                statement, current = "", statement.strip()
+                upper = current.upper()
+                if upper.startswith("DROP TRIGGER IF EXISTS "):
+                    pending_drop = current
+                    continue
+                if upper.startswith("CREATE TRIGGER IF NOT EXISTS "):
+                    desired = current.replace("IF NOT EXISTS ", "", 1).rstrip(";")
+                    name = desired.split(None, 3)[2]
+                    if stored.get(name) == desired:
+                        pending_drop = None
+                        continue
+                    if not cursor.connection.in_transaction:
+                        # Admit the whole trigger replacement before dropping anything. A sibling
+                        # opener may have installed it since our first, read-only snapshot.
+                        cursor.execute("BEGIN IMMEDIATE")
+                        owns_transaction = True
+                        stored = dict(cursor.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall())
+                        if stored.get(name) == desired:
+                            pending_drop = None
+                            continue
+                if pending_drop is not None:
+                    cursor.execute(pending_drop)
+                    pending_drop = None
+                cursor.execute(current)
+            if statement.strip():
+                raise sqlite3.OperationalError("incomplete DDL statement")
+        except BaseException:
+            if owns_transaction:
+                cursor.connection.rollback()
+            raise
+        else:
+            if owns_transaction:
+                cursor.connection.commit()
 
     @staticmethod
     def _execute_ddl_script_transactional(cursor: sqlite3.Cursor, ddl: str) -> None:

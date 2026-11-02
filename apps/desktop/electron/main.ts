@@ -224,6 +224,7 @@ import {
   DESKTOP_PROFILE_NAME_RE,
   desktopConnectionRequestInheritsPrimary,
   type DesktopProfileRoute,
+  registerDesktopProfilePreferenceIpc,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch
 } from './desktop-profile'
@@ -439,7 +440,7 @@ import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
-import { joinPrimaryBoot, primaryBootRequest, primaryProfileRestorable } from './primary-boot-join'
+import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfileRestorable } from './primary-boot-join'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { connectPrimaryRemote } from './primary-remote-startup'
@@ -9506,7 +9507,7 @@ async function ensureTerminalBackend(webContentsId: number) {
   // No window route: follow the primary, like a profile-less hermes:connection.
   const inheritsPrimary = !windowRoute?.profile
 
-  return backendDialClaims.run(`${backendScopeKey(null, profile)}${inheritsPrimary ? '\u0000inherited' : ''}`, () =>
+  return backendDialClaims.run(primaryDialClaimKey(backendScopeKey(null, profile), inheritsPrimary), () =>
     ensureBackend(profile, { inheritsPrimary })
   )
 }
@@ -10533,7 +10534,7 @@ async function ensureBackend(
   opts: { inheritsPrimary?: boolean; passive?: boolean; request?: { method?: string; path?: string } } = {}
 ) {
   const request = primaryBootRequest(profile, primaryProfileKey(), opts.inheritsPrimary)
-  let key = request.key
+  const key = request.key
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -10549,23 +10550,12 @@ async function ensureBackend(
     const joined = await joinPrimaryBoot(request, route, {
       primaryKey: primaryProfileKey,
       resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
-      start: boot => startHermes(boot.key, { inheritsPrimary: boot.inheritsPrimary })
+      start: boot => startHermes(boot.key, boot.inheritsPrimary)
     })
 
-    const { connection } = joined
-    key = joined.key
-    setWslBridgeProfileState(key, connection.mode !== 'remote')
+    setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
 
-    // A shared backend still owes the caller its profile scope, so renderer-side
-    // WebSocket, filesystem, and cache routing target the selected profile.
-    // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag. The
-    // unshared primary carries its own key too: a profile-less descriptor
-    // reads as "default" downstream, which breaks per-source profile memory
-    // (the primary IS "default" only when it actually booted as default).
-    return joined.route.descriptorProfile
-      ? { ...connection, profile: joined.route.descriptorProfile, sharedPrimary: true }
-      : { ...connection, profile: key }
+    return joined.descriptor
   }
 
   const existing = backendPool.get(key)
@@ -11751,7 +11741,7 @@ function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function startHermes(requestedProfile?: string, intent: { inheritsPrimary?: boolean } = {}) {
+async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -11838,12 +11828,7 @@ async function startHermes(requestedProfile?: string, intent: { inheritsPrimary?
       connectPrimaryRemote(remote, {
         profile: primaryProfile,
         restoreRememberedProfile: () =>
-          primaryProfileRestorable({
-            explicitDefaultEntry: Boolean(readDesktopConnectionConfig().profiles?.default),
-            inheritsPrimary: Boolean(intent.inheritsPrimary),
-            launchArgProfile: parseLaunchProfile(process.argv),
-            requestedProfile
-          }),
+          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig().profiles?.default),
         signal: localBackendLifecycle.signal,
         assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
         advanceBootProgress,
@@ -14045,26 +14030,17 @@ ipcMain.handle('hermes:connection', async (event, profile) => {
   const source = windowConnectionRoutes.get(event.sender.id) ?? null
   const route = resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
 
-  // A profile-less request follows the primary, even though the route now
-  // carries its name: a remote boot may still move it to a served profile.
-  return connectDesktopProfileRoute(route, event.sender, {
-    inheritsPrimary: desktopConnectionRequestInheritsPrimary(profile, source)
-  })
+  // A profile-less request follows the primary even though the route carries its name.
+  return connectDesktopProfileRoute(route, event.sender, desktopConnectionRequestInheritsPrimary(profile, source))
 })
 
-async function connectDesktopProfileRoute(
-  route: DesktopProfileRoute,
-  sender?: Electron.WebContents,
-  intent: { inheritsPrimary?: boolean } = {}
-) {
+async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents, inherits = false) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  // Inherited and explicit dials of one name answer different profiles once a
-  // remote boot re-pins the primary, so they never share a claim.
-  const inheritsPrimary = !route.connectionId && Boolean(intent.inheritsPrimary)
-  const scopeKey = `${backendScopeKey(route.connectionId, route.profile)}${inheritsPrimary ? '\u0000inherited' : ''}`
+  const inheritsPrimary = !route.connectionId && inherits
+  const scopeKey = primaryDialClaimKey(backendScopeKey(route.connectionId, route.profile), inheritsPrimary)
 
   const connection = await backendDialClaims.run(scopeKey, () =>
     route.connectionId
@@ -15575,19 +15551,8 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
-
-// Main owns each connection's last-used profile: windows send one change at a
-// time and import their pre-mirror record once, never their whole copy.
-const isRegisteredConnection = (connectionId: string) =>
+registerDesktopProfilePreferenceIpc(ipcMain, desktopProfilePreferences, connectionId =>
   readDesktopConnectionsRegistry().connections.some(connection => connection.id === connectionId)
-
-ipcMain.handle('hermes:profile:connections:remember', async (_event, connectionId, profile) =>
-  desktopProfilePreferences.rememberConnectionProfile(connectionId, profile, isRegisteredConnection)
-)
-ipcMain.handle('hermes:profile:connections:import', async (_event, record) =>
-  desktopProfilePreferences.importConnectionProfiles(record, isRegisteredConnection)
 )
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the

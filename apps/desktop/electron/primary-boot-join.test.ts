@@ -52,6 +52,8 @@ test('a renderer that joins a remote boot mid-roster read adopts the served prof
     const want = asked ? 'windows-only' : 'default'
     assert.equal(joined.key, want, String(asked))
     assert.equal(joined.route.descriptorProfile, want, String(asked))
+    // The descriptor ensureBackend returns: the global remote's shared primary, tagged with that profile.
+    assert.deepEqual(joined.descriptor, { mode: 'remote', profile: want, sharedPrimary: true }, String(asked))
   }
 })
 
@@ -62,13 +64,7 @@ test('a renderer retry after a failed remote boot still restores a served profil
   assert.deepEqual(request, { key: 'windows-only', inheritsPrimary: true })
 
   // startHermes(request.key, { inheritsPrimary }) gates restoration on this.
-  const restorable = () =>
-    primaryProfileRestorable({
-      explicitDefaultEntry: false,
-      inheritsPrimary: request.inheritsPrimary,
-      launchArgProfile: null,
-      requestedProfile: request.key
-    })
+  const restorable = () => primaryProfileRestorable(request.key, request.inheritsPrimary, null, undefined)
 
   pin.pin(request.key)
 
@@ -92,11 +88,11 @@ test('a renderer retry after a failed remote boot still restores a served profil
 
   // An explicitly requested profile, a --profile launch or a per-profile
   // route is intent and is never swapped.
-  for (const launch of [
-    { inheritsPrimary: false, launchArgProfile: null, explicitDefaultEntry: false },
-    { inheritsPrimary: true, launchArgProfile: 'windows-only', explicitDefaultEntry: false },
-    { inheritsPrimary: true, launchArgProfile: null, explicitDefaultEntry: true }
-  ]) {
-    assert.equal(primaryProfileRestorable({ ...launch, requestedProfile: 'windows-only' }), false, JSON.stringify(launch))
+  for (const [inherits, launchArg, defaultRoute] of [
+    [false, null, undefined],
+    [true, 'windows-only', undefined],
+    [true, null, { url: 'https://work.invalid' }]
+  ] as const) {
+    assert.equal(primaryProfileRestorable('windows-only', inherits, launchArg, defaultRoute), false, String(inherits))
   }
 })

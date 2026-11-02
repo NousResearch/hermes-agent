@@ -5,6 +5,11 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+# Hard cap on children per decompose: each entry becomes a task row plus graph
+# links in one transaction, and the decomposer LLM's "use 2-6 tasks" guidance is
+# advisory only — an over-long or hostile response must not explode the board.
+MAX_DECOMPOSE_CHILDREN = 32
+
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
     created_at: int,
@@ -106,6 +111,8 @@ def decompose_triage_task(
 
     if not children:
         return None
+    if len(children) > MAX_DECOMPOSE_CHILDREN:
+        raise ValueError(f"decompose fan-out exceeds the {MAX_DECOMPOSE_CHILDREN}-child cap")
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
     _validate_children_graph(children)

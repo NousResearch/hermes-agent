@@ -406,6 +406,9 @@ def test_hosted_memory_prefetch_preserves_structured_result(tmp_path, monkeypatc
         '''
 from agent.memory_provider import MemoryObservation, MemoryPrefetchResult, MemoryProvider
 
+class Version(int):
+    pass
+
 class Probe(MemoryProvider):
     @property
     def name(self): return "memprobe"
@@ -415,10 +418,14 @@ class Probe(MemoryProvider):
     def prefetch(self, query, *, session_id=""):
         return MemoryPrefetchResult(
             context=f"host context: {query}:{session_id}" + chr(10) + "x" * 10_100,
-            observations=(MemoryObservation(
+            observations=tuple(
+                MemoryObservation("recall", "memprobe.recall", 1,
+                                  {"text": "x" * 3910}, provider="other")
+                for _ in range(55)
+            ) + (MemoryObservation(
                 source_kind="recall",
                 schema="memprobe.recall",
-                version=1,
+                version=Version(1),
                 payload={"query": query},
             ),),
         )

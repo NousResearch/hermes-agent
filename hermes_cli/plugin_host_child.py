@@ -230,7 +230,7 @@ class HostRuntime:
         return result
 
     def _encode_result(
-        self, plugin_key: str, value: Any, *, memory_prefetch: bool = False
+        self, plugin_key: str, value: Any, *, memory_prefetch: bool = False, provider_name: Any = None
     ) -> Any:
         def refs(obj: Any) -> Optional[dict]:
             if _provider_base(obj) is not None:  # e.g. the engine ``clone_for_agent`` returns
@@ -240,7 +240,7 @@ class HostRuntime:
         if memory_prefetch:
             from hermes_cli.plugin_host_wire_memory import encode_memory_prefetch_result
 
-            return encode_memory_prefetch_result(value, refs, 0)
+            return encode_memory_prefetch_result(value, refs, 0, provider_name)
         return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
@@ -362,14 +362,20 @@ class HostRuntime:
         base = _provider_base(obj)
         if base is not None:  # the ABC's annotations say what Hermes passed (``home_path: Path``)
             args, kwargs = restore_arguments(declared_member(base, method), args, kwargs)
-        value = self._run(getattr(obj, method)(*args, **kwargs))
         memory_prefetch = False
         if method == "prefetch":
             from agent.memory_provider import MemoryProvider
 
             memory_prefetch = isinstance(obj, MemoryProvider)
+        provider_name = obj.name if memory_prefetch else None
+        if isinstance(provider_name, str):
+            provider_name = str.__str__(provider_name)
+        else:
+            provider_name = None
+        value = self._run(getattr(obj, method)(*args, **kwargs))
         return self._encode_result(
-            self.owners.get(ref, ""), value, memory_prefetch=memory_prefetch
+            self.owners.get(ref, ""), value, memory_prefetch=memory_prefetch,
+            provider_name=provider_name,
         )
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:

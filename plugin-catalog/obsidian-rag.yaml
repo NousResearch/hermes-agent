@@ -1,6 +1,6 @@
 name: obsidian-rag
 repo: https://github.com/kastormdz/obsidian-rag
-sha: 8c3bd19ceb5536bb40139f6c1667b0e90e35ddb3
+sha: 42d3a6457df0b60799ab367271e2b9aa7143316f
 subdir: plugins/obsidian-rag
 version: "0.3.1"
 description: Search and edit an Obsidian vault from a local hybrid index (SQLite FTS5 plus
@@ -10,7 +10,7 @@ maintainer: kastormdz
 tier: community
 category: tools
 docs_url: https://github.com/kastormdz/obsidian-rag#hermes-plugin
-image: https://raw.githubusercontent.com/kastormdz/obsidian-rag/8c3bd19ceb5536bb40139f6c1667b0e90e35ddb3/docs/banner.webp
+image: https://raw.githubusercontent.com/kastormdz/obsidian-rag/42d3a6457df0b60799ab367271e2b9aa7143316f/docs/banner.webp
 capabilities:
   provides_tools:
     - vault_search

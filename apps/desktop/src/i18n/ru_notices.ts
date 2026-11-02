@@ -45,8 +45,12 @@ export const ruNotices = {
     openBilling: 'Открыть биллинг',
     addCredits: 'Пополнить кредиты',
     dismiss: 'Скрыть'
+  },
+  sessionPins: {
+    pinFailed: 'Не удалось закрепить сеанс',
+    unpinFailed: 'Не удалось открепить сеанс'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

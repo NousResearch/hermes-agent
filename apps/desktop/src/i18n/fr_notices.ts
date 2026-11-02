@@ -45,8 +45,12 @@ export const frNotices = {
     openBilling: 'Ouvrir la facturation',
     addCredits: 'Ajouter des crédits',
     dismiss: 'Fermer'
+  },
+  sessionPins: {
+    pinFailed: "Impossible d'épingler la session",
+    unpinFailed: 'Impossible de désépingler la session'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

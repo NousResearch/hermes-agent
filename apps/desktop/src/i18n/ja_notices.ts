@@ -44,8 +44,12 @@ export const jaNotices = {
     openBilling: '請求を開く',
     addCredits: 'クレジットを追加',
     dismiss: '閉じる'
+  },
+  sessionPins: {
+    pinFailed: 'セッションをピン留めできませんでした',
+    unpinFailed: 'セッションのピン留めを解除できませんでした'
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sessionPins'
 >

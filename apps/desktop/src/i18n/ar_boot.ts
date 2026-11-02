@@ -352,6 +352,10 @@ export const arBoot = {
     change: 'تغيير',
     startChatting: 'ابدأ',
     docs: provider => `وثائق ${provider}`
+  },
+  sessionPins: {
+    pinFailed: 'فشل تثبيت الجلسة',
+    unpinFailed: 'فشل إلغاء تثبيت الجلسة'
   }
 } satisfies Pick<
   TranslationOverrides,
@@ -363,4 +367,5 @@ export const arBoot = {
   | 'updates'
   | 'install'
   | 'onboarding'
+  | 'sessionPins'
 >

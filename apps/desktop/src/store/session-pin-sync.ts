@@ -24,8 +24,10 @@
 import { atom } from 'nanostores'
 
 import { setSessionPinnedRemote } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $cronSessions,
@@ -44,6 +46,9 @@ import type { SessionInfo } from '@/types/hermes'
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
+// pin ids whose pinned=true write failed and already showed its error toast.
+// The retry runs on every slice change, so only the first failure is shown.
+const failedPins = new Set<string>()
 // Writes we've issued, id -> the value we wrote and when. A list page already
 // in flight when we PATCH still carries the OLD value, and it can land after
 // our ack — so the ack is not proof the page we're reading is newer than the
@@ -333,11 +338,16 @@ function reconcileInner(): void {
     if (!current.has(id)) {
       mirrored.delete(id)
       pending.delete(id)
+      failedPins.delete(id)
 
       // Removal owns the durable write; a separate unpin would race its
       // revision snapshot. Archive clears the pin in the same PATCH.
       if (!isSessionRemovalPending(id)) {
-        void writePin(id, false, profileFor(id)).catch(() => {})
+        // A refused unpin leaves the server pinned, so the next page re-adopts
+        // the pin. Tell the user why it came back (#142982).
+        void writePin(id, false, profileFor(id)).catch((err: unknown) => {
+          notifyError(err, translateNow('sessionPins.unpinFailed'), { id: 'session-unpin-failed' })
+        })
       }
     }
   }
@@ -360,11 +370,21 @@ function reconcileInner(): void {
 
     pending.delete(id)
     mirrored.add(id)
-    void writePin(id, true, row.profile).catch(() => {
-      // Let a later reconcile retry the mirror.
-      mirrored.delete(id)
-      pending.add(id)
-    })
+    void writePin(id, true, row.profile).then(
+      () => {
+        failedPins.delete(id)
+      },
+      (err: unknown) => {
+        // Let a later reconcile retry the mirror.
+        mirrored.delete(id)
+        pending.add(id)
+
+        if (!failedPins.has(id)) {
+          failedPins.add(id)
+          notifyError(err, translateNow('sessionPins.pinFailed'), { id: 'session-pin-failed' })
+        }
+      }
+    )
   }
 
   pullRemotePins()
@@ -397,6 +417,7 @@ export function watchSessionPins(): void {
 export function resetSessionPinMirror(): void {
   mirrored.clear()
   pending.clear()
+  failedPins.clear()
   unconfirmed.clear()
   publishUnconfirmed()
 }
@@ -410,5 +431,6 @@ export function resetSessionPinMirror(): void {
 export function forgetPinSyncState(id: string): void {
   mirrored.delete(id)
   pending.delete(id)
+  failedPins.delete(id)
   unconfirmed.delete(id)
 }

@@ -141,6 +141,7 @@ export const zhHantOverrides = {
   butterbar: zhHantBoot.butterbar,
   promptNotices: zhHantBoot.promptNotices,
   keepAwakeOffer: zhHantBoot.keepAwakeOffer,
+  sessionPins: zhHantBoot.sessionPins,
   billingBlock: zhHantCommon.billingBlock,
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,

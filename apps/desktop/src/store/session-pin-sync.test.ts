@@ -13,6 +13,12 @@ vi.mock('@/hermes', () => ({
   setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
 }))
 
+const notifyError = vi.fn()
+
+vi.mock('@/store/notifications', () => ({
+  notifyError: (...args: unknown[]) => notifyError(...args)
+}))
+
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
@@ -41,6 +47,7 @@ beforeEach(() => {
   // its page). Same reset the gateway switch uses.
   resetSessionPinMirror()
   patch.mockClear()
+  notifyError.mockClear()
 })
 
 afterEach(() => {
@@ -502,6 +509,57 @@ describe('watchSessionPins remote pull', () => {
 
     expect($pinnedSessionIds.get()).toContain('failed')
     expect(patch).toHaveBeenCalledWith('failed', true, undefined)
+  })
+
+  it('shows an error toast when the server refuses an unpin (#142982)', async () => {
+    $sessions.set([row('refused', { pinned: true })])
+    $pinnedSessionIds.set(['refused'])
+    await flush()
+
+    const refusal = new Error('permission_denied')
+    patch.mockImplementationOnce(() => Promise.reject(refusal))
+    $pinnedSessionIds.set([])
+    await flush()
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('refused', false, undefined)
+    expect(notifyError).toHaveBeenCalledTimes(1)
+    expect(notifyError).toHaveBeenCalledWith(refusal, 'Could not unpin session', { id: 'session-unpin-failed' })
+  })
+
+  it('shows one error toast when a pin write fails, not one per retry', async () => {
+    const refusal = new Error('permission_denied')
+    patch.mockImplementation(() => Promise.reject(refusal))
+
+    try {
+      $sessions.set([row('stuck')])
+      $pinnedSessionIds.set(['stuck'])
+      await flush()
+      await flush()
+
+      // Each slice change retries the PATCH; the user already saw the failure.
+      $sessions.set([row('stuck', { title: 'renamed' })])
+      await flush()
+      await flush()
+
+      expect(patch.mock.calls.filter(([id, pinned]) => id === 'stuck' && pinned)).toHaveLength(2)
+      expect(notifyError).toHaveBeenCalledTimes(1)
+      expect(notifyError).toHaveBeenCalledWith(refusal, 'Could not pin session', { id: 'session-pin-failed' })
+    } finally {
+      patch.mockImplementation(() => Promise.resolve({ ok: true }))
+    }
+  })
+
+  it('shows no toast when the pin writes succeed', async () => {
+    $sessions.set([row('fine')])
+    $pinnedSessionIds.set(['fine'])
+    await flush()
+    $pinnedSessionIds.set([])
+    await flush()
+    await flush()
+
+    expect(patch).toHaveBeenCalledTimes(2)
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('does not oscillate when two profiles share a session id with conflicting pins', async () => {

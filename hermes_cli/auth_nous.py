@@ -426,6 +426,13 @@ def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
     return oauth_pair_order(a, b)
 
 
+def _same_known_nous_identity(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when *a* and *b* are provably the same identity. An account whose access token carries no
+    JWT ``sub`` is UNKNOWN, never "the same" as another unknown one."""
+    identity = _nous_identity(a)
+    return identity[1] not in (None, "") and identity == _nous_identity(b)
+
+
 def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
     """Adopt the shared store's OAuth tokens into a profile-local Nous state when they are NEWER.
 
@@ -444,9 +451,11 @@ def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
         return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
     order = _nous_state_order(shared, state)
+    same = _same_known_nous_identity(shared, state)
     # Unstamped on both sides: no evidence either way, keep the legacy "a different token wins".
-    if not (order == 1 or (order is None and refresh_changed)):
-        if order == -1 and refresh_changed and _nous_identity(shared) == _nous_identity(state):
+    # Never across identities: a profile signed in as one account keeps it (profiles are islands).
+    if not (same and (order == 1 or (order is None and refresh_changed))):
+        if order == -1 and refresh_changed and same:
             _oauth_trace(
                 "nous_shared_store_older_than_profile",
                 shared_refresh_token_fp=_token_fingerprint(shared_refresh),
@@ -494,7 +503,7 @@ def _shared_copy_is_newer(held: Optional[dict[str, Any]], state: dict[str, Any],
     if held is None or is_guest_state(state):
         return False
     copy = held if same else held.get(_SHARED_RENEWAL_KEY)
-    if not isinstance(copy, dict) or _nous_identity(copy) != _nous_identity(state):
+    if not isinstance(copy, dict) or not _same_known_nous_identity(copy, state):
         return False
     return _nous_state_order(copy, state) == 1
 

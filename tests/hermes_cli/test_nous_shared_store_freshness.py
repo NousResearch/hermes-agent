@@ -140,3 +140,22 @@ def test_a_later_rotation_with_a_shorter_ttl_is_still_the_newer_pair(homes, monk
     assert auth_nous._read_shared_nous_state()["refresh_token"] == "RT3"  # never rolled back to RT2
     auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
     assert posted[-1] == "RT3"
+
+
+def test_unknown_identities_never_push_over_the_shared_store(homes):
+    hermes_home, _ = homes
+    # No JWT ``sub`` on either side: unknown identities, so a newer profile is not pushed over shared.
+    newer, older = (_state("A", "RTA", issued=-10, token="opaqueA"), _state("B", "RTB", issued=-600, token="opaqueB"))
+    _seed(hermes_home, newer, older)
+    with auth_nous._nous_shared_store_lock():
+        assert auth_nous._merge_shared_nous_oauth_state(dict(newer)) is False
+    assert auth_nous._read_shared_nous_state()["refresh_token"] == "RTB"
+
+
+def test_a_profile_never_adopts_another_accounts_newer_shared_login(homes):
+    """Profiles are islands: account B's shared login is not account A's next refresh token."""
+    hermes_home, _ = homes
+    _seed(hermes_home, _state("KA", "RTA", issued=-600, sub="uA"), _state("KB", "RTB", issued=-10, sub="uB"))
+    auth_mod.resolve_nous_access_token()
+    assert _profile_refresh_token(hermes_home) == "RTA"
+    assert auth_nous._read_shared_nous_state()["refresh_token"] == "RTB"

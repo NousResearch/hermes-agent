@@ -74,6 +74,9 @@ class _FakeChild:
         self._interrupt_requested = False
         self.messages, self.task_ids, self.start_cwds = [], [], []
         self.closed = False
+        # Registered like a real child, so steer/stop/close-steering go through the live registry.
+        self._subagent_id = kw.get("subagent_id") or f"sa-fake-{uuid.uuid4().hex[:8]}"
+        self._pending_steer: list[str] = []
         log.append(self)
 
     def run_conversation(self, user_message, task_id=None, stream_callback=None, **_):
@@ -107,8 +110,13 @@ class _FakeChild:
     def interrupt(self, *_a, **_k):
         self._stop.set()
 
-    def steer(self, _text):
+    def steer(self, text):
+        self._pending_steer.append(text)
         return True
+
+    def _drain_pending_steer(self):
+        text, self._pending_steer = "\n".join(self._pending_steer) or None, []
+        return text
 
     def close(self):
         self.closed = True
@@ -141,7 +149,7 @@ def _run_direct(monkeypatch, script, *, effort="low", ceiling="high", enabled=Tr
             child._delegate_escalate_ceiling = ceiling
         if builder and enabled and ceiling:
             child._delegate_build_retry = lambda e, g: make({**kw, "reasoning_config": parse_reasoning_effort(e),
-                                                             "goal": g})
+                                                             "goal": g, "subagent_id": child._subagent_id})
         if schema is not None:
             child._delegate_output_schema = schema
         child._live_transcript_path = TRANSCRIPT
@@ -214,6 +222,23 @@ def test_a_timeout_after_api_calls_retries(monkeypatch):
     assert entry["cost_usd"] == pytest.approx(0.03)
     handoff = log[1].messages[0]
     assert "timed out" in handoff and "left no summary" in handoff and TRANSCRIPT in handoff
+
+
+def test_the_runtimes_own_budget_warning_is_never_handed_off_as_a_missed_parent_steer(monkeypatch):
+    """The 80% inactivity warning rides the child's steer channel; when the window then elapses, only the parent's
+    own undelivered steer may reach the retry's handoff, never the runtime's warning."""
+    from tools.delegate_tool_registry import steer_subagent
+
+    def low(child, *_):
+        assert steer_subagent(child._subagent_id, "use the v2 API")
+        return T(calls=3)
+
+    _entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="medium",
+                                timeout=0.3)
+    assert _efforts(log) == ["low", "medium"]
+    handoff = log[1].messages[0]
+    assert "[delegation budget warning]" not in handoff
+    assert "use the v2 API" in handoff
 
 
 def test_a_timeout_with_zero_api_calls_never_reached_the_model_and_does_not_retry(monkeypatch):

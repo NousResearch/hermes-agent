@@ -279,9 +279,12 @@ def _effective_child_timeout(child: Any) -> Optional[float]:
     return _get_child_timeout()
 
 
+_BUDGET_WARNING_PREFIX = "[delegation budget warning]"
+
+
 def _budget_warning_text(idle_seconds: float, child_timeout: float) -> str:
     return (
-        f"[delegation budget warning] No progress signal for {idle_seconds:.0f}s of your {child_timeout:.0f}s "
+        f"{_BUDGET_WARNING_PREFIX} No progress signal for {idle_seconds:.0f}s of your {child_timeout:.0f}s "
         "inactivity window. Finish the current step and return your summary now — the work is discarded if the "
         "window elapses."
     )
@@ -295,6 +298,15 @@ def _warn_child_budget(child: Any, idle_seconds: float, child_timeout: float) ->
         steer(_budget_warning_text(idle_seconds, child_timeout))
     except Exception as exc:
         logger.debug("budget warning steer failed: %s", exc)
+
+def _parent_steer_text(late: Optional[str]) -> Optional[str]:
+    """Drained steer text minus the runtime's own budget warnings: they ride the steer channel, but an undelivered
+    one is not a parent steer to report as missed or hand to a retry."""
+    if not late:
+        return None
+    kept = "\n".join(line for line in late.split("\n") if not line.startswith(_BUDGET_WARNING_PREFIX))
+    return kept if kept.strip() else None
+
 
 def _child_activity_fingerprint(child: Any) -> tuple:
     """``(completed calls, current tool, activity clock)`` — the progress signals the heartbeat's stale verdict
@@ -538,7 +550,7 @@ def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child:
     """Linearization boundary for registry steering: from here the child cannot consume another steer. Closing under
     the registry lock either rejects a concurrent caller or drains every accepted exact text into the result before
     callbacks/result assembly run."""
-    late = _close_subagent_steering(subagent_id, child) if subagent_id else None
+    late = _parent_steer_text(_close_subagent_steering(subagent_id, child) if subagent_id else None)
     if late:
         existing = result.get("pending_steer")
         result["pending_steer"] = f"{existing}\n{late}" if isinstance(existing, str) and existing else late
@@ -1136,7 +1148,7 @@ class _ChildRun:
 
     def close_steering(self) -> Optional[str]:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
-        return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
+        return _parent_steer_text(_close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None)
 
     def wait_liveness_aware(self, settled: threading.Event, child_future: Any, child_timeout: Optional[float]) -> None:
         """Wait for the worker or the stale verdict, where ``child_timeout`` bounds INACTIVITY, not total runtime.

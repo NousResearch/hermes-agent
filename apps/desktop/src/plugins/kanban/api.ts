@@ -487,6 +487,25 @@ export const estimateNew = (title: string, body: string) =>
 export const updateBoard = (slug: string, patch: Record<string, unknown>) =>
   call<{ board: BoardMeta }>(`/boards/${encodeURIComponent(slug)}`, { method: 'PATCH', body: patch })
 
+export const emergencyStopAllBoards = async (boards: BoardMeta[]) => {
+  if (boards.length === 0) {
+    throw new Error('No boards are available to stop')
+  }
+
+  const patch = { dispatch_enabled: false, auto_decompose_enabled: false, review_dispatch_enabled: false }
+  const results = await Promise.allSettled(boards.map(board => updateBoard(board.slug, patch)))
+
+  const failed = results
+    .map((result, index) => (result.status === 'rejected' ? boards[index].slug : null))
+    .filter((board): board is string => board !== null)
+
+  if (failed.length > 0) {
+    throw new Error(`Emergency stop failed for: ${failed.join(', ')}`)
+  }
+
+  return { count: boards.length, patch }
+}
+
 /** Archive a board to `boards/_archived/` — recoverable, and the backend
  *  refuses to touch `default`. (`?delete=true` hard-deletes; no caller yet.) */
 export const deleteBoard = (slug: string) =>

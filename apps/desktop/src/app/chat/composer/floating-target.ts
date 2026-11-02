@@ -219,7 +219,12 @@ function trackFocus(event: FocusEvent) {
   // A delayed focus/restore isn't a navigation gesture. A clicked control,
   // keyboard Tab, or the inline edit opened by a bubble click still keeps its
   // normal focus, without redirecting to the input.
-  if (isTouchInteraction() || keyboardNavigation || keepsOwnFocus(target) || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  if (
+    isTouchInteraction() ||
+    keyboardNavigation ||
+    keepsOwnFocus(target) ||
+    (pointerDownTarget && target.contains(pointerDownTarget))
+  ) {
     flushSync(() => selectSurface(id))
   } else {
     // A refused redirect leaves focus where it landed: that element's focusin

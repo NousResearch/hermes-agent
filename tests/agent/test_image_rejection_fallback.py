@@ -6,6 +6,8 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+import pytest
+
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _strip_images_from_messages,
     strip_images_for_rejecting_model,
@@ -455,3 +457,250 @@ def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypat
     assert "image_url" not in str(out), "summary request must be text-only for a rejecting model"
     assert any("look" in str(m.get("content")) for m in out if m.get("role") == "user")
     assert history == before, "the per-call strip must not leak into canonical history"
+
+
+def test_image_only_turn_keeps_roles_alternating_for_rejecting_model(tmp_path, monkeypatch):
+    """History keeps an image-only user turn and replays it on every request; dropping it from
+    the request to a rejecting model left the replies around it adjacent, which strict
+    chat templates (Gemma- and Mistral-style on vLLM / llama.cpp) reject."""
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = AIAgent(api_key="k", base_url="http://localhost:8000/v1", provider="custom", model="m",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    api_messages = [
+        {"role": "system", "content": "S"}, {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "A"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+        {"role": "assistant", "content": "B"}, {"role": "user", "content": "and now?"},
+    ]
+
+    assert strip_images_for_rejecting_model(agent, api_messages) is True
+
+    wire = agent._build_api_kwargs(api_messages)["messages"]
+    assert [m["role"] for m in wire] == ["system", "user", "assistant", "user", "assistant", "user"]
+    assert "image_url" not in str(wire)
+
+
+def test_image_only_current_turn_still_ends_on_user_for_rejecting_model():
+    """An image-only message as the current turn must not leave the request ending on an
+    assistant turn."""
+    from types import SimpleNamespace
+
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+
+    agent = SimpleNamespace(provider="p", model="m", _image_rejecting_models=set())
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    api_messages = [
+        {"role": "user", "content": "hi"}, {"role": "assistant", "content": "A"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+    ]
+
+    assert strip_images_for_rejecting_model(agent, api_messages) is True
+    assert [m["role"] for m in api_messages] == ["user", "assistant", "user"]
+    assert "image content removed" in api_messages[-1]["content"]
+
+
+@pytest.mark.parametrize("roles, expected", [
+    # I / J = an image-only user / assistant turn. Kept as a placeholder unless a neighbour has
+    # its own role; there it is dropped, so the placeholder never creates same-role adjacency.
+    # The request's edges read as assistant: it must open and end on a user turn.
+    ("u a I a u", "u a P a u"),
+    ("u a I", "u a P"),
+    ("s I a u", "s P a u"),
+    ("u I a u", "u a u"),
+    ("u a I u", "u a u"),
+    ("u a I I a", "u a P a"),
+    ("u a I I u", "u a u"),
+    # Assistant image replies are a supported replay shape too (#118401 review).
+    ("s u J u", "s u P u"),
+    ("u J u a", "u P u a"),
+    ("u a J u", "u a u"),
+    ("u J", "u"),
+    ("s J u", "s u"),
+    # A system message mid-list sits outside the alternation: neighbours are found past it.
+    ("u a s I a u", "u a s P a u"),
+    ("u a s I u", "u a s u"),
+])
+def test_rejecting_model_strip_never_breaks_role_alternation(roles, expected):
+    from types import SimpleNamespace
+
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+
+    role = {"s": "system", "u": "user", "a": "assistant", "I": "user", "J": "assistant"}
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    msgs = [{"role": role[r], "content": [img]} if r in "IJ" else {"role": role[r], "content": r}
+            for r in roles.split()]
+    agent = SimpleNamespace(provider="p", model="m", _image_rejecting_models=set())
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+
+    assert strip_images_for_rejecting_model(agent, msgs) is True
+
+    got = " ".join("P" if "image content removed" in str(m["content"]) else m["content"] for m in msgs)
+    assert got == expected
+    # Roles alternate after the optional system turn, starting and ending on a user turn — the
+    # invariant strict templates enforce.
+    turns = [m["role"] for m in msgs if m["role"] != "system"]
+    assert all(a != b for a, b in zip(turns, turns[1:]))
+    assert turns[0] == "user" and (turns[-1] == "user" or roles.endswith(" a"))
+    assert "image_url" not in str(msgs)
+
+
+def test_rejecting_model_strip_keeps_every_alternating_conversation_alternating():
+    """Exhaustive over every alternating conversation up to 8 turns (optional system prompt) and
+    every choice of image-only turns: after the strip it still alternates, opens and ends on a
+    user turn, and carries no image."""
+    import itertools
+    from types import SimpleNamespace
+
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    agent = SimpleNamespace(provider="p", model="m", _image_rejecting_models=set())
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    for n in range(1, 9, 2):  # odd lengths: user ... user
+        roles = ["user" if k % 2 == 0 else "assistant" for k in range(n)]
+        for with_system, mask in itertools.product((False, True), itertools.product((0, 1), repeat=n)):
+            msgs = ([{"role": "system", "content": "S"}] if with_system else []) + [
+                {"role": r, "content": [img] if m else f"t{k}"} for k, (r, m) in enumerate(zip(roles, mask))]
+            strip_images_for_rejecting_model(agent, msgs)
+            turns = [m["role"] for m in msgs if m["role"] != "system"]
+            assert turns and turns[0] == "user" and turns[-1] == "user", (with_system, mask, turns)
+            assert all(a != b for a, b in zip(turns, turns[1:])), (with_system, mask, turns)
+            assert "image_url" not in str(msgs)
+
+
+def test_image_only_assistant_reply_keeps_roles_alternating_on_the_wire(tmp_path, monkeypatch):
+    """#118401 review: an image-only assistant reply between two user turns must not be dropped
+    either — the production payload would otherwise carry two adjacent user turns."""
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    from agent.vision_message_prep import _provider_model_key
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = AIAgent(api_key="k", base_url="http://localhost:8000/v1", provider="custom", model="m",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    api_messages = [
+        {"role": "system", "content": "S"}, {"role": "user", "content": "first"},
+        {"role": "assistant", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]},
+        {"role": "user", "content": "second"},
+    ]
+
+    assert strip_images_for_rejecting_model(agent, api_messages) is True
+
+    wire = agent._build_api_kwargs(api_messages)["messages"]
+    assert [m["role"] for m in wire] == ["system", "user", "assistant", "user"]
+    assert "image_url" not in str(wire)
+
+
+def _strict_text_only_server(rejection: str):
+    """A text-only OpenAI-compatible endpoint with a strict-alternation chat template: 400s any
+    request carrying an image part with ``rejection``, and any request whose non-system turns do
+    not alternate or do not open and end on a user turn (Gemma/Mistral templates on vLLM)."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    requests: list = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, payload):
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
+
+        def do_GET(self):
+            self._send(200, {"object": "list", "data": [{"id": "m", "object": "model"}]})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            msgs = body.get("messages") or []
+            if not msgs:  # not a chat turn (capability probe)
+                return self._send(200, {"object": "list", "data": []})
+            requests.append(msgs)
+            if "image_url" in json.dumps(msgs):
+                return self._send(400, {"error": {"message": rejection, "type": "invalid_request_error"}})
+            roles = [m["role"] for m in msgs if m["role"] != "system"]
+            if roles[0] != "user" or roles[-1] != "user" or any(a == b for a, b in zip(roles, roles[1:])):
+                return self._send(400, {"error": {
+                    "message": "Conversation roles must alternate user/assistant/user/assistant/...",
+                    "type": "invalid_request_error"}})
+            chunk = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK-REPLY"},
+                                  "finish_reason": None}]}
+            done = {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n".encode())
+                return None
+            return self._send(200, {
+                "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK-REPLY"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, requests
+
+
+_PASTED_IMAGE = {"type": "image_url", "image_url": {
+    "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}}
+
+
+@pytest.mark.parametrize("rejection", [
+    "image content is not supported",  # text-only model: recorded, stripped on every request
+    # vision model, corrupt bytes: stripped for the attempt only (_strip_request_images_and_retry)
+    "Invalid request: prepare image failed: failed to decode image: invalid or unsupported image format",
+], ids=["text-only-model", "corrupt-image"])
+@pytest.mark.parametrize("image_turn", ["earlier", "current"])
+def test_api_server_image_only_turn_recovers_end_to_end(rejection, image_turn, monkeypatch):
+    """An API-server client (e.g. Open WebUI) sends a pasted image with an empty caption; the
+    server normalizes it to an image-only user turn. With the model believed vision-capable
+    (``model.supports_vision: true``) the image reaches an endpoint that rejects it, and the
+    text-only retry must still alternate user/assistant and end on a user turn — dropping the
+    emptied turn left two replies adjacent (or the request ending on the previous reply) and a
+    strict chat template failed the turn."""
+    import os
+    from pathlib import Path
+
+    from gateway.platforms.api_server import _normalize_multimodal_content
+    from run_agent import AIAgent
+
+    Path(os.environ["HERMES_HOME"], "config.yaml").write_text("model:\n  supports_vision: true\n", encoding="utf-8")
+    srv, requests = _strict_text_only_server(rejection)
+    try:
+        raw = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "A"},
+               {"role": "user", "content": [{"type": "text", "text": ""}, _PASTED_IMAGE]}]
+        if image_turn == "earlier":
+            raw += [{"role": "assistant", "content": "B"}, {"role": "user", "content": "and now?"}]
+        conv = [{"role": m["role"], "content": _normalize_multimodal_content(m["content"])} for m in raw]
+        agent = AIAgent(api_key="k", base_url=f"http://127.0.0.1:{srv.server_address[1]}/v1",
+                        provider="custom", model="m", quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, max_iterations=3, enabled_toolsets=[])
+        assert agent._model_supports_vision(), "precondition: images must reach the model"
+
+        result = agent.run_conversation(conv[-1]["content"], conversation_history=conv[:-1])
+    finally:
+        srv.shutdown()
+
+    assert "image_url" in str(requests[0]), "precondition: the first request carries the image"
+    assert result.get("final_response") == "OK-REPLY", result.get("error")
+    text_only = requests[-1]
+    assert "image_url" not in str(text_only)
+    assert [m["role"] for m in text_only if m["role"] != "system"] == (
+        ["user", "assistant", "user", "assistant", "user"] if image_turn == "earlier"
+        else ["user", "assistant", "user"])

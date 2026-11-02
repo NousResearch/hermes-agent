@@ -535,6 +535,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/productivity/productivity-airtable',
+                    'user-guide/skills/optional/productivity/productivity-botsesh',
                     'user-guide/skills/optional/productivity/productivity-box',
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',

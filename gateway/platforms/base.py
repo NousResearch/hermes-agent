@@ -432,6 +432,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.stream_consumer_fences import escape_code_fences_for_display
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -2717,9 +2718,8 @@ class BasePlatformAdapter(ABC):
         text = str(text or "")
         return text[:budget] + suffix if len(text) > budget else text
 
-    def _ea_escape(self, text: str) -> str:
-        """Escape hook for command preview/reason; HTML-mode platforms (Telegram) override."""
-        return text
+    def _ea_escape(self, text: str) -> str:  # command/reason escape hook; HTML-mode Telegram overrides
+        return escape_code_fences_for_display(text)  # an agent-supplied ``` must not close the card's fence
 
     def _ea_fit(self, text: str, budget: int, suffix: str = "...", escape: Optional[Callable[[str], str]] = None) -> str:
         """``_truncate_preview`` measured after ``escape`` (default ``_ea_escape``) in

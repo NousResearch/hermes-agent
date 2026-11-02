@@ -180,7 +180,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     release runs.
     """
     from hermes_cli.local_runtime.catalog import entry_for_model
-    from hermes_cli.local_runtime.growth import load_window_overrides
+    from hermes_cli.local_runtime.growth import load_parallel_overrides, load_window_overrides
 
     model_id = model_id_from_stem(gguf.stem)
     try:
@@ -257,6 +257,12 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
+    slots = load_parallel_overrides().get(model_id)
+    if slots:
+        # Carving the granted window into per-slot contexts leaves the priced KV pool
+        # unchanged, so the split is an operator choice, not a physics input; a
+        # policy-pinned split (the DFlash draft's parallel = 1) always wins.
+        keys.setdefault("parallel", str(slots))
     return PresetEntry(model_id=model_id, window=decision.window,
                        spilled=decision.spilled, keys=keys)
 

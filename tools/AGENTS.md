@@ -161,7 +161,8 @@ the child is built, leases and converses inside that profile's scope, on that pr
 `child_timeout_seconds`, overriding the globals for its children, and a bad value refuses that task).
 Model routes also accept route-only `escalate_reasoning` (boolean, default false) and `escalate_ceiling`
 (trimmed/lowercased: `none, minimal, low, medium, high, xhigh, max, ultra`); escalation runs only with
-both set, invalid values refuse the task, and profile routes ignore both. A backend may add enum-checked per-task schema params; it
+both set, invalid values refuse the task, and profile routes ignore both. A provider's `next_attempt`
+can stop or pick the level of a budget-stop retry (`_provider_escalation_effort`). A backend may add enum-checked per-task schema params; it
 never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
 beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
 unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background

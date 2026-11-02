@@ -331,7 +331,7 @@ delegation:
           description: Writes and refactors code; runs tests.
 ```
 
-`escalate_reasoning` is a route-only boolean, defaulting to `false`. Reasoning escalation runs on a model route only when it sets both `escalate_reasoning: true` and an `escalate_ceiling`; either one alone leaves escalation off. `escalate_ceiling` is trimmed and lowercased to a level on the ladder `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Invalid values refuse the task, and profile routes ignore both settings.
+`escalate_reasoning` is a route-only boolean, defaulting to `false`. Reasoning escalation runs on a model route only when it sets both `escalate_reasoning: true` and an `escalate_ceiling`; either one alone leaves escalation off. `escalate_ceiling` is trimmed and lowercased to a level on the ladder `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Invalid values refuse the task, and profile routes ignore both settings. A delegation backend plugin can change the retry decision; see the developer guide.
 
 The model only ever sees the names and descriptions you configured, never raw provider, model or key fields. Each result of a backend-routed task carries `route`: the backend, the option or profile name, and the provider, model, reasoning effort and speed tier the child actually ran on (`fallback_activated: true` when a fallback provider took over). Writing your own: [Delegation Provider Plugins](../../developer-guide/delegation-provider-plugin.md).
 

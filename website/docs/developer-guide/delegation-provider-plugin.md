@@ -145,6 +145,37 @@ timeout), never the launching profile's.
 A non-profile route without `fallback_providers` of its own gets `delegation.fallback_providers`; return
 `"fallback_providers": []` to disable fallback for a route. A profile route keeps its profile's chain.
 
+### Deciding the retry after a budget stop
+
+When a child on a route with escalation stops on budget, core calls your provider's
+`next_attempt(stop, config)` before it retries. `stop` has `effort`, `exit_reason`
+(`max_iterations` or `timeout`), `api_calls`, `attempt` (1 for the first), `ceiling`, `route`
+and `summary`. Return:
+
+- `None`: core's rule, one level up and never past the ceiling.
+- `{"retry": False}`: no retry. The attempt's result goes to the parent.
+- `{"effort": "<level>"}`: retry on the same route at that level. It must be a ladder level, not
+  past the ceiling, and stronger than `effort` after the provider's clamp. Else core logs a
+  warning and uses its rule.
+
+Core asks only for budget stops on a route with escalation on. A finished, failed or
+interrupted attempt never retries. An `Exception` in `next_attempt` (or while core reads its
+answer) is logged and read as `None`. Other `BaseException` subclasses are not caught.
+
+Core asks once per budget stop. It asks the provider that routed the child, with the config
+it routed with, not a backend saved later. The call is synchronous on the orchestration worker:
+a slow hook delays that retry, and the child timeout does not bound it. `stop` and `config`
+are copies, so changing them has no effect. `summary` is elided to the handoff length
+(8000 characters).
+The retry runs on the same route: a different model or family for the retry is not in scope.
+
+```python
+def next_attempt(self, stop, config):
+    if stop["attempt"] >= 2:
+        return {"retry": False}
+    return {"effort": "high"} if stop["exit_reason"] == "timeout" else None
+```
+
 ### Refusals are per task
 
 A `DelegationRouteError` from `route_task`, a parameter your backend did not declare, a value outside

@@ -165,7 +165,12 @@ class DelegationProvider(ProviderBase):
         ``{"retry": False}`` to end the chain. Return ``{"effort": level}`` to retry on the same route at that
         level: it must be a ladder level, not past the ceiling, and stronger than ``effort`` after the
         provider's clamp, else core logs a warning and uses its rule. Never called for a finished, failed or
-        interrupted attempt, or for a route without escalation. An exception here is logged and treated as
-        ``None``.
+        interrupted attempt, or for a route without escalation.
+
+        Called once per budget stop, on the provider (and with the config) that routed the child, synchronously
+        on the orchestration worker: a slow hook delays that retry, and the child timeout does not bound it.
+        ``stop`` and ``config`` are copies (changing them changes nothing in core). ``summary`` is elided to the
+        handoff length (8000 characters). An ``Exception`` raised here, or while core reads the answer, is
+        logged and treated as ``None``; other ``BaseException`` subclasses are not caught.
         """
         return None

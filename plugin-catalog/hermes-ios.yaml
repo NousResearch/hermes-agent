@@ -4,10 +4,7 @@ repo: https://github.com/akinduroifedayo/Hermes-iOS-sim
 sha: 3a184e5d847dcd1c8363224ec3175498b10988c5
 subdir: plugin
 version: "1.0.0"
-description: >-
-  Build and visually iterate on native iOS apps in Hermes Desktop through
-  localhost. Runs Xcode commands and a pinned preview server; known dependency
-  security limitations are disclosed in the README.
+description: "Build and visually iterate on native iOS apps in Hermes Desktop through localhost. Runs Xcode commands and a pinned preview server; known dependency security limitations are disclosed in the README. Disclosure — on approval, setup downloads an exact-pinned serve-sim (0.1.49-beta.139.1) and its locked npm tree from registry.npmjs.org into the plugin's data dir. The plugin runs Xcode/simctl commands and keeps background serve-sim preview and watchdog processes on 127.0.0.1, whose simulator stream/input/start/shutdown routes are unauthenticated to local processes (shell execution stays disabled). It reads the local Hermes config to pick its lifecycle mode. Never expose, forward or tunnel the preview port."
 maintainer: akinduroifedayo
 tier: community
 category: desktop

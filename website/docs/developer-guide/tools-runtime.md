@@ -44,24 +44,26 @@ Each call creates a `ToolEntry` stored in the singleton `ToolRegistry._tools` di
 
 `schema["description"]` is the authoritative model-facing description. The separate `description=` argument populates `ToolEntry.description`; when it is omitted, the registry metadata falls back to the schema description. `get_definitions()` builds the OpenAI function definition from `entry.schema` and does not copy `entry.description` into a schema that lacks `description`. Therefore, `description=` alone does not describe the tool to the model, and when both values differ the model sees the schema value. Prefer defining the description once in the schema unless a registry consumer intentionally needs different metadata.
 
-### Discovery: `discover_builtin_tools()`
+### Discovery: `defer_builtin_tools()`
 
-When `model_tools.py` is imported, it calls `discover_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file using AST parsing to find modules that contain top-level `registry.register()` calls, then imports them:
+When `model_tools.py` is imported, it calls `defer_builtin_tools()` from `tools/registry.py`. This function scans every `tools/*.py` file (and each package's `tools/<pkg>/tool.py`) using AST parsing to find modules that contain top-level `registry.register()` calls, and indexes the tool names and toolsets each one registers — without importing it:
 
 ```python
 # tools/registry.py (simplified)
-def discover_builtin_tools(tools_dir=None):
-    tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
-    for path in sorted(tools_path.glob("*.py")):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
-            continue
-        if _module_registers_tools(path):  # AST check for top-level registry.register()
-            importlib.import_module(f"tools.{path.stem}")
+def defer_builtin_tools(tools_dir=None):
+    index = {}
+    for path in _tool_module_candidates(tools_dir):
+        module_index = _module_tool_index(path)  # names + toolsets read from the source
+        if module_index is not None:              # None: no top-level registry.register()
+            index[module_name(path)] = module_index
+    registry._defer_modules(index)
 ```
 
-This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `tools/` are not imported.
+The registry imports a module the first time a lookup needs one of its tools or toolsets: `get_entry()` / `dispatch()` for a name, `get_definitions()` for the requested names, `get_tool_names_for_toolset()` for a toolset. Whole-registry reads (`get_all_entries()`, `get_tool_to_toolset_map()`, `check_tool_availability()`, ...) import every remaining module, and `discover_builtin_tools()` imports them all up front for callers that read the registry directly. So `import run_agent` stays cheap, and an agent built for a few toolsets imports only the modules behind them.
 
-Each import triggers the module's `registry.register()` calls. Errors in optional tools (e.g., missing `fal_client` for image generation) are caught and logged — they don't prevent other tools from loading.
+This auto-discovery means new tool files are picked up automatically — no manual list to maintain. The AST check only matches top-level `registry.register()` calls (not calls inside functions), so helper modules in `tools/` are not imported. Keep registrations statically readable — literal `name=` / `toolset=` values, or a module-level `for` over a literal table of rows — so the index can say which module owns a tool; a module the index cannot read is imported whenever a lookup cannot rule it out. `tests/tools/test_registry_lazy_discovery.py` checks that the index matches what every built-in module actually registers. The index is cached in `<HERMES_HOME>/cache/tool_discovery_cache.json`, keyed by each file's mtime and size.
+
+Each import runs the module's `registry.register()` calls. A deferred import runs in an empty context, so import-time values bind the launch profile even when a served profile's turn is the first to need the tool. Errors in optional tools (e.g., missing `fal_client` for image generation) are caught and logged once — they don't prevent other tools from loading.
 
 After core tool discovery, MCP tools and plugin tools are also discovered:
 

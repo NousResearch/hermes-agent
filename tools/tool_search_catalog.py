@@ -244,9 +244,8 @@ def hidden_declared_sources() -> list[dict[str, Any]]:
     from tools.registry import registry
 
     grouped: dict[str, list[Any]] = {}
-    for entry in registry.get_all_entries():
-        if entry.toolset.startswith("mcp-"):
-            grouped.setdefault(entry.toolset[4:], []).append(entry)
+    for entry in registry.get_entries_for_toolset_prefix("mcp-"):
+        grouped.setdefault(entry.toolset[4:], []).append(entry)
     rows: list[dict[str, Any]] = []
     for server_name in sorted(grouped):
         if declaration.lookup(server_name) is None:

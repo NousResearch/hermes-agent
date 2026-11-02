@@ -7,10 +7,12 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 ## Registry and discovery
 
 `tools/registry.py` has no deps and is imported by every tool file; each `tools/*.py` calls
-`registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
-(`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`
-consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
-manual import list. A tool that is a whole package (`tools/connectors/`) registers from
+`registry.register()` at import time; `model_tools.py` runs `defer_builtin_tools()`, then
+`run_agent.py`, `cli.py`, `batch_runner.py`, `environments/` consume it. Any `tools/*.py` with a
+top-level `registry.register()` is found automatically and indexed from source (names, toolsets);
+the registry imports it (empty context: launch-profile import values) when a lookup first needs one
+of them, and whole-registry reads import all. Keep `name=`/`toolset=` literal or loop over a
+literal module-level table (`test_registry_lazy_discovery.py` checks index == reality). A tool that is a whole package (`tools/connectors/`) registers from
 `tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),

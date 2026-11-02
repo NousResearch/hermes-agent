@@ -139,7 +139,7 @@ _HERMES_CORE_TOOLS = [
 
 ## ~~Step 3: Add Discovery Import~~ (No longer needed)
 
-Tool modules with a top-level `registry.register()` call are auto-discovered by `discover_builtin_tools()` in `tools/registry.py`. No manual import list to maintain — just create your file in `tools/` and it's picked up at startup.
+Tool modules with a top-level `registry.register()` call are auto-discovered by `defer_builtin_tools()` in `tools/registry.py`. No manual import list to maintain — just create your file in `tools/` and it's picked up at startup. Discovery indexes your module's tool names and toolsets from its source and imports it the first time a lookup needs one of them, so keep `name=` and `toolset=` literal (or register from a module-level `for` over a literal table).
 
 ## Async Handlers
 

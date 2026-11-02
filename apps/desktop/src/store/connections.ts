@@ -265,8 +265,12 @@ async function reconcileStartupProfile(
   // mask a subsequent switch failure as a roster failure, though. The status
   // read names which installed profiles this gateway serves; failed = unknown.
   const [roster, status] = await Promise.all([
-    getProfiles({ connectionId }).catch(() => null),
-    getConnectionServedProfiles(connectionId).catch(() => null)
+    Promise.resolve()
+      .then(() => getProfiles({ connectionId }))
+      .catch(() => null),
+    Promise.resolve()
+      .then(() => getConnectionServedProfiles(connectionId))
+      .catch(() => null)
   ])
 
   const unchanged =
@@ -292,8 +296,11 @@ async function reconcileStartupProfile(
   )
 
   if (target) {
-    await selectConnection(connectionId, { profile: target, restore: true })
-  } else if (roster.profiles.some(candidate => candidate.name === profile) && (served === null || served.has(profile))) {
+    await selectConnection(connectionId, { profile: target, restore: true, yieldToOpenedSession: true })
+  } else if (
+    roster.profiles.some(candidate => candidate.name === profile) &&
+    (served === null || served.has(profile))
+  ) {
     $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [connectionId]: profile })
   }
 }
@@ -437,11 +444,15 @@ export interface SelectConnectionOptions {
    *  source yet, so a second restore pass — the normal case, because main opens
    *  the local backend before the registry settles — read as user-initiated. */
   restore?: boolean
+  /** The startup profile re-home only: it gives way to a conversation opened
+   *  while it dials. Other silent restores keep main's behaviour (the restore
+   *  wins), since a session selected during them may itself be automatic. */
+  yieldToOpenedSession?: boolean
 }
 
-/** A silent restore never closes a conversation the user opened while it dialed. */
-function restoreYields(restoreOnBoot: boolean, openedSession: string): boolean {
-  return restoreOnBoot && openSessionKey() !== openedSession
+/** The startup re-home never closes a conversation opened while it dialed. */
+function restoreYields(options: SelectConnectionOptions, openedSession: string): boolean {
+  return options.yieldToOpenedSession === true && openSessionKey() !== openedSession
 }
 
 /** The pick in flight loses ownership: its late steps see a newer revision. */
@@ -558,7 +569,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
       return false
     }
 
-    if (restoreYields(restoreOnBoot, openedSession)) {
+    if (restoreYields(options, openedSession)) {
       abandonPick()
 
       return false

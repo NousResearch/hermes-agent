@@ -566,9 +566,9 @@ export function useDesktopIntegrations({
     return onSessionsChanged(() => void refreshSessions())
   }, [refreshSessions])
 
-  // A gateway that connects after the list was drawn adds its rows to it. The
-  // launch burst (every kept gateway opening at once) is one pull; reopens on
-  // the reconnect backoff land seconds apart and each still pulls.
+  // A gateway that connects after the list was drawn adds its rows to it.
+  // Kept-route opens (launch dials and reconnects alike) share one trailing
+  // timer, so opens less than KEPT_ROUTE_REFRESH_COALESCE_MS apart pull once.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
 

@@ -30,7 +30,7 @@ def loop_thread():
     loop.close()
 
 
-@pytest.mark.parametrize("lane", ["native", "relay", "native-fallback", "relay-failure", "standalone", "standalone-async"])
+@pytest.mark.parametrize("lane", ["native", "relay", "native-uncertain", "relay-failure", "standalone", "standalone-async"])
 @pytest.mark.parametrize("setting,for_failure", [(None, True), (False, True), (True, True), (True, False)])
 def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_thread, lane, setting, for_failure):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -48,7 +48,7 @@ def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_t
 
     async def send(chat_id, content, metadata=None):
         sent.append(("discord", chat_id, content))
-        if lane == "native-fallback":
+        if lane == "native-uncertain":
             raise RuntimeError("isolated live failure")
         return {"success": True, "message_id": "native-id"}
 
@@ -82,8 +82,8 @@ def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_t
         drain()
     muted = setting is True and for_failure
     assert sent == ([] if muted or lane.startswith("standalone") else [("discord", "fixture", payload)])
-    assert fallbacks == ([] if muted or lane not in ("standalone", "standalone-async", "native-fallback") else [("discord", "fixture", payload)])
-    expected = "suppressed" if muted else "failed" if lane == "relay-failure" else "delivered"
+    assert fallbacks == ([] if muted or lane not in ("standalone", "standalone-async") else [("discord", "fixture", payload)])
+    expected = "suppressed" if muted else "failed" if lane in ("relay-failure", "native-uncertain") else "delivered"
     assert delivery_queue.get_status("run")["status"] == expected
     # Duplicate category and policy changes cannot overwrite durable SQL queue outcomes.
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: false}\n")

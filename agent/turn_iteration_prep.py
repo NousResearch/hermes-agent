@@ -1,8 +1,9 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
-``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
-standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
+``prepare_iteration`` (registry-move tool refresh, ``agent:step`` callback, skill-nudge counter,
+pre-API ``/steer`` drain as a standalone user row after the newest tool result, run-budget wrap-up
+notice, tool_call argument sanitization, interrupt-placeholder ghost-row neutralisation,
+role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -154,6 +155,14 @@ def prepare_iteration(
     if getattr(agent, "_nous_wire_pending", None):
         from agent.nous_wire import apply_pending_wire_switch
         apply_pending_wire_switch(agent)
+
+    # A server that revived (or connected late) after this turn's snapshot has re-registered
+    # its tools: fold them in before THIS request is built, or the bridge listing the model
+    # reads cannot name them until the next turn. Same import-cost gate as the between-turns
+    # refresh: MCP tools exist only in a process that imported ``tools.mcp_tool``.
+    if "tools.mcp_tool" in sys.modules:
+        from tools.mcp_tool_agent import refresh_agent_tools_after_registry_move
+        refresh_agent_tools_after_registry_move(agent)
 
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:

@@ -24,7 +24,8 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "observers", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "created_at_ns", "data", "event", "expired", "observers", "reason",
+                 "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -35,6 +36,8 @@ class _ApprovalEntry:
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
         self.observers = []
+        # Plain ``/approve`` resolves the oldest waiter across a session's task-isolated queues.
+        self.created_at_ns = time.monotonic_ns()
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None

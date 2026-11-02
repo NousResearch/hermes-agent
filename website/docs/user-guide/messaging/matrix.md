@@ -904,3 +904,15 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **Auto-join**: The bot automatically accepts room invites and joins. It starts responding immediately after joining.
 - **Media support**: Hermes can send and receive images, audio, video, and file attachments. Media is uploaded to your homeserver using the Matrix content repository API.
 - **Native voice messages (MSC3245)**: The Matrix adapter automatically tags outgoing voice messages with the `org.matrix.msc3245.voice` flag. This means TTS responses and voice audio are rendered as **native voice bubbles** in Element and other clients that support MSC3245, rather than as generic audio file attachments. Incoming voice messages with the MSC3245 flag are also correctly identified and routed to speech-to-text transcription. No configuration is needed — this works automatically. An audio file attached with a `MEDIA:` tag (an `.mp3`/`.wav` the agent produced, not marked `[[audio_as_voice]]`) is sent as a plain `m.audio` attachment in its original format instead of a voice bubble.
+
+## Exec approval cards
+
+Dangerous-command approvals on Matrix use standard `m.room.message` text/HTML plus reactions (`✅` once / `🌀` session / `♾️` always / `❌` deny) and the typed `!approve` / `!deny` commands.
+
+- The card first shows the force-redacted command in full.
+- An optional advisory summary can collapse the command into an HTML `<details>` block; the full command stays in the plain-text fallback for audit.
+- Each card answers exactly one request: a reaction resolves that card's request, never the oldest pending one, so concurrent approvals in one room cannot cross-wire.
+- When the request settles any other way (a typed `!approve`/`!deny`, the session ending, or the approval timeout), the card's reactions are withdrawn and the card is replaced (`m.replace`) with a compact one-line outcome.
+- Approvals raised by `/background` tasks are posted to the room the task was started from.
+
+Summary routing can be disabled or constrained (including local-only) via the Matrix approval summary config.

@@ -1,5 +1,6 @@
 """Finite background tasks launched by the gateway /bg command."""
 
+import asyncio
 from contextlib import suppress
 import logging
 import os
@@ -115,7 +116,13 @@ class GatewayBackgroundMixin:
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            from gateway.approval_bridge import background_approval_scope
+            # Without a notifier a dangerous command in /bg could never be approved from the chat.
+            with background_approval_scope(
+                adapter=adapter, source=source, task_id=task_id, chat_session_key=self._session_key_for_source(source),
+                metadata=_thread_metadata, loop=asyncio.get_running_loop(),
+            ):
+                result = await self._run_in_executor_with_context(run_sync)
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):

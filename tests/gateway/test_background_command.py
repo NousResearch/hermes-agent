@@ -4,13 +4,15 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
@@ -154,6 +156,120 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_matrix_task_routes_approval_to_its_room(self, monkeypatch):
+        """A dangerous command in /bg reaches its chat as a card for that exact request, waits under the
+        task's own key, and typed /approve in the chat session can still answer it."""
+        from gateway import run as gateway_run
+        from tools import approval
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(return_value=("test-model", {"api_key": "test-key"}))
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(return_value={
+            "model": "test-model", "runtime": {"api_key": "test-key"}, "request_overrides": None})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+        source = SessionSource(platform=Platform.MATRIX, user_id="@user:example.org", chat_id="!room:example.org",
+                               user_name="user-example", chat_type="group", thread_id="$thread")
+        chat_session = runner._session_key_for_source(source)
+        cards, typed = [], []
+
+        class MatrixAdapter(BasePlatformAdapter):
+            async def _send_exec_approval_prompt(self, prompt):
+                cards.append(prompt)
+                typed.append(approval.resolve_gateway_approval(chat_session, "once"))
+                return SendResult(success=True, message_id="$card")
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                return None
+
+            async def send(self, *_args, **_kwargs):
+                return SendResult(success=True)
+
+            async def get_chat_info(self, _chat_id):
+                return {}
+
+        runner.adapters[Platform.MATRIX] = MatrixAdapter(PlatformConfig(enabled=True), Platform.MATRIX)
+        monkeypatch.setattr(approval, "is_approved", lambda *_args: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+        observed = {}
+
+        def run_conversation(**_kwargs):
+            observed["session_key"] = approval.get_current_session_key(default="")
+            observed["decision"] = approval.check_dangerous_command(
+                "rm -rf -- /tmp/probe", env_type="local", has_host_access=True)
+            return {"final_response": "approved", "messages": []}
+
+        agent = MagicMock()
+        agent.run_conversation.side_effect = run_conversation
+        try:
+            with patch("run_agent.AIAgent", return_value=agent):
+                await runner._run_background_task("delete the probe", source, "bg_approval", event_message_id="$req")
+        finally:
+            approval.clear_session("bg_approval")
+
+        assert observed["session_key"] == "bg_approval"
+        assert observed["decision"]["approved"] is True
+        assert typed == [1]
+        assert len(cards) == 1
+        assert (cards[0].chat_id, cards[0].session_key) == (source.chat_id, "bg_approval")
+        assert cards[0].request_id
+        assert "request_id" not in (cards[0].metadata or {})
+        assert cards[0].metadata["requester_user_id"] == source.user_id
+        assert cards[0].metadata["thread_id"] == source.thread_id
+        with approval._lock:
+            assert "bg_approval" not in approval._gateway_notify_cbs
+            assert "bg_approval" not in approval._gateway_command_session_keys
+
+    @pytest.mark.asyncio
+    async def test_timed_out_background_card_is_edited_to_the_timeout_notice(self, monkeypatch):
+        """Nobody answers a /bg approval: the card is rewritten to say the command did not run."""
+        from gateway.approval_bridge import background_approval_scope
+        from tests.waiting import async_wait_until
+        from tools import approval, approval_context
+        from tools.approval_gateway_wait import _await_gateway_decision
+
+        edits = []
+
+        class CardAdapter(BasePlatformAdapter):
+            async def _send_exec_approval_prompt(self, prompt):
+                return SendResult(success=True, message_id="$card")
+
+            async def edit_message(self, chat_id, message_id, content, **_kwargs):
+                edits.append((chat_id, message_id, content))
+                return SendResult(success=True, message_id=message_id)
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                return None
+
+            async def send(self, *_args, **_kwargs):
+                return SendResult(success=True)
+
+            async def get_chat_info(self, _chat_id):
+                return {}
+
+        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0)
+        source = SessionSource(platform=Platform.MATRIX, user_id="@user:example.org", chat_id="!room:example.org",
+                               chat_type="group")
+        adapter = CardAdapter(PlatformConfig(enabled=True), Platform.MATRIX)
+        with background_approval_scope(adapter=adapter, source=source, task_id="bg_timeout", chat_session_key="chat",
+                                       metadata=None, loop=asyncio.get_running_loop()):
+            notify = approval._gateway_notify_cbs["bg_timeout"]
+            result = await asyncio.to_thread(_await_gateway_decision, "bg_timeout", notify, {
+                "command": "rm -rf /tmp/probe", "description": "recursive delete", "pattern_key": "rm"})
+        await async_wait_until(lambda: edits, what="timeout notice edit")
+
+        assert result["resolved"] is False
+        assert edits[0][:2] == ("!room:example.org", "$card")
+        assert "rm -rf /tmp/probe" in edits[0][2]
 
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands

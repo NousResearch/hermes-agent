@@ -236,18 +236,62 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
-    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
-        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
-        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
-        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
-        platform is its own credential boundary and never borrows the primary. Restored/cached sources
-        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+    def _routed_primary_adapter(self, source: Optional[SessionSource]):
+        """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.
+
+        Destination-gated: the most specific default-bot route matching *source*'s chat must name
+        *source*'s profile, and that profile must own no bot on the platform. A platform-only lookup
+        (``_adapters_for_profile``, ``send_message``, the platform-events API) never reaches here, so a
+        satellite cannot write to an arbitrary chat through the primary's credentials.
+        """
+        from gateway.delivery import resolve_delivery_transport
+        platform = getattr(source, "platform", None)
+        profile = (getattr(source, "profile", None) or "").strip()
+        if platform is None or not profile or not self._is_shared_bot_satellite(profile, platform):
+            return None
+        if platform in (self._profile_adapters_map().get(profile) or {}):
+            return None
+        if not self._default_bot_routes_to(source, profile):
+            return None
+        transport = resolve_delivery_transport(platform, self.config, self._primary_adapters())
+        return transport.adapter if transport is not None else None
+
+    def _default_bot_routes_to(self, source: SessionSource, profile: str) -> bool:
+        """Whether the most specific default-bot route matching *source*'s chat names *profile*."""
+        from gateway.profile_routing import match_profile_route
+        route = match_profile_route(
+            self.config.profile_routes, source.platform.value, guild_id=getattr(source, "scope_id", None),
+            chat_id=getattr(source, "chat_id", None), thread_id=getattr(source, "thread_id", None),
+            parent_chat_id=getattr(source, "parent_chat_id", None), user_id=getattr(source, "user_id", None),
+        )
+        return route is not None and route.profile == profile
+
+    def _restored_transport_trusted(self, source: SessionSource, identity) -> bool:
+        """Whether a persisted receiving bot can stand in for the live one. Routes saved before inferred
+        transports stopped being persisted may hold the primary-profile GUESS, indistinguishable on disk
+        from a primary bot that really received the chat; for another runtime that is only genuine
+        where a default-bot route sends the chat to that runtime. A live transport is always trusted."""
+        if identity.transport is not None:
+            return True
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if identity.transport_profile != primary or identity.runtime_profile == primary:
+            return True
+        return self._default_bot_routes_to(source, identity.runtime_profile)
+
+    def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
+        """A served profile that a ``profile_routes`` entry targets through the default profile's bot
+        (gateway/AGENTS.md). With no *platform*, it must own no bot at all: such a profile drains
+        through the primary's adapters (its ``_profile_adapters`` entry is the ``{}`` startup
+        placeholder). With *platform*, only a bot it owns on THAT platform makes it a credential
+        boundary there — the per-destination borrow in ``_routed_primary_adapter``. Restored/cached
+        sources carry no transport ref, so this keeps heartbeats, completions and goal notices
+        deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
         # A bot of its own that is down (failed to connect, or dropped) still makes it a credential boundary.
-        if (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name):
+        owned = (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name)
+        if owned and (platform is None or platform in owned):
             return False
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
@@ -283,12 +327,12 @@ class GatewayAuthorizationMixin:
         platform = getattr(source, "platform", None)
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        # A LOCAL session has no receiving bot.  Its default transport is inferred as the
-        # primary profile, but the policy and delivery adapter belong to the session authority.
-        # Let the delivery fallback resolve that profile instead of treating a lazily-created
-        # primary LocalSessionAdapter as the receiver (#139060).
-        if (identity is not None and identity.multiplexed
-                and not (platform == Platform.LOCAL and identity.transport_inferred)):
+        # An INFERRED transport is a guess (the primary profile), not a receiving bot: a hand-built
+        # internal/voice source canonicalized by ``run_inbound`` would otherwise take the primary's
+        # adapter for any chat, skipping the satellite route gate in ``_delivery_adapter_for`` and
+        # an owned-but-down bot's fail-closed row. It has no live provenance, so intake is None and
+        # delivery resolves the runtime profile's owner. Covers LOCAL too (#139060).
+        if identity is not None and identity.multiplexed and not identity.transport_inferred:
             return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None
@@ -330,7 +374,9 @@ class GatewayAuthorizationMixin:
         # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        # A satellite with no bot on the platform borrows the primary only for its routed chats.
+        return (self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+                or self._routed_primary_adapter(source))
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

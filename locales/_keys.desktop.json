@@ -4033,8 +4033,6 @@
     "settings.pluginPages.manage",
     "settings.pluginPages.missing",
     "settings.pluginPages.pageCount",
-    "settings.plugins.disable",
-    "settings.plugins.enable",
     "settings.plugins.failed",
     "settings.plugins.installModal.advanced",
     "settings.plugins.installModal.agentFailed",

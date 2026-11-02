@@ -1691,8 +1691,6 @@
   "settings.notifications.kinds.credits.label": ["ar"],
   "settings.notifications.kinds.plugin.description": ["ar"],
   "settings.notifications.kinds.plugin.label": ["ar"],
-  "settings.plugins.disable": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
-  "settings.plugins.enable": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "settings.plugins.failed": ["ja","zh-hant"],
   "settings.plugins.installModal.agentFailed": ["ar","ja","zh-hant"],
   "settings.plugins.installModal.agentLabel": ["ar","ja","zh-hant"],

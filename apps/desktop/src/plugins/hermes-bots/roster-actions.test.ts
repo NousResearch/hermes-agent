@@ -22,7 +22,13 @@ const { hostMock, markUnreadMock, storageMock } = vi.hoisted(() => ({
   hostMock: {
     notify: vi.fn(),
     request: vi.fn(),
-    state: { connectionId: { get: () => 'local' }, focusedSessionOwner: null, profile: { get: () => 'default' } }
+    state: {
+      busy: { get: () => false },
+      connectionId: { get: () => 'local' },
+      focusedSessionOwner: null,
+      focusedStoredSessionId: { get: (): string => '' },
+      profile: { get: () => 'default' }
+    }
   },
   markUnreadMock: vi.fn(),
   storageMock: { get: vi.fn(), set: vi.fn() }
@@ -241,5 +247,48 @@ describe('the toast preference', () => {
     })
     expect(() => setActivityToasts(false)).not.toThrow()
     expect($activityToasts.get()).toBe(false)
+  })
+})
+
+describe('the open bot chat refreshes on its own activity only', () => {
+  // #147825: any other session in the same profile bumps the roster's
+  // last_session (the newest VISIBLE session) every few seconds while it runs.
+  // botActivitySession then advances on every poll, and refreshing the open
+  // chat off that signal re-shows its finished todo list (FINISHED_LINGER_MS)
+  // and costs one activate RPC + transcript read per poll until that turn ends.
+  const idleBotChat = (canonicalLastActive: number, visibleLastActive: number): RosterRow =>
+    ({
+      canonical_session: { id: 'researcher-chat', last_active: canonicalLastActive, preview: 'hi' },
+      last_session: { id: 'other-session', last_active: visibleLastActive, preview: 'busy turn' },
+      name: 'researcher'
+    }) as RosterRow
+
+  async function openIdleBotChat() {
+    const actions = await loadActions()
+    const canonical = await import('./canonical-chat')
+
+    vi.mocked(canonical.openBotCanonicalChat).mockResolvedValue(null)
+    hostMock.state.focusedStoredSessionId.get = () => 'researcher-chat'
+    actions.$selectedBot.set('researcher')
+
+    return { ...actions, openBotCanonicalChat: canonical.openBotCanonicalChat }
+  }
+
+  it('does not re-resolve the chat when only another session advanced', async () => {
+    const { trackInboundActivity, openBotCanonicalChat } = await openIdleBotChat()
+
+    trackInboundActivity([idleBotChat(5000, 5000)]) // seeding poll
+    trackInboundActivity([idleBotChat(5000, 7000)]) // another session's running turn
+
+    expect(openBotCanonicalChat).not.toHaveBeenCalled()
+  })
+
+  it('still re-resolves the chat when the bot chat itself advances', async () => {
+    const { trackInboundActivity, openBotCanonicalChat } = await openIdleBotChat()
+
+    trackInboundActivity([idleBotChat(5000, 5000)])
+    trackInboundActivity([idleBotChat(6000, 9000)])
+
+    expect(openBotCanonicalChat).toHaveBeenCalledTimes(1)
   })
 })

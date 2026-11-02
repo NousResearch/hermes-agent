@@ -75,3 +75,19 @@ async def test_api_session_with_a_viewer_or_queued_input_stays(api, owner):
     # The retirement check runs at the drain's idle exit, before its task finishes.
     await async_wait_until(lambda: live.task.done(), timeout=10, what='the drain to go idle')
     assert owner.sessions.get('watched') is live
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_idle_api_session_evicts_its_cached_agent(api, owner):
+    """A delete or prune of an API conversation retirement let go still drops its cached agent
+    (transcript, client pool, memory provider), as it does for one in memory."""
+    _answer(owner, [])
+    evicted = []
+    owner.runner._evict_cached_agent = lambda route, **kw: evicted.append(route)
+    admitted = admit_api_turn(api, session_id='conv', user_message='one', conversation_history=[])
+    route = owner.sessions['conv'].route
+    await asyncio.wait_for(observe_api_turn(admitted), 10)
+    await async_wait_until(lambda: 'conv' not in owner.sessions, timeout=10, what='the idle API session to retire')
+    from gateway.session_mutations import retire_live_sessions
+    retire_live_sessions(owner, ['conv'])  # the delete / prune primitive
+    assert evicted == [route]

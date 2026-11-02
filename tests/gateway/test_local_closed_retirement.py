@@ -248,3 +248,56 @@ async def test_closed_branch_keeps_its_parents_launch_key_after_the_parent_is_de
     finally:
         await connection.close()
         owner.db.close()
+
+
+@pytest.mark.asyncio
+async def test_retired_conversation_a_rename_brings_back_retires_again(tmp_path, monkeypatch):
+    """A rename (any authorize: a read RPC, archive, pin) restores a retired conversation to run
+    its checks; once it sits idle again it leaves memory again instead of staying until restart."""
+    from gateway import session_retirement
+    from gateway.session_mutations import mutate_session
+    monkeypatch.setattr(session_retirement, 'RESTORED_IDLE_S', 0.05)
+    _runner, authority, db = await _owner(tmp_path, monkeypatch)
+    try:
+        ref = _create(authority)
+        await _close(authority, ref)
+        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                               what="the closed session to leave memory")
+        handle = authority._handle(ref)
+        await mutate_session(authority, _viewer(), ref, dict(
+            session_id=ref.session_id, request_id='rename1', operation='rename', payload={'title': 'Renamed'},
+            expected_revision=handle.revision, expected_generation=handle.execution_generation))
+        assert db.get_session(ref.session_id)['title'] == 'Renamed'
+        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                               what="the renamed conversation to retire again")
+        await authority.attach(_viewer(), ref)  # and it still resumes
+        assert ref.session_id in authority.sessions
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_closed_conversation_with_a_running_refine_review_stays(tmp_path, monkeypatch):
+    """A cold /refine's review run token lives on the LiveSession: closing mid-review keeps it, so a
+    reopen's second /refine joins that review and the next turn cancels it."""
+    import threading
+    from types import SimpleNamespace
+
+    from gateway import session_retirement
+    _runner, authority, db = await _owner(tmp_path, monkeypatch)
+    checked = []
+    retire_closed = session_retirement.retire_closed
+
+    def recorded(*args):
+        checked.append(retire_closed(*args))
+        return checked[-1]
+    monkeypatch.setattr(session_retirement, 'retire_closed', recorded)
+    try:
+        ref = _create(authority)
+        live = authority.sessions[ref.session_id]
+        live.review._background_review_run = SimpleNamespace(request_done=threading.Event())
+        await _close(authority, ref)
+        await async_wait_until(lambda: checked, timeout=10, what="the close's retirement check")
+        assert checked == [False] and authority.sessions.get(ref.session_id) is live
+    finally:
+        db.close()

@@ -87,6 +87,9 @@ class LiveSession:
     # ``(execution stamp,)`` the last viewer close completed at: a drain alive then retires the closed
     # conversation at its idle exit unless a turn claimed since (gateway/session_retirement.py).
     closed_stamp: tuple | None = None
+    # A conversation retirement let go that an RPC brought back: its re-retirement check
+    # (``session_retirement.touch_restored``), pushed back by each authorize.
+    retire_timer: object = None
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -156,6 +159,9 @@ class SessionAuthority:
         # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
         # it is deleted or retired again): their source and frozen policy stay on the local adapter.
         self.retired_local = set()
+        # Every conversation ``session_retirement`` let go and not yet deleted -> its route: a delete or
+        # prune of one not in memory still evicts that route's cached agent.
+        self.retired_routes = {}
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -227,6 +233,8 @@ class SessionAuthority:
         if (source is not None and source.platform == Platform.LOCAL
                 and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
+        from gateway.session_retirement import touch_restored
+        touch_restored(self, ref.session_id)  # a rename or a read brought a retired one back
 
     def _require_admission_open(self, *, queue_only=False):
         """``queue_only``: the caller only COMMITS a queued row (never claims or runs it). A restart's

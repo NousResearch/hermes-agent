@@ -2463,6 +2463,12 @@ export const frOverrides = {
     changesApplyNewSessions: "Les modifications s'appliquent aux nouvelles sessions.",
     skillUpdated: 'Skill mis à jour',
     edit: 'Modifier',
+    lock: 'Verrouiller',
+    locked: 'Verrouillé',
+    lockHint:
+      'L’agent ne peut pas modifier ce skill tant qu’il est verrouillé. Vous pouvez toujours le modifier vous-même.',
+    unlockedHint:
+      'Verrouillez-le pour que l’agent ne puisse pas modifier ce skill. Vous pouvez toujours le modifier vous-même.',
     archive: 'Archiver',
     skillArchivedTitle: 'Skill archivé',
     skillArchivedMessage: 'Restaurable via hermes curator restore.',

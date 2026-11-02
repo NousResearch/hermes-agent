@@ -22,6 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
+from tools.arg_validation import split_tool_args, validate_tool_args, with_ignored_arguments
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -814,9 +815,10 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: dict[str, Any], original_args: dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool) -> Any:
-    """Run the registry handler (through tool-execution middleware unless skipped)
-    with the approval observability context bound for the duration."""
+                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool,
+                  ) -> tuple[Any, Optional[tuple[str, Optional[str], Optional[str]]]]:
+    """Validate the final middleware payload before dispatch; return the result
+    and any argument-validation observer classification."""
     dispatch_kwargs: dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
     if function_name == "execute_code":
         # Prefer the caller's list so subagents can't overwrite the parent's
@@ -825,22 +827,37 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     else:
         dispatch_kwargs["user_task"] = user_task
 
+    observer_fields: Optional[tuple[str, Optional[str], Optional[str]]] = None
+
     def _dispatch(next_args: dict[str, Any]) -> Any:
+        nonlocal observer_fields
+        # Hooks and execution middleware may repair or replace arguments; only the
+        # final handler payload tells us which keys would actually be dropped.
+        arg_error = validate_tool_args(function_name, next_args)
+        if arg_error is not None:
+            observer_fields = ("error", "invalid_arguments", json.loads(arg_error)["error"])
+            return arg_error
+
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
-        return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+        accepted_args, ignored = split_tool_args(function_name, next_args)
+        result = registry.dispatch(function_name, accepted_args, **dispatch_kwargs)
+        return with_ignored_arguments(result, function_name, ignored)
 
     with _approval_observability(ids):
         if skip_tool_execution_middleware:
-            return _dispatch(function_args)
-        from hermes_cli.middleware import run_tool_execution_middleware
-        return run_tool_execution_middleware(function_name, function_args, _dispatch, original_args=original_args,
-                                             **ids.hook_kwargs())
+            result = _dispatch(function_args)
+        else:
+            from hermes_cli.middleware import run_tool_execution_middleware
+            result = run_tool_execution_middleware(function_name, function_args, _dispatch, original_args=original_args,
+                                                   **ids.hook_kwargs())
+        return result, observer_fields
 
 
 def _apply_transform_tool_result_hook(function_name: str, function_args: dict[str, Any], result: Any, duration_ms: int,
-                                      ids: _CallIds) -> Any:
+                                      ids: _CallIds,
+                                      observer_fields: Optional[tuple[str, Optional[str], Optional[str]]] = None) -> Any:
     """transform_tool_result: plugins may replace the final result string.
 
     Runs after post_tool_call and before the result enters context. Fail-open;
@@ -849,7 +866,7 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):
-            status, error_type, error_message = _tool_result_observer_fields(function_name, result)
+            status, error_type, error_message = observer_fields or _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,
                                        result=result, **ids.hook_kwargs(), duration_ms=duration_ms,
                                        status=status, error_type=error_type, error_message=error_message)
@@ -946,11 +963,12 @@ def handle_function_call(
 
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
-        result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
+        result, observer_fields = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
                                enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
         duration_ms = _elapsed_ms(start)
-        _emit(result, duration_ms=duration_ms)
-        return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
+        observer_kwargs = dict(zip(("status", "error_type", "error_message"), observer_fields)) if observer_fields else {}
+        _emit(result, duration_ms=duration_ms, **observer_kwargs)
+        return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids, observer_fields)
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {e!s}"

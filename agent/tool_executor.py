@@ -744,6 +744,14 @@ def _dispatch_authorized_once(
             block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
 
+    # Inline tools (notably delegation) bypass model_tools.handle_function_call.
+    # Check the final rewritten arguments here too, before any handler can run.
+    from tools.arg_validation import split_tool_args, validate_tool_args, with_ignored_arguments
+    argument_error = validate_tool_args(ref.name, ref.args)
+    if argument_error is not None:
+        _advance_start_order()
+        return argument_error
+
     if ref.name == "memory":
         agent._turns_since_memory = 0
     elif ref.name == "skill_manage":
@@ -754,11 +762,18 @@ def _dispatch_authorized_once(
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
+    # Registry-dispatched tools normalize after execution middleware in model_tools;
+    # only inline handlers need normalization at this seam.
+    ignored: list = []
+    args = ref.args
+    if ref.name in INLINE_TOOL_EXECUTORS:
+        args, ignored = split_tool_args(ref.name, ref.args)
     with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
         try:
-            return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+            result = _run_with_activity_heartbeat(agent, ref.name, lambda: execute(args))
         finally:
             state.data_use = frozenset(data_use)
+    return with_ignored_arguments(result, ref.name, ignored)
 
 
 def _run_agent_tool_execution_middleware(

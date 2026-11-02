@@ -949,14 +949,21 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
+def _execute_code_argument_hint(args: dict) -> str:
+    """Explain the known shell-command mix-up without guessing or translating arguments."""
+    if "command" in args:
+        return ("For shell commands, use terminal(command=...). "
+                "For Python, retry as execute_code(code=...).")
+    return ""
+
+
 def _execute_code_handler(args: dict, **kwargs) -> str:
     """Redirect misdirected calls (terminal's ``command`` arg, non-string ``code``) with an
     actionable error before dispatching to ``execute_code``."""
     if "code" not in args and "command" in args:
         logger.warning("execute_code received 'command' instead of the required 'code' argument")
         return tool_error("execute_code received a 'command' parameter, but it requires "
-                          "Python source in 'code'. Use terminal(command=...) for shell "
-                          "commands; for Python, retry as execute_code(code=...).")
+                          "Python source in 'code'. " + _execute_code_argument_hint(args))
     code = args.get("code", "")
     if code is not None and not isinstance(code, str):
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
@@ -969,4 +976,5 @@ registry.register(
     name="execute_code", toolset="code_execution", schema=EXECUTE_CODE_SCHEMA,
     handler=_execute_code_handler, check_fn=check_sandbox_requirements, emoji="🐍",
     max_result_size_chars=100_000,
+    argument_error_hint=_execute_code_argument_hint,
 )

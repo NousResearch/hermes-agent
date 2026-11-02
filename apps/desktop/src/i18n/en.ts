@@ -2098,6 +2098,10 @@ export const en: Translations = {
     edit: 'Edit',
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
+    lock: 'Lock',
+    locked: 'Locked',
+    lockHint: "The agent can't change this skill while it's locked. You can still edit it yourself.",
+    unlockedHint: 'Lock to stop the agent from changing this skill. You can still edit it yourself.',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {

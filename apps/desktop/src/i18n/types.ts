@@ -1898,6 +1898,10 @@ export interface Translations extends NoticeTranslations {
     edit: string
     archive: string
     skillArchivedTitle: string
+    lock: string
+    locked: string
+    lockHint: string
+    unlockedHint: string
     skillArchivedMessage: string
     tabPlugins: string
     plugins: PluginUpdateTranslations &

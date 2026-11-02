@@ -85,6 +85,34 @@ def _rich_api_kwargs(adapter):
 
 
 @pytest.mark.asyncio
+async def test_citation_markdown_survives_rich_send_and_markdownv2_fallback():
+    content = (
+        "## Sources\n\n| Claim | Source |\n|---|---|\n"
+        "| Verified claim | [Example Source](https://example.com/a_%28b%29?x=1&y=2) |"
+    )
+    adapter = _make_adapter()
+
+    rich_result = await adapter.send("12345", content)
+
+    assert rich_result.success is True
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == content
+    rich_bot = adapter._bot
+    assert rich_bot is not None
+    rich_bot.send_message.assert_not_called()
+
+    fallback = _make_adapter()
+    fallback_bot = fallback._bot
+    assert fallback_bot is not None
+    fallback_bot.do_api_request = AsyncMock(side_effect=BadRequest("can't parse rich message"))
+
+    fallback_result = await fallback.send("12345", content)
+
+    assert fallback_result.success is True
+    fallback_bot.send_message.assert_awaited()
+    assert "https://example.com/a_%28b%29?x=1&y=2" in repr(fallback_bot.send_message.call_args)
+
+
+@pytest.mark.asyncio
 async def test_details_without_math_still_uses_rich_send():
     adapter = _make_adapter()
 

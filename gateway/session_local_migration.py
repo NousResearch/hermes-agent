@@ -241,7 +241,7 @@ def adopt_legacy_session(authority, actor, row):
     if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
-    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
+    from hermes_state_local_migration import legacy_creation_source, validate_legacy_row
     validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
@@ -253,7 +253,7 @@ def adopt_legacy_session(authority, actor, row):
     request_id = 'legacy:' + row['id']
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
-    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    params['source'] = legacy_creation_source(row)
     private = {}
     config = _load_gateway_config()
     params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)

@@ -629,14 +629,14 @@ class AuthorityConnection:
                     ref = SessionRef(ref.profile_id, resolved_id)
             from gateway.session_local_migration import resolve_local_target
             from gateway.session_policy_refresh import refresh_settled
-            from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+            from hermes_state_local_migration import legacy_history_row
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)
             # Canonical LOCAL compression/reset segments keep the receipt on their logical
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
-            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+            if row and (row['source'] == Platform.LOCAL.value or legacy_history_row(row)):
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
             elif row:

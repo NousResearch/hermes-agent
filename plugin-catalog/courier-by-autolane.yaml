@@ -7,7 +7,7 @@ description: >-
   vehicle collects it and drives it to them for a flat fee, through Autolane's hosted MCP server
   (Streamable HTTP, OAuth 2.1 with dynamic client registration and PKCE; the user links a mobile
   number with a texted code), with one ordering skill bundled. Portable Agent Plugins v1 package
-  (plugin.json + mcp.json + skills/). Disclosure: hosted-only connector with no local code; every
+  (plugin.json + mcp.json + skills/). Disclosure — hosted-only connector with no local code; every
   tool call goes to Autolane's MCP server at mcp.goautolane.com with store and drop-off addresses,
   the customer's name and order details, which also reach the user's model provider through the
   session. reserve_delivery, confirm_delivery, update_delivery and cancel_delivery book, change or

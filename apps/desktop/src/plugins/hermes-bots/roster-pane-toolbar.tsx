@@ -63,6 +63,11 @@ interface renderRosterToolbarProps {
   setActivityFilter: (value: RosterActivityFilter) => void
   gatewayFilter: string
   setGatewayFilter: (value: string) => void
+  /** Live classic group rooms in the current roster projection (no tombstones). */
+  liveGroupCount: number
+  selectedGroupCount: number
+  onDeleteSelectedGroups?: () => void
+  onClearAllGroups?: () => void
 }
 
 export function renderRosterToolbar({
@@ -85,7 +90,11 @@ export function renderRosterToolbar({
   activityFilter,
   setActivityFilter,
   gatewayFilter,
-  setGatewayFilter
+  setGatewayFilter,
+  liveGroupCount,
+  selectedGroupCount,
+  onDeleteSelectedGroups,
+  onClearAllGroups
 }: renderRosterToolbarProps) {
   return (
     <>
@@ -94,6 +103,41 @@ export function renderRosterToolbar({
           Bots
         </span>
         <div className="flex items-center gap-0.5">
+          {selectedGroupCount > 0 && onDeleteSelectedGroups ? (
+            <Tip label={b.group.deleteNAction(selectedGroupCount)}>
+              <Button
+                aria-label={b.group.deleteNAction(selectedGroupCount)}
+                className="rounded-md text-destructive hover:text-destructive"
+                onClick={onDeleteSelectedGroups}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <Codicon name="trash" />
+              </Button>
+            </Tip>
+          ) : null}
+          {liveGroupCount > 0 && onClearAllGroups ? (
+            <DropdownMenu>
+              <Tip label={b.group.clearAllAction}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label={b.group.clearAllAction}
+                    className="rounded-md text-(--ui-text-tertiary) hover:text-foreground"
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <Codicon name="ellipsis" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </Tip>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onClearAllGroups}>
+                  <Codicon name="trash" />
+                  <span className="ml-1.5">{b.group.clearAllAction}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
           <Tip
             label={activityToasts ? 'Activity toasts on — click to silence' : 'Activity toasts off — click to enable'}
           >

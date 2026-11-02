@@ -269,6 +269,15 @@ const en: BotsMessages = {
     disbandTitle: 'Disband group chat?',
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
+    deleteNTitle: count => (count === 1 ? 'Delete group chat?' : `Delete ${count} group chats?`),
+    deleteNAction: count => (count === 1 ? 'Delete' : `Delete ${count}`),
+    deleteNDesc: count =>
+      `This removes ${count} group chat${count === 1 ? '' : 's'} from their bots and clears each shared room log. The bots and their individual chats are kept.`,
+    deletedN: count => `Deleted ${count} group chat${count === 1 ? '' : 's'}`,
+    clearAllAction: 'Clear all group chats',
+    clearAllTitle: 'Clear all group chats?',
+    clearAllDesc: count =>
+      `This deletes all ${count} group chat${count === 1 ? '' : 's'} in the Bots list. Each room uses the same disband path as a single delete, so they stay gone after reload.`,
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
     slashCommandsUnsupported:
       'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
@@ -712,6 +721,15 @@ const ja: BotsMessages = {
     disbandTitle: 'グループチャットを解散しますか？',
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
+    deleteNTitle: count => (count === 1 ? 'グループチャットを削除しますか？' : `${count} 件のグループチャットを削除しますか？`),
+    deleteNAction: count => (count === 1 ? '削除' : `${count} 件を削除`),
+    deleteNDesc: count =>
+      `${count} 件のグループチャットをボットから外し、各共有ルームのログを消します。ボット本体と個別チャットは残ります。`,
+    deletedN: count => `${count} 件のグループチャットを削除しました`,
+    clearAllAction: 'すべてのグループチャットを消去',
+    clearAllTitle: 'すべてのグループチャットを消去しますか？',
+    clearAllDesc: count =>
+      `Bots リストの ${count} 件のグループチャットをすべて削除します。各ルームは単体削除と同じ解散パスを使うので、再読み込み後も戻りません。`,
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
     slashCommandsUnsupported:
       'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
@@ -1147,6 +1165,15 @@ const zh: BotsMessages = {
     disbandTitle: '解散群聊？',
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
+    deleteNTitle: count => (count === 1 ? '删除群聊？' : `删除 ${count} 个群聊？`),
+    deleteNAction: count => (count === 1 ? '删除' : `删除 ${count} 个`),
+    deleteNDesc: count =>
+      `这将从各自的机器人中移除 ${count} 个群聊并清除每个共享房间日志。机器人和它们的单独聊天会保留。`,
+    deletedN: count => `已删除 ${count} 个群聊`,
+    clearAllAction: '清除全部群聊',
+    clearAllTitle: '清除全部群聊？',
+    clearAllDesc: count =>
+      `这将删除 Bots 列表中的全部 ${count} 个群聊。每个房间使用与单个删除相同的解散路径，因此重新加载后不会回来。`,
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
     slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
@@ -1576,6 +1603,15 @@ const zhHant: BotsMessages = {
     disbandTitle: '解散群組聊天？',
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
+    deleteNTitle: count => (count === 1 ? '刪除群組聊天？' : `刪除 ${count} 個群組聊天？`),
+    deleteNAction: count => (count === 1 ? '刪除' : `刪除 ${count} 個`),
+    deleteNDesc: count =>
+      `這會從各自的機器人中移除 ${count} 個群組聊天並清除每個共用房間日誌。機器人和它們的個別聊天會保留。`,
+    deletedN: count => `已刪除 ${count} 個群組聊天`,
+    clearAllAction: '清除全部群組聊天',
+    clearAllTitle: '清除全部群組聊天？',
+    clearAllDesc: count =>
+      `這會刪除 Bots 清單中的全部 ${count} 個群組聊天。每個房間使用與單筆刪除相同的解散路徑，因此重新載入後不會回來。`,
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
     slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',

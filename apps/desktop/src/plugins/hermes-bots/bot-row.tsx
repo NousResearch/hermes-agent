@@ -506,13 +506,30 @@ interface GroupRowProps {
   group: string
   members: GroupMember[]
   needsYou: boolean
+  /** Multi-select highlight for bulk delete (ctrl/shift selection). */
+  selected?: boolean
   onDisband: (room: { members: GroupMember[]; name: string }) => void
   /** Opens the New section dialog; the group is filed into it on create. */
   onNewSection: (group: string) => void
   onOpen: (group: string) => void
+  /**
+   * Multi-select path: when the click carries ctrl/cmd/shift, the roster
+   * updates selection instead of opening the room. Omitted = always open.
+   */
+  onSelectClick?: (group: string, mod: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => boolean
 }
 
-export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, onNewSection }: GroupRowProps) {
+export function GroupRow({
+  active,
+  group,
+  members,
+  needsYou,
+  selected = false,
+  onOpen,
+  onDisband,
+  onNewSection,
+  onSelectClick
+}: GroupRowProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
@@ -550,15 +567,26 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
   const row = (
     <RowButton
       aria-label={`${group}, ${b.group.memberCount(members.length)}, ${availabilityLabel}`}
+      aria-selected={selected || undefined}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         active && 'bg-(--ui-row-active-background)',
+        selected && !active && 'bg-(--chrome-action-hover) ring-1 ring-inset ring-(--ui-accent)',
         dragging && 'opacity-40'
       )}
       draggable
-      onClick={() => {
+      onClick={event => {
         haptic('tap')
+        const mod = {
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey
+        }
+        if (onSelectClick?.(group, mod)) {
+          event.preventDefault()
+          return
+        }
         onOpen(group)
       }}
       onDragEnd={() => $draggingBot.set(null)}

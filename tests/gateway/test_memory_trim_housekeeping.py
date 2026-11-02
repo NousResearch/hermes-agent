@@ -1,5 +1,7 @@
 """Memory-trim coverage for the long-lived messaging gateway housekeeper."""
 
+import logging
+
 import gateway.run as gateway_run
 
 
@@ -29,4 +31,4 @@ def test_gateway_housekeeping_calls_periodic_memory_trim(monkeypatch):
 
     gateway_run._start_gateway_housekeeping(_OneTickStopEvent(), interval=0)
 
-    assert calls == [{"reason": "messaging gateway housekeeping"}]
+    assert calls == [{"reason": "messaging gateway housekeeping", "log_level": logging.DEBUG}]

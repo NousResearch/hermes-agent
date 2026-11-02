@@ -11,8 +11,8 @@ reads it.
 import types
 
 import pytest
-import yaml
 
+import hermes_yaml as yaml
 from gateway.config import Platform
 from gateway.run import GatewayRunner
 from hermes_cli.plugins import _reset_plugin_managers_for_tests, get_plugin_manager

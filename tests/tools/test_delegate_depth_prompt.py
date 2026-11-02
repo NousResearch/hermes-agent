@@ -13,7 +13,7 @@ from tools.registry import registry
 @pytest.mark.parametrize("legacy_role", [None, "leaf", "orchestrator"])
 @pytest.mark.parametrize(
     "parent_depth,max_depth,enabled",
-    [(1, 5, True), (1, 3, True), (2, 3, True), (1, 5, False)],
+    [(1, 5, True), (1, 3, True), (2, 3, True), (1, 5, False), (1, 5, 0), (1, 5, 0.0)],
 )
 def test_dispatched_child_prompt_matches_depth_capability(
     tmp_path, monkeypatch, legacy_role, parent_depth, max_depth, enabled,
@@ -78,3 +78,55 @@ def test_dispatched_child_prompt_matches_depth_capability(
         else:
             assert "children can themselves delegate because depth remains" in prompt
             assert "orchestrators or leaves" not in prompt
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        # Falsy scalars/containers an operator writes to disable spawning must
+        # read as disabled, like every other delegation boolean.
+        (0, False), (0.0, False), ([], False), ({}, False),
+        # Explicit null is "unset" (the _knob convention), so the default applies.
+        (None, True),
+        # Strings and bools keep their existing coercion.
+        ("0", False), ("false", False), ("off", False), ("yes", True),
+        (False, False), (True, True), (1, True),
+    ],
+)
+def test_orchestrator_enabled_falsy_scalars_disable_the_kill_switch(value, expected):
+    """delegation.orchestrator_enabled: 0 must not silently enable child spawning."""
+    with patch.object(delegate_tool, "_load_config", return_value={"orchestrator_enabled": value}):
+        assert delegate_tool._get_orchestrator_enabled() is expected
+
+
+@pytest.mark.parametrize("value,expected", [("false", False), ("0", False), ("off", False), (1, True), (True, True)])
+def test_worktree_isolation_string_values_coerce_like_the_other_booleans(value, expected):
+    """delegation.worktree_isolation: "false" (quoted YAML) must not enable isolation."""
+    with patch.object(delegate_tool, "_load_config", return_value={"worktree_isolation": value}):
+        assert delegate_tool._get_worktree_isolation() is expected
+
+
+@pytest.mark.parametrize("value,expected_delegating", [(0, False), ("false", False), (True, True)])
+def test_tool_description_matches_the_kill_switch(value, expected_delegating):
+    """The delegate_task schema text must not advertise nested delegation when the
+    operator switched orchestration off, whatever scalar type they used."""
+    with patch.object(
+        delegate_tool, "_load_config",
+        return_value={"max_spawn_depth": 5, "orchestrator_enabled": value},
+    ):
+        description = delegate_tool._build_top_level_description()
+    assert ("Children can themselves delegate" in description) is expected_delegating
+
+
+@pytest.mark.parametrize("value,expected_open", [("false", False), ("0", False), (True, True)])
+def test_worktree_isolation_gate_reads_the_config_value(value, expected_open):
+    """_create_isolated_worktree must not open its gate for a quoted "false"."""
+    from tools import subagent_worktree
+    from tools.delegate_tool_child_run import _create_isolated_worktree
+
+    with (
+        patch.object(delegate_tool, "_load_config", return_value={"worktree_isolation": value}),
+        patch.object(subagent_worktree, "local_backend_active", return_value=False) as backend_probe,
+    ):
+        assert _create_isolated_worktree(MagicMock(), "task-1", "sa-1") is None
+    assert backend_probe.called is expected_open

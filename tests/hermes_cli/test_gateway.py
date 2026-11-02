@@ -530,6 +530,20 @@ class TestRestartWaitsForApiServerPort:
 
         assert gateway._wait_for_tcp_port_free("127.0.0.1", port, timeout=5.0) is True
 
+    def test_closed_port_that_refuses_slowly_reads_as_free(self, monkeypatch):
+        """Windows refuses a connect to a closed loopback port only after ~2 s (SYN retransmit): an
+        attempt shorter than that times out and used to read as a live listener, so every restart
+        waited out its whole budget and warned that the port was still busy."""
+        def slow_refusal(address, timeout=None, *args, **kwargs):
+            if timeout is None or timeout < 2.0:
+                raise TimeoutError
+            raise ConnectionRefusedError
+
+        monkeypatch.setattr(gateway.socket, "create_connection", slow_refusal)
+        monkeypatch.setattr(gateway, "_CLOSED_PORT_ATTEMPT_TIMEOUT", 2.6)
+
+        assert gateway._wait_for_tcp_port_free("127.0.0.1", 9, timeout=5.0) is True
+
     def test_wait_targets_the_configured_api_server_port_only_when_enabled(self, monkeypatch):
         import socket
 

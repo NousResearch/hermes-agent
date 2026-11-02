@@ -154,23 +154,18 @@ function composerHasFocus(el: Element): boolean {
 }
 
 /**
- * A real pointer click at the composer's hit-tested centre, then proof it took
- * focus. Unlike locator.click this never scrolls the app (see waitForChatReady).
+ * Focus the hit-tested composer without scrolling. A pointer click (page.mouse
+ * or locator.click) did not reliably focus the v0.19.1 editor, and locator
+ * actions scroll the app (see waitForChatReady); focus({ preventScroll }) does
+ * neither, and the topmost check still proves a user could reach it.
  */
-async function focusComposerByPointer(page: Page, composer: Locator): Promise<void> {
+async function focusComposer(composer: Locator): Promise<void> {
   await expect.poll(async (): Promise<boolean> => composer.evaluate(composerIsTopmost), {
-    timeout: 15_000, message: 'The composer must be the topmost element at its centre before the click',
+    timeout: 15_000, message: 'The composer must be the topmost element at its centre before typing',
   }).toBe(true)
-
-  const box = await composer.evaluate((el: Element): { x: number; y: number } => {
-    const rect = el.getBoundingClientRect()
-
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-  })
-
-  await page.mouse.click(box.x, box.y)
+  await composer.evaluate((el: Element): void => { (el as HTMLElement).focus({ preventScroll: true }) })
   await expect.poll(async (): Promise<boolean> => composer.evaluate(composerHasFocus), {
-    timeout: 15_000, message: 'The click at the composer must focus it',
+    timeout: 15_000, message: 'The composer must hold focus before typing',
   }).toBe(true)
 }
 
@@ -326,7 +321,7 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit, options.reusedBuildCommit) }
     const beforeIds = (await readTranscript(page)).map((message: TranscriptMessage): string => message.id)
     const before = (await observe()).length
-    await focusComposerByPointer(page, composer)
+    await focusComposer(composer)
     // The app persists its composer draft across launches, so a checkpoint that
     // types on top of a restored draft can submit the PREVIOUS checkpoint's text
     // (proved: the update window's turn carried the root checkpoint's prompt) and

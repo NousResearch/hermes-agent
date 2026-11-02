@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.gateway.test_stored_history_mount import _connect
+from agent.turn_facade_lease import admit_durable_turn_lease
 from tools.delegate_tool import _build_child_agent
 
 
@@ -113,17 +114,30 @@ async def test_published_children_open_before_any_child_starts(
             assert "result" in reply, reply
             assert reply["result"]["messages"] == []
 
-            # Reservation must not freeze a partial model config or skip prompt persistence.
-            child._session_init_model_config["synthetic_startup_setting"] = "ready"
-            child._cached_system_prompt = "Synthetic completed prompt"
-            child._ensure_db_session()
-            ready = connection.authority.db.get_session(sid)
-            config = json.loads(ready["model_config"])
-            assert config["_delegate_from"] == parent_ref.session_id
-            assert config["synthetic_startup_setting"] == "ready"
-            assert ready["system_prompt"] == "Synthetic completed prompt"
-            assert ready["model"] == "synthetic-model"
-            assert child._session_db_created
+            # Real turn admission must not mistake a reserved identity for completed
+            # initialization and suppress the first-turn metadata write.
+            admission = admit_durable_turn_lease(
+                child,
+                session_id=sid,
+                relay_turn_id="synthetic-turn",
+                task_context={"session_id": sid, "platform": "subagent"},
+                conversation_history=None,
+            )
+            assert admission.lease is not None
+            try:
+                assert not child._session_db_created
+                child._session_init_model_config["synthetic_startup_setting"] = "ready"
+                child._cached_system_prompt = "Synthetic completed prompt"
+                child._ensure_db_session()
+                ready = connection.authority.db.get_session(sid)
+                config = json.loads(ready["model_config"])
+                assert config["_delegate_from"] == parent_ref.session_id
+                assert config["synthetic_startup_setting"] == "ready"
+                assert ready["system_prompt"] == "Synthetic completed prompt"
+                assert ready["model"] == "synthetic-model"
+                assert child._session_db_created
+            finally:
+                admission.lease.release()
     finally:
         for child in children:
             child.close()

@@ -6,21 +6,25 @@ from __future__ import annotations
 
 import pytest
 
-from pm import extras, install
+from pm import extras, install, paths
 from pm.environment import BuildFailure
-from pm.environments import runtime_facts_path
+from pm.environments import install_state_dir, runtime_facts_path
 from pm.lock import Facts
-from pm.paths import repo_root
 
 
 class _Venv:
-    """The venv package with a build backend that fails whenever a broken extra is selected."""
+    """The venv package with a build backend that fails whenever a broken extra is selected.
+
+    A build that succeeds commits a generation of this install, as the real one does: a
+    stamp only counts as current while the environment the facts name is on disk, so the
+    test must never lean on whatever venv the checkout running it happens to have.
+    """
 
     def __init__(self, broken: set[str]):
         self.broken, self.applied = broken, []
 
     def project_root(self):
-        return repo_root()
+        return paths.repo_root()
 
     def expected_stamp(self, enabled, **_inputs):
         return "stamp:" + ",".join(sorted(enabled))
@@ -29,11 +33,18 @@ class _Venv:
         self.applied.append(sorted(enabled))
         if self.broken & set(enabled):
             raise BuildFailure("venv", "uv sync exited 1: Failed to build `python-olm==3.2.16`")
-        return {}
+        environment = install_state_dir(self.project_root()) / "environments" / str(len(self.applied)) / "venv"
+        environment.mkdir(parents=True)
+        (environment / "pyvenv.cfg").write_text("home = fixture\n")
+        return {"environment": environment}
 
 
 @pytest.fixture()
-def venv(monkeypatch):
+def venv(monkeypatch, tmp_path):
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    monkeypatch.setattr(paths, "repo_root", lambda: repo)
+
     def make(broken):
         package = _Venv(broken)
         monkeypatch.setattr(install, "get_package", lambda name: package)
@@ -42,7 +53,7 @@ def venv(monkeypatch):
 
 
 def _recorded():
-    return (Facts(runtime_facts_path(repo_root())).get("venv") or {}).get("extras")
+    return (Facts(runtime_facts_path(paths.repo_root())).get("venv") or {}).get("extras")
 
 
 def test_a_carried_extra_that_cannot_build_is_left_out_and_not_carried_again(venv, capsys):

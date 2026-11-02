@@ -30,7 +30,9 @@ _RECORDED = ("CC", "CXX", "LDSHARED", "LDCXXSHARED", "AR")
 
 _MISSING_COMPILER = (
     re.compile(r"No such file or directory: '([^']+)'"),
-    re.compile(r"command '([^']+)' failed"),
+    # distutils' spawn when the executable is absent; a compiler that ran and failed
+    # ("command 'gcc' failed with exit code 1") is a source error, not a missing tool.
+    re.compile(r"command '([^']+)' failed: No such file or directory"),
     re.compile(r"No CMAKE_(?:C|CXX)_COMPILER could be found"),
 )
 _COMPILER_NAME = re.compile(r"(?:clang(?:\+\+)?|g?cc|g\+\+|c\+\+)(?:-[\d.]+)?")

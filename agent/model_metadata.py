@@ -19,7 +19,7 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
-from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_llamacpp import apply_llamacpp_props, llamacpp_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -973,38 +973,6 @@ def _lmstudio_native_models(normalized: str, headers: dict[str, str]) -> dict[st
     return cache
 
 
-def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: str, headers: dict[str, str], verify) -> None:
-    """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
-    ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
-    via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
-    base = request_candidate.rstrip("/").replace("/v1", "")
-    def _props(params=None):
-        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if resp.is_error:
-            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if not props_resp.is_error:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
-            cache[model_alias]["context_length"] = n_ctx
-        return
-    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
-    if native.is_error:
-        return
-    for child in (native.json() or {}).get("data", [])[:16]:
-        child_id = child.get("id") if isinstance(child, dict) else None
-        if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
-            continue
-        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
-        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
-        if child_ctx:
-            cache[child_id]["context_length"] = child_ctx
-
-
 def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
     from agent.credential_persistence import fingerprint_secret_value
     # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
@@ -1071,9 +1039,16 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 response.read()
                 payload = response.json()
             cache = _parse_models_payload(payload)
-            if any(m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)):
+            # llama.cpp-speaking gateways don't all brand ``owned_by`` as "llamacpp" (Unsloth
+            # Studio names itself), but /props still reports the n_ctx the loader allocated —
+            # the models payload only carries the model's native length. Local endpoints are
+            # cheap to probe; a server that isn't llama.cpp just fails the read.
+            local_or_llamacpp = local or any(
+                m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)
+            )
+            if local_or_llamacpp:
                 with contextlib.suppress(Exception):
-                    _apply_llamacpp_props(cache, request_candidate, headers, verify)
+                    apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
             return _remember_endpoint_models(memo_key, cache)
@@ -1232,6 +1207,9 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
+        # llama.cpp behind a gateway (Unsloth Studio): "22589 tokens exceeds the 15872-token
+        # context window" — hyphenated window, and the offending input count comes first.
+        r'(\d{4,})[\s-]*tokens?[\s-]*(?:context|window)',
         r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
         # Gemini: "input token count is 32825 but model only supports up to

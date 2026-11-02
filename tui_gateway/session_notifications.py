@@ -805,6 +805,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
             _notif_log_failure("notification dispatch failed", exc)
         finally:
             release_in_flight(ready)
+            notification_park.unhold(parked)
     # Drain remaining events after the stop signal so nothing is lost on shutdown: unowned ones park for their
     # owner's return; foreign ones (and delegations the park refused) go back to the shared queue afterwards, even
     # when routing one of them raised (#140718).

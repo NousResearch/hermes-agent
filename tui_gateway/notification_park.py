@@ -16,11 +16,13 @@ its owner's slots (or the total) full displaces the oldest such notice, same own
 ``watch_patterns`` process cannot crowd out the completion the user is waiting for.
 
 A startup replay (``restored``) delegation is not parked: its row's owner process is dead, so the orphan sweep
-re-offers it until its owner is back. A live delegation's owner is THIS process, which the sweep skips, so its
-parked copy is the only in-memory one. When the park lets go of it (TTL) that loss is logged at WARNING, as an
-unparked drop always was, and its offer is cleared with ``return_completion_offer``; the durable row stays
-pending, but the sweep only re-offers it once it also re-offers rows of a live owner (the ledger re-offer lane),
-and until then it is replayed at the next process start.
+re-offers it until its owner is back. A live delegation's parked copy is its only in-memory one, so the park holds
+it in the ledger's held-copy registry (``async_delegation.mark_copy_held``) for as long as it owns it: the orphan
+sweep, which cannot see this list, then neither warns that the copy was lost nor queues a duplicate. The copy is
+marked in ``park`` (inside the routing step, before the poller's ``release`` of its dequeue hold) and unmarked
+exactly once when it leaves: after the claiming poller has routed it (``unhold``), or when the park lets go of it
+(TTL, ``clear``). A delegation the park lets go of is a lost result, logged at WARNING as an unparked drop always
+was, with its offer cleared (``return_completion_offer``) so the sweep re-offers the still-pending row.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def _is_progress(evt: dict) -> bool:
 
 def _release(events) -> None:
     """Events the park let go of. A delegation is a lost result (WARNING, as an unparked drop logs it) whose offer
-    is cleared so a ledger re-offer may pick the still-pending row up; see the module docstring."""
+    is cleared and whose hold ends, so the orphan sweep re-offers the still-pending row; see the module docstring."""
     if not events:
         return
     from tools.async_delegation import return_completion_offer
@@ -66,6 +68,7 @@ def _release(events) -> None:
         is_delegation = evt.get("type") == "async_delegation"
         if is_delegation:
             return_completion_offer(evt)
+        unhold([evt])
         (logger.warning if is_delegation else logger.debug)(
             "Dropping parked %s notification past its retention window (key=%r)",
             evt.get("type", "completion"), str(evt.get("session_key") or ""))
@@ -95,11 +98,13 @@ def park(evt: dict) -> bool:
     then disposes of the event exactly as it did before the park existed."""
     if not _parkable(evt):
         return False
+    from tools.async_delegation import completion_copy_id, mark_copy_held
     now = time.monotonic()
     with _lock:
         expired = _expire_locked(now)
         admitted, displaced = _admit_locked(evt, _key(evt))
         if admitted:
+            mark_copy_held(completion_copy_id(evt))
             _parked.append((now + RETENTION_SECONDS, evt))
     _release(expired)
     for held in displaced:
@@ -110,7 +115,9 @@ def park(evt: dict) -> bool:
 
 def claim(owns: Callable[[dict], bool]) -> list:
     """Parked events ``owns`` accepts, in arrival order. ``owns`` may read the lineage store, so it runs on a
-    snapshot outside the lock; an event is handed out only if it is still parked, so exactly one poller takes it."""
+    snapshot outside the lock; an event is handed out only if it is still parked, so exactly one poller takes it.
+    Each claimed delegation's held-copy mark passes to the caller, who MUST pass the result to ``unhold`` once
+    routing returns (a re-park in between takes its own mark)."""
     if not _parked:
         return []
     with _lock:
@@ -126,6 +133,14 @@ def claim(owns: Callable[[dict], bool]) -> list:
     return claimed
 
 
+def unhold(events) -> None:
+    """End the held-copy mark ``park`` took for each of ``events`` (a no-op for anything but a result copy)."""
+    if events:
+        from tools.async_delegation import completion_copy_id, unmark_copy_held
+        for evt in events:
+            unmark_copy_held(completion_copy_id(evt))
+
+
 def parked() -> list:
     with _lock:
         return [evt for _deadline, evt in _parked]
@@ -133,4 +148,6 @@ def parked() -> list:
 
 def clear() -> None:
     with _lock:
+        dropped = [evt for _deadline, evt in _parked]
         _parked.clear()
+    unhold(dropped)

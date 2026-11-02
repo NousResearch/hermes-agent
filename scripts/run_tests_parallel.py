@@ -622,6 +622,83 @@ _FLAKY_RESULTS: list[tuple[Path, str]] = []
 _flaky_lock = threading.Lock()
 
 
+# Third-party modules nearly every test file imports. The fork server imports
+# them once; product code and tests/conftest.py stay out so each file imports
+# them fresh. pytest plugins (anyio, pytest_asyncio) stay out too: pytest must
+# import them itself to rewrite their asserts.
+_FORK_PRELOAD = (
+    "pytest", "_pytest.python", "_pytest.fixtures", "_pytest.assertion.rewrite",
+    "asyncio", "email.message", "importlib.metadata", "psutil", "pygments",
+    "pydantic", "httpx", "urllib3", "rich", "ruamel.yaml",
+)
+_fork_server: "_ForkServer | None" = None  # set by main() when enabled
+_fork_start_lock = threading.Lock()  # Process.start() is not thread-safe
+
+
+class _ForkServer:
+    """The run's fork-server context plus what each child sets up (run_tests_fork_child)."""
+
+    def __init__(self, ctx, sys_path: list[str], argv0: str):
+        self.ctx = ctx
+        self.sys_path = sys_path
+        self.argv0 = argv0
+
+
+def _start_fork_server(repo_root: Path) -> _ForkServer:
+    """Linux only: one fork server for the whole run."""
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("forkserver")
+    ctx.set_forkserver_preload(list(_FORK_PRELOAD))
+    # What ``python -m pytest`` would put on sys.path: the cwd first, then the
+    # interpreter's own entries (never this script's directory).
+    base = json.loads(subprocess.run(
+        [sys.executable, "-c", "import json, sys; print(json.dumps(sys.path[1:]))"],
+        cwd=repo_root, capture_output=True, text=True, check=True,
+    ).stdout)
+    import pytest
+
+    return _ForkServer(ctx, [str(repo_root), *base], str(Path(pytest.__file__).with_name("__main__.py")))
+
+
+class _ForkedPytest:
+    """The subprocess.Popen surface _run_one_file_once uses, for a fork-server child."""
+
+    def __init__(self, server: _ForkServer, file: Path, pytest_args: list[str], repo_root: Path, env: dict[str, str]):
+        from scripts import run_tests_fork_child
+
+        fd, self._out = tempfile.mkstemp(prefix="o-", dir=_runner_scratch_root())
+        os.close(fd)
+        self._proc = server.ctx.Process(
+            target=run_tests_fork_child.run,
+            args=(str(file), list(pytest_args), str(repo_root), env, self._out,
+                  server.sys_path, server.argv0),
+        )
+        with _fork_start_lock:
+            self._proc.start()
+        self.pid = self._proc.pid
+        self.returncode: int | None = None
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, None]:
+        self._proc.join(timeout)
+        if self._proc.exitcode is None:
+            raise subprocess.TimeoutExpired(str(self._out), timeout or 0)
+        self.returncode = self._proc.exitcode
+        try:
+            with open(self._out, encoding="utf-8", errors="replace") as fh:
+                return fh.read(), None
+        finally:
+            os.unlink(self._out)
+
+    def kill(self) -> None:
+        import signal as _signal
+
+        try:
+            os.kill(self.pid, _signal.SIGKILL)  # windows-footgun: ok (Linux only)
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def _run_one_file_once(
     file: Path,
     pytest_args: list[str],
@@ -655,27 +732,34 @@ def _run_one_file_once(
     env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
-    # launch the pytest process
-    proc = subprocess.Popen(
-        cmd,
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        env=env,
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
-        start_new_session=True,
-    )
+    pgid: int | None = None
+    if _fork_server is not None:
+        proc = _ForkedPytest(_fork_server, file, pytest_args, repo_root, env)
+        # The child's first act is setsid(), so its pid is its group. Never ask
+        # getpgid here: until setsid runs it reports the fork server's group,
+        # which is the runner's own.
+        pgid = proc.pid
+    else:
+        # launch the pytest process
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            env=env,
+            # POSIX: place the child at the head of its own process group so
+            # _kill_tree can SIGKILL the group atomically.
+            # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
+            # _kill_tree handles the Windows path via taskkill /F /T.
+            start_new_session=True,
+        )
 
     # Capture the pgid NOW, before the leader can exit and be reaped. Once
     # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
     # even though grandchildren in that group are still alive — defeating
     # the whole cleanup. None on Windows where the pgid concept doesn't apply.
-    pgid: int | None = None
-    if sys.platform != "win32":
+    if sys.platform != "win32" and pgid is None:
         try:
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
@@ -1486,6 +1570,7 @@ def main() -> int:
     # Read once, here: test processes inherit this env, and a runner they start (the
     # runner's own probe tests) must run its whole file set, not "its" slice of it.
     os.environ.pop("HERMES_TEST_SLICE", None)
+    use_fork_server = os.environ.pop("HERMES_TEST_FORKSERVER", "") == "1" and sys.platform == "linux"
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
@@ -1631,6 +1716,10 @@ def main() -> int:
         sys.path.insert(0, str(repo_root))
     _sweep_killed_run_roots(_runner_scratch_root())
 
+    if use_fork_server:
+        global _fork_server
+        _fork_server = _start_fork_server(repo_root)
+        print("  fork server: on (third-party imports shared; each file still a fresh process)", flush=True)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         # Duration cache for the timeout scaler: known-slow files get
         # proportional headroom instead of a false timeout-kill under

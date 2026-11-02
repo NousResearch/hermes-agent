@@ -1,4 +1,11 @@
+import type { DesktopAgentRoster } from '@/global'
 import type { ProfileInfo } from '@/types/hermes'
+
+/** The roster has reported the launch target down: the window has fallen back
+ *  to the source already in front. Connect-on-demand SSH counts as reachable. */
+export function launchTargetUnreachable(roster: DesktopAgentRoster | null, connectionId: string): boolean {
+  return roster?.sources.some(source => source.connectionId === connectionId && !source.reachable) === true
+}
 
 /**
  * The profiles a gateway serves, from its `/api/status`: `/api/profiles` lists
@@ -17,7 +24,10 @@ export function servedProfileSet(status: unknown): null | Set<string> {
     return null
   }
 
-  return new Set(['default', ...shared.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))])
+  return new Set([
+    'default',
+    ...shared.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+  ])
 }
 
 /** A profile remembered globally is not necessarily on the selected gateway,

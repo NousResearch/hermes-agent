@@ -1006,6 +1006,17 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
         yield
 
 
+async def _plugin_ws_request_gate(conn: HTTPConnection) -> None:
+    """Host/Origin/peer gate for plugin WebSocket routes: the same ``_ws_request_is_allowed`` check
+    (and so the same ``_is_trusted_local_origin`` rule) the core sockets run before accept. HTTP
+    middleware (Host check, CORS) never sees an upgrade, so without this a plugin socket such as
+    kanban's ``/events`` accepted a stolen session token from any origin. Applied at mount time so no
+    plugin can skip or drift from it; plain HTTP requests pass through untouched."""
+    from hermes_cli.web_server_chat import _ws_request_is_allowed
+    if conn.scope["type"] == "websocket" and not _ws_request_is_allowed(conn):
+        raise WebSocketException(code=4403)
+
+
 def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
     """``plugins.isolation: host``: the plugin's router runs in the requesting profile's plugin host;
     this process only forwards each ``/api/plugins/<name>/`` request to it (auth and the profile
@@ -1235,7 +1246,7 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         app.include_router(
             router,
             prefix=f"/api/plugins/{plugin['name']}",
-            dependencies=[Depends(_plugin_route_secret_scope)],
+            dependencies=[Depends(_plugin_ws_request_gate), Depends(_plugin_route_secret_scope)],
         )
         _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         return True

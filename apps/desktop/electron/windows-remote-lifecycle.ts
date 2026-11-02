@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 
-import { resolveReadyTimeoutMs } from './remote-lifecycle'
+import { lockServesConnect, resolveReadyTimeoutMs } from './remote-lifecycle'
 import { WINDOWS_CHECKOUT_LOCK_PS, WINDOWS_MARKER_JUDGE_PS } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 import { WINDOWS_NO_REPARSE_PS, windowsHelperArgv } from './windows-runtime-command'
@@ -470,7 +470,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}, payload?: str
       ? '  if($spawnExit -ne 0){exit $spawnExit}'
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
     reservation.ownershipId
-      ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
+      ? `  $spawned=$spawnLines[-1]|ConvertFrom-Json; $lock=[ordered]@{schemaVersion=2;protocolVersion=1;ownershipId=${psLiteral(reservation.ownershipId)};spawnNonce=${psLiteral(reservation.spawnNonce)};pid=[int]$spawned.pid;creationTimeNs=[string]$spawned.creationTimeNs;port=0;profile=${psLiteral(reservation.profile)};hermesPath=${psLiteral(reservation.hermesPath)};hermesHome=${psLiteral(reservation.hermesHome)};tokenFingerprint=${psLiteral(reservation.tokenFingerprint)};devServer=${psLiteral(reservation.devServer || '')};startedAt=${psLiteral(reservation.startedAt)}}|ConvertTo-Json -Compress; ` +
         `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
@@ -527,16 +527,17 @@ function validLock(lock, ownershipId) {
   )
 }
 
-function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
+function reusableWindowsLock(lock, state, profile, reuseToken, runtime, devServer = '') {
   return Boolean(
     state.alive &&
     state.owned &&
-    lock.port > 0 &&
-    lock.profile === profile &&
-    reuseToken &&
-    lock.tokenFingerprint === fingerprintToken(reuseToken) &&
-    lock.hermesPath === runtime.hermesPath &&
-    lock.hermesHome === runtime.hermesHome
+    lockServesConnect(lock, {
+      profile,
+      reuseToken,
+      hermesPath: runtime.hermesPath,
+      hermesHome: runtime.hermesHome,
+      devServer
+    })
   )
 }
 
@@ -755,6 +756,7 @@ async function connectWindowsRemote(deps) {
     profile = '',
     remoteHermesPath = '',
     reuseToken = '',
+    devServer = '',
     signal,
     pickLocalPort,
     forward,
@@ -799,7 +801,7 @@ async function connectWindowsRemote(deps) {
       throw error
     }
 
-    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
+    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime, devServer)
 
     if (reusable) {
       await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome, runtime.python)
@@ -863,7 +865,9 @@ async function connectWindowsRemote(deps) {
     spawned = await atomicWindowsSpawn(
       ssh,
       runtime,
-      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath }),
+      // The backend trusts a dev renderer's http origin only from the HERMES_DESKTOP_DEV_SERVER it
+      // inherits; the runtime helper sets it from devServer, as the POSIX spawn command does.
+      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath, devServer }),
       {
         ownershipId,
         spawnNonce,
@@ -871,6 +875,7 @@ async function connectWindowsRemote(deps) {
         hermesPath: runtime.hermesPath,
         hermesHome: runtime.hermesHome,
         tokenFingerprint,
+        devServer,
         startedAt
       }
     )
@@ -912,6 +917,7 @@ async function connectWindowsRemote(deps) {
     hermesPath: runtime.hermesPath,
     hermesHome: runtime.hermesHome,
     tokenFingerprint,
+    devServer,
     startedAt
   }
 

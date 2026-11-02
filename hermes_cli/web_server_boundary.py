@@ -194,6 +194,41 @@ def ws_client_reason(ws, state) -> Optional[str]:
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 
+# CORS: this backend's own loopback origin (the port actually bound) and the desktop dev renderer it
+# was spawned for, nothing else (web-dashboard.md § CORS). allow_origins=["*"] on 0.0.0.0 would let
+# any website read/modify config and secrets; ANY local port would let a page previewed from another
+# port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
+# drive /api/pty. No fixed dev port is trusted either: 3000, 5173 and 5174 are where most local dev
+# servers land (Vite takes 5174 when 5173 is busy). The dashboard's Vite dev server proxies with
+# Host and Origin unchanged (web/vite.config.ts), so its page's upgrades name the Host they dial and
+# ws_host_origin_reason admits them; it needs no grant here. The WebSocket Origin gate applies the
+# same rule (ws_host_origin_reason).
+
+
+def _loopback_origin(origin: str) -> Optional[tuple[str, str, int]]:
+    """``(scheme, host, port)`` of an http(s) loopback origin, else None."""
+    try:
+        parsed = urllib.parse.urlparse(origin)
+        port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except ValueError:  # malformed authority, out-of-range / non-numeric port
+        return None
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in _LOOPBACK_HOST_VALUES:
+        return None
+    return parsed.scheme, parsed.hostname, port
+
+
+def is_trusted_local_origin(origin: str, state) -> bool:
+    """True for a loopback origin on *state*'s bound port, or the desktop dev renderer this backend
+    serves. Electron hands its ``HERMES_DESKTOP_DEV_SERVER`` down to the backend it spawns, and
+    worktree-ui-dev.md's ``hgui`` slots run that renderer on 5174+N."""
+    loopback = _loopback_origin(origin)
+    if loopback is None:
+        return False
+    if loopback[2] == getattr(state, "bound_port", None):
+        return True
+    return _loopback_origin(os.environ.get("HERMES_DESKTOP_DEV_SERVER", "")) == loopback
+
+
 def ws_host_origin_reason(ws, state) -> Optional[str]:
     """``host_mismatch …`` / ``origin_mismatch …`` under listener *state*, or None when allowed.
 
@@ -219,5 +254,13 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
     if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return f"origin_mismatch origin={origin} bound={bound_host}"
+    # _is_accepted_host drops the port: a page on ANOTHER loopback port is a different origin, the
+    # same one CORS refuses — without this it opens /api/pty with a token it read off index.html.
+    # An Origin naming the very authority the upgrade targets is this server's own page reached
+    # through a port forward (``ssh -L 8000:localhost:9119``, ``docker -p 8080:9119``): same-origin
+    # by definition, and a page on another port cannot make the two match.
+    if (parsed.hostname in _LOOPBACK_HOST_VALUES and parsed.netloc.lower() != host_header.strip().lower()
+            and not is_trusted_local_origin(origin, state)):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None

@@ -959,11 +959,13 @@ def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[st
 def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
                new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, anchor: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile``: same semantics as ``write_file``'s flag (mirror-guard
     bypass only; unadvertised).
+    ``anchor``: ``"L<line>[:<hash>]"`` selecting one region when old_string
+    matches several (unadvertised; taught by the ambiguous-match error).
     """
     _paths_to_check = [path] if path else []
     _content_write_paths = list(_paths_to_check)
@@ -1001,7 +1003,8 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
                 _replace_target = _path_to_resolved.get(path) or path
-                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
+                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all,
+                                                anchor=anchor)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
@@ -1365,7 +1368,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
-        session_id=kw.get("session_id"),
+        session_id=kw.get("session_id"), anchor=args.get("anchor"),
     ))
 
 

@@ -1623,9 +1623,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return None
 
     def patch_replace(self, path: str, old_string: str, new_string: str,
-                      replace_all: bool = False) -> PatchResult:
+                      replace_all: bool = False, anchor: Optional[str] = None) -> PatchResult:
         """Replace text in a file using fuzzy matching (``old_string`` must be
-        unique unless ``replace_all``). Returns a PatchResult with diff + lint."""
+        unique unless ``replace_all`` or ``anchor`` selects one region).
+        Returns a PatchResult with diff + lint."""
         path = self._expand_path(path)
         denied = get_write_denied_error(path)
         if denied:
@@ -1643,7 +1644,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
         correction_notes = []
         new_content, match_count, strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all, correction_notes=correction_notes)
+            content, old_string, new_string, replace_all, correction_notes=correction_notes,
+            anchor=anchor)
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
         # Models send bare-LF old/new strings; normalize the substituted region to

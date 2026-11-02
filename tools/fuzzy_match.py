@@ -10,11 +10,69 @@ still land on the intended region::
 """
 
 import bisect
+import hashlib
 import re
 from difflib import SequenceMatcher
 from typing import Callable, Iterable, Optional
 
 Span = tuple[int, int]
+
+
+def line_anchor_hash(line_text: str) -> str:
+    """Stable 12-char anchor for one source line (stripped text, sha256).
+
+    Anchors name a line without retyping it: the ambiguous-match and
+    no-match errors print them, and ``anchor="L<line>:<hash>"`` selects or
+    verifies the intended region. A line whose text changed no longer
+    matches its anchor, so a stale retry is refused instead of landing
+    on the wrong region.
+    """
+    return hashlib.sha256(line_text.strip().encode("utf-8")).hexdigest()[:12]
+
+
+def _line_text_at(content: str, line_no: int) -> Optional[str]:
+    lines = content.split("\n")
+    if 1 <= line_no <= len(lines):
+        return lines[line_no - 1]
+    return None
+
+
+def resolve_anchor(matches: list[Span], content: str,
+                   anchor: str) -> tuple[list[Span], Optional[str]]:
+    """Filter ambiguous *matches* to the region named by *anchor*.
+
+    Anchor forms: ``"L<line>"`` (the match whose span contains that
+    1-based line wins) or ``"L<line>:<hash>"`` (additionally verifies the
+    line's current text still hashes to ``hash``; a mismatch means the file
+    moved under the caller and the anchor is stale). Returns
+    ``(matches, None)`` or ``([], error)``.
+    """
+    text = (anchor or "").strip()
+    line_part, _, hash_part = text.partition(":")
+    line_digits = line_part.strip().lstrip("Ll")
+    if not line_digits.isdigit():
+        return [], (
+            f"Invalid anchor {anchor!r}: expected 'L<line>' or "
+            "'L<line>:<hash>' (see the '# anchor ...' rows in the error above).")
+    line_no = int(line_digits)
+    current = _line_text_at(content, line_no)
+    if current is None:
+        return [], (
+            f"Stale anchor {anchor!r}: line {line_no} is past the end of the "
+            "file. Re-read the file and retry with a fresh anchor.")
+    if hash_part and line_anchor_hash(current) != hash_part.strip().lower():
+        return [], (
+            f"Stale anchor {anchor!r}: line {line_no} no longer matches "
+            f"(now {current.strip()[:60]!r}). Re-read the file and retry "
+            "with a fresh anchor.")
+    kept = [span for span in matches
+            if content.count("\n", 0, span[0]) + 1 <= line_no
+            <= content.count("\n", 0, span[1]) + 1]
+    if not kept:
+        return [], (
+            f"Anchor {anchor!r} names line {line_no}, which is inside none of "
+            "the matched regions. Re-read the file and retry.")
+    return kept, None
 
 IDENTICAL_STRINGS_ERROR = (
     "No edit was applied because old_string and new_string are identical. "
@@ -338,7 +396,12 @@ def _matched_regions(content: str, matches: list[Span]) -> str:
 
 
 def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> str:
-    """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows."""
+    """Render up to ``cap`` match positions as 'L<line>: <snippet>' rows.
+
+    Each row carries a stable ``# anchor L<line>:<hash>`` the caller can
+    pass back as ``anchor=`` to select that region without retyping a
+    longer unique context.
+    """
     rows = []
     for start, _end in matches[:cap]:
         line_no = content.count("\n", 0, start) + 1
@@ -349,7 +412,8 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
         snippet = content[line_start:line_end].strip()
         if len(snippet) > 80:
             snippet = snippet[:77] + "..."
-        rows.append(f"  L{line_no}: {snippet}")
+        anchor = line_anchor_hash(content[line_start:line_end])
+        rows.append(f"  L{line_no}: {snippet}  # anchor L{line_no}:{anchor}")
     extra = len(matches) - cap
     if extra > 0:
         rows.append(f"  ... and {extra} more")
@@ -358,12 +422,15 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                            replace_all: bool = False, *,
-                           correction_notes: Optional[list[str]] = None) -> tuple[str, int, Optional[str], Optional[str]]:
+                           correction_notes: Optional[list[str]] = None,
+                           anchor: Optional[str] = None) -> tuple[str, int, Optional[str], Optional[str]]:
     """Find and replace via the strategy chain.
 
     Returns ``(new_content, match_count, strategy_name, error)``; on failure
     ``(content, 0, None, error)``. Successful escape corrections append their
     explanation to ``correction_notes`` when supplied by a tool caller.
+    ``anchor="L<line>[:<hash>]"`` selects one region when several match;
+    a hash that no longer matches the file is refused as stale.
     """
     if not old_string:
         # Actionable recovery text: a terse "cannot be empty" leaves the model
@@ -397,12 +464,29 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             continue
 
         if len(matches) > 1 and not replace_all:
-            _note_edit_match(None, "ambiguous")
-            locations = _format_match_locations(content, matches)
-            return content, 0, None, (
-                f"Found {len(matches)} matches for old_string. "
-                f"Provide more context to make it unique, or use replace_all=True. "
-                f"Matches:\n{locations}")
+            if anchor:
+                matches, anchor_error = resolve_anchor(matches, content, anchor)
+                if anchor_error is not None:
+                    _note_edit_match(None, "ambiguous")
+                    return content, 0, None, anchor_error
+                if len(matches) == 1:
+                    pass  # anchored to one region; fall through to apply
+                else:
+                    _note_edit_match(None, "ambiguous")
+                    locations = _format_match_locations(content, matches)
+                    return content, 0, None, (
+                        f"Anchor {anchor!r} still matches {len(matches)} regions. "
+                        f"Use a longer unique context, or use replace_all=True. "
+                        f"Matches:\n{locations}")
+            else:
+                _note_edit_match(None, "ambiguous")
+                locations = _format_match_locations(content, matches)
+                return content, 0, None, (
+                    f"Found {len(matches)} matches for old_string. "
+                    f"Provide more context to make it unique, use replace_all=True, "
+                    f"or retry with the anchor shown on the intended row "
+                    f"(anchor=\"L<line>:<hash>\"). "
+                    f"Matches:\n{locations}")
         if replace_all and len(matches) > 1 and strategy_name in SIMILARITY_STRATEGIES:
             _note_edit_match(None, "ambiguous")
             return content, 0, None, (
@@ -693,8 +777,13 @@ def find_closest_lines(old_string: str, content: str, context_lines: int = 2, ma
         if (start, end) in seen_ranges:
             continue
         seen_ranges.add((start, end))
-        parts.append("\n".join(
-            f"{start + j + 1:4d}| {content_lines[start + j]}" for j in range(end - start)))
+        section = "\n".join(
+            f"{start + j + 1:4d}| {content_lines[start + j]}" for j in range(end - start))
+        section += (f"\n# anchor L{line_idx + 1}:"
+                    f"{line_anchor_hash(content_lines[line_idx])} (retry with anchor="
+                    f"\"L{line_idx + 1}:{line_anchor_hash(content_lines[line_idx])}\" "
+                    "to name this region)")
+        parts.append(section)
     result = "\n---\n".join(parts)
 
     # Whitespace-shaped miss: best line equals the anchor once stripped. Show

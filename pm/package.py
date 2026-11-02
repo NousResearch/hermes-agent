@@ -44,8 +44,10 @@ def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str
     if path_dirs:
         key = next((k for k in env if k.upper() == "PATH"), "PATH")
         existing = env.get(key, "")
+        inherited = existing.split(os.pathsep) if existing else []
+        inherited = [entry for entry in inherited if entry not in path_dirs]
         prefix = os.pathsep.join(path_dirs)
-        env[key] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+        env[key] = f"{prefix}{os.pathsep}{os.pathsep.join(inherited)}" if inherited else prefix
     return env
 
 

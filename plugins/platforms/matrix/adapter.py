@@ -5,6 +5,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN (preferred) | MATRIX_USER_ID + MATRIX_PASSWORD;
   MATRIX_E2EE_MODE off|optional|required (legacy MATRIX_ENCRYPTION=true => required);
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
+  MATRIX_DISABLE_DEVICE_CHANGE_KEY_ROTATION (bots: keep Megolm sender sessions across device-list
+  churn; default false — see _apply_bot_rotation_policy),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
@@ -871,6 +873,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
+        self._disable_device_change_rotation: bool = self._extra_truthy(
+            config, "disable_device_change_key_rotation", "MATRIX_DISABLE_DEVICE_CHANGE_KEY_ROTATION", "false")
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -1236,6 +1240,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("Matrix: share_keys() warning during startup: %s", exc)
             await self._verify_or_bootstrap_cross_signing(olm, client)
             client.crypto = olm
+            # Bots suffer a device-change rotation storm: every gateway restart / peer device-list
+            # churn discards the sender session, so the first reply after a restart needs a brand
+            # new key-share that racing peers routinely miss ("Unable to decrypt" after restarts).
+            # Mautrix bridges ship the same opt-out (bridge/e2ee.py); expose it via env. Trade-off:
+            # a signed-out device keeps old keys until the scheduled rotation (100 msgs / 7 days),
+            # and a brand-new peer device gets keys only at that rotation or next session start.
+            self._apply_bot_rotation_policy(olm)
+            self._install_membership_replay_gate(client, olm)
             logger.info(
                 "Matrix: E2EE enabled (store: %s%s)", str(self._crypto_db_path),
                 f", device_id={client.device_id}" if client.device_id else "")
@@ -1305,6 +1317,56 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
         except Exception as exc:
             logger.warning("Matrix: initial sync error: %s", exc)
+
+    def _apply_bot_rotation_policy(self, olm: Any) -> None:
+        """Honour disable_device_change_key_rotation (config) / MATRIX_DISABLE_DEVICE_CHANGE_KEY_ROTATION (env).
+
+        mautrix discards every shared room's outbound Megolm session whenever a peer device
+        list changes (crypto/device_lists.py on_devices_changed). For a bot the guarantee buys
+        nothing -- it has no sibling devices to re-share from -- but the rotation storm it
+        causes (startup key upload, sleeping phones, multi-device users) makes the FIRST reply
+        after every restart a fresh key-share race that peers routinely miss: "Unable to
+        decrypt" until key forwarding recovers. Mautrix's own bridges ship the same opt-out
+        (bridge/e2ee.py: bridge.encryption.rotation.disable_device_change_key_rotation).
+        Trade-off: a signed-out peer keeps old keys until scheduled rotation (100 msgs /
+        7 days); a brand-new peer device gets keys at that rotation or a new session start.
+        """
+        if self._disable_device_change_rotation:
+            olm.disable_device_change_key_rotation = True
+            logger.info(
+                "Matrix: device-change sender-session rotation disabled "
+                "(MATRIX_DISABLE_DEVICE_CHANGE_KEY_ROTATION / matrix.disable_device_change_key_rotation)")
+
+    def _install_membership_replay_gate(self, client: Any, olm: Any) -> None:
+        """Neutralise the OlmMachine's false-positive 'membership changed' on initial sync.
+
+        MemoryStateStore starts empty, so a full-state sync replays the room's current
+        m.room.member events (own + peers' joins) as a None -> join transition; machine.py
+        handle_member_event treats that as a real change and discards the room's outbound
+        megolm session. On a bot in a small room this fires EVERY startup, leaving peers
+        'Unable to decrypt' the first post-restart messages until key forwarding recovers.
+        Wrap the machine's handler and skip it while the initial sync dispatches; live
+        membership changes (delta syncs) are unaffected.
+        """
+        self._skip_membership_rotation = False
+        machine_handler = olm.handle_member_event
+
+        async def _gated(evt: Any) -> None:
+            if getattr(self, "_skip_membership_rotation", False):
+                logger.debug(
+                    "Matrix: replayed membership event %s in initial sync; skipping "
+                    "sender-session rotation", getattr(evt, "event_id", "?"))
+                return
+            await machine_handler(evt)
+
+        try:
+            from mautrix.types import EventType
+            client.remove_event_handler(EventType.ROOM_MEMBER, machine_handler)
+            client.add_event_handler(EventType.ROOM_MEMBER, _gated)
+        except Exception as exc:  # deliberate catch-all boundary: gate failure must never abort connect
+            logger.warning(
+                "Matrix: could not install membership replay gate (session may rotate on "
+                "every restart): %s", exc, exc_info=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
@@ -1897,9 +1959,12 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
         try:
+            self._skip_membership_rotation = bool(initial)
             await self._dispatch_sync(sync_data)
         except Exception as exc:
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
+        finally:
+            self._skip_membership_rotation = False
         self._schedule_pending_invite_joins(sync_data)
         return nb
 

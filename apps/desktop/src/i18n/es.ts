@@ -25,6 +25,7 @@ import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
+import { esUpdateWhenIdle } from './es_update_when_idle'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
@@ -4096,6 +4097,7 @@ export const esOverrides = {
     }
   },
   updates: {
+    whenIdle: esUpdateWhenIdle,
     discontinuedTitle: 'Esta versión de Hermes ya no tiene soporte',
     discontinuedBody:
       'Esta versión de Hermes ya no tiene soporte y podría dejar de funcionar; desinstálala. Tus datos permanecen en el disco.',

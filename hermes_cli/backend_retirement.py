@@ -12,7 +12,7 @@ import time
 
 
 class RetirementFence:
-    """Exclusive 30-second prepare permit; commit closes admission permanently.
+    """Exclusive 30-second prepare permit (renewable while live); commit closes admission permanently.
 
     Tokens are random and recognized only by this process instance. A committed prepare
     returns the same token so a client can recover a lost commit response without reopening.
@@ -89,6 +89,16 @@ class RetirementFence:
             if not token or token != self._token:
                 return {"ok": False}
             self._committed = True
+            return {"ok": True}
+
+    def renew(self, token):
+        """Extend a live, uncommitted permit by another 30 s (a hand-off still preparing, e.g. a
+        download, heartbeats it). An expired permit stays expired: work may have started since."""
+        with self._lock:
+            self._expire()
+            if not token or token != self._token or self._committed:
+                return {"ok": False}
+            self._expires_at = self._now() + 30.0
             return {"ok": True}
 
     def cancel(self, token):

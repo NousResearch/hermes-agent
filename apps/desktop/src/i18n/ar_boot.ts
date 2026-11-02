@@ -1,5 +1,6 @@
 import { arDesktopCommands } from './ar_desktop_commands'
 import { arSessionCommands } from './ar_session_commands'
+import { arUpdateWhenIdle } from './ar_update_when_idle'
 import type { TranslationOverrides } from './define-locale'
 
 export const arBoot = {
@@ -88,6 +89,7 @@ export const arBoot = {
     desktopCommands: arDesktopCommands
   },
   updates: {
+    whenIdle: arUpdateWhenIdle,
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
     discontinuedBody: 'لم يعد إصدار Hermes هذا مدعومًا وقد يتوقف عن العمل — ألغِ تثبيته. ستبقى بياناتك على القرص.',
     channels: { stable: 'مستقر', canary: 'تجريبي' },

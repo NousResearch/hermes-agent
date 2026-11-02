@@ -1466,7 +1466,7 @@ export function useSessionActions({
           // `applyRuntimeInfo` runs, which would leave the workspace marked
           // un-owned for the life of the session (#71254).
           setWorkspaceCwdOwner(storedSessionId)
-          publishWarmSessionRuntime(cachedViewState)
+          publishWarmSessionRuntime(cachedViewState, stored)
 
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)

@@ -110,4 +110,15 @@ describe('a reconnect page that stores a plain reply the live row is still short
 
     expect(assistants(overlaid)).toEqual([['assistant-stream-9-1', 'A8 survives the drop']])
   })
+
+  // A shared prefix that ends inside a word is not evidence of the same reply.
+  it('does not hand the live row a stored reply that only shares a word fragment with it', () => {
+    const other: ChatMessage[] = [page[0], { ...page[1], parts: [{ type: 'text', text: 'A8x unrelated reply' }] }]
+    const overlaid = overlayConcurrentMessageChanges(other, [prompt, stream('A')], [prompt, stream('A8')])
+
+    expect(assistants(overlaid)).toEqual([
+      ['17-assistant', 'A8x unrelated reply'],
+      ['assistant-stream-9-1', 'A8']
+    ])
+  })
 })

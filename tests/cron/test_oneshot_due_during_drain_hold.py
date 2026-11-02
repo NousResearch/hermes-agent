@@ -4,7 +4,7 @@ A restart or ``hermes update`` drain waits on in-flight turns with the ticker's 
 (``can_dispatch`` false). The one-shot grace (120s) must count from the end of that hold, not
 from the due time: an update that waited three minutes on a Kanban turn retired the reminder
 the user scheduled for that minute as ``missed`` without ever running it. A hold whose gateway
-never came back still retires it (#93526).
+never came back, or a reminder due hours into an endless external drain, is still retired (#93526).
 """
 
 import threading
@@ -65,12 +65,16 @@ def test_oneshot_due_during_a_drain_fires_once_the_next_gateway_ticks(cron_store
     assert [j["id"] for j in load_jobs()] == ["reminder"]
 
 
-def test_oneshot_due_during_a_drain_whose_gateway_never_returned_is_retired(cron_store, monkeypatch):
+@pytest.mark.parametrize("hold_ticks_ago,due_ago", [
+    ((3 * 3600 + 60, 3 * 3600), 3 * 3600 + 30),  # the drain's gateway never came back
+    (tuple(range(5 * 3600, 89, -60)), 5 * 3600),  # a live hold (external drain) ticking for hours
+], ids=["gateway-never-returned", "hours-long-live-hold"])
+def test_stale_oneshot_is_retired_despite_a_hold(cron_store, monkeypatch, hold_ticks_ago, due_ago):
     t0 = time.time()
-    note_held(now=t0 - 3 * 3600 - 60)
-    note_held(now=t0 - 3 * 3600)
+    for ago in hold_ticks_ago:
+        note_held(now=t0 - ago)
     start = datetime.fromtimestamp(t0, UTC)
-    save_jobs([_oneshot("reminder", start - timedelta(hours=3, seconds=30))])
+    save_jobs([_oneshot("reminder", start - timedelta(seconds=due_ago))])
 
     assert _scan_at(monkeypatch, start) == []
     assert load_jobs() == []

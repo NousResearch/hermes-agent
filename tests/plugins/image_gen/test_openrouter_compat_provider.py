@@ -788,8 +788,10 @@ class TestImageApiSurface:
         from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
 
         by_name = {p.name: p for p in _build_providers()}
-        openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
-        nous_ids = {m["id"] for m in by_name["nous"].list_models()}
+        # The tables' contract, not OpenRouter's live catalog: offline, list_models serves them.
+        with patch("requests.get", side_effect=OSError("offline")):
+            openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
+            nous_ids = {m["id"] for m in by_name["nous"].list_models()}
         assert set(_IMAGE_API_MODELS) <= openrouter_ids
         assert not (set(_IMAGE_API_MODELS) & nous_ids)
 

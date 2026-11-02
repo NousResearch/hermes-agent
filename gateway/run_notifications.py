@@ -110,6 +110,21 @@ def _mark_internal_notification(text: str) -> str:
     return text + "\n\n" + INTERNAL_NOTIFICATION_FOOTER
 
 
+def _held_reason(source, platform: str, multiplexed: bool) -> str:
+    """Why a completion has no transport, naming what is actually missing: the saved receiving bot
+    is down, or the route never saved one (a row older than the column), which no reconnect fixes."""
+    from gateway.session_identity import identity_of
+    identity = identity_of(source)
+    runtime = getattr(source, "profile", None) or "default"
+    if identity is not None and identity.multiplexed and not identity.transport_inferred:
+        return (f"the {platform} bot of profile {identity.transport_profile!r} that received this chat "
+                f"(runtime profile {runtime!r}) is not connected; the row stays pending until it reconnects")
+    if multiplexed:
+        return (f"the {platform} route of profile {runtime!r} has no saved receiving bot and no shared bot "
+                f"covers it; the row stays pending until a new message in that chat records the bot")
+    return f"no live {platform} transport for profile {runtime!r}; the row stays pending until it connects"
+
+
 def _raw_process_event_session_id(evt: dict) -> str:
     """Recognize API routes, not malformed structured or partial messaging routes."""
     session_key = str(evt.get("session_key") or "").strip()
@@ -867,15 +882,23 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return owner[0]
             if getattr(source, "delivered_via_upstream_relay", False) is True:
                 return self.adapters.get(Platform.RELAY)
-        # One resolver with authz/kanban/cron: a secondary's own map, or the primary's for a
-        # shared-bot satellite; a disconnected secondary fails closed to ``{}``.
-        adapters = self._adapters_for_profile(getattr(source, "profile", None))
+        # A pinned identity names the bot that received the conversation: it answers, as
+        # ``_delivery_adapter_for`` rules (a ``bot_profile`` route's runtime may own no adapter for this
+        # platform, #139726). Otherwise one resolver with authz/kanban/cron: a secondary's own map, or the
+        # primary's for a shared-bot satellite; a disconnected bot fails closed to ``{}``.
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        pinned = identity is not None and identity.multiplexed and not identity.transport_inferred
+        adapters = self._adapters_for_profile(
+            identity.transport_profile if pinned else getattr(source, "profile", None))
         try:
             _transport = resolve_delivery_transport(Platform(platform_name), self.config, adapters)
         except Exception:
             _transport = None
         if _transport is not None:
             return _transport.adapter
+        if not pinned and source is not None and (borrowed := self._routed_primary_adapter(source)) is not None:
+            return borrowed
         if source is not None and (relay := self._committed_relay_adapter(source)) is not None:
             return relay
         return next((a for p, a in adapters.items() if p.value == platform_name), None)
@@ -1138,8 +1161,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             adapter = self.adapters.get(Platform.API_SERVER) if raw_sid else None
             if adapter is not None and adapter_supports_push(adapter):
                 return False
+        warned = self.__dict__.setdefault("_completion_no_transport_warned", set())
+        key = (getattr(source, "profile", None), platform) if source is not None else None
         if adapter is None:
+            # The watcher requeues silently every tick; say once per outage which lane has no transport.
+            if key is not None and key not in warned:
+                warned.add(key)
+                logger.warning("Async completion held: %s", _held_reason(
+                    source, platform, getattr(getattr(self, "config", None), "multiplex_profiles", False)))
             return False
+        warned.discard(key)
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)
             try:

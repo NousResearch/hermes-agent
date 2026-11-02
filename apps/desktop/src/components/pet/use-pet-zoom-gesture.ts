@@ -30,7 +30,10 @@ export interface PetZoomAnchor {
 export function usePetZoomGesture<T extends HTMLElement>(
   ref: RefObject<T | null>,
   onScale: (scale: number, anchor: PetZoomAnchor) => void,
-  ready: boolean
+  ready: boolean,
+  // When set, listen on window and only zoom if this returns true. The in-window
+  // pet uses it so Alt+wheel on transparent frame padding still scrolls the page.
+  claimsEvent?: (event: WheelEvent) => boolean
 ): void {
   useEffect(() => {
     const el = ref.current
@@ -40,7 +43,7 @@ export function usePetZoomGesture<T extends HTMLElement>(
     }
 
     const onWheel = (event: WheelEvent) => {
-      if (!event.altKey) {
+      if (!event.altKey || (claimsEvent && !claimsEvent(event))) {
         return
       }
 
@@ -51,8 +54,9 @@ export function usePetZoomGesture<T extends HTMLElement>(
       onScale(next, { clientX: event.clientX, clientY: event.clientY, ratio: next / base })
     }
 
-    el.addEventListener('wheel', onWheel, { passive: false })
+    const target = claimsEvent ? window : el
+    target.addEventListener('wheel', onWheel, { passive: false })
 
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [ref, onScale, ready])
+    return () => target.removeEventListener('wheel', onWheel)
+  }, [ref, onScale, ready, claimsEvent])
 }

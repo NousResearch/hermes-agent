@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
+import { spriteSolidAt } from '@/components/pet/sprite-hit'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
@@ -20,11 +21,6 @@ const DEFAULT_SCALE = 0.33
 // Must match the root's paddingBottom — the sprite renders bottom-centered, this
 // many px above the window's bottom edge. Used to anchor the resize.
 const PET_PADDING_BOTTOM = 24
-
-// A sprite pixel counts as "solid" (interactive) at/above this alpha (0-255).
-// Low enough to catch anti-aliased edges, high enough that the faint halo around
-// the art still clicks through.
-const ALPHA_HIT_THRESHOLD = 16
 
 /**
  * The pop-out overlay's only view: a transparent, draggable mascot with a mini
@@ -144,27 +140,8 @@ export function PetOverlayApp() {
         return true
       }
 
-      const rect = target.getBoundingClientRect()
-
-      if (rect.width === 0 || rect.height === 0) {
-        return true
-      }
-
-      const ctx = target.getContext('2d')
-
-      if (!ctx) {
-        return true
-      }
-
-      const px = Math.floor((x - rect.left) * (target.width / rect.width))
-      const py = Math.floor((y - rect.top) * (target.height / rect.height))
-
-      try {
-        return ctx.getImageData(px, py, 1, 1).data[3] >= ALPHA_HIT_THRESHOLD
-      } catch {
-        // Tainted/zero-size read — fail open so the pet stays grabbable.
-        return true
-      }
+      // null = couldn't read the pixel. Fail open so the pet stays grabbable.
+      return spriteSolidAt(target, x, y) !== false
     }
 
     const onMove = (ev: MouseEvent) => {

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
@@ -29,6 +29,7 @@ import { useTheme } from '@/themes/context'
 
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
 import { PetSprite, roamWalkRow } from './pet-sprite'
+import { spriteSolidAt } from './sprite-hit'
 import { usePetRoam } from './use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from './use-pet-zoom-gesture'
 
@@ -337,7 +338,7 @@ export function FloatingPet() {
     return () => window.removeEventListener('resize', reclamp)
   }, [clamp])
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
+  const onPointerDown = useCallback((e: { clientX: number; clientY: number; pointerId: number; shiftKey: boolean }) => {
     const el = containerRef.current
 
     if (!el) {
@@ -357,12 +358,19 @@ export function FloatingPet() {
     }
 
     dragRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, x: rect.left, y: rect.top }
-    el.setPointerCapture(e.pointerId)
     el.style.cursor = 'grabbing'
+
+    try {
+      // The subtree is pointer-events: none, so this may throw. Window listeners
+      // still drive the drag if capture is refused.
+      el.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
   }, [])
 
   const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
+    (e: { clientX: number; clientY: number }) => {
       const drag = dragRef.current
       const el = containerRef.current
 
@@ -386,7 +394,7 @@ export function FloatingPet() {
     [clamp, petW]
   )
 
-  const onPointerUp = useCallback((e: React.PointerEvent) => {
+  const onPointerUp = useCallback((e: { pointerId: number }) => {
     const drag = dragRef.current
 
     if (drag) {
@@ -427,7 +435,114 @@ export function FloatingPet() {
     [requestGateway, info.frameW, info.frameH]
   )
 
-  usePetZoomGesture(containerRef, onScale, active && !overlayActive)
+  const claimsPetWheel = useCallback((event: WheelEvent) => {
+    const canvas = containerRef.current?.querySelector('canvas')
+
+    return canvas instanceof HTMLCanvasElement && spriteSolidAt(canvas, event.clientX, event.clientY) === true
+  }, [])
+
+  usePetZoomGesture(containerRef, onScale, active && !overlayActive, claimsPetWheel)
+
+  // The canvas is the full atlas cell, and a child with the default
+  // `pointer-events: auto` is still a hit target when its parent is `none`.
+  // Disarm the whole subtree so transparent padding cannot eat clicks, then
+  // claim a press from the window only when the pixel under the cursor is solid.
+  const petMounted = active && !overlayActive
+
+  useLayoutEffect(() => {
+    if (!petMounted) {
+      return
+    }
+
+    const root = containerRef.current
+
+    if (!root) {
+      return
+    }
+
+    const disarm = () => {
+      root.style.pointerEvents = 'none'
+      root.querySelectorAll<HTMLElement>('*').forEach(node => {
+        node.style.pointerEvents = 'none'
+      })
+    }
+
+    disarm()
+    const observer = new MutationObserver(disarm)
+    observer.observe(root, { childList: true, subtree: true })
+
+    return () => observer.disconnect()
+  }, [petMounted])
+
+  useEffect(() => {
+    if (!petMounted) {
+      return
+    }
+
+    const solidAt = (x: number, y: number) => {
+      const canvas = containerRef.current?.querySelector('canvas')
+
+      return canvas instanceof HTMLCanvasElement && spriteSolidAt(canvas, x, y) === true
+    }
+
+    let cursorOwned = false
+
+    const setCursor = (value: string) => {
+      if (value) {
+        document.documentElement.style.cursor = value
+        cursorOwned = true
+
+        return
+      }
+
+      if (cursorOwned) {
+        document.documentElement.style.cursor = ''
+        cursorOwned = false
+      }
+    }
+
+    const onDown = (event: PointerEvent) => {
+      if (event.button !== 0 || !solidAt(event.clientX, event.clientY)) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      setCursor('grabbing')
+      onPointerDown(event)
+    }
+
+    const onMove = (event: PointerEvent) => {
+      if (dragRef.current) {
+        onPointerMove(event)
+
+        return
+      }
+
+      setCursor(solidAt(event.clientX, event.clientY) ? 'grab' : '')
+    }
+
+    const onUp = (event: PointerEvent) => {
+      setCursor('')
+
+      if (!dragRef.current) {
+        return
+      }
+
+      onPointerUp(event)
+    }
+
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+
+    return () => {
+      setCursor('')
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  }, [petMounted, onPointerDown, onPointerMove, onPointerUp])
 
   // Commit a roamed-to position back to React state + storage when the wander
   // loop settles, so the inline style matches the DOM once the loop stops
@@ -473,7 +588,7 @@ export function FloatingPet() {
       style={{
         cursor: 'grab',
         left: position.x,
-        pointerEvents: 'auto',
+        pointerEvents: 'none',
         position: 'fixed',
         top: position.y,
         touchAction: 'none',
@@ -499,6 +614,7 @@ export function FloatingPet() {
         ref={spriteWrapRef}
         style={{
           lineHeight: 0,
+          pointerEvents: 'none',
           position: 'relative',
           transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
           zIndex: 1

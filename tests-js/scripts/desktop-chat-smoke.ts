@@ -16,6 +16,8 @@ export interface DesktopChatSmokeOptions {
   outDir: string
   expectCommit?: string
   provenanceCommit?: string
+  /** A commit the running app may report instead of expectCommit: the build a reused packaged app came from. */
+  reusedBuildCommit?: string
   observePrompts?: () => Promise<readonly string[]>
 }
 
@@ -75,9 +77,10 @@ export async function readChatIdentity(page: Page): Promise<ChatIdentity> {
   return { ...identity, commit: identity.commit ?? null }
 }
 
-/** Old desktops do not report a commit; their caller must verify the installed runtime. */
-export function assertChatCommit(identity: ChatIdentity, expected: string, provenanceCommit?: string): void {
-  if (identity.commit !== null && identity.commit !== expected) {
+/** Old desktops do not report a commit; their caller must verify the installed runtime.
+ * A reused packaged app reports the commit it was built from (`reusedBuildCommit`). */
+export function assertChatCommit(identity: ChatIdentity, expected: string, provenanceCommit?: string, reusedBuildCommit?: string): void {
+  if (identity.commit !== null && identity.commit !== expected && identity.commit !== reusedBuildCommit) {
     throw new Error(`Running commit ${identity.commit} does not equal expected ${expected}`)
   }
 
@@ -279,7 +282,7 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
 
     const identity = await readChatIdentity(page)
 
-    if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit) }
+    if (expectCommit) { assertChatCommit(identity, expectCommit, options.provenanceCommit, options.reusedBuildCommit) }
     const beforeIds = (await readTranscript(page)).map((message: TranscriptMessage): string => message.id)
     const before = (await observe()).length
     await composer.click()

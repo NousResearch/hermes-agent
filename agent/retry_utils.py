@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -74,6 +74,12 @@ _RESETS_IN_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
 )
+# Absolute reset instants providers name in free text: "will reset at 2026-09-23 20:06:41"
+# (Z.AI/Zhipu usage-limit 429s). Local-naive timestamps are read in local time, ISO stamps
+# with an explicit offset in UTC-true time.
+_RESET_AT_RE = re.compile(
+    r"resets?\s+at\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)", re.IGNORECASE,
+)
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
 # The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
@@ -90,6 +96,36 @@ def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
 
 
+def _reset_at_seconds(m: "re.Match[str]") -> Optional[float]:
+    """Seconds until an absolute reset instant named as ``YYYY-MM-DD HH:MM[:SS]``.
+
+    A timestamp with an explicit ``Z``/offset suffix is UTC-true; a local-naive
+    one is read in local time (Z.AI sends server-local wall time). Past
+    instants yield 0.0, never negative.
+    """
+    raw = m.group(1)
+    tz_match = re.search(r"(Z|[+-]\d{2}:?\d{2})$", raw, re.IGNORECASE)
+    suffix = tz_match.group(1) if tz_match else ""
+    text = raw[: len(raw) - len(suffix)] if suffix else raw
+    normalized = suffix if suffix and suffix.upper() != "Z" else ("+00:00" if suffix else "")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"):
+        try:
+            when = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    if normalized:
+        sign = 1 if normalized[0] == "+" else -1
+        digits = normalized[1:].replace(":", "")
+        offset = timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
+        when = when.replace(tzinfo=timezone(sign * offset))
+    else:
+        when = when.astimezone()
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
 # An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
 # a body carrying both describes a short throttle inside a long quota window, and the
 # shorter explicit wait is the one the provider actually asks for.
@@ -97,6 +133,7 @@ RETRY_DELAY_PATTERNS = (
     (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_SECONDS_FIELD_RE, lambda m: float(m.group(1))),
+    (_RESET_AT_RE, _reset_at_seconds),
     (_RESETS_IN_RE, _resets_in_seconds),
 )
 

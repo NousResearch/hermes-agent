@@ -33,6 +33,31 @@ def _origin_json(source) -> Optional[str]:
 class SessionRecoveryMixin:
     """SessionStore durable-row recovery and the SQLite side of routing transitions."""
 
+    def _refresh_telegram_origin(self, session_key, entry, source) -> bool:
+        """Refresh online forum labels on reused routes, without touching keys or titles.
+
+        Only Telegram group topics need this online-learning refresh. Other transports and
+        DM topic-mode retain their existing origin semantics.
+        """
+        if source.platform != Platform.TELEGRAM or source.chat_type != "group" or not source.thread_id:
+            return False
+        from gateway.session_identity import replace_source
+        with self._lock:
+            old = entry.origin
+            if old is None or self._entries.get(session_key) is not entry:
+                return False
+            labels = {attr: getattr(source, attr) for attr in ("chat_name", "chat_topic")
+                      if getattr(source, attr) and getattr(source, attr) != getattr(old, attr)}
+            if not labels:
+                return False
+            if source.chat_name and entry.display_name in (None, old.chat_name, old.chat_id):
+                entry.display_name = source.chat_name
+            entry.origin = replace_source(old, **labels)
+            session_id, origin, name, transport = entry.session_id, entry.origin, entry.display_name, entry.transport_profile
+        self._record_gateway_session_peer(
+            session_id, session_key, origin, display_name=name, transport_profile=transport)
+        return True
+
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Profile namespace for session keys: None when multiplexing is off (legacy
         ``agent:main``), else the pinned identity's runtime profile, ``source.profile`` or the

@@ -46,13 +46,19 @@ def test_dead_bodies_past_the_byte_budget_go_first_and_estimates_never_change(mo
     now = _fake_clock(monkeypatch)
     active = {"role": "user", "content": "active " + "y" * 100_000}
     active_tokens = mm.estimate_messages_tokens_rough([active])
+    computed = _count_computes(monkeypatch)
     dead_bodies = []
     for i in range(10):
         now[0] += 3600  # each dead body goes idle before the next arrives
         dead_bodies.append(f"dead {i} " + "z" * 1_000_000)
         mm.estimate_messages_tokens_rough([{"role": "tool", "content": dead_bodies[-1]}])
+        computed[0] -= 1  # the dead body itself is a miss
         assert mm.estimate_messages_tokens_rough([dict(active)]) == active_tokens  # the running turn touches it
+    assert computed[0] == 0  # every active lookup was a hit, never an evict-and-recompute
 
+    # One message bigger than the whole budget is not memoized and does not flush what fits (all idle now).
+    now[0] += 3600
+    mm.estimate_messages_tokens_rough([{"role": "tool", "content": "huge " + "w" * 4_000_000}])
     pinned = {id(pin) for pins, _text, _images in mm._MSG_TOKENS_CACHE.values() for pin in pins}
     assert id(active["content"]) in pinned
     assert sum(id(body) in pinned for body in dead_bodies) <= 3

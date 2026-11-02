@@ -1079,7 +1079,7 @@ Starting a session with `origin` (gateway mode only):
 
 - `origin` uses the same shape as a stored session origin (`SessionSource.to_dict()`): `platform` and `chat_id` are required; `chat_type`, `thread_id`, `user_id`, `user_name`, `chat_name` and the other origin fields are optional. Use it when no session exists yet — for example, a bot-authored forum post, which platforms like Discord never deliver back to the bot as an inbound message.
 - The session is created in **the plugin's own profile** (the profile whose plugin manager loaded it) through the normal session path, with a fresh prompt and an empty history, and the reply is delivered to that chat/thread. If the chat already has a session in that profile, the text joins it exactly like a human message would (the busy-session queue applies), so a human follow-up in the same thread continues the same session.
-- Under the gateway's session authority (every gateway-owned session), the plugin turn is committed to that session's durable FIFO and borrows the connector provenance of a human message already admitted there. An `origin` whose chat has **no human message admitted yet** (no session, or a session with no committed human turn) is therefore refused: `inject_message` returns `False` right away and the gateway log says "has no human message admitted yet". Hermes never mints platform provenance for a chat the platform did not deliver. Have the first message in that chat come from the platform (or a human), then inject with `origin` or `session_key`.
+- Under the gateway's session authority (every gateway-owned session), the plugin turn is committed to that session's durable FIFO and borrows the connector provenance of a human message already admitted there. An `origin` whose chat has **no human message admitted yet** (no session, or a session with no committed human turn) is therefore refused: `inject_message` returns `False` right away and the gateway log says "has no human message admitted yet". Hermes never mints platform provenance for a chat the platform did not deliver. Have the first message in that chat come from the platform (or a human), then inject with `origin` or `session_key`, or have the operator list the chat under the plugin's `open_chats` (below).
 - A plugin can never target another profile. `False` is returned (with the reason in the gateway log) when the origin names a different `profile`, when the gateway's own profile routing sends that chat to a different profile, when the plugin's profile is not served by this gateway, or when that profile has no connected adapter for `platform` — another profile's bot is never borrowed. On a multiplexed gateway the turn runs under the plugin's profile home and secrets.
 - Authorisation is not bypassed: the origin's user must pass the gateway's current allowlists, pairing, or allow-all configuration for that profile, the same check as the `session_key` path. Choose a `user_id` that is authorised, or the request is dropped at dispatch and logged.
 - The same text rules apply: no slash commands, approvals, or prompt resolution. The permission below is read from the plugin's own profile `config.yaml`.
@@ -1100,6 +1100,24 @@ plugins:
 :::warning
 Only grant gateway injection to plugins you trust. Hermes checks this host API permission, restricts it to existing session routes or new sessions in the plugin's own profile, and applies current authorisation, but Python plugins run in-process and this setting is not a sandbox.
 :::
+
+To let a plugin open a chat where nobody has written yet (a forum topic or thread the plugin's bot just created, for example), list the chat in the same entry:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      allow_gateway_injection: true
+      open_chats:
+        - telegram:-1001234567890      # any thread of this chat
+        - telegram:-1001234567890:42   # or only this thread
+```
+
+- Entries use the `platform:chat_id[:thread_id]` form of cron delivery targets. As in `profile_routes`, a chat matches directly or as the parent of a thread or forum post. A chat entry covers every thread in that chat; a thread entry covers that thread only. Anything else in the list is ignored.
+- For a listed chat with no committed turn, `inject_message(origin=...)` returns `True`. Hermes creates the chat's session the way a first inbound message creates it, then commits the plugin turn to its FIFO under the connector binding a human message there would record. The admission is marked `opened`. After a restart it replays only against the same live connector, like any other queued message. A listed chat whose connector can't provide that binding gets `False`, and nothing is created for it.
+- Once opened, the chat is an ordinary session. Human replies, later plugin turns and wakes continue it, and removing the entry afterwards doesn't close it.
+- Everything else above still applies: the plugin's own profile only, the current authorisation of the origin's `user_id`, no other profile's bot. Chats delivered through an upstream relay are never opened this way.
+- The key sits next to `allow_gateway_injection`, not under `settings`, so a plugin cannot list a chat for itself with `ctx.set_config`.
 
 :::note
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.

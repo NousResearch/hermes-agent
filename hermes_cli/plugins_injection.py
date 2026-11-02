@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -68,3 +69,40 @@ def inject_plugin_message(
     except Exception:
         logger.warning("inject_message: gateway scheduling failed for plugin %s", ctx.plugin_id, exc_info=True)
         return False
+
+
+def plugin_open_chats(home: Path, plugin_id: str) -> Any:
+    """``plugins.entries.<plugin_id>.open_chats`` from the plugin's own profile config: the chats its
+    operator lets it open with ``inject_message(origin=...)`` before any human message there. It sits
+    beside ``allow_gateway_injection``, outside ``settings`` (the subtree ``ctx.set_config`` writes),
+    so a plugin cannot list a chat for itself. An unreadable config lists nothing."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_cli.plugins_state import _plugin_settings_entry
+    try:
+        with _plugin_home_scope(home):
+            cfg = load_config_readonly() or {}
+    except Exception:
+        logger.warning("inject_message: could not read open_chats for plugin %s", plugin_id, exc_info=True)
+        return None
+    return (_plugin_settings_entry(cfg, plugin_id) or {}).get("open_chats")
+
+
+def open_chat_listed(entries: Any, source: Any) -> bool:
+    """Whether *entries* (``platform:chat_id[:thread_id]``, the cron delivery target form) list
+    *source*'s chat. As in ``profile_routes``, a chat matches directly or as the parent of a thread or
+    forum post; a chat entry covers each of its threads, a thread entry only that thread. Entries are
+    compared whole, so chat ids that contain ``:`` (Matrix rooms) match too."""
+    if not isinstance(entries, list):
+        return False
+    platform = source.platform.value
+    chats = [str(chat) for chat in (source.chat_id, source.parent_chat_id) if chat]
+    listed = {f"{platform}:{chat}" for chat in chats}
+    if source.thread_id:
+        listed.update(f"{platform}:{chat}:{source.thread_id}" for chat in chats)
+    for raw in entries:
+        if isinstance(raw, str):
+            prefix, _, rest = raw.strip().partition(":")
+            if f"{prefix.lower()}:{rest}" in listed:
+                return True
+    return False

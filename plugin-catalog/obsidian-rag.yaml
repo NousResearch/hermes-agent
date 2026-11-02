@@ -1,8 +1,8 @@
 name: obsidian-rag
 repo: https://github.com/kastormdz/obsidian-rag
-sha: 77bd935ab20a432e2cf01aa4fd5ecf01070c54d7
+sha: 8c3bd19ceb5536bb40139f6c1667b0e90e35ddb3
 subdir: plugins/obsidian-rag
-version: "0.3.0"
+version: "0.3.1"
 description: Search and edit an Obsidian vault from a local hybrid index (SQLite FTS5 plus
   384-dim ONNX embeddings) through seven tools. Answers come from the notes on disk, with no
   server, no account and no model in the gateway process.

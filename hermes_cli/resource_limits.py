@@ -5,7 +5,6 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
-import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -89,34 +88,100 @@ def apply_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> bool:
         return False
 
 
+def glibc_malloc() -> Any | None:
+    """This process's libc handle when it is glibc with ``mallopt`` (else ``None``: musl, macOS, Windows)."""
+    try:
+        libc = ctypes.CDLL(None)
+    except (OSError, TypeError):  # Windows: no process-global symbol namespace
+        return None
+    return libc if hasattr(libc, "gnu_get_libc_version") and hasattr(libc, "mallopt") else None
+
+
+def _arena_max_setting(env: Mapping[str, str]) -> str | None:
+    """The arena cap an environment asks glibc for (exact ``glibc.malloc.arena_max`` tunable, else
+    ``MALLOC_ARENA_MAX``), or ``None``."""
+    for item in env.get("GLIBC_TUNABLES", "").split(":"):
+        name, sep, value = item.partition("=")
+        if sep and name == "glibc.malloc.arena_max":
+            return value
+    return env.get("MALLOC_ARENA_MAX")
+
+
+def _launch_environ() -> dict[str, str] | None:
+    """The environment this process was exec'd with (what glibc read at startup), or ``None``.
+
+    ``/proc/self/environ`` keeps the exec-time block; ``os.environ`` also holds values Hermes loaded
+    later from the profile ``.env``, which glibc never saw.
+    """
+    try:
+        raw = open("/proc/self/environ", "rb").read()
+    except OSError:
+        return None
+    entries = (os.fsdecode(entry).partition("=") for entry in raw.split(b"\0") if entry)
+    return {name: value for name, sep, value in entries if sep}
+
+
+def _positive_c_int(value: str) -> int | None:
+    try:
+        number = int(value.strip())
+    except ValueError:
+        return None
+    return number if 0 < number <= 2**31 - 1 else None
+
+
 def apply_malloc_arena_max(config: Mapping[str, Any] | None = None) -> bool:
     """Cap glibc's malloc arena count for this process (``mallopt(M_ARENA_MAX)``); ``True`` iff set.
 
     glibc gives every thread that contends on an arena lock a new arena, up to 8 x cores, and never
     unmaps them. A long-lived server with hundreds of short-lived Python threads plus native pools
     (tokio, rayon, sqlite) fills every slot (157 of 160 on a 20-core host), and each arena keeps its
-    own free pages, which is most of the gateway's native RSS. The GIL already serialises Python's
-    allocations, so a small cap costs no measurable throughput. Applied in-process rather than via
-    ``MALLOC_ARENA_MAX`` so children (terminal commands, MCP servers, builds) keep glibc's default.
-    Must run before the ninth arena exists: glibc latches its limit then. An operator's own
-    ``MALLOC_ARENA_MAX`` / ``glibc.malloc.arena_max`` tunable wins. Linux/glibc only; never raises.
+    own free pages. The GIL already serialises Python's allocations, so a small cap costs no
+    measurable throughput. Applied in-process rather than via an exported ``MALLOC_ARENA_MAX`` so
+    exec'd children (terminal commands, MCP servers, builds) keep glibc's default.
+
+    Call before the process starts any thread: arenas that exist never go away, and glibc latches its
+    limit once a thread asks for an arena past ``glibc.malloc.arena_test``. (The gateway's startup
+    watchdog thread arms before config loads, so a gateway may hold one arena beyond a cap of 1.)
+
+    An arena setting in the exec-time environment was already applied by glibc and wins. One that
+    is only in ``os.environ`` because Hermes loaded it from the profile ``.env`` is applied here with
+    the operator's number (glibc never read it). glibc only; never raises.
     """
-    if sys.platform != "linux" or os.environ.get("MALLOC_ARENA_MAX") \
-            or "arena_max" in os.environ.get("GLIBC_TUNABLES", ""):
+    libc = glibc_malloc()
+    if libc is None:
         return False
-    target = _runtime_int(config, "malloc_arena_max", DEFAULT_MALLOC_ARENA_MAX)
+    current = _arena_max_setting(os.environ)
+    launch_env = _launch_environ()
+    launched = current if launch_env is None else _arena_max_setting(launch_env)
+    if launched is not None and current in (None, launched):
+        return False
+    if current is not None:
+        target = _positive_c_int(current)
+    else:
+        target = _runtime_int(config, "malloc_arena_max", DEFAULT_MALLOC_ARENA_MAX)
+        target = target if target is not None and target <= 2**31 - 1 else None
     if target is None:
         return False
     try:
-        libc = ctypes.CDLL(None)
-        if not hasattr(libc, "gnu_get_libc_version"):  # musl and other libcs: no arenas to cap
-            return False
         return bool(libc.mallopt(_M_ARENA_MAX, target))
     except Exception:
         logger.debug("Could not cap malloc arenas", exc_info=True)
         return False
 
 
+def server_process_argv(argv: list[str]) -> bool:
+    """True when *argv* (``sys.argv[1:]``) launches a long-lived server: ``serve``, ``dashboard`` or a
+    foreground ``gateway`` (``gateway`` / ``gateway run``)."""
+    from hermes_cli._parser import command_argv
+
+    args = command_argv(argv)
+    if not args:
+        return False
+    if args[0] in ("serve", "dashboard"):
+        return True
+    return args[0] == "gateway" and (len(args) == 1 or args[1] == "run" or args[1].startswith("-"))
+
+
 __all__ = [
     "DEFAULT_MALLOC_ARENA_MAX", "DEFAULT_NOFILE_SOFT_LIMIT", "apply_malloc_arena_max",
-    "apply_nofile_soft_limit", "configured_nofile_soft_limit"]
+    "apply_nofile_soft_limit", "configured_nofile_soft_limit", "glibc_malloc", "server_process_argv"]

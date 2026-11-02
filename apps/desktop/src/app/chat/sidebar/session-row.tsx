@@ -51,6 +51,7 @@ import {
 } from './chrome'
 import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionProjectBadge } from './session-project-badge'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
@@ -285,28 +286,6 @@ function SidebarSessionRowImpl({
   // Live plan progress ("3/7"), far right of the footer. A selector keyed to
   // this row: only rows whose own fraction changes repaint on todo events.
   const todoProgress = useStoreSelector($todoProgressBySession, progress => (card ? progress[session.id] : undefined))
-
-  // One-line rows have no room for the card's context line, so a session that
-  // resolves to a project marks itself with a folder glyph before the title —
-  // the same resolver the card header (and the project grouping) reads, so
-  // icon, tint and lane membership cannot disagree. null paints nothing:
-  // home-less chats stay unmarked. The card skips the badge; its header line
-  // already names the project and a second mark would read as duplication.
-  const projectLabel = useStoreSelector($projects, projects =>
-    card ? null : sessionProjectLabel(session, projects)
-  )
-
-  const projectBadge =
-    projectLabel && !card ? (
-      <Tip label={projectLabel}>
-        <Codicon
-          aria-hidden="true"
-          className="size-3.5 shrink-0 text-(--ui-text-quaternary)"
-          name="folder"
-          size="0.75rem"
-        />
-      </Tip>
-    ) : null
 
   // An archived session has no live status to paint, so the archive glyph takes
   // the lead slot the dot would occupy instead of adding a column of its own.
@@ -554,7 +533,7 @@ function SidebarSessionRowImpl({
                   {leadNode}
                   <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
-                  {projectBadge}
+                  <SessionProjectBadge card={card} session={session} />
                   <span className="min-w-0 flex-1 self-center">
                     {/* The row's primary action (#38072 finding 3): the title
                         is the session row's real button — the grabber and ⋯

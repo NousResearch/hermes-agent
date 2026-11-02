@@ -682,6 +682,11 @@ class TestSchemaConversion:
         other_schema = _convert_mcp_schema(server_name, other_tool)
         assert other_schema["name"] != schema["name"]
         assert len(other_schema["name"]) <= 64
+        # The provider-safe id may be opaque, but deferred tool_search still gets the
+        # human MCP identity from the description.
+        assert schema["description"].startswith(
+            f"{server_name}.reply_communication_todo — "
+        )
 
         # Deterministic across repeated calls with the same inputs.
         assert (

@@ -1,16 +1,20 @@
 """Declarative config schema for memory provider plugins: each declares its fields in
 a ``config_schema.py`` beside ``__init__.py``; one generic renderer and one
 ``GET/PUT /api/memory/providers/{name}/config`` pair drive the UI. Schema files are
-loaded by path, never imported as a package (plugin ``__init__`` pulls in the agent
-runtime, which must not load into the web server); they may import only this
-pure-data module. ``web_server`` owns read/write, dispatching on ``storage``.
+loaded in a directory-scoped package shell that leaves the plugin's root
+``__init__`` unexecuted. They may import this module and relative pure-data helpers;
+provider runtime imports belong in ``__init__``. ``web_server`` owns read/write,
+dispatching on ``storage``.
 """
 
 from __future__ import annotations
 
-import importlib.util
+import hashlib
+import importlib
 import logging
+import sys
 from dataclasses import dataclass, field as dataclass_field
+from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
@@ -86,6 +90,31 @@ class ProviderConfigSchema:
 _SCHEMA_CACHE: dict[str, ProviderConfigSchema] = {}
 
 
+def load_config_schema_file(path: Path) -> ProviderConfigSchema | None:
+    """Load schema data with relative imports scoped to this provider's directory."""
+    from plugins.plugin_loader import _module_load_lock, register_synthetic_package
+
+    directory = path.resolve().parent
+    digest = hashlib.sha256(str(directory).encode()).hexdigest()[:16]
+    package = f"_hermes_memory_config_schema_{digest}"
+    with _module_load_lock(package):
+        # Keep schema helpers separate from the provider's runtime package: its
+        # root initializer must still execute when the provider is activated.
+        register_synthetic_package(package, [str(directory)])
+        schema = None
+        try:
+            module = importlib.import_module(f"{package}.config_schema")
+            schema = getattr(module, "CONFIG_SCHEMA", None)
+            return schema
+        finally:
+            if schema is None:
+                # Retry every helper after an incomplete load, including helpers
+                # imported successfully before a later dependency failed.
+                for name in tuple(sys.modules):
+                    if name == package or name.startswith(package + "."):
+                        sys.modules.pop(name, None)
+
+
 def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
     """``CONFIG_SCHEMA`` of provider ``name``; None (no panel) without a ``config_schema.py``.
     Cached by resolved file path, not name: user plugins are per-profile."""
@@ -107,10 +136,7 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         if host is not None:  # plugins.isolation: host — a user schema file is user code too
             schema = _schema_from_record(host.config_schema(path))
         else:
-            spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{name}", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            schema = getattr(module, "CONFIG_SCHEMA", None)
+            schema = load_config_schema_file(path)
     except Exception:
         # Never cache a failed load: it would pin an empty panel until restart.
         _log.exception("failed to load config schema for memory provider %r", name)

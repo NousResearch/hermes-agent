@@ -306,6 +306,14 @@ installs the catalog plugin automatically for anyone whose `memory.provider` sti
 
 ## Config Schema
 
+For the Desktop config panel, place a `config_schema.py` beside the provider's
+root `__init__.py` and export a `CONFIG_SCHEMA` instance of
+`plugins.memory.config_schema.ProviderConfigSchema`. The schema can import
+relative pure-data helpers, including nested packages. Hermes loads it in a
+directory-scoped package shell, keeping the provider's root initializer deferred
+until provider activation. Keep runtime initialization out of schema helpers.
+With `plugins.isolation: host`, these imports run in the profile's plugin host.
+
 `get_config_schema()` returns a list of field descriptors used by `hermes memory setup`:
 
 ```python

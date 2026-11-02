@@ -45,6 +45,11 @@ class IterationBudget:
             if self._used > 0:
                 self._used -= 1
 
+    def reset(self) -> None:
+        """Clear the counter for a fresh continuation window (the caller bounds the total)."""
+        with self._lock:
+            self._used = 0
+
     @property
     def used(self) -> int:
         with self._lock:

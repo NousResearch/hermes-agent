@@ -2,7 +2,7 @@ name: tokenjuice
 repo: https://github.com/vincentkoc/tokenjuice
 sha: 825eaa98214c73174156eea582042e1f8b6fdc9a
 subdir: src/python/tokenjuice_integrations
-description: Compact successful terminal output locally before model consumption.
+description: "Compact successful terminal output locally before model consumption. Disclosure — runs the separately installed `tokenjuice` CLI (from PATH or `TOKENJUICE_BIN`; installed outside the pinned commit with `npm install --global tokenjuice`) on every successful foreground terminal command's output and replaces what the model sees with its shorter summary; the plugin sends nothing over the network."
 maintainer: vincentkoc
 tier: community
 category: tools

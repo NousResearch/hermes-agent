@@ -11806,7 +11806,7 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
       connectPrimaryRemote(remote, {
         profile: primaryProfile,
         restoreRememberedProfile: () =>
-          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig().profiles?.default),
+          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig()),
         signal: localBackendLifecycle.signal,
         assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
         advanceBootProgress,

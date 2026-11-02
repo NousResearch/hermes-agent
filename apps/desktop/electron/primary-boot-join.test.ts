@@ -64,7 +64,7 @@ test('a renderer retry after a failed remote boot still restores a served profil
   assert.deepEqual(request, { key: 'windows-only', inheritsPrimary: true })
 
   // startHermes(request.key, { inheritsPrimary }) gates restoration on this.
-  const restorable = () => primaryProfileRestorable(request.key, request.inheritsPrimary, null, undefined)
+  const restorable = () => primaryProfileRestorable(request.key, request.inheritsPrimary, null, {})
 
   pin.pin(request.key)
 
@@ -88,11 +88,47 @@ test('a renderer retry after a failed remote boot still restores a served profil
 
   // An explicitly requested profile, a --profile launch or a per-profile
   // route is intent and is never swapped.
-  for (const [inherits, launchArg, defaultRoute] of [
-    [false, null, undefined],
-    [true, 'windows-only', undefined],
-    [true, null, { url: 'https://work.invalid' }]
+  for (const [inherits, launchArg, config] of [
+    [false, null, {}],
+    [true, 'windows-only', {}],
+    [true, null, { profiles: { default: { mode: 'remote', url: 'https://work.invalid' } } }],
+    [true, null, { profiles: { default: { mode: 'ssh', host: 'work.invalid' } } }]
   ] as const) {
-    assert.equal(primaryProfileRestorable('windows-only', inherits, launchArg, defaultRoute), false, String(inherits))
+    assert.equal(primaryProfileRestorable('windows-only', inherits, launchArg, config), false, JSON.stringify(config))
   }
+})
+
+test('a default profile kept local with only remembered SSH settings still repairs the global remote primary', async () => {
+  // Settings → "This device" on the default profile parks its SSH form as
+  // savedSsh; the global remote stays the primary's effective route.
+  const config = {
+    mode: 'remote',
+    remote: { url: 'https://offline.invalid' },
+    profiles: { default: { mode: 'local', savedSsh: { mode: 'ssh', host: 'box.invalid', user: 'me' } } }
+  }
+
+  const reads: string[] = []
+
+  const connection = await connectPrimaryRemote(
+    { ...remote, source: 'settings' },
+    {
+      profile: 'work',
+      restoreRememberedProfile: () => primaryProfileRestorable('work', true, null, config),
+      assertCurrentAttempt: () => undefined,
+      advanceBootProgress: async () => undefined,
+      waitForRemote: async () => undefined,
+      readProfiles: async () => {
+        reads.push('profiles')
+
+        return { profiles: [{ name: 'default' }] }
+      },
+      onProfileRestored: () => undefined,
+      updateBootProgress: () => undefined,
+      logs: () => [],
+      windowState: () => ({})
+    }
+  )
+
+  assert.deepEqual(reads, ['profiles'])
+  assert.equal(connection.profile, 'default')
 })

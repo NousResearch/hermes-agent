@@ -1,3 +1,5 @@
+import { profileHasRemoteConnection } from './connection-config'
+
 /**
  * Which profile a caller of the primary backend asked for, and whether it
  * named one at all. A profile-less caller follows the primary, and only that
@@ -69,13 +71,20 @@ export function primaryDialClaimKey(scopeKey: string, inheritsPrimary: boolean):
 /**
  * A startHermes attempt may swap a remote primary's stale profile for a served
  * one only when its profile was inherited: no caller named it, no --profile
- * launch argument and no per-profile route pins it.
+ * launch argument and no per-profile route pins it. "Pins" means the default
+ * profile's own EFFECTIVE route (what resolveDesktopRemoteRoute would select),
+ * not any `profiles.default` entry: a local entry that only remembers
+ * `savedSsh` leaves the primary on the global remote, which must still repair.
  */
 export function primaryProfileRestorable(
   requestedProfile: string | undefined,
   inheritsPrimary: boolean,
   launchArgProfile: null | string,
-  defaultProfileRoute: unknown
+  connectionConfig: Record<string, unknown>
 ): boolean {
-  return (!requestedProfile || inheritsPrimary) && !launchArgProfile && !defaultProfileRoute
+  return (
+    (!requestedProfile || inheritsPrimary) &&
+    !launchArgProfile &&
+    !profileHasRemoteConnection(connectionConfig, 'default')
+  )
 }

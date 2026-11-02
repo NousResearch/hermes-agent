@@ -97,6 +97,15 @@ export function resolveDesktopConnectionRequest(
   return { connectionId: null, profile: requested || primaryProfile }
 }
 
+/** True when resolveDesktopConnectionRequest filled in the primary's profile:
+ *  the caller named none and its window has no route of its own. */
+export function desktopConnectionRequestInheritsPrimary(
+  profile: unknown,
+  source: WindowConnectionRoute | null
+): boolean {
+  return !(typeof profile === 'string' && profile.trim()) && !source?.profile
+}
+
 // The legacy profile field records last use. defaultRoute is an explicit,
 // app-wide preference, never changed by switching workspaces in any window.
 export function createDesktopProfilePreferences(

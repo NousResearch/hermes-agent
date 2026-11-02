@@ -6,8 +6,11 @@ gateway housekeeping (once per served profile), CLI/TUI startup maintenance and 
 maintenance ticker. A task runs when the host has been idle ``min_idle_hours``, the task is not
 paused, ``interval_hours`` have passed since its last run (the first observation seeds
 ``last_run_at`` and defers one interval, like the curator, unless ``first_run="immediate"``) and no
-other run of it holds the claim. Runs are synchronous on the polling thread; an exception is
-logged and recorded, never raised.
+other run of it holds the claim. Each due task runs on its own thread, started with the poller's
+contextvars (profile home and secret scope), and the poll returns at once: a slow task never holds
+up the host's housekeeping. The claim keeps one run at a time across pollers and processes; the
+worker records the run and releases the claim when ``fn`` returns or raises. An exception is logged
+and recorded, never raised.
 
 State is per (profile, plugin, task): ``<plugin data dir>/idle-tasks/<name>.json`` with
 ``last_run_at``, ``run_count``, ``paused``, ``last_summary``, ``last_status``, ``last_error``.
@@ -22,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 import time
 import weakref
 from dataclasses import dataclass
@@ -69,6 +73,11 @@ class IdleTaskSpec:
 
 # Registered tasks per plugin manager (one manager per profile home), keyed "<plugin id>:<name>".
 _registries: weakref.WeakKeyDictionary[Any, dict[str, IdleTaskSpec]] = weakref.WeakKeyDictionary()
+
+# This process's running workers, keyed by their claim's lock path. A run may outlast the claim's
+# stale age; the claim alone would then let the next poll start a second run beside it.
+_in_flight: dict[str, threading.Thread] = {}
+_in_flight_lock = threading.Lock()
 
 
 def registered_idle_tasks(manager: Any) -> dict[str, IdleTaskSpec]:
@@ -173,9 +182,40 @@ def _due(spec: IdleTaskSpec, state: dict[str, Any], path: Path, now: datetime) -
                         seed_summary="deferred first run: runs after one interval")
 
 
-def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime) -> Optional[str]:
-    """Run ``spec`` if every gate passes; its status (``ok``/``error``) or None when not run."""
+def _execute(spec: IdleTaskSpec, run: IdleTaskRun, path: Path, lock: Path, now: datetime) -> None:
+    """The worker body: run ``spec.fn``, then record the run and release the claim, whatever happened."""
+    from agent.idle_schedule import release_run
+
+    started, status, summary, error = time.monotonic(), "ok", None, None
+    try:
+        result = spec.fn(run)
+        if isinstance(result, str) and result.strip():
+            summary = result.strip()[:_SUMMARY_MAX_CHARS]
+    except Exception as exc:
+        # Boundary: a plugin's job never breaks the host.
+        status, error = "error", f"{type(exc).__name__}: {exc}"[:500]
+        logger.warning("Plugin %s idle task %s failed", spec.plugin_id, spec.name, exc_info=True)
+    finally:
+        try:
+            fresh = load_state(path, spec.plugin_id, spec.name)  # keep a pause set while it ran
+            fresh.update(last_run_at=now.isoformat(), run_count=int(fresh["run_count"] or 0) + 1, last_status=status,
+                         last_summary=summary, last_error=error, interval_hours=spec.interval_hours,
+                         last_run_duration_seconds=round(time.monotonic() - started, 3))
+            save_state(path, fresh)
+        finally:
+            release_run(lock)
+            with _in_flight_lock:
+                _in_flight.pop(str(lock), None)
+    logger.info("plugin idle task plugin=%s task=%s status=%s", spec.plugin_id, spec.name, status)
+
+
+def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime) -> Optional[threading.Thread]:
+    """Start ``spec`` on its own thread if every gate passes; the started worker, or None when not run.
+
+    The worker carries the poller's contextvars (profile home and secret scope), so a host polling
+    under a profile's scope runs that profile's task in it."""
     from agent.idle_schedule import claim_run, release_run
+    from agent.memory_provider import spawn_context_thread
 
     if idle_for_seconds < spec.min_idle_hours * 3600.0:
         return None
@@ -184,48 +224,45 @@ def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime) -> Opti
     if not _due(spec, state, path, now):
         return None
     lock = path.with_name(f".{spec.name}.lock")
-    if not claim_run(lock):  # another poller (thread or process) is running it
-        return None
-    started, status, summary, error = time.monotonic(), "ok", None, None
-    try:
-        result = spec.fn(IdleTaskRun(spec.name, idle_for_seconds, state["last_run_at"], int(state["run_count"] or 0)))
-        if isinstance(result, str) and result.strip():
-            summary = result.strip()[:_SUMMARY_MAX_CHARS]
-    except Exception as exc:
-        # Boundary: a plugin's job never breaks the host's housekeeping.
-        status, error = "error", f"{type(exc).__name__}: {exc}"[:500]
-        logger.warning("Plugin %s idle task %s failed", spec.plugin_id, spec.name, exc_info=True)
-    finally:
-        fresh = load_state(path, spec.plugin_id, spec.name)  # keep a pause set while it ran
-        fresh.update(last_run_at=now.isoformat(), run_count=int(fresh["run_count"] or 0) + 1, last_status=status,
-                     last_summary=summary, last_error=error, interval_hours=spec.interval_hours,
-                     last_run_duration_seconds=round(time.monotonic() - started, 3))
-        save_state(path, fresh)
-        release_run(lock)
-    logger.info("plugin idle task plugin=%s task=%s status=%s", spec.plugin_id, spec.name, status)
-    return status
+    run = IdleTaskRun(spec.name, idle_for_seconds, state["last_run_at"], int(state["run_count"] or 0))
+    with _in_flight_lock:
+        # A run of this process still holds the claim: its age says nothing about a crash.
+        if str(lock) in _in_flight or not claim_run(lock):  # or another process is running it
+            return None
+        worker = spawn_context_thread(_execute, args=(spec, run, path, lock, now),
+                                      name=f"idle-task-{spec.plugin_id}-{spec.name}")
+        _in_flight[str(lock)] = worker
+        try:
+            worker.start()
+        except RuntimeError:  # no thread to be had: the claim must not outlive the attempt
+            _in_flight.pop(str(lock), None)
+            release_run(lock)
+            logger.warning("Plugin %s idle task %s could not start", spec.plugin_id, spec.name, exc_info=True)
+            return None
+    return worker
 
 
 def run_plugin_idle_tasks(
     *, idle_for_seconds: float, manager: Any = None, now: Optional[datetime] = None,
-) -> dict[str, str]:
-    """Poll the active profile's registered idle tasks; ``{"<plugin>:<task>": status}`` for those
-    that ran. A manager polled outside its own profile runs nothing. Never raises."""
+) -> dict[str, threading.Thread]:
+    """Poll the active profile's registered idle tasks and return at once; ``{"<plugin>:<task>":
+    worker}`` for the runs it started, each on its own thread. A manager polled outside its own
+    profile runs nothing. Never raises."""
     from hermes_constants import hermes_home_key
     from hermes_cli.plugins import get_plugin_manager
 
-    ran: dict[str, str] = {}
+    started: dict[str, threading.Thread] = {}
     try:
         manager = manager if manager is not None else get_plugin_manager()
         if manager.scope_key != hermes_home_key():
-            return ran
+            return started
         now = now or datetime.now(UTC)
         for key, spec in list(registered_idle_tasks(manager).items()):
-            if (status := _run_one(spec, idle_for_seconds, now)) is not None:
-                ran[key] = status
+            if (worker := _run_one(spec, idle_for_seconds, now)) is not None:
+                started[key] = worker
     except Exception:
         logger.debug("plugin idle task poll failed", exc_info=True)
-    return ran
+    return started
 
 
 def run_idle_jobs(*, idle_for_seconds: float, on_summary: Optional[Callable[[str], None]] = None) -> None:
@@ -269,9 +306,10 @@ class PluginIdleTaskCtxMixin:
         min_idle_hours: float = 2.0, first_run: str = "defer",
     ):
         """Run ``fn`` in the background when Hermes is idle, at most once per ``interval_hours``
-        (floored to 1) and only after ``min_idle_hours`` without activity. ``fn`` receives an
-        :class:`IdleTaskRun` (``name``, ``idle_for_seconds``, ``last_run_at``, ``run_count``) and
-        may return a short summary string. The first run waits one interval
+        (floored to 1) and only after ``min_idle_hours`` without activity. ``fn`` runs on its own
+        thread and the host does not wait for it, so keep a run short and safe to repeat; it
+        receives an :class:`IdleTaskRun` (``name``, ``idle_for_seconds``, ``last_run_at``,
+        ``run_count``) and may return a short summary string. The first run waits one interval
         unless ``first_run="immediate"``. Returns the :class:`PluginRegistration` (dispose to stop
         polling). Raises ``ValueError`` for a bad name (``[a-z0-9][a-z0-9_-]*``), a non-callable
         ``fn``, a non-numeric interval, or an unknown ``first_run``."""

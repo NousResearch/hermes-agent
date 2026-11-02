@@ -4,11 +4,14 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { setApiRequestConnection } from '@/api/client'
 import type { HermesApiRequest } from '@/global'
 import type { HermesConfigRecord } from '@/hermes'
+import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 import { useI18n } from './context'
 import { ProfileI18nProvider as I18nProvider } from './profile-provider'
+import { resetAppLocaleRegistry } from './registry'
+import { $requestedLocale } from './runtime'
 
 function Probe() {
   const { locale, setLocale, saveError, isSavingLocale } = useI18n()
@@ -31,6 +34,10 @@ function route(profile: string, connectionId: string | null = null) {
 
 afterEach(() => {
   cleanup()
+  $gateway.set(null)
+  $gatewayState.set('idle')
+  resetAppLocaleRegistry()
+  $requestedLocale.set(null)
   route('default')
   Reflect.deleteProperty(window, 'hermesDesktop')
   vi.restoreAllMocks()
@@ -144,4 +151,100 @@ it('isolates stale reads and failed saves when the same profile moves between co
   api.mockImplementation(() => Promise.resolve({ display: { language: 'ar' } }))
   act(() => $connection.set({ baseUrl: 'https://second.example' } as never))
   await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ar'))
+})
+
+// A backend whose hermes-lang-ko pack carries Desktop strings.
+function koPackRequest() {
+  return vi.fn(async (method: string) =>
+    method === 'i18n.languages'
+      ? {
+          languages: [
+            {
+              id: 'ko',
+              endonym: '한국어',
+              rtl: false,
+              source: 'plugin:hermes-lang-ko',
+              surfaces: ['core', 'tui', 'desktop']
+            }
+          ]
+        }
+      : { lang: 'ko', surface: 'desktop', messages: { 'common.save': '저장' } }
+  )
+}
+
+// A saved `display.language: ko` with an OS-language probe the test resolves.
+function savedKoWithDeferredProbe() {
+  let resolveProfile: (profile: { locale: string }) => void = () => undefined
+
+  const machineProfile = new Promise<{ locale: string }>(resolve => {
+    resolveProfile = resolve
+  })
+
+  window.hermesDesktop = {
+    api: vi.fn(async () => ({ display: { language: 'ko' } })),
+    getMachineProfile: vi.fn(() => machineProfile)
+  } as never
+
+  return async (locale: string) => {
+    await act(async () => {
+      resolveProfile({ locale })
+      await machineProfile
+    })
+    await act(async () => undefined)
+  }
+}
+
+function mountWithOpenSocket() {
+  act(() => $gatewayState.set('open'))
+  render(
+    <I18nProvider>
+      <Probe />
+    </I18nProvider>
+  )
+}
+
+// Boot reports the socket `open` before the client is published in `$gateway`.
+// The backend-pack sync must still run once the client arrives, or a language
+// only a pack renders (ko via hermes-lang-ko) never leaves English.
+it('pulls the backend language pack once the gateway client is published after the socket opened', async () => {
+  window.hermesDesktop = { api: vi.fn(async () => ({ display: { language: 'ko' } })) } as never
+  const request = koPackRequest()
+
+  mountWithOpenSocket()
+  await waitFor(() => expect(window.hermesDesktop.api).toHaveBeenCalled())
+  expect(request).not.toHaveBeenCalled()
+
+  act(() => $gateway.set({ request } as never))
+  await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
+  expect(request).toHaveBeenCalledWith('i18n.catalog', { lang: 'ko', surface: 'desktop' })
+})
+
+// The OS-language probe can finish after the pack sync promoted the saved
+// language; the probe's answer must not replace it.
+it('keeps a pack-rendered saved language when the OS-language probe resolves after the pack', async () => {
+  const resolveProbe = savedKoWithDeferredProbe()
+
+  mountWithOpenSocket()
+  await waitFor(() => expect(window.hermesDesktop.getMachineProfile).toHaveBeenCalled())
+
+  act(() => $gateway.set({ request: koPackRequest() } as never))
+  await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
+
+  await resolveProbe('en-US')
+  expect(screen.getByTestId('locale').textContent).toBe('ko')
+})
+
+// The other order: the OS guess applies first, then the pack promotes the
+// saved language.
+it('promotes a saved pack language that arrives after the OS-language probe', async () => {
+  const resolveProbe = savedKoWithDeferredProbe()
+
+  mountWithOpenSocket()
+  await waitFor(() => expect(window.hermesDesktop.getMachineProfile).toHaveBeenCalled())
+
+  await resolveProbe('en-US')
+  expect(screen.getByTestId('locale').textContent).toBe('en')
+
+  act(() => $gateway.set({ request: koPackRequest() } as never))
+  await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
 })

@@ -1479,27 +1479,17 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
 
 
 def backfill_profile_envs(quiet: bool = False) -> list[str]:
-    """Give every named profile predating per-profile ``.env`` one (copy of the default's, or
-    the placeholder header). Never overwrites an existing profile ``.env``.
-
-    Profiles created before the dashboard/CLI started seeding a ``.env`` (PR #44792) have none, so once the
-    Channels/Keys endpoints became profile-scoped those profiles stopped inheriting the root install's
-    credentials and showed everything as unconfigured. To avoid breaking anyone on update, copy the DEFAULT
-    install's ``.env`` into each named profile that lacks one — that preserves the effective credentials
-    those profiles were already running with (they previously read the root ``.env`` via the process
-    environment). Users can then diverge per profile from there.
+    """Seed the placeholder ``.env`` header into every named profile lacking one; never
+    overwrites an existing file. It never copies the default's ``.env``: secrets are
+    profile-scoped, and a copied bot token makes two adapters fight over one bot.
     """
     backfilled: list[str] = []
-    default_env = _get_default_hermes_home() / ".env"
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
         if env_path.exists():
             continue
         try:
-            if default_env.is_file():
-                shutil.copy2(default_env, env_path)
-            else:
-                env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
+            env_path.write_text(_PLACEHOLDER_ENV, encoding="utf-8")
             os.chmod(str(env_path), 0o600)
             backfilled.append(entry.name)
         except OSError as e:

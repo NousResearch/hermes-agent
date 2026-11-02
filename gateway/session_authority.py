@@ -21,6 +21,7 @@ from gateway.session_contract import (
 from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
+from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,
@@ -490,9 +491,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
 
-    async def admit_automation(self, adapter, event, identity, replaces=None):
+    async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity, replaces)
+        return await admit_automation(self, adapter, event, identity, replaces, fold)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -839,6 +840,8 @@ class SessionAuthority:
         # A paused drain (preclaim refusal on this head) ended its task; the successors
         # need a fresh drain that revalidates them on their own merits.
         self._schedule(ref)
+        # Last: telemetry must never stand between a cancelled row and its waiter/successor drain.
+        busy_row_settled(admission_id, outcome)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
         """Operator acknowledgement that an ``unknown`` turn will not finish; the paused FIFO behind
@@ -1313,6 +1316,8 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
+                from gateway.session_ingress import fire_post_delivery
+                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
@@ -1390,13 +1395,16 @@ class SessionAuthority:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
                     drop_producer_turn(self, admission_id)
+                    from gateway.session_ingress import fire_post_delivery
+                    await fire_post_delivery(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
                 # Taken on every exit, so a turn that never settled leaves no reset for a later one.
                 reset = self.deferred_resets.pop(live.route, None)
             await self._run_deferred_reset(live.route, reset)
-            from gateway.session_ingress import deliver_settled
+            from gateway.session_ingress import deliver_settled, fire_post_delivery
             await deliver_settled(self, admission_id)
+            await fire_post_delivery(self, admission_id)
             await self._resolve_settled_waiter(admission_id, response)
 
     @staticmethod

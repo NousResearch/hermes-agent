@@ -92,7 +92,10 @@ export function pickerModelMutation(value: unknown): { model: string; provider: 
 }
 
 function mutationSummary(operation: string, value: Record<string, unknown>): string {
-  if (operation === 'model') { return `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}` }
+  if (operation === 'model') {
+    // `/model reset` already on the configured default answers with the owner's note.
+    return typeof value.note === 'string' ? value.note : `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}`
+  }
 
   if (operation === 'branch') { return `branch: ${value.branched_session_id}` }
 

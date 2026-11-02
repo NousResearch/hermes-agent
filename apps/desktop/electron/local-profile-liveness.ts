@@ -7,8 +7,16 @@ const PROFILE_IDENTITY_MARKERS = ['config.yaml', '.env', 'SOUL.md', 'profile.yam
 // hermes_constants._DELETED_PROFILES_DIR: `hermes profile delete` tombstones here.
 const DELETED_PROFILES_DIR = '.deleted'
 
-const stat = (target: string, follow: boolean) =>
-  (follow ? fs.statSync : fs.lstatSync)(target, { throwIfNoEntry: false })
+// Each check fails on its own, like the os.path predicates behind pathlib on the
+// shipped Python 3.14: any OSError (ELOOP, EACCES, ...) reads that one path as
+// absent and the remaining checks still run. throwIfNoEntry only covers ENOENT.
+const stat = (target: string, follow: boolean): fs.Stats | undefined => {
+  try {
+    return (follow ? fs.statSync : fs.lstatSync)(target, { throwIfNoEntry: false })
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Whether `<hermesHome>/profiles/<profile>` is a profile the CLI would start.
@@ -22,20 +30,15 @@ export function localProfileIsLive(hermesHome: string, profile: string): boolean
   const profilesRoot = path.join(hermesHome, 'profiles')
   const home = path.join(profilesRoot, profile)
 
-  try {
-    if (!stat(home, true)?.isDirectory()) {
-      return false
-    }
-
-    const hasIdentity = PROFILE_IDENTITY_MARKERS.some(marker => {
-      const target = path.join(home, marker)
-
-      return Boolean(stat(target, true)?.isFile() || stat(target, false)?.isSymbolicLink())
-    })
-
-    return hasIdentity && !stat(path.join(profilesRoot, DELETED_PROFILES_DIR, profile), true)
-  } catch {
-    // Python's Path predicates read an unreadable path as absent.
+  if (!stat(home, true)?.isDirectory()) {
     return false
   }
+
+  const hasIdentity = PROFILE_IDENTITY_MARKERS.some(marker => {
+    const target = path.join(home, marker)
+
+    return Boolean(stat(target, true)?.isFile() || stat(target, false)?.isSymbolicLink())
+  })
+
+  return hasIdentity && !stat(path.join(profilesRoot, DELETED_PROFILES_DIR, profile), true)
 }

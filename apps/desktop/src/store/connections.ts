@@ -79,10 +79,17 @@ let switchRevision = 0
 export const $pendingConnectionId = atom<null | string>(null)
 
 $lastProfileByConnection.subscribe(value => persistStringRecord(LAST_PROFILE_STORAGE_KEY, value))
-// Main boots the primary before this window exists, so it keeps a copy. Only a
-// real change is pushed: a window with no record of its own must not erase it.
-$lastProfileByConnection.listen(value => {
-  void window.hermesDesktop?.profile?.rememberConnections?.(value)?.catch(() => undefined)
+// Main boots the primary before this window exists, so it owns a copy. This
+// window imports its earlier record once, then reports only the entries it
+// changes: windows never see each other's picks, so a whole-map push from an
+// older window would erase newer ones.
+void window.hermesDesktop?.profile?.importConnections?.($lastProfileByConnection.get())?.catch(() => undefined)
+$lastProfileByConnection.listen((value, previous) => {
+  for (const [connectionId, profile] of Object.entries(value)) {
+    if (previous[connectionId] !== profile) {
+      void window.hermesDesktop?.profile?.rememberConnection?.(connectionId, profile)?.catch(() => undefined)
+    }
+  }
 })
 
 const $activeConnectionProfile = computed(

@@ -213,16 +213,53 @@ export function createDesktopProfilePreferences(
     return connectionId ? (readConnectionProfiles()[connectionId] ?? null) : null
   }
 
-  function rememberConnectionProfiles(value: unknown) {
-    const entries = value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []
+  // Main owns this map. Each window reports one (connection, profile) change,
+  // never its whole copy: windows do not see each other's changes, so a
+  // wholesale push from an older window would erase newer picks or resurrect
+  // an entry connectionRemoved just pruned.
+  function rememberConnectionProfile(
+    connectionId: unknown,
+    profile: unknown,
+    isKnownConnection: (connectionId: string) => boolean = () => true
+  ) {
+    if (typeof connectionId !== 'string' || !connectionId.trim() || typeof profile !== 'string') {
+      return
+    }
 
-    const next = Object.fromEntries(
-      entries.filter(([id, profile]) => id.trim() && typeof profile === 'string' && DESKTOP_PROFILE_NAME_RE.test(profile))
+    const existing = readConnectionProfiles()
+
+    if (!DESKTOP_PROFILE_NAME_RE.test(profile) || existing[connectionId] === profile || !isKnownConnection(connectionId)) {
+      return
+    }
+
+    write({ ...read(true), connectionProfiles: { ...existing, [connectionId]: profile } })
+  }
+
+  // One-time import of the record windows kept before main owned the map:
+  // the first import fills only connections main has no entry for, later ones
+  // are ignored, so a stale window can never overwrite main's map.
+  function importConnectionProfiles(value: unknown, isKnownConnection: (connectionId: string) => boolean = () => true) {
+    const current = read(true)
+
+    if (current.connectionProfilesImported === true) {
+      return
+    }
+
+    const entries = value && typeof value === 'object' && !Array.isArray(value) ? Object.entries(value) : []
+    const existing = readConnectionProfiles()
+
+    const imported = Object.fromEntries(
+      entries.filter(
+        ([id, profile]) =>
+          id.trim() &&
+          !(id in existing) &&
+          isKnownConnection(id) &&
+          typeof profile === 'string' &&
+          DESKTOP_PROFILE_NAME_RE.test(profile)
+      )
     )
 
-    if (JSON.stringify(next) !== JSON.stringify(readConnectionProfiles())) {
-      write({ ...read(true), connectionProfiles: next })
-    }
+    write({ ...current, connectionProfiles: { ...existing, ...imported }, connectionProfilesImported: true })
   }
 
   function connectionRemoved(connectionId: string) {
@@ -309,8 +346,9 @@ export function createDesktopProfilePreferences(
     getDefault,
     profileChanged,
     readActive,
+    importConnectionProfiles,
     remember,
-    rememberConnectionProfiles,
+    rememberConnectionProfile,
     setDefault
   }
 }

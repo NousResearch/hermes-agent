@@ -15576,8 +15576,17 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
 ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
 ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
-ipcMain.handle('hermes:profile:connections:remember', async (_event, record) =>
-  desktopProfilePreferences.rememberConnectionProfiles(record)
+
+// Main owns each connection's last-used profile: windows send one change at a
+// time and import their pre-mirror record once, never their whole copy.
+const isRegisteredConnection = (connectionId: string) =>
+  readDesktopConnectionsRegistry().connections.some(connection => connection.id === connectionId)
+
+ipcMain.handle('hermes:profile:connections:remember', async (_event, connectionId, profile) =>
+  desktopProfilePreferences.rememberConnectionProfile(connectionId, profile, isRegisteredConnection)
+)
+ipcMain.handle('hermes:profile:connections:import', async (_event, record) =>
+  desktopProfilePreferences.importConnectionProfiles(record, isRegisteredConnection)
 )
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the

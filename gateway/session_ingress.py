@@ -191,13 +191,15 @@ async def deliver_resolved(authority, admission_id, *, owed):
 
 
 def _take_post_delivery(authority, admission_id, source, route):
-    """Move the turn's post-delivery callback off its adapter's per-route slot onto this admission.
-    A runner or adapter without the seam (a webhook sink, a bare test double) holds none."""
+    """Move the turn's post-delivery slot off its adapter onto this admission. A delivery waiter
+    (a messaging adapter task) runs it after its own send instead. A runner or adapter without the
+    seam (a webhook sink, a bare test double) holds none."""
     resolve = getattr(authority.runner, '_adapter_for_source', None)
-    pop = getattr(resolve(source), 'pop_post_delivery_callback', None) if resolve and source else None
-    callback = pop(route) if pop is not None else None
-    if callback is not None:
-        _registry(authority, 'post_delivery')[admission_id] = callback
+    adapter = resolve(source) if resolve and source and admission_id not in authority.waiters else None
+    slots = getattr(adapter, '_post_delivery_callbacks', None)
+    entry = slots.pop(route, None) if slots is not None else None
+    if entry is not None:
+        _registry(authority, 'post_delivery')[admission_id] = (slots, route, entry)
 
 
 async def fire_post_delivery(authority, admission_id):
@@ -205,11 +207,18 @@ async def fire_post_delivery(authority, admission_id):
     a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
     does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
     and result) in the adapter's slot until restart."""
-    callback = _registry(authority, 'post_delivery').pop(admission_id, None)
-    if callback is None:
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is None:
         return
-    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+    slots, route, entry = taken
+    if admission_id in authority.waiters:
+        # Its adapter task registered as the waiter after the turn started: it sends the reply
+        # and then runs the slot, which goes back unless a newer turn's already took it.
+        slots.setdefault(route, entry)
+        return
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
     from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    callback = _split_post_delivery_entry(entry)[1]
     with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
         await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 

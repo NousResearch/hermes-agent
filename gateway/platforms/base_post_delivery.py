@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import threading
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ def split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
 
 
 _CLOSED = "post_delivery_closed"
+# Closing a turn (snapshot its slots) and registering a slot for it (closed check, insert, record)
+# each run whole under this lock, so a late executor-thread registration either lands in the
+# snapshot or is refused, never slipping in after the snapshot.
+_SLOTS_LOCK = threading.Lock()
 
 
 def _turn_closed() -> bool:
@@ -51,8 +56,9 @@ def _note_owed_slot(adapter: Any, session_key: str, generation: Optional[int]) -
 def close_owed_slots(captured: dict) -> list[OwedSlot]:
     """End the turn behind *captured*: return the slots it registered; later registrations from
     that turn are refused."""
-    captured[_CLOSED] = True
-    return list((captured.get("post_delivery") or {}).values())
+    with _SLOTS_LOCK:
+        captured[_CLOSED] = True
+        return list((captured.get("post_delivery") or {}).values())
 
 
 def drop_slots(slots: Iterable[OwedSlot]) -> None:
@@ -85,20 +91,23 @@ class PostDeliveryMixin:
         chained (both fire in order, per-callback exception isolation) so independent features
         coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
         fresher slot."""
-        if not session_key or not callable(callback) or _turn_closed():
+        if not session_key or not callable(callback):
             return
-        existing = self._post_delivery_callbacks.get(session_key)
-        if existing is not None:
-            existing_gen, existing_cb = split_post_delivery_entry(existing)
-            if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
+        with _SLOTS_LOCK:
+            if _turn_closed():
                 return
-            # Same-or-newer generation: chain so both fire in registration order.
-            if callable(existing_cb) and (
-                existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
-        self._post_delivery_callbacks[session_key] = (
-            callback if generation is None else (int(generation), callback))
-        _note_owed_slot(self, session_key, None if generation is None else int(generation))
+            existing = self._post_delivery_callbacks.get(session_key)
+            if existing is not None:
+                existing_gen, existing_cb = split_post_delivery_entry(existing)
+                if existing_gen is not None and generation is not None and int(generation) < int(existing_gen):
+                    return
+                # Same-or-newer generation: chain so both fire in registration order.
+                if callable(existing_cb) and (
+                    existing_gen is None or generation is None or int(existing_gen) == int(generation)):
+                    callback = self._chain_callbacks(existing_cb, callback)
+            self._post_delivery_callbacks[session_key] = (
+                callback if generation is None else (int(generation), callback))
+            _note_owed_slot(self, session_key, None if generation is None else int(generation))
 
     @staticmethod
     def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:

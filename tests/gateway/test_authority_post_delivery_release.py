@@ -89,3 +89,44 @@ async def test_a_turn_that_raises_drops_its_callback_unfired(tmp_path, monkeypat
         assert adapter._post_delivery_callbacks == {}
     finally:
         authority.db.close()
+
+
+def test_a_registration_racing_the_turn_end_is_either_owed_or_refused():
+    """An executor thread mid-registration when the drain closes the turn: its slot must land in
+    the closing snapshot (so it is released) or be refused, never be added after the snapshot."""
+    import threading
+    from gateway.platforms.base_post_delivery import PostDeliveryMixin, close_owed_slots
+    from gateway.session_results import execution_result
+
+    entered, proceed = threading.Event(), threading.Event()
+
+    class PausingSlots(dict):
+        def get(self, key, default=None):
+            entered.set()
+            proceed.wait(5)
+            return super().get(key, default)
+
+    adapter = object.__new__(PostDeliveryMixin)
+    adapter._post_delivery_callbacks = PausingSlots()
+    captured = {}
+
+    def register():
+        token = execution_result.set(captured)
+        try:
+            adapter.register_post_delivery_callback('route', lambda: None, generation=1)
+        finally:
+            execution_result.reset(token)
+
+    worker = threading.Thread(target=register)
+    worker.start()
+    assert entered.wait(5)
+    closing = {}
+    closer = threading.Thread(target=lambda: closing.setdefault('slots', close_owed_slots(captured)))
+    closer.start()
+    closer.join(0.3)
+    proceed.set()
+    worker.join(5)
+    closer.join(5)
+    in_registry = 'route' in adapter._post_delivery_callbacks
+    in_snapshot = any(key == 'route' for _adapter, key, _gen in closing['slots'])
+    assert in_registry == in_snapshot, 'a slot in the registry must be one the drain will release'

@@ -1484,7 +1484,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Replace a message, returning its original root ID rather than the edit event ID."""
         formatted = self.format_message(content)

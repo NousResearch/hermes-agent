@@ -165,7 +165,6 @@ def test_interim_callback_skips_already_streamed_and_empty():
     def _schedule(coro, log_message, loop=None):
         scheduled.append(True)
         coro.close()
-        return None
 
     runner._schedule = _schedule  # type: ignore[method-assign]
     breaks = []
@@ -297,3 +296,27 @@ async def test_bind_turn_wiring_uses_delivery_adapter_for_commentary_pane():
     GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
     assert ctx.matrix_commentary_pane is not None
     assert ctx.matrix_commentary_pane.adapter is adapter
+
+
+@pytest.mark.asyncio
+async def test_bind_turn_wiring_skips_commentary_pane_for_detached_route():
+    """A detached conversation answers app viewers through the local adapter, not the Matrix pane."""
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session import SessionSource
+
+    adapter = SimpleNamespace(name="local")
+    source = SessionSource(platform=Platform.MATRIX, chat_id="!room:example.org", user_id="@user:example.org")
+    source.detached_route = "agent:main:matrix:!room:example.org"
+    ctx = TurnContext(source=source, interim_assistant_messages_enabled=True)
+    host = SimpleNamespace(
+        _delivery_adapter_for=lambda _source: adapter,
+        _run_agent_progress_threading=lambda *_a, **_k: ({"thread_id": "$t"}, "$reply", None),
+        hooks=object(),
+    )
+    turn_runner = SimpleNamespace(
+        _step_callback_sync=object(),
+        _event_callback_sync=object(),
+        _status_callback_sync=object(),
+    )
+    GatewayTurnMixin._run_agent_bind_turn_wiring(host, ctx, turn_runner, source, "$event", False)
+    assert ctx.matrix_commentary_pane is None

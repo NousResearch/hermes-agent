@@ -83,9 +83,12 @@ class GatewayTurnWiringMixin:
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
         adapter = self._delivery_adapter_for(source)
+        from gateway.session_detached import detached_route_of
         if (
             turn_ctx.interim_assistant_messages_enabled
             and adapter is not None
+            # A detached conversation answers app viewers through the local adapter.
+            and detached_route_of(source) is None
             and (getattr(adapter, "name", "") == "matrix" or source.platform == Platform.MATRIX)
         ):
             from gateway.matrix_commentary_pane import MatrixCommentaryPane

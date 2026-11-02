@@ -6,7 +6,7 @@ import html as _html
 import json
 import re
 from collections import deque
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Sequence
 
 
 _ITEMS_JSON_LIMIT = 12_000
@@ -26,7 +26,7 @@ def _item_html(text: str) -> str:
     return "<br>".join(_html.escape(p) for p in parts)
 
 
-def matrix_commentary_bodies(items: Sequence[str] | Iterable[str]) -> Tuple[str, str]:
+def matrix_commentary_bodies(items: Sequence[str] | Iterable[str]) -> tuple[str, str]:
     """Build plain body + HTML for Matrix interim commentary.
 
     Contract:

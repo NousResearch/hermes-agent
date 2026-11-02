@@ -1733,14 +1733,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     document.addEventListener("visibilitychange", onResume);
     window.addEventListener("pageshow", onResume);
-    window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
     onResume();
 
     return () => {
       document.removeEventListener("visibilitychange", onResume);
       window.removeEventListener("pageshow", onResume);
-      window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);
     };
   }, [isActive, maybeReconnectOnPageResume]);

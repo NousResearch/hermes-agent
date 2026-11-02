@@ -858,68 +858,52 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
 
     The caller must first establish that HEAD is not an ancestor of the update target; ordinary
     fast-forward failures (locks, object transport errors) must never reach this destructive path.
-    Merge on a custom branch (local commits survive) or reset --hard on the same branch after
-    parking the old HEAD behind a rescue ref. ``sys.exit(1)`` on failure."""
-    # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
-    # would discard that work: merge instead, stop on conflict.
+    Merge the fetched target into the current checkout so local commits survive.
+    A proven divergence is never resolved with reset --hard; the old HEAD is first
+    pinned by a rescue ref and conflicts stop the update without discarding work.
+    ``sys.exit(1)`` on failure."""
+    # A custom branch and the update target branch are both required to preserve
+    # local commits.  The old implementation reset the target branch here after
+    # creating a rescue ref; that made a successful update silently strand the
+    # local code outside the branch.  Pin the pre-update tip, then merge the
+    # fetched target.  A conflict aborts the merge and stops the update.
     merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
-    _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
-    if _cur_branch and _cur_branch != branch:
-        print(
-            f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
-            f"merging origin/{branch} instead of resetting so local commits survive...")
-        # Best-effort safety tag as a recovery anchor.
-        _git_run(git_cmd, ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"])
-        if _git_run(git_cmd, ["merge", "--no-edit", merge_ref]).returncode != 0:
-            _git_run(git_cmd, ["merge", "--abort"])
-            print("✗ Merge conflict between local commits and upstream — update stopped, nothing was changed.")
-            print(f"  Resolve manually: cd {_m().PROJECT_ROOT} && git merge origin/{branch}")
-            print("  Then re-run the update. Local work is untouched.")
-            _record_stop("merge_conflict")
-            sys.exit(1)
-        return
-    # Same branch and proven non-ancestor: an upstream force-push/rebase may lose nothing,
-    # while local commits on this branch lose everything. The reflog is only an expiring
-    # recovery path, so park pre_pull_sha behind a rescue ref for BOTH, orphan divergence
-    # (no common ancestor: corrupted HEAD, re-init) included.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
     has_common_ancestor = bool(
         merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
-    if pre_pull_sha:
-        from datetime import datetime as _dt, timezone
-        # SHA suffix so two updates in the same second get distinct refs.
-        kind = "diverged" if has_common_ancestor else "orphan"
-        rescue_ref = (
-            f"refs/hermes-update-backups/{kind}-{branch}-"
-            f"{_dt.now(UTC).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
-        head = (
-            f"  ⚠ Local history has diverged from origin/{branch} — "
-            if has_common_ancestor else
-            f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — ")
-        if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
-            print(
-                f"{head}backed up current HEAD to {rescue_ref} before resetting. "
-                f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
-            if has_common_ancestor:
-                dropped = (_git_run(
-                    git_cmd, ["rev-list", "--count", f"origin/{branch}..{pre_pull_sha}"]).stdout or "").strip()
-                print(f"    {dropped or 'Some'} commit(s) not on origin/{branch} leave the branch; "
-                      f"list them with: git log origin/{branch}..{rescue_ref}")
-        else:
-            # update-ref failure is intentionally non-fatal, but never claim a backup exists.
-            print(
-                f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
-                f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
-        _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
-    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
-    reset_result = _git_run(git_cmd, ["reset", "--hard", merge_ref])
-    if reset_result.returncode != 0:
-        print(f"✗ Failed to reset to origin/{branch}.")
-        if reset_result.stderr.strip():
-            print(f"  {reset_result.stderr.strip()}")
-        print(f"  Try manually: git fetch origin && git reset --hard origin/{branch}")
+    from hermes_cli._early_recovery import is_object_id
+    if not is_object_id(pre_pull_sha):
+        print("✗ Captured pre-update HEAD is invalid; refusing to merge history without a recovery anchor.")
         _record_stop("checkout_move_failed")
         sys.exit(1)
+
+    from datetime import datetime as _dt
+    kind = "diverged" if has_common_ancestor else "orphan"
+    rescue_ref = (
+        f"refs/hermes-update-backups/{kind}-{branch}-"
+        f"{_dt.now(UTC).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}"
+    )
+    if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode != 0:
+        print(f"✗ Could not create the pre-merge recovery ref {rescue_ref}; no history was changed.")
+        _record_stop("checkout_move_failed")
+        sys.exit(1)
+    print(
+        f"  ⚠ Local history diverged from {merge_ref}; merging the fetched target so local commits survive.\n"
+        f"    Recovery ref: {rescue_ref}"
+    )
+    merge_result = _git_run(git_cmd, ["merge", "--no-edit", merge_ref])
+    if merge_result.returncode == 0:
+        return
+
+    _git_run(git_cmd, ["merge", "--abort"])
+    print("✗ Merge conflict between local Hermes code and upstream; update stopped without discarding local commits.")
+    detail = (merge_result.stderr or merge_result.stdout or "").strip()
+    if detail:
+        print(f"  {detail}")
+    print(f"  Resolve manually: cd {_m().PROJECT_ROOT} && git merge {merge_ref}")
+    print(f"  Recovery ref retained: {rescue_ref}")
+    _record_stop("merge_conflict")
+    sys.exit(1)
 
 
 def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=None, _windows_gateway_resume=None) -> None:
@@ -1097,8 +1081,8 @@ def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
     in_place_update=False, _windows_gateway_resume=None, expected_sha=None):
-    """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
-    custom branch -> merge, same branch -> rescue ref then reset; a
+    """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence creates a
+    recovery ref and merges the fetched target so local commits survive; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
     update_succeeded = False
     # Rescue refs must retain the immediate pre-pull tip, even when syntax
@@ -1346,9 +1330,8 @@ def _apply_parked_branch_guard(
     """Decide how a checkout parked on another branch is brought to *branch* (stash-switch-pull-
     switch-back used to "update" main while the running code stayed behind).
 
-    By branch contents + updates.parked_branch_strategy: fully merged -> switch back;
-    unmerged -> "switch" (default; loud "kept" notice) or "update_in_place" (merge origin/<target>
-    INTO the branch, checkout never moves; --switch-branch overrides once); dirty/unverifiable ->
+    By branch contents: fully merged -> fast-forward in place; unmerged -> merge origin/<target>
+    INTO the branch, checkout never moves; ``--switch-branch`` is a deprecated no-op; dirty/unverifiable ->
     touch nothing, warn, ``sys.exit(1)`` with the code update SKIPPED (also when the target is
     missing). Returns ``(parked_branch_switched, in_place_update, switch_block_reason)``.
     """
@@ -1364,25 +1347,19 @@ def _apply_parked_branch_guard(
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         _record_stop("parked_branch_blocked")
         sys.exit(1)
-    if not switch_block_reason.startswith("unmerged:"):
-        print(f"  ⚠ Checkout was parked on '{current_branch}' (fully merged) — switching back to {branch}...")
-        return True, False, switch_block_reason
-    _in_place_configured = False
-    with _best_effort('Could not read updates.parked_branch_strategy: %s'):
-        _in_place_configured = (
-            _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
-    if not _in_place_configured or switch_branch:
-        _m()._print_parked_branch_kept_notice(
-            current_branch, branch, switch_block_reason.split(":", 1)[1])
-        return True, False, switch_block_reason
+    if switch_branch:
+        print("  ⚠ --switch-branch is deprecated and ignored; local code must be merged in place.")
+    if switch_block_reason.startswith("unmerged:"):
+        print(
+            f"  ℹ Checkout is parked on '{current_branch}' with "
+            f"{switch_block_reason.split(':', 1)[1]} local commit(s); merging {branch} into it.")
+    else:
+        print(f"  ℹ Checkout is parked on '{current_branch}' and already contains {branch}; updating in place.")
     # --branch typos used to surface via the checkout failing, which this path skips.
     if _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", f"origin/{branch}"]).returncode != 0:
         print(f"✗ Branch '{branch}' does not exist locally or on origin.")
         _record_stop("branch_missing")
         sys.exit(1)
-    print(
-        f"  ℹ On branch '{current_branch}' — updating it in place from "
-        f"origin/{branch} (no branch switch; local commits preserved).")
     return False, True, switch_block_reason
 
 
@@ -1774,12 +1751,22 @@ def _apply_pulled_update(
     if completion_request is not None:
         observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
         pinned = completion_request.get("expected_sha")
-        if pinned is not None and observed != pinned:
+        # In-place updates intentionally land on a merge commit containing the
+        # selected target, so the checkout SHA is not expected to equal the
+        # target SHA. The ancestry gate below still proves that the selected
+        # commit was applied; exact SHA equality remains required for detached
+        # release/channel moves.
+        target_sha = completion_request.get("target_sha")
+        landed_target_ok = bool(
+            target_sha
+            and _git_run(git_cmd, ["merge-base", "--is-ancestor", target_sha, observed]).returncode == 0
+        )
+        if pinned is not None and observed != pinned and not landed_target_ok:
             print("✗ Checkout no longer matches the selected channel commit. No completion was applied.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             _record_stop("head_moved")
             sys.exit(1)
-        completion_request["expected_sha"] = pinned or observed
+        completion_request["expected_sha"] = observed
     _complete_source_update(completion_request)
 
 
@@ -1871,6 +1858,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
         stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))
     branch = completion_request["branch"]
+    if release_sha:
+        completion_request["target_sha"] = release_sha
 
     if use_zip_update:
         try:
@@ -1946,6 +1935,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
             target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
+        if not release_sha:
+            completion_request["target_sha"] = _resolved_commit(git_cmd, target_ref)
 
         if commit_count == 0:
             _finish_already_up_to_date(

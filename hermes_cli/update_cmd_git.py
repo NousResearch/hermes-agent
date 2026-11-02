@@ -176,23 +176,18 @@ def _branch_head_suffix(git_cmd=None, cwd=None) -> str:
 
 
 def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: str, target_branch: str) -> tuple[bool, str]:
-    """Decide whether a parked feature branch may be auto-switched back to the update target.
+    """Assess whether a parked branch is safe to update in place.
 
-    - (True, "") — tree clean and every parked commit is in ``origin/<target>`` (no ``git cherry +``).
-    - (True, "unmerged:<n>") — tree clean but commits not in target; switching is safe (checkout keeps
-      committed work) but caller must print a LOUD notice. Non-interactive callers (desktop, gateway
-      /update, cron) can't resolve a skip, so a clean checkout must reach target.
-    - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
-      genuinely unsafe case: uncommitted work riding an autostash across branches.
-    A config read failure must not disable the safety checks: fall through with the default."""
+    - (True, "") — tree clean and every parked commit is in ``origin/<target>``.
+    - (True, "unmerged:<n>") — tree clean but commits are not in target; the caller
+      must merge the target into this branch and retain the local commits.
+    - (False, "dirty"|"unverifiable") — do not touch the branch. Dirty is the
+      genuinely unsafe case: uncommitted work must be handled by the user first.
+
+    The old ``auto_switch_parked_branch`` opt-out is intentionally ignored: the
+    updater no longer switches away from local code, and future upgrades must
+    reconcile the checked-out branch rather than silently leave it stale."""
     from hermes_cli.update_cmd_git import _git_run
-    try:
-        from hermes_cli.config import load_config
-        _update_cfg = (load_config() or {}).get("updates", {})
-        if isinstance(_update_cfg, dict) and not bool(_update_cfg.get("auto_switch_parked_branch", True)):
-            return False, "disabled"
-    except Exception as exc:
-        logger.debug("Could not read updates.auto_switch_parked_branch: %s", exc)
     status = _git_run(git_cmd, ["status", "--porcelain"], cwd)
     if status.returncode != 0:
         return False, "unverifiable"
@@ -232,7 +227,6 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
 
 _PARKED_SKIP_WHY = {
     "dirty": "the working tree has uncommitted changes",
-    "disabled": "updates.auto_switch_parked_branch is set to false in config.yaml",
 }
 
 

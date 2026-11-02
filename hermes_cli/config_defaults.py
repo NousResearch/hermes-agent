@@ -2357,16 +2357,14 @@ DEFAULT_CONFIG = {
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
         # --hard + clean -fd, so ignored paths like node_modules/venv are never touched).
         "non_interactive_local_changes": "stash",
-        # If the checkout is parked on a feature branch and the tree is clean, switch to the update
-        # target (commits stay on the branch; a loud notice names it) so non-interactive updates
-        # keep working. A DIRTY tree blocks the switch and the code update is SKIPPED with a loud
-        # warning. False = never auto-switch.
+        # If the checkout is parked on a feature branch, merge the fetched target into that branch
+        # in place. Local commits therefore remain part of the running checkout and are never hidden
+        # by switching to a different branch. A DIRTY tree is still blocked before any stash/move.
         "auto_switch_parked_branch": True,
-        # Clean parked branch with unmerged commits: switch = move to the update target, commits
-        # stay on the branch (never conflicts). update_in_place = for a maintained custom branch:
-        # merge origin/<target> INTO it after leaving a pre-update-<stamp> tag; a conflict stops the
-        # update cleanly. `hermes update --switch-branch` overrides to switch for one run.
-        "parked_branch_strategy": "switch",
+        # Kept for config compatibility; parked branches are always updated in place. A divergent
+        # merge creates a recovery ref and stops on conflict; it never resets or silently switches
+        # away from local code. `hermes update --switch-branch` is accepted but ignored.
+        "parked_branch_strategy": "update_in_place",
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,

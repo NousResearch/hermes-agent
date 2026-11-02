@@ -1,12 +1,10 @@
-"""`hermes update` must not drop local commits without leaving a named way back.
+"""`hermes update` must preserve local commits when histories diverge.
 
-When the checkout sits on the update's target branch and its history has
-diverged, the update resets hard to ``origin/<branch>``. Divergence there has
-two indistinguishable causes: an upstream force-push (nothing local is lost)
-and local commits on that branch (everything is). The update must park the old
-HEAD under ``refs/hermes-update-backups/`` first and tell the user the ref name.
-The installer update paths are covered in
-``tests/scripts/install/test_install_diverged_rescue_ref.py``.
+When the checkout sits on the update target and its history has diverged, the
+updater pins the pre-update HEAD under ``refs/hermes-update-backups/`` and
+merges the fetched target. A merge conflict aborts and stops the update; local
+work remains reachable and the recovery ref is retained. The installer update
+paths are covered in ``tests/scripts/install/test_install_diverged_rescue_ref.py``.
 """
 
 from __future__ import annotations
@@ -56,21 +54,21 @@ def _rescue_refs(checkout):
     return dict(line.split() for line in out.splitlines() if line.strip())
 
 
-def _assert_reset_kept_local_commit(checkout, local_sha, output):
+def _assert_merge_kept_local_commit(checkout, local_sha, output):
     head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
     origin = _git(checkout, "rev-parse", "origin/main").stdout.strip()
-    assert head == origin, "the reset itself must still happen"
+    assert head != origin, "a divergent update must create a merge commit, not reset to origin"
+    assert _git(checkout, "merge-base", "--is-ancestor", origin, head, check=False).returncode == 0
+    assert _git(checkout, "merge-base", "--is-ancestor", local_sha, head, check=False).returncode == 0
     refs = [ref for ref, sha in _rescue_refs(checkout).items() if sha == local_sha]
-    assert len(refs) == 1, f"the dropped commit needs exactly one rescue ref: {_rescue_refs(checkout)}"
+    assert len(refs) == 1, f"the pre-merge commit needs exactly one rescue ref: {_rescue_refs(checkout)}"
     assert refs[0].startswith("refs/hermes-update-backups/diverged-main-")
-    assert refs[0] in output, "the user must be told where the commits went"
-    dropped = _git(checkout, "log", "--format=%H", f"origin/main..{refs[0]}").stdout.split()
-    assert dropped == [local_sha]
+    assert refs[0] in output, "the user must be told where the recovery ref went"
 
 
-def test_hermes_update_keeps_local_commit_behind_a_rescue_ref(
+def test_hermes_update_merges_local_commit_and_keeps_a_recovery_ref(
         diverged_checkout, monkeypatch, capsys):
-    """The real apply path: ff-only fails, the reconcile resets, the local commit stays reachable."""
+    """The real apply path: ff-only fails, then local and upstream commits are merged."""
     checkout, local_sha = diverged_checkout
     monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
 
@@ -79,8 +77,47 @@ def test_hermes_update_keeps_local_commit_behind_a_rescue_ref(
         discard_local_changes=False, keep_stash=False)
 
     out = capsys.readouterr().out
-    _assert_reset_kept_local_commit(checkout, local_sha, out)
-    assert "1 commit(s) not on origin/main" in out
+    _assert_merge_kept_local_commit(checkout, local_sha, out)
+    assert "merging the fetched target" in out
+    assert "resetting to match remote" not in out
+    assert "git reset --hard" not in out
+
+
+def test_hermes_update_stops_on_merge_conflict_and_retains_recovery_ref(
+        diverged_checkout, monkeypatch, capsys):
+    """A conflicting same-branch merge aborts without replacing local code."""
+    checkout, local_sha = diverged_checkout
+    upstream = checkout.parent / "upstream"
+    (checkout / "shared.txt").write_text("local change\n", encoding="utf-8")
+    local_sha = _commit(checkout, "shared.txt", "local change\n")
+    (upstream / "shared.txt").write_text("upstream change\n", encoding="utf-8")
+    _git(upstream, "add", "shared.txt")
+    _git(upstream, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "commit", "-q", "-m", "conflicting upstream")
+    upstream_sha = _git(upstream, "rev-parse", "HEAD").stdout.strip()
+    # Fetch the newly-created upstream commit so the checkout owns the object before
+    # moving origin/main; a ref update alone is invalid in a freshly-cloned repo.
+    _git(checkout, "fetch", "-q", "origin", "main")
+    assert _git(checkout, "rev-parse", "origin/main").stdout.strip() == upstream_sha
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._pull_updates(
+            GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
+            discard_local_changes=False, keep_stash=False)
+
+    assert exc.value.code == 1
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == local_sha
+    assert _git(checkout, "merge-base", "--is-ancestor", upstream_sha, local_sha,
+                check=False).returncode == 1
+    assert _git(checkout, "diff", "--name-only").stdout.strip() == ""
+    assert (checkout / "shared.txt").read_text(encoding="utf-8") == "local change\n"
+    assert not (checkout / ".git" / "MERGE_HEAD").exists()
+    refs = _rescue_refs(checkout)
+    assert any(sha == local_sha for sha in refs.values())
+    out = capsys.readouterr().out
+    assert "Merge conflict" in out
+    assert "Recovery ref retained" in out
 
 
 @pytest.fixture()

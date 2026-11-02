@@ -12,6 +12,7 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import urlsplit
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -1123,17 +1124,136 @@ def _text_chunks(parts: Any, types: Optional[set] = None) -> list[str]:
     return [text for text in (getattr(part, "text", None) for part in selected) if _nonempty_str(text)]
 
 
+_INTERNAL_RESPONSES_CITATION_RE = re.compile(r"\ue200cite\ue202[^\ue201\r\n]*\ue201")
+_ENCODED_INTERNAL_REF_RE = re.compile(r"\ue002REF[A-Za-z0-9_+/=-]+\ue003")
+_URL_CITATION_SOURCES_HEADING_RE = re.compile(
+    r"(?im)^[ \t]*(?:#{1,6}[ \t]+|(?:\*\*|__))?"
+    r"(?:sources|источники)[ \t]*:?[ \t]*(?:(?:\*\*|__))?[ \t]*$"
+)
+
+
+_INTERNAL_CITATION_TOKEN_PATTERN = (
+    f"(?:{_INTERNAL_RESPONSES_CITATION_RE.pattern}|{_ENCODED_INTERNAL_REF_RE.pattern})"
+)
+_INTERNAL_CITATION_RUN_RE = re.compile(
+    r"(?P<left>[ \\t])?"
+    + _INTERNAL_CITATION_TOKEN_PATTERN
+    + r"(?:[ \\t]*" + _INTERNAL_CITATION_TOKEN_PATTERN + r")*"
+    + r"(?P<right>[ \\t])?"
+)
+
+
+def _strip_internal_citation_markers(text: str) -> str:
+    """Remove opaque provider citation tokens while preserving unrelated whitespace."""
+    def replace_marker(match: re.Match[str]) -> str:
+        source = match.string
+        left_space = match.group("left") or ""
+        right_space = match.group("right") or ""
+        token_start = match.start() + len(left_space)
+        line_start = source.rfind("\n", 0, token_start) + 1
+
+        # Preserve indentation when a marker is the first non-space item on a line.
+        if not source[line_start:token_start].strip():
+            return left_space
+
+        left = source[match.start() - 1] if match.start() else ""
+        right = source[match.end()] if match.end() < len(source) else ""
+        if not left or not right or right in ",.;:!?)]}":
+            return ""
+        if left_space or right_space or (left.isalnum() and right.isalnum()):
+            return " "
+        return ""
+
+    return _INTERNAL_CITATION_RUN_RE.sub(replace_marker, text).strip()
+
+
+def _responses_url_citation(annotation: Any) -> Optional[tuple[str, str]]:
+    """Validate a structured Responses ``url_citation`` and return its title and URL."""
+    citation = _field(annotation, "url_citation") or annotation
+    url_value = _field(citation, "url")
+    if not _nonblank(url_value):
+        return None
+    url = url_value.strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    try:
+        parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in url
+        or any(ch.isspace() for ch in url)
+    ):
+        return None
+
+    title_value = _field(citation, "title")
+    title = title_value.strip() if isinstance(title_value, str) else ""
+    title = re.sub(r"[\r\n\t]+", " ", title)
+    # Titles are provider-supplied text, not Markdown. Flatten delimiters that could
+    # terminate a link or inject formatting before placing them in a Markdown link.
+    title = re.sub(r"[\[\]\\_*`~|]+", " ", title)
+    title = re.sub(r"[ \t]{2,}", " ", title).strip()
+    return (title or parsed.netloc, url.replace(")", "%29"))
+
+
+def _citation_sources_from_part(part: Any) -> list[tuple[str, str]]:
+    """Collect structured URL citations; never infer URLs from opaque reference IDs."""
+    sources: list[tuple[str, str]] = []
+    for annotation in _as_list(_field(part, "annotations")):
+        nested = _field(annotation, "url_citation")
+        annotation_type = _lower_or_none(_field(annotation, "type"))
+        if annotation_type != "url_citation" and nested is None:
+            continue
+        source = _responses_url_citation(annotation)
+        if source is not None:
+            sources.append(source)
+    return sources
+
+
+def _append_citation_sources(text: str, sources: list[tuple[str, str]]) -> str:
+    """Append a durable linked source list from structured annotations."""
+    seen: set[str] = set()
+    missing = []
+    for title, url in sources:
+        if url in seen or url in text:
+            continue
+        seen.add(url)
+        missing.append((title, url))
+    if not missing:
+        return text
+    heading = (
+        "## Additional sources"
+        if _URL_CITATION_SOURCES_HEADING_RE.search(text)
+        else "## Sources"
+    )
+    entries = "\n".join(f"- [{title}]({url})" for title, url in missing)
+    prefix = text.rstrip()
+    return f"{prefix}\n\n{heading}\n{entries}" if prefix else f"{heading}\n{entries}"
+
+
 def _extract_responses_message_text(item: Any) -> str:
-    """Assistant text from a Responses message output item. A ``refusal`` part carries the
-    model's explanation in ``refusal`` instead of ``text``; it is message text too, otherwise a
-    refusal-only turn reads as an empty response (sibling of chat_completions ``message.refusal``)."""
+    """Assistant text from a Responses message, plus clickable structured URL sources.
+
+    Responses URL-citation annotations are the trusted URL mapping. Opaque provider
+    markers without such a mapping are removed before the text is persisted/replayed.
+    """
     chunks = []
+    sources: list[tuple[str, str]] = []
     for part in _as_list(_field(item, "content")):
         ptype = _field(part, "type")
         text = _field(part, "refusal") if ptype == "refusal" else (_field(part, "text") if ptype in _OUTPUT_TEXT_TYPES else None)
         if _nonempty_str(text):
             chunks.append(text)
-    return "".join(chunks).strip()
+        if ptype in _OUTPUT_TEXT_TYPES:
+            sources.extend(_citation_sources_from_part(part))
+    cleaned = _strip_internal_citation_markers("".join(chunks))
+    return _append_citation_sources(cleaned, sources)
 
 
 def _extract_responses_reasoning_text(item: Any) -> str:
@@ -1301,6 +1421,7 @@ def _normalize_codex_response(
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
+    final_text = _strip_internal_citation_markers(final_text)
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``) or Codex-CLI shell JSON (``{"cmd": ...}``). Treat as incomplete so the
     # continuation re-elicits a real call; clear the garbage.

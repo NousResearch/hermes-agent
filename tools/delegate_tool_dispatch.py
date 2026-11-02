@@ -273,7 +273,9 @@ def _resolve_async_wake_sid(
         if async_delivery_supported():
             return ""
     except Exception:
-        return ""
+        # A capability read that raises proves nothing: fail CLOSED to synchronous
+        # execution instead of detaching onto an unproven delivery lane (#121048).
+        return None
     if origin_wake_sid and origin_session_history_delivery:
         logger.info(
             "delegate_task: session %s resumes server history — detached result will be persisted "

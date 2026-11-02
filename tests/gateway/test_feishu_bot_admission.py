@@ -41,6 +41,30 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
+@pytest.mark.parametrize(
+    "env_value, extra, expected",
+    [
+        (None, {}, False),
+        ("true", {}, True),
+        ("false", {}, False),
+        ("true", {"ignore_other_user_mentions": False}, False),
+        ("false", {"ignore_other_user_mentions": True}, True),
+    ],
+)
+def test_feishu_load_settings_ignore_other_user_mentions(monkeypatch, env_value, extra, expected):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_value is None:
+        monkeypatch.delenv("FEISHU_IGNORE_OTHER_USER_MENTIONS", raising=False)
+    else:
+        monkeypatch.setenv("FEISHU_IGNORE_OTHER_USER_MENTIONS", env_value)
+
+    settings = FeishuAdapter._load_settings(extra=extra)
+    assert settings.ignore_other_user_mentions is expected
+
+
 # --- Module-level helpers --------------------------------------------------
 
 
@@ -272,6 +296,61 @@ _ADMIT_CASES = [
         id="require_mention_false:group_bot_mentions_mode_still_gated",
     ),
 ]
+
+
+# --- ignore_other_user_mentions: free-response groups yield to addressed peers ---
+
+
+def _free_response_adapter(**kwargs):
+    base = dict(
+        bot_open_id="ou_self",
+        require_mention=False,
+        group_policy="open",
+    )
+    base.update(kwargs)
+    return make_adapter_skeleton(**base)
+
+
+def test_free_response_yields_when_message_addresses_someone_else():
+    adapter = _free_response_adapter(ignore_other_user_mentions=True)
+    stub_mention(adapter, mentions_self=False)
+    sender = make_sender(open_id="ou_human")
+    message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(key="@_user_1")],
+    )
+    assert adapter._admit(sender, message) == "group_policy_rejected"
+
+
+def test_free_response_answers_when_message_addresses_this_bot():
+    adapter = _free_response_adapter(ignore_other_user_mentions=True)
+    stub_mention(adapter, mentions_self=True)
+    sender = make_sender(open_id="ou_human")
+    message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(key="@_user_1")],
+    )
+    assert adapter._admit(sender, message) is None
+
+
+def test_free_response_unaddressed_message_not_affected_by_the_flag():
+    adapter = _free_response_adapter(ignore_other_user_mentions=True)
+    stub_mention(adapter, mentions_self=False)
+    sender = make_sender(open_id="ou_human")
+    message = make_message(chat_type="group", mentions=None)
+    assert adapter._admit(sender, message) is None
+
+
+def test_free_response_default_keeps_answering_messages_for_others():
+    # Default off: behavior is unchanged unless the flag is opted into.
+    adapter = _free_response_adapter()
+    stub_mention(adapter, mentions_self=False)
+    sender = make_sender(open_id="ou_human")
+    message = make_message(
+        chat_type="group",
+        mentions=[SimpleNamespace(key="@_user_1")],
+    )
+    assert adapter._admit(sender, message) is None
 
 
 # --- Mention call-count semantics ------------------------------------------

@@ -616,17 +616,15 @@ function Get-PinnedGit {
         }
     }
     Log "installing git $($script:GitPinVersion) ($target)"
-    # Stage beside the entry, not in %TEMP%: the final step must be a rename
-    # on one volume. Prerequisites run first, so on a fresh host the store
-    # root does not exist yet.
-    $storeRoot = Split-Path -Parent $entry
-    New-Item -ItemType Directory -Force -Path $storeRoot | Out-Null
-    $tmpDir = Join-Path $storeRoot ".staging-git-bootstrap-$PID"
+    $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
+    # Extract beside the entry, not in %TEMP%: the final step must be a
+    # rename on one volume. Created only after the download verifies, so
+    # rejected bytes never touch the store.
+    $extractDir = Join-Path (Split-Path -Parent $entry) ".staging-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
         $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
         Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
-        $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
         # PortableGit's self-extracting 7z carries its own extractor: stock
         # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
@@ -653,6 +651,7 @@ function Get-PinnedGit {
         }
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     return $gitExe
 }

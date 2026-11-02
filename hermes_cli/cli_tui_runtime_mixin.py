@@ -420,12 +420,21 @@ class CLITuiRuntimeMixin:
             extra_kw["color_depth"] = ColorDepth.DEPTH_24_BIT
         if _cpr_disabled_output is not None:
             extra_kw["output"] = _cpr_disabled_output
-        if _STEADY_CURSOR is not None:
+        vim_mode = getattr(self, "_vim_mode", False)
+        if vim_mode:
+            try:
+                from prompt_toolkit.cursor_shapes import ModalCursorShapeConfig
+
+                extra_kw["cursor"] = ModalCursorShapeConfig()
+            except (ImportError, AttributeError):
+                if _STEADY_CURSOR is not None:
+                    extra_kw["cursor"] = _STEADY_CURSOR
+        elif _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
         if EditingMode is not None:
             # Vi editing mode when display.vim_mode is on.
             # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
-            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
+            extra_kw["editing_mode"] = EditingMode.VI if vim_mode else EditingMode.EMACS
         return Application(
             layout=layout,
             key_bindings=kb,

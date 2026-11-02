@@ -1,5 +1,5 @@
 import type { TabStripMode } from '@/components/pane-shell/tree/model'
-import { type Codec, persistentAtom } from '@/lib/persisted'
+import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 
 const TAB_STRIP_DEFAULT_STORAGE_KEY = 'hermes.desktop.tabStripDefault'
 
@@ -24,6 +24,19 @@ export const $tabStripDefault = persistentAtom<TabStripDefault>(TAB_STRIP_DEFAUL
 
 export function setTabStripDefault(value: TabStripDefault) {
   $tabStripDefault.set(value)
+}
+
+/**
+ * Bot Mode tab strips show only the selected bot's tabs (#115140). Off by
+ * default: bot chats are ordinary tabs beside session tabs. On, other bots'
+ * tabs and Sessions tabs leave the STRIP but stay open — see
+ * `workspaceStripPanes` for what can never be scoped out. Global: a window
+ * presentation preference, not a profile's.
+ */
+export const $botTabsFollowSelectedBot = persistentAtom('hermes.desktop.botTabsFollowSelectedBot', false, Codecs.bool)
+
+export function setBotTabsFollowSelectedBot(value: boolean) {
+  $botTabsFollowSelectedBot.set(value)
 }
 
 /** The mode a zone resolves against: its own choice, else the app default. */

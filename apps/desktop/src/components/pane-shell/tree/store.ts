@@ -16,7 +16,16 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { $botTabsFollowSelectedBot } from '@/store/tabstrip-prefs'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
+
+import {
+  $workspaceMode,
+  $workspaceOwnerKey,
+  resolveRememberedActivePane,
+  workspaceScopeKey,
+  workspaceStripPanes
+} from '../workspace-scope'
 
 import {
   allPaneIds,
@@ -48,6 +57,7 @@ import {
 import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
+import { paneChrome } from './renderer/track-model'
 
 // v2: v1 trees were saved against placeholder panes with index-order zone
 // assignment (chat could land in a corner cell). Retire them wholesale.
@@ -703,7 +713,7 @@ export function closeFocusedToolTab(): boolean {
  *  the tab menu's Close-others / Close-to-the-right verbs (and their enablement). */
 function closeableTreeSiblings(paneId: string): { others: string[]; right: string[] } {
   const tree = $layoutTree.get()
-  const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
+  const panes = workspaceStripTabs((tree ? findGroupOfPane(tree, paneId) : null) ?? { panes: [] })
   const idx = panes.indexOf(paneId)
 
   return {
@@ -760,7 +770,7 @@ export function closeTreeTabsToRight(paneId: string): void {
 /** Close every closeable tab in `paneId`'s group (the uncloseable workspace stays). */
 export function closeAllTreeTabs(paneId: string): void {
   const tree = $layoutTree.get()
-  const panes = (tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? []
+  const panes = workspaceStripTabs((tree ? findGroupOfPane(tree, paneId) : null) ?? { panes: [] })
 
   panes.filter(id => !isUncloseablePane(id) && !isHideOnlyPane(id)).forEach(closeTabPane)
 }
@@ -817,7 +827,47 @@ export const $newSessionTabAction = atom<(() => void) | null>(null)
  * the raw array made ⌘2 land on what the strip called tab 1 after a hidden
  * pane sat earlier in the list (classic after-⌘W-shift offset).
  */
-export function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
+export function shownPanesInGroup(group: { active?: string; panes: readonly string[] }): string[] {
+  const shown = chromeShownPanesInGroup(group)
+  const scopedOut = workspaceScopedOutPanes(group, shown)
+
+  return scopedOut.size ? shown.filter(id => !scopedOut.has(id)) : shown
+}
+
+/** The group's panes minus the chips the opt-in per-bot strip leaves off —
+ *  what the zone menu's Close verbs may reach. A tab the user cannot see is
+ *  never closed by "Close Others" / "Close All": scoped out means kept open. */
+export function workspaceStripTabs(group: { active?: string; panes: readonly string[] }): string[] {
+  const scopedOut = workspaceScopedOutPanes(group, chromeShownPanesInGroup(group))
+
+  return group.panes.filter(id => !scopedOut.has(id))
+}
+
+/** Chips `workspaceStripPanes` drops from this group, resolving the active
+ *  pane exactly as TreeGroup does so the strip, ⌘1…⌘9 and the Close verbs
+ *  agree. Empty unless Bot Mode's per-bot strip is on. */
+function workspaceScopedOutPanes(group: { active?: string }, shown: readonly string[]): ReadonlySet<string> {
+  const mode = $workspaceMode.get()
+  const ownerKey = $workspaceOwnerKey.get()
+
+  if (!$botTabsFollowSelectedBot.get() || mode !== 'bots' || shown.length === 0) {
+    return new Set()
+  }
+
+  const registered = registry.getArea('panes')
+  const ownerOf = (id: string) => paneChrome(registered.find(c => c.id === id)).workspaceOwner?.()
+
+  const activeId =
+    group.active && shown.includes(group.active)
+      ? group.active
+      : (resolveRememberedActivePane(workspaceScopeKey(mode, ownerKey), shown) ?? shown[0])
+
+  const kept = new Set(workspaceStripPanes(shown, activeId, ownerOf, mode, ownerKey, true))
+
+  return new Set(shown.filter(id => !kept.has(id)))
+}
+
+function chromeShownPanesInGroup(group: { panes: readonly string[] }): string[] {
   const hidden = $hiddenTreePanes.get()
   const registered = registry.getArea('panes')
   const paneFor = (id: string) => registered.find(c => c.id === id)

@@ -317,6 +317,8 @@ export const zhHantSettings = {
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
+      botTabsTitle: '僅顯示所選機器人的分頁',
+      botTabsDesc: '在機器人模式下，分頁列只顯示所選機器人的分頁。其他分頁保持開啟，選擇其機器人後會重新出現。',
       appActionsTitle: '應用操作',
       appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
       appActionsLeft: '左側',

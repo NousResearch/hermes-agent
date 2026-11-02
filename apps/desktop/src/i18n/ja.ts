@@ -520,6 +520,9 @@ export const jaOverrides = {
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
+      botTabsTitle: '選択中のボットのタブだけを表示',
+      botTabsDesc:
+        'ボットモードでは、選択中のボットのタブだけをタブバーに表示します。ほかのタブは開いたままで、そのボットを選ぶと戻ります。',
       appActionsTitle: 'アプリ操作',
       appActionsDesc:
         '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',

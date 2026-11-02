@@ -44,6 +44,7 @@ import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
+import { $botTabsFollowSelectedBot } from '@/store/tabstrip-prefs'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -54,7 +55,8 @@ import {
   $workspaceOwnerKey,
   rememberActivePane,
   resolveRememberedActivePane,
-  workspaceScopeKey
+  workspaceScopeKey,
+  workspaceStripPanes
 } from '../../workspace-scope'
 import type { DropPosition, GroupNode } from '../model'
 import {
@@ -398,6 +400,7 @@ export function TreeGroup({
   const narrow = useStore($narrowViewport)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
+  const botTabsFollowSelectedBot = useStore($botTabsFollowSelectedBot)
   const newSessionTabAction = useStore($newSessionTabAction)
   const panesWithCloser = useStore($panesWithCloser)
   // Multi-tab selection (⌥/Ctrl-click, Shift-click) — null for every zone but
@@ -424,6 +427,18 @@ export function TreeGroup({
     ? node.active
     : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
 
+  // The CHIPS: `shown` minus other bots' tabs when the per-bot strip is on.
+  // Everything that decides what renders (body, keep-alive, emptiness) keeps
+  // reading `shown` — scoped-out tabs stay open and mounted.
+  const strip = workspaceStripPanes(
+    shown,
+    activeId,
+    id => paneChrome(paneFor(id)).workspaceOwner?.(),
+    workspaceMode,
+    workspaceOwnerKey,
+    botTabsFollowSelectedBot
+  )
+
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
@@ -431,7 +446,7 @@ export function TreeGroup({
   const { compactTabs, tabStripHeight, tabsBelowControls, tabsInTitlebar, titlebarHeight } = useZoneHeaderLayout({
     measuredBelowControls,
     narrow,
-    shown,
+    shown: strip,
     sidebarGroup,
     topEdge
   })
@@ -517,7 +532,7 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown
+    shown: strip
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the
@@ -541,8 +556,8 @@ export function TreeGroup({
   // left both the new tab and the button that made it out of view.
   useActiveTabVisible(tabsRef, activeId, {
     enabled: headerVisible && !compactTabs,
-    last: shown[shown.length - 1] === activeId,
-    tabCount: shown.length
+    last: strip[strip.length - 1] === activeId,
+    tabCount: strip.length
   })
 
   // Zone-menu close targets read the layout tree, but this component must NOT
@@ -658,7 +673,7 @@ export function TreeGroup({
               className="flex min-h-0 flex-col overflow-y-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               role="tablist"
             >
-              {shown.map(paneId => {
+              {strip.map(paneId => {
                 const closeable = closeableTab(paneId)
 
                 return (
@@ -715,7 +730,7 @@ export function TreeGroup({
               newTab={newTab}
               node={node}
               tabActions={paneId => paneChrome(paneFor(paneId)).tabActions?.()}
-              tabs={shown.map(id => ({ id, label: tabLabel(id), title: tabText(id) }))}
+              tabs={strip.map(id => ({ id, label: tabLabel(id), title: tabText(id) }))}
             />
           ) : headerVisible ? (
             <ZoneMenu {...zoneMenu}>
@@ -756,7 +771,7 @@ export function TreeGroup({
                   </>
                 }
               >
-                {shown.map((paneId, index) => {
+                {strip.map((paneId, index) => {
                   const isActive = paneId === activeId && !node.minimized
                   const chrome = paneChrome(paneFor(paneId))
                   const closeable = closeableTab(paneId)
@@ -780,7 +795,7 @@ export function TreeGroup({
                         if (e.button === 0 && e.shiftKey) {
                           e.preventDefault()
                           e.stopPropagation()
-                          selectTabRange(node.id, shown, paneId, activeId)
+                          selectTabRange(node.id, strip, paneId, activeId)
 
                           return
                         }
@@ -821,7 +836,7 @@ export function TreeGroup({
                         // one block through the generic pane move — a multi-tab
                         // drag outranks the pane's own tab drag (the session drop
                         // language is single-session).
-                        const dragSelection = selectionFor(node.id, shown, paneId)
+                        const dragSelection = selectionFor(node.id, strip, paneId)
 
                         if (dragSelection) {
                           startPaneDrag(

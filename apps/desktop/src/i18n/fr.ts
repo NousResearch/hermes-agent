@@ -1014,6 +1014,9 @@ export const frOverrides = {
       tabStripAuto: 'Automatique',
       tabStripAlways: 'Toujours',
       tabStripNever: 'Jamais',
+      botTabsTitle: 'N’afficher que les onglets du bot sélectionné',
+      botTabsDesc:
+        'En mode Bot, la barre d’onglets n’affiche que les onglets du bot sélectionné. Les autres restent ouverts et reviennent quand vous sélectionnez leur bot.',
       appActionsTitle: "Actions de l'application",
       appActionsDesc:
         'Choisissez le côté de la barre de titre où placer Paramètres, Disposition et HUD. Le côté droit laisse de la place aux onglets à gauche.',

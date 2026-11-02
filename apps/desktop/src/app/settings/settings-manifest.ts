@@ -89,6 +89,7 @@ export const SETTINGS_MANIFEST = {
       'sessionDensity'
     ),
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
+    botTabs: appearanceSetting('window-layout', ['bots', 'bot mode', 'tabs', 'tab bar', 'workspace'], 'botTabs'),
     appActions: appearanceSetting(
       'window-layout',
       ['titlebar', 'settings gear', 'layout', 'HUD', 'left', 'right', 'tabs'],

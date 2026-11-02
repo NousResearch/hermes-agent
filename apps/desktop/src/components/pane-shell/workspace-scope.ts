@@ -85,6 +85,43 @@ export function workspaceSessionRenameable(
   return !(scope?.workspaceMode === 'bots' && scope.workspaceTabTitle)
 }
 
+/**
+ * Which chips a zone's tab STRIP paints when the user opted into per-bot tabs
+ * (Settings → Appearance; off by default — the default strip carries every
+ * bot's tabs beside session tabs).
+ *
+ * Still a signal, not a filter on what renders: the zone's body, its
+ * keep-alive cache and whether it exists at all keep reading the full shown
+ * list, so a scoped-out tab stays open and mounted exactly as before and comes
+ * back the moment its bot is selected again. Only chips go, and never so many
+ * that a zone is stranded — the failure that took the first scoping out:
+ *
+ * - the ACTIVE pane's chip always stays (the body on screen keeps its tab);
+ * - a zone holding none of this bot's tabs shows every chip, so an edge split
+ *   of another bot's tabs stays reachable instead of a dead zone;
+ * - panes with no workspace owner (`ownerOf` → `undefined`: files, terminal,
+ *   browser…) are never scoped.
+ *
+ * `ownerOf` answers a bot's opaque owner key for its tabs, `null` for a
+ * Sessions tab. Returns `shown` itself when nothing is scoped out.
+ */
+export function workspaceStripPanes(
+  shown: readonly string[],
+  activeId: string,
+  ownerOf: (paneId: string) => null | string | undefined,
+  mode: WorkspaceMode,
+  ownerKey: string | null,
+  enabled: boolean
+): readonly string[] {
+  if (!enabled || mode !== 'bots' || !ownerKey || !shown.some(id => ownerOf(id) === ownerKey)) {
+    return shown
+  }
+
+  const kept = shown.filter(id => id === activeId || ownerOf(id) === undefined || ownerOf(id) === ownerKey)
+
+  return kept.length === shown.length ? shown : kept
+}
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`

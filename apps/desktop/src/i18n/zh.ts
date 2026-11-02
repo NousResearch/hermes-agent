@@ -740,6 +740,8 @@ export const zhOverrides = {
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
+      botTabsTitle: '仅显示所选机器人的标签页',
+      botTabsDesc: '在机器人模式下，标签栏只显示所选机器人的标签页。其他标签页保持打开，选择其机器人后会重新出现。',
       appActionsTitle: '应用操作',
       appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
       appActionsLeft: '左侧',

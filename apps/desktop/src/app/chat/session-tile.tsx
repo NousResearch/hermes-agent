@@ -1018,5 +1018,12 @@ export const watchSessionTiles = paneMirror<SessionTile>({
 
     return true
   },
+  // Read live by the opt-in per-bot strip, so a re-scoped tile needs no
+  // re-registration: a bot's tab names its owner, anything else is Sessions.
+  workspaceOwner: storedSessionId => {
+    const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+    return tile?.workspaceMode === 'bots' && tile.workspaceOwnerKey ? tile.workspaceOwnerKey : null
+  },
   close: requestCloseSessionTile
 })

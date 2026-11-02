@@ -153,6 +153,27 @@ def _registry(authority, name):
     return found
 
 
+def owed_post_delivery(authority):
+    """admission -> post-delivery slots its turn registered (``platforms/base_post_delivery.py``).
+    Only turns no adapter task delivers are recorded: the drain releases those slots itself."""
+    return _registry(authority, 'owed_post_delivery')
+
+
+async def fire_post_delivery(authority, admission_id):
+    """Run the slots *admission_id*'s turn registered, now that its reply went out."""
+    if slots := owed_post_delivery(authority).pop(admission_id, None):
+        from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS
+        from gateway.platforms.base_post_delivery import release_owed_slots
+        await release_owed_slots(slots, fire=True, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
+def discard_post_delivery(authority, admission_id):
+    """Drop the slots of a turn that settled with no reply to follow (or whose reply another
+    lifecycle sends and fires): popped from their adapters so none outlives the turn."""
+    for adapter, session_key, generation in owed_post_delivery(authority).pop(admission_id, None) or ():
+        adapter.pop_post_delivery_callback(session_key, generation=generation)
+
+
 def waiter_replies(authority):
     """admission -> the reply a live native waiter is about to send, kept only until the drain
     settles the turn, so a turn fenced ``unknown`` can still owe it to the chat."""
@@ -305,6 +326,12 @@ async def execute_admission(authority, ref, row):
                 event.allow_gateway_control = False
                 event.internal = True  # trust comes from the private binding and preclaim, never client JSON
             response = await authority.runner._handle_message(event)
+            if not native:
+                # No adapter task delivers this turn, so none fires what it registered to run after
+                # its reply: ``deliver_settled`` does, once the reply went out.
+                from gateway.platforms.base_post_delivery import owed_slots
+                if slots := owed_slots(captured):
+                    owed_post_delivery(authority)[row['admission_id']] = slots
             result = captured.get('terminal_result', captured.get('result'))
             if result is None:
                 # No TurnRunner result means the handler answered without executing the turn.
@@ -402,6 +429,7 @@ async def deliver_settled(authority, admission_id):
         # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
         authority.native_waiters.discard(admission_id)
         authority.pending_deliveries.pop(admission_id)
+        owed_post_delivery(authority).pop(admission_id, None)  # the waiter's adapter task fires them
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
@@ -412,6 +440,10 @@ async def deliver_settled(authority, admission_id):
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
         # Settled with nothing (left) to send: its reply streamed, or it had none.
+        if held is None:
+            await fire_post_delivery(authority, admission_id)
+        else:
+            discard_post_delivery(authority, admission_id)
         await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
         return
     adapter, event, session_key, response, home = delivery
@@ -424,6 +456,7 @@ async def deliver_settled(authority, admission_id):
     finally:
         # Held until the send returns: an empty map means every settled reply was handed over.
         authority.pending_deliveries.pop(admission_id, None)
+        await fire_post_delivery(authority, admission_id)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
         await close_producer_turn(

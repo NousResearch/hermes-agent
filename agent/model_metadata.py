@@ -1005,18 +1005,6 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
-    from agent.credential_persistence import fingerprint_secret_value
-    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
-    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
-
-
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
-    return cache
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1032,14 +1020,15 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if not normalized or base_url_host_matches(normalized, "openrouter.ai"):
         return {}
     local = is_local_endpoint(normalized)
-    memo_key = _endpoint_memo_key(normalized, api_key)
+    from agent.model_metadata_endpoint_memo import endpoint_memo_key, remember_endpoint_models
+    memo_key = endpoint_memo_key(normalized, api_key)
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(memo_key)
         if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
         memo = _endpoint_disk_cache_get(normalized) if not local else None
         if memo is not None:
-            return _remember_endpoint_models(memo_key, memo)
+            return remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
@@ -1051,7 +1040,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
+                return remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -1076,13 +1065,13 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(memo_key, cache)
+            return remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    return _remember_endpoint_models(memo_key, {})
+    return remember_endpoint_models(memo_key, {})
 
 
 def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:

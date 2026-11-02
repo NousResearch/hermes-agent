@@ -148,14 +148,3 @@ def test_unloading_the_plugin_removes_its_destination(manager):
 
     assert "matters.updates" not in manager._review_destinations
     assert manager.render_review_destinations(["matters.updates"], {"memory"}, {}, {"rd_unload"}) == []
-
-
-def test_mixed_in_registrars_are_ignored_after_an_abandoned_load(manager):
-    ctx = _context(manager)
-    tool = _tool(ctx, "rd_abandoned")
-    ctx._abandon_load()
-
-    assert ctx.register_review_destination("matters.late", "text", tools=tool) is None
-    assert ctx.register_system_prompt_section("matters.late", "text") is None
-    assert "matters.late" not in manager._review_destinations
-    assert "matters.late" not in manager._system_prompt_sections

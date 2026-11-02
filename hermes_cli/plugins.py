@@ -1013,12 +1013,19 @@ def _ignore_after_abandoned_load(method):
     return wrapped
 
 
-# Every mutating entry point plugins reach through ``ctx`` during register(), mixed-in registrars
-# included; applied by name so the guard cannot drift from the surface as registrars are added.
-for _name, _method in list({**vars(PluginPromptCtxMixin), **vars(PluginContext)}.items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+def _ignore_registrars_after_abandoned_load(cls: type) -> None:
+    """Guard every mutating entry point plugins reach through ``ctx`` during register(): each
+    ``register_*``, ``subscribe`` and ``on_unload`` that ``cls`` defines or inherits from a mixin.
+    Applied by name over the MRO, so the guard cannot drift from the surface as registrars or
+    mixins are added."""
+    names = {name for klass in cls.__mro__ for name in vars(klass)
+             if name.startswith("register_") or name in {"subscribe", "on_unload"}}
+    for name in sorted(names):
+        if callable(method := getattr(cls, name)):
+            setattr(cls, name, _ignore_after_abandoned_load(method))
+
+
+_ignore_registrars_after_abandoned_load(PluginContext)
 
 
 def _resolve_hook_callback_timeout() -> float:

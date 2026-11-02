@@ -361,9 +361,9 @@ def test_half_configured_escalation_pins_what_it_has_and_no_retry_builder(fields
     assert "_delegate_build_retry" not in vars(child)
 
 
-def test_the_retry_builder_rebuilds_the_same_route_with_only_effort_and_goal_changed():
-    """Same limits, tier, transcript and delegation id; only the reasoning level and the goal differ, and the
-    route itself keeps its own reasoning_effort."""
+def test_the_retry_builder_rebuilds_the_same_route_with_only_effort_changed():
+    """Same goal, limits, tier, transcript and delegation id; only the reasoning level differs (the handoff is the
+    retry's first user message, not build input), and the route itself keeps its own reasoning_effort."""
     from tools import delegate_tool_routes
     seen_routes = []
     real_resolve = delegate_tool_routes.resolve_task_routes

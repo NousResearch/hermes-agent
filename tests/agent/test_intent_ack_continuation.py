@@ -1,19 +1,28 @@
 """Intent-ack continuation gate + detector behavior.
 
 Covers the config-driven generalization of the codex intent-ack continuation
-(issue #27881): the historical ``codex_responses``-only path is byte-stable
-under the default ``"auto"`` mode, while an explicit ``true``/model-list opt-in
-extends the "you announced an action but called no tool — keep going" nudge to
-every api_mode and relaxes the codebase/workspace requirement so general
-autonomous workflows ("I'll run a health check on the server") are caught.
+(issue #27881). Under the default ``"auto"`` mode the detector is invoked only
+for the ``codex_responses`` api_mode (``codex_only``, ``require_workspace=True``);
+an explicit ``true``/model-list opt-in extends the "you announced an action but
+called no tool — keep going" nudge to every api_mode and relaxes the
+codebase/workspace requirement so general autonomous workflows ("I'll run a
+health check on the server") are caught. The detector's shared internals (the
+future-ack, action-verb, and sign-off patterns) were tightened for both modes,
+so ``codex_only`` is not byte-stable — it inherits the same false-positive
+guards; only the workspace requirement and the current-turn after-tool gate are
+codex_only-specific.
 
 These are invariant assertions about how the mode string and the detector
-gates relate, not snapshots of the marker lists.
+gates relate, plus false-positive guards on realistic prose — not snapshots of
+the marker lists.
 """
 
+import json
 from types import SimpleNamespace
 from typing import Union
 from unittest.mock import patch
+
+import pytest
 
 from agent.agent_runtime_helpers import (
     intent_ack_continuation_mode,
@@ -75,6 +84,228 @@ def test_missing_attr_defaults_to_auto():
     bare_codex = SimpleNamespace(api_mode="codex_responses", model="x", _strip_think_blocks=lambda c: c)
     assert intent_ack_continuation_mode(bare_codex) == "codex_only"
 
+
+# ── build/ops action detection (announce-then-stop on local models) ──────────
+
+# Real announce-then-stop shapes local/general models produce. The original
+# inspection-oriented marker list missed these; they carry a future-ack + a
+# build/ops verb + no prior tool call, so opted-in "all" mode must catch them.
+BUILD_ACKS = [
+    "I'll delegate the FastAPI app creation to a sub-agent, then bring it up.",
+    "Sure — I'll set up the docker compose stack and deploy it.",
+    "Let me install the dependencies and launch the service.",
+    "Now I'll scaffold the project and generate the config.",
+    "I'll verify the endpoints and curl them.",
+    "Great! Now let me verify what was created and bring it all up properly.",
+]
+
+
+def test_build_ops_acks_caught_in_all_mode():
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    for ack in BUILD_ACKS:
+        assert looks_like_codex_intermediate_ack(
+            ag, "build me a service", ack, [], require_workspace=False
+        ), ack
+
+
+def test_after_tool_ack_continues_in_all_mode():
+    # Opted-in "all" mode now CONTINUES even when a tool ran this turn — the
+    # dominant local-model failure is "do work, announce the next step, stop"
+    # ("files are in place; let me launch the stack:"), which lands after a tool.
+    # Bounded by the loop's max-consecutive-continuation cap.
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    msgs = [
+        {"role": "user", "content": "build me a service"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "wrote files"},
+    ]
+    assert looks_like_codex_intermediate_ack(
+        ag, "build me a service",
+        "Now let me verify what was created and bring it all up.",
+        msgs, require_workspace=False,
+    )
+
+
+def test_historical_tool_does_not_block():
+    # The store keeps a role=='tool' row for every past tool call; an ack at the
+    # START of a new turn must still be caught even in a session that used tools
+    # earlier. (Previously the full-history scan short-circuited here.)
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    hist = [
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "old result"},
+        {"role": "assistant", "content": "earlier answer"},
+        {"role": "user", "content": "build me a service"},   # current turn's user msg
+    ]
+    assert looks_like_codex_intermediate_ack(
+        ag, "build me a service",
+        "I'll delegate this to a sub-agent, then bring it up.",
+        hist, require_workspace=False,
+    )
+
+
+def test_after_tool_still_gated_in_codex_only():
+    # codex_only mode keeps the original "a tool ran this turn -> don't continue"
+    # behavior (scoped to the current turn, never full history).
+    ag = _agent("auto", "codex_responses")
+    msgs = [
+        {"role": "user", "content": "review the codebase in /app"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "2"}]},
+        {"role": "tool", "content": "listed files"},
+    ]
+    assert not looks_like_codex_intermediate_ack(
+        ag, "review the codebase in /app",
+        "Let me inspect the repository files next.",
+        msgs, require_workspace=True,
+    )
+
+
+def test_truncated_colon_ack_caught_in_all_mode():
+    # Robust to phrasing that dodges the verb lists: a short reply ending
+    # mid-thought on a colon is a classic announced-then-cut-off stall.
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    for text in ("Going straight to execution now:", "Let me check:", "I'll set it up:"):
+        assert looks_like_codex_intermediate_ack(ag, "do the thing", text, [], require_workspace=False), text
+    # Colon endings without a first-person announcement are NOT stalls: a
+    # question to the user or a list header must not trigger the nudge.
+    for text in ("Sure, happy to help!", "The answer is 42.",
+                 "Please paste the failing test output here:", "The three checks to run:"):
+        assert not looks_like_codex_intermediate_ack(ag, "do the thing", text, [], require_workspace=False), text
+
+
+def test_no_false_positive_on_benign_prose_in_all_mode():
+    """Opt-in mode must not nudge on conversational replies, sign-offs, or
+    questions to the user. Guards against the false-positive class that
+    keyword-matching invites: substring stems (creat/creative, kill/skill,
+    boot/booties), phantom future-acks ("suite on it"), colon endings with no
+    action, and first-person idioms governing a verb only across a clause."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    benign = [
+        "I need your sudo password to continue - please type it here:",
+        "Here are the three options:",
+        "All three files are written and the tests pass. Let me know if you'd like me to create more examples.",
+        "The deploy finished cleanly and the health checks pass. Let me know if you want me to run it again later.",
+        "Let me know if you want anything else.",
+        "Would you like me to deploy it now?",
+        "I fixed the bug and ran the full test suite on it. Everything is green.",
+        "Let's talk about your creative writing project first.",
+        "I'll admit, building rapport with a new team takes time.",
+        "Let's talk about the skill tree in your game design.",
+        "I'll say it: dark mode is the killer feature here.",
+        "Let's plan for the next installment of the series.",
+        "Let's go with the curly brace style you prefer.",
+        "Let's get your dog some booties for winter.",
+        "Let's think about generational wealth strategies.",
+        "I'll be honest, in the long run this pays off.",
+        "I'll check in with you next week.",
+        "Done. The tests pass.",
+        # "ill" is not the lead-in "I'll"; a bare/2nd-person "going to" is not a
+        # first-person announcement.
+        "This error message is ill-formed when running the old parser.",
+        "The parser is now ill-suited to run large files.",  # "now ill" != "now I'll"
+        "If you're going to run a marathon, start with base mileage.",
+        "The team is going to review the proposal on Friday.",
+        "Right now I think we should run the tests together.",  # proposal, not announce
+        "Now I am done reviewing the code and everything runs.",  # completion, not "now I'm <verb>ing"
+        "Now I am unable to run the tests because docker is down.",  # failure report
+        # a refusal must not get an "execute the tool calls" nudge
+        "I'll never run that command on prod.",
+        "I will never delete your data without asking.",
+        # the governed window must not cross a newline into the next clause
+        "I'll be brief\nkill the process when you are done.",
+        # colon ending without a first-person announcement (question / header).
+        "Please paste the output of the failing test here:",
+        "The three checks I'd run:",
+        # phrasal verbs whose meaning is conversational, not a tool action.
+        "I'll run through my reasoning first.",
+        "I'll open with a quick summary.",
+        "Let me build on your earlier point.",
+        "Let me read you the key line.",
+        "Now I'll walk you through the tradeoffs.",
+    ]
+    for text in benign:
+        assert not looks_like_codex_intermediate_ack(
+            ag, "help me plan", text, [], require_workspace=False
+        ), text
+    # KNOWN RESIDUAL (bounded, opt-in, max-2 nudges): a first-person lead
+    # governing an everyday verb whose object is conversational, not a task
+    # ("I'll test that assumption", "I'll review your essay"), still fires — the
+    # verb match cannot see the object. "all" mode is intended for autonomous
+    # task sessions, where relaxing the workspace requirement is the point;
+    # codex_only keeps the workspace requirement that prevents this.
+
+
+def test_governed_announcement_fires_across_variants_in_all_mode():
+    """A first-person lead-in governing an action verb in the same clause is the
+    core positive signal (announce-then-stop, including mid-task)."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    fires = [
+        "I'll delegate the FastAPI app creation, then bring it up.",
+        "Now let me verify what was created and bring it all up properly.",
+        "I'll set up the service and deploy it now.",
+        "I'll run the tests and fix any failures.",
+        "let me verify + finish directly:",
+        "Let me kick off the migration.",
+        "Now I'll bring the stack up.",
+        "I'm going to run the full test suite.",
+        "Let me delete the stale containers and redeploy.",
+        "I'll scaffold the project and install deps.",
+        "Now I'm deploying the fix.",  # "now I'm <verb>ing" progressive
+        "Now I am going to run the migration.",
+    ]
+    for text in fires:
+        assert looks_like_codex_intermediate_ack(
+            ag, "bring up the stack", text, [], require_workspace=False
+        ), text
+
+
+def test_offer_guard_is_load_bearing_over_a_governed_announcement():
+    """A governed announcement that also defers to the user ("...but let me know
+    if you'd prefer...") is waiting on input, not stalling. The offer guard must
+    suppress it even though the governed-announcement pattern matches — this is
+    the case the guard exists for (the lead-in lookahead alone does not catch)."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    assert not looks_like_codex_intermediate_ack(
+        ag, "set it up",
+        "I'll deploy it, but let me know if you'd prefer a different approach.",
+        [], require_workspace=False,
+    )
+
+
+def test_offer_guard_suppresses_in_codex_only_too():
+    """The sign-off/offer guard is shared: a conditional offer is not a stall in
+    codex_only either, even with a workspace reference."""
+    ag = _agent("auto", "codex_responses", "gpt-5-codex")
+    assert not looks_like_codex_intermediate_ack(
+        ag, "review the repo",
+        "Let me know if you'd like me to inspect the repository files.",
+        [], require_workspace=True,
+    )
+
+
+def test_colon_ack_after_tool_fires_in_all_mode():
+    # The "let me launch it:" mid-task stall lands after a tool call — opted-in
+    # mode must catch it so the task actually reaches completion.
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    msgs = [{"role": "user", "content": "bring up the stack"},
+            {"role": "tool", "content": "wrote compose"}]
+    assert looks_like_codex_intermediate_ack(
+        ag, "bring up the stack",
+        "The files are in place; let me launch the stack:",
+        msgs, require_workspace=False,
+    )
+
+
+def test_conversational_future_not_caught():
+    # A future-ack with no build/ops or inspection verb must not fire.
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    for text in ("I'll help you brainstorm some names.", "Let me know what you think."):
+        assert not looks_like_codex_intermediate_ack(
+            ag, "hi", text, [], require_workspace=False
+        )
+
+
 # ── detector: workspace requirement ─────────────────────────────────────────
 
 
@@ -130,6 +361,16 @@ def test_all_path_drops_workspace_requirement():
     msgs = [{"role": "user", "content": REPRO_USER}]
     assert looks_like_codex_intermediate_ack(
         a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
+    )
+    # #69778 / ClaySecAI #69779: old tool work must not disable a new turn.
+    history = [{"role": "tool", "content": "old result"},
+               {"role": "assistant", "content": "Earlier task finished."}, *msgs]
+    assert looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, history, require_workspace=False
+    )
+    assert not looks_like_codex_intermediate_ack(
+        a, REPRO_USER, "Let me know if you want me to run it again.",
+        history, require_workspace=False,
     )
 
 
@@ -265,4 +506,220 @@ def test_pronounless_action_guardrails_reject_questions_and_finals():
 
 
 
+def test_all_mode_continues_after_a_tool_already_ran():
+    # Opted-in mode intentionally continues after a tool ran this turn (the
+    # after-tool relaxation). codex_only still suppresses — covered by
+    # test_after_tool_still_gated_in_codex_only.
+    a = _agent(True, "chat_completions")
+    msgs = [
+        {"role": "user", "content": REPRO_USER},
+        {"role": "tool", "content": "health check result"},
+    ]
+    assert looks_like_codex_intermediate_ack(
+        a, REPRO_USER, REPRO_ACK, msgs, require_workspace=False
+    )
 
+
+
+def test_explicit_user_decline_suppresses_on_both_paths():
+    """An explicit refusal governs the turn: never continue against it.
+
+    Regression test for #69779 (reported by @cygnostik). ``_DECLINED_RE`` was
+    applied only inside ``intent_ack.clarification_ack``, which runs on an
+    answered-clarification turn. On the general path the detector never consulted
+    it, so a declined request still produced a continuation signal. Both
+    ``require_workspace`` values are asserted because the opted-in path returns
+    before the workspace check that is the only other place user text is read.
+
+    Verbatim repro from the report: False at 14b330c3, True at 40193d60.
+    """
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    user = "Do not inspect the project yet."
+    msgs = [{"role": "user", "content": user}]
+    for require_workspace in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            ag, user, "I'll inspect the files.", msgs,
+            require_workspace=require_workspace,
+        ), f"continued against an explicit decline (require_workspace={require_workspace})"
+
+
+def test_scoped_decline_suppresses():
+    """A refusal scoped to part of the request still suppresses: "explain X; do
+    not edit anything" must not license an edit announcement. Also from the
+    14b330c3 negative table."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    user = "Explain the project options; do not edit anything."
+    assert not looks_like_codex_intermediate_ack(
+        ag, user, "I'll update the project files.",
+        [{"role": "user", "content": user}], require_workspace=False,
+    )
+
+
+def _answered(answer):
+    return [
+        {"role": "user", "content": "Please implement the panel highlight in the repository."},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "clarify", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "clarify", "content": json.dumps({
+            "outcome": "submitted", "responses": [{"status": "answered", "user_response": answer}]})},
+    ]
+
+
+@pytest.mark.parametrize("answer,authorized", [
+    ("Design only, please.", False),
+    ("Only a plan for now.", False),
+    ("Just outline the approach, no code.", False),
+    ("A write-up without changing anything.", False),
+    ("Implement it now.", True),
+    ("Implement the design only, not the tests.", True),
+    ("Trace selection means route highlighting, not viewport tracking.", True),
+])
+def test_scope_narrowing_clarification_answer_is_not_authorization(answer, authorized):
+    """An answer that narrows the request to a design or plan is not a decline, so
+    ``_DECLINED_RE`` let it through and the original edit request was recovered
+    against "I'll implement the panel change." (#69779, reported by @kvnloo). Such an
+    answer now reads as unresolved on both paths; an answer that still names an
+    execution verb keeps the request."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    user = "Please implement the panel highlight in the repository."
+    for require_workspace in (True, False):
+        assert looks_like_codex_intermediate_ack(
+            ag, user, "I'll implement the panel change.", _answered(answer),
+            require_workspace=require_workspace,
+        ) is authorized, (answer, require_workspace)
+
+
+def test_decline_guard_does_not_suppress_an_ordinary_request():
+    """The inverse the original table did not assert: a plain request with no
+    refusal wording still fires, so restoring the guard cannot silently disable
+    continuation altogether."""
+    ag = _agent(True, "chat_completions", "ornith-35b")
+    user = "Please inspect the project and report what you find."
+    assert looks_like_codex_intermediate_ack(
+        ag, user, "I'll inspect the files.",
+        [{"role": "user", "content": user}], require_workspace=False,
+    )
+
+
+# ── exact-head evidence from #69779 (jar-vision-ai, 2026-11-01) ───────────────
+
+# A completed tool turn earlier in the conversation, then a status question.
+_STATUS_QUESTION = "Are we doing it or not?"
+_STATUS_MESSAGES = [
+    {"role": "user", "content": "Inspect the repository first."},
+    {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "old", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+    ]},
+    {"role": "tool", "tool_call_id": "old", "content": "The source has been inspected."},
+    {"role": "assistant", "content": "Inspection complete."},
+    {"role": "user", "content": _STATUS_QUESTION},
+]
+
+
+def _status_turn(text: str) -> list[bool]:
+    return [
+        looks_like_codex_intermediate_ack(
+            _agent(), _STATUS_QUESTION, text, _STATUS_MESSAGES, require_workspace=mode
+        )
+        for mode in (True, False)
+    ]
+
+
+def test_status_question_turn_matrix():
+    """The reporter's four replies, asserted at both require_workspace values.
+
+    Only the first is an unstarted action. The worker reply defers reporting
+    to a completion the model is not driving, the cancellation negates the
+    very verb it names, and the approval reply is gated on the user.
+    """
+    assert _status_turn("I'll inspect the project files now.") == [True, True]
+    assert _status_turn(
+        "Worker job-42 is running. I'll report back when it completes."
+    ) == [False, False]
+    assert _status_turn("Cancelled. I'll run no further commands.") == [False, False]
+    assert _status_turn(
+        "Blocked on approval. I'll inspect the files once you authorize access."
+    ) == [False, False]
+
+
+def test_post_verb_negation_is_a_stand_down_not_an_announcement():
+    """A negated object right after the governed verb ends the turn in both modes.
+
+    The governed-announcement pattern only guarded negation BETWEEN the lead-in
+    and the verb ("I'll not run"), so "I'll run no further commands" matched on
+    "I'll run" before reaching "no further".
+    """
+    for text in (
+        "Cancelled. I'll run no further commands.",
+        "I'll make no changes.",
+        "Understood. I'll run nothing else.",
+        "I will touch nothing until you say so.",
+    ):
+        assert _status_turn(text) == [False, False], text
+    # The guard is about the object, not the verb: an affirmative object still fires.
+    assert _status_turn("I'll run the remaining commands in the repo now.") == [True, True]
+
+
+def test_deferred_report_on_a_pronoun_completion_is_a_wait():
+    """"when it completes" is a wait, the same as "when the job completes".
+
+    The wait guard only knew the ``when the <noun> completes`` form, so a
+    pronoun subject ("when it completes", "after it finishes", "once they are
+    done") slipped through and "I'll report back" fired as an announcement.
+    """
+    for text in (
+        "Worker job-42 is running. I'll report back when it completes.",
+        "The build is queued. I'll report back after it finishes.",
+        "Both jobs are running. I'll summarize once they are done.",
+        "I'll check the logs when the job is done.",
+    ):
+        assert _status_turn(text) == [False, False], text
+    # Still a live announcement when nothing is being waited on.
+    assert _status_turn("I'll check the project logs and report back.") == [True, True]
+
+
+def test_workspace_markers_match_whole_words_only():
+    """codex_only's workspace requirement must not be met by a substring.
+
+    "repo" matched inside "report", "files" inside "profiles" and "path" inside
+    "sympathy", so a codex_only reply with no workspace reference at all could
+    satisfy the gate. The same bug class as #101868's "read" in "bread".
+    """
+    user = "Check the service."
+    for text in (
+        "I'll summarize the report now.",
+        "I'll review your profiles now.",
+        "I'll check with sympathy now.",
+    ):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=True
+        ), text
+        # The all-mode path never needed a workspace, so it is unchanged.
+        assert looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=False
+        ), text
+    # Whole-word markers, singular and plural, still satisfy the requirement.
+    for text in (
+        "I'll inspect the repo now.",
+        "I'll scan both repos now.",
+        "I'll read the files now.",
+        "I'll check the path now.",
+    ):
+        assert looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=True
+        ), text
+
+
+def test_complete_answer_with_an_action_substring_is_delivered():
+    """#101868: a complete list that happens to contain "bread" plus a closing
+    offer must not be mistaken for an unstarted "read" announcement."""
+    user = "List four products."
+    text = (
+        "Here are four options:\n"
+        "1. Bread maker.\n2. Coffee grinder.\n3. Electric kettle.\n4. Stand mixer.\n\n"
+        "These are the available options. If useful, I'll provide a comparison table."
+    )
+    for mode in (True, False):
+        assert not looks_like_codex_intermediate_ack(
+            _agent(), user, text, [{"role": "user", "content": user}], require_workspace=mode
+        )

@@ -179,6 +179,39 @@ These tools modify agent state directly and return synthetic tool results withou
 
 ### Iteration Budget
 
+Intent-acknowledgment detection lives in `agent/intent_ack.py`; the text-response
+boundary in `agent/turn_final_response.py` owns its bounded continuation.
+It considers tool calls only since the latest user message. Previous completed
+turns do not disable recovery. Current-turn execution still blocks it in both
+the default Codex mode and the existing all-provider opt-in mode.
+Synthetic verification/recovery prompts and mid-turn steering do not create a
+fresh unstarted-work window for this detector.
+
+A clarification-only turn may recover a short action acknowledgment when the
+user directly requests an edit (including proceeding with implementation), or
+conversationally asks to continue the immediately preceding, still-unstarted
+edit request. The latter uses only the adjacent real user request, never tool
+output or assistant prose, and cannot cross intervening tool work. Quoted or
+reported continuation language is not a request. Every clarification
+call must have a nonempty, non-declined answer. Clarification does not itself authorize
+work: timeouts, partial/unmatched results, cancellation, input waits, and other
+tool activity block this exception. Completed replies, optional offers, quoted
+examples, refusals, and session-owned live background work are not acknowledgments.
+The English-language detector is deliberately conservative, not a general
+natural-language authorization classifier.
+
+An eligible clean stop retries the existing request unchanged, consuming the
+existing two-continuation budget and ordinary iteration budget. It does not
+force a tool, append a synthetic user instruction, or change cached history,
+tools, or system-prompt bytes. The interrupted acknowledgment is surfaced through
+the interim callback rather than persisted as a completed answer. If the model
+keeps acknowledging, the existing cap still ends recovery; this is not a promise
+of eventual execution. Visible tail-style acknowledgments after clarification
+use this same safety gate and transcript-free retry: the earlier tail guard
+cannot bypass a declined answer or inject a fake user instruction. Its existing
+tail vocabulary still applies. Unrelated stalls, promoted reasoning and fragment
+recovery retain their existing policy.
+
 The agent tracks iterations via `IterationBudget`:
 
 - Default: 500 iterations (configurable via `agent.max_turns`)

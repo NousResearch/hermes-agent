@@ -69,6 +69,8 @@ def remember_message_tokens(key: Any, entry: tuple[MemoPins, int, int]) -> None:
     the first one looked up inside the active window (everything after it is more recent)."""
     global _retained_bytes
     size = _entry_bytes(entry)
+    if size > _MSG_TOKENS_CACHE_MAX_BYTES:
+        return  # one message larger than the whole budget is recomputed, never allowed to flush the memo
     cache = _MSG_TOKENS_CACHE
     now = _clock()
     entry[0].touched = now

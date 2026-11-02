@@ -1530,7 +1530,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         else:
             # The API accepted the call but the result carried no id. Report success here only because a
             # blind retry could duplicate a message Telegram already holds; the confirmation step in
-            # BasePlatformAdapter (``_confirm_delivery_result``) downgrades an id-less final to the
+            # ``gateway.platforms.delivery_confirm.confirm_delivery_result`` downgrades an id-less final to the
             # ledger's unconfirmed state, so this is a warning rather than a silent success.
             logger.warning(
                 "[%s] sendRichMessage accepted for chat %s but returned no message_id (%d chars)",

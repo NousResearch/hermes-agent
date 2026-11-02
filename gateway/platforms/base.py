@@ -439,6 +439,7 @@ from gateway.platforms.base_exec_approval import (
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.delivery_confirm import _split_post_delivery_entry, confirm_delivery_result
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1785,12 +1786,6 @@ def resolve_channel_skills(
                     nm for name in skills if isinstance(name, str) and (nm := name.strip()))
                 return list(seen) or None
     return None
-
-
-def _split_post_delivery_entry(entry: Any) -> tuple[Optional[int], Any]:
-    """``(generation, callback)`` from a post-delivery slot; legacy bare callbacks have no
-    generation."""
-    return entry if isinstance(entry, tuple) and len(entry) == 2 else (None, entry)
 
 
 def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
@@ -4298,38 +4293,11 @@ class BasePlatformAdapter(ABC):
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        result = self._confirm_delivery_result(delivery_adapter, text_content, event, result)
+        result = confirm_delivery_result(delivery_adapter, text_content, event, result)
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
-
-    @staticmethod
-    def _confirm_delivery_result(
-        delivery_adapter: "BasePlatformAdapter", text_content: str, event: MessageEvent, result: SendResult,
-    ) -> SendResult:
-        """Downgrade a success that carries no message id to the ledger's unconfirmed state.
-
-        An adapter can report ``success=True`` with ``message_id=None`` for a send that never landed.
-        Two live shapes produce it: the Telegram rich fast-path returns that when the API result has no
-        ``message_id``, and ``_send_chunks`` returns it when the formatter reduces non-empty content to
-        zero chunks (it also stringifies a missing id, so the literal ``"None"`` arrives here). A final
-        finalized as ``delivered`` is pruned, so a genuine loss was neither recovered nor logged.
-
-        A delivery the platform acknowledged always carries an id, so this cannot fire for a landed
-        message. Empty or whitespace-only text is excluded on purpose: nothing was owed, and the
-        whitespace guard in every adapter legitimately reports that as a success.
-        """
-        message_id = result.message_id
-        if message_id is not None and str(message_id).strip().lower() in ("", "none"):
-            message_id = None  # ``str(None)`` reaches here from the delivered list in ``_send_chunks``
-        if not result.success or message_id or not text_content or not text_content.strip():
-            return result
-        logger.warning(
-            "[%s] Final response reported success with no message id (chat %s, %d chars); "
-            "treating it as unconfirmed so the delivery ledger can recover it",
-            delivery_adapter.name, event.source.chat_id, len(text_content))
-        return SendResult(success=False, error="unconfirmed_delivery_no_message_id", retryable=True)
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
         """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or

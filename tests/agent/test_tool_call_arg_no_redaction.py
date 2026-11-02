@@ -58,6 +58,9 @@ class _FakeAgent:
     def _split_responses_tool_id(self, _raw):
         return (None, None)
 
+    def _canonical_call_id_from_fc(self, _response_item_id):
+        return None
+
     def _derive_responses_function_call_id(self, _call_id, _resp_id):
         return None
 

@@ -20,6 +20,7 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_memo_bounds import bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -1011,12 +1012,6 @@ def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
 
 
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
-    return cache
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1832,6 +1827,7 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
     current = _codex_oauth_context_cache.get(cache_key)
     if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return
+    bound_codex_caches(cache_key)
     _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
 
 
@@ -1876,6 +1872,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         _remember_no_codex_catalog(cache_key)
         return {}, False
     # Max first: a reader that sees the fresh context entry must also see its cap.
+    bound_codex_caches(cache_key)
     _codex_oauth_max_context_cache[cache_key] = max_result
     _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True

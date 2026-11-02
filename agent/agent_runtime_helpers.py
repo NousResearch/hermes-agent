@@ -21,6 +21,7 @@ from agent.message_sanitization import (
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -2638,18 +2639,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
-# ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
-# Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
-# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it via
-# ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0 disables escalation entirely — WARNINGs
-# still fire per window).
+# Escalate repeated heals once per session window, then stay quiet: repeated heals of the same poisoned
+# transcript used to WARNING on every send (#96870). Built-in default threshold; config.yaml's
+# ``agent.sanitizer_heal_escalation_threshold`` tunes it (<= 0 disables escalation; WARNINGs still fire per window).
 _EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
 _empty_heal_log_state: dict[str, dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
-# Sessions already told ONCE (out-of-band, never in conversation context); kept apart from the
-# windowed log state so a new window never re-arms the notice.
+# LRU over the log counters only (they pick WARNING vs ERROR): a forgotten session that heals again opens a fresh
+# window. The notice set and pending notices below are never evicted, so nobody is told twice or loses a notice.
+_EMPTY_HEAL_MAX_SESSIONS = 1024
 # Session keys that already received the one-time user notice. Separate from the windowed log state so a new
 # 10-minute window never re-notifies: the user is told ONCE per session, ever (#96870 — out-of-band,
 # delivery channel only, never injected into conversation context).
@@ -2745,13 +2744,14 @@ def _log_empty_non_final_heal(healed: int) -> None:
     threshold = _heal_escalation_threshold()
     now = time.monotonic()
     with _empty_heal_log_lock:
-        state = _empty_heal_log_state.get(key)
+        state = _empty_heal_log_state.pop(key, None)  # re-inserted last: most recently healed
         if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
             prior = state or {}
-            state = _empty_heal_log_state[key] = {
+            state = {
                 "count": 0, "window_start": now, "escalated": False,
                 "total_events": prior.get("total_events", 0), "total_healed": prior.get("total_healed", 0),
             }
+        publish_lru(_empty_heal_log_state, key, state, _EMPTY_HEAL_MAX_SESSIONS)
         state["count"] += 1
         state["total_events"] = state.get("total_events", 0) + 1
         state["total_healed"] = state.get("total_healed", 0) + healed

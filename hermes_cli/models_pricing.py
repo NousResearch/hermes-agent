@@ -51,7 +51,14 @@ def _cache_catalog(
 ) -> dict[str, dict[str, Any]]:
     """Cache a catalog result, giving an empty one an expiry. *ttl_seconds* expires a non-empty
     result too — only for a catalog whose contents depend on server-side state the client cannot
-    observe (an org's model policy can change while a long-lived process holds the entry)."""
+    observe (an org's model policy can change while a long-lived process holds the entry).
+    Entries past their deadline are dropped here as the reader would: a rotated credential's
+    catalog is otherwise never read again and stays resident for the life of the process."""
+    now = time.monotonic()
+    for key, deadline in list(_pricing_cache_retry_after.items()):
+        if now >= deadline:
+            _pricing_cache.pop(key, None)
+            _pricing_cache_retry_after.pop(key, None)
     _pricing_cache[cache_key] = result
     if not result:
         _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS

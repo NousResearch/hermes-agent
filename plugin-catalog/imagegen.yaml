@@ -1,0 +1,43 @@
+name: imagegen
+title: ImageGen
+repo: https://github.com/phdigital01/imagegen-hermes
+sha: a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb
+description: >-
+  Image studio for Hermes Desktop: generate, compose from references, edit and
+  upscale across FAL, Nous Portal, Magnific, Vertex AI and the Hermes image providers, with
+  a guided prompt builder, campaign grids, a gallery and a local monthly budget.
+  It can also serve the agent's image_generate calls when picked under Tools →
+  Image Generation.
+  Disclosure — Each generation is billed by the provider you pick (FAL, Magnific,
+  Nous Portal, Vertex AI or a Hermes image provider). On its screen each one starts from a
+  button you click; the agent spends only if you pick ImageGen under Tools →
+  Image Generation or add the optional MCP server;
+  prompts and reference images go to that provider (queue.fal.run, fal.run,
+  api.magnific.com, aiplatform.googleapis.com, the Nous tool gateway, or a Hermes image provider, including a
+  linked ChatGPT subscription through Hermes's own provider). Prompt writing and image reading use
+  your Hermes model through ctx.llm. Images, history and the spending ledger are
+  stored in plugin-data/imagegen. Optional FAL_KEY, MAGNIFIC_API_KEY,
+  VERTEX_API_KEY and VERTEX_PROJECT are plugin secrets. An optional command line runs single or batch
+  generations only when someone starts it; its --profile option asks Hermes's own loader for that profile's keys.
+  It imports some non-public Hermes modules to reach the image
+  provider registry and the Nous gateway.
+maintainer: phdigital01
+tier: community
+category: desktop
+version: "1.3.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/phdigital01/imagegen-hermes#readme
+image: https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/generate.png
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/gallery.png
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/gallery-detail.png
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/edit.png
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/campaign.png
+  - https://raw.githubusercontent.com/phdigital01/imagegen-hermes/a5f3d5f6da381ee9b78357dd9d9978b0f0139cdb/docs/catalog/screenshots/providers.png
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

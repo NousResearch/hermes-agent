@@ -19,6 +19,20 @@ pytest_plugins = ["tests.gateway.test_native_image_steering"]
 async def test_busy_image_ack_waits_for_native_transfer(setup, monkeypatch, accepted, ack_mode):
     import gateway.run_image_steering as native
     from agent.i18n import t
+    from hermes_cli.observability import relay_shared_metrics as metrics
+    from hermes_cli.observability import shared_metrics_busy as busy
+    from hermes_cli.observability import shared_metrics_contract as contract
+    from hermes_cli.observability import shared_metrics_gateway as gateway_metrics
+
+    recorded = []
+    monkeypatch.setattr(metrics, "enabled", lambda: True)
+    monkeypatch.setattr(metrics, "record_process_mark", lambda mark, data: recorded.append((mark, dict(data))))
+    monkeypatch.setattr(busy, "_queued", type(busy._queued)())
+
+    def arrivals():
+        gateway_metrics.drain()
+        return [data for mark, data in recorded
+                if contract._DECISION_MARK_METRICS.get(mark) == busy.BUSY_ARRIVAL_METRIC]
 
     runner, agent, images, adapter, key, event, authority, running = await owner(setup, monkeypatch)
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false" if ack_mode == "off" else "true")
@@ -32,11 +46,13 @@ async def test_busy_image_ack_waits_for_native_transfer(setup, monkeypatch, acce
     adapter._active_sessions[key] = asyncio.Event()
     adapter._session_tasks[key] = asyncio.current_task()
     sent = []
+    metrics_at_send = []
 
     def rows():
         return list_session_admissions(authority.db, session_id=agent.session_id, pending_only=False)
 
     async def send(chat_id, content, reply_to=None, metadata=None):
+        metrics_at_send.append(arrivals())
         sent.append((content, chat_id, reply_to, metadata, rows()[-1], bool(agent._content_steering._pending)))
         return SendResult(success=True, message_id="busy-ack")
 
@@ -56,6 +72,7 @@ async def test_busy_image_ack_waits_for_native_transfer(setup, monkeypatch, acce
         assert len(rows()) == 2, "pixels must be captured and durably admitted first"
         assert rows()[-1]["status"] == "queued"
         assert sent == [], "preparation has not decided steering versus FIFO yet"
+        assert arrivals() == []
         if not accepted:
             agent._content_steering.seal()  # the real agent refuses the prepared correction
         release.set()
@@ -65,9 +82,16 @@ async def test_busy_image_ack_waits_for_native_transfer(setup, monkeypatch, acce
         assert row["outcome"] == "steering" if accepted else row["status"] == "queued"
         assert row["generation"] == (running["generation"] if accepted else None)
         assert len(row["payload"]["native_text_v1"]["media"]) == len(images)
+        if not accepted:
+            assert arrivals() == [], "FIFO fallback counts only when its own turn starts"
+            busy.busy_turn_started(row["admission_id"])
+        expected_metrics = [{"disposition": "steered" if accepted else "queued",
+                             "platform": "slack", "wait_bucket": "lt_5s"}]
+        assert arrivals() == expected_metrics
         expected_ack = ack_mode not in ("off", "debounced") and not (accepted and ack_mode == "steer-off")
         assert len(sent) == int(expected_ack)
         if expected_ack:
+            assert metrics_at_send == [expected_metrics if accepted else []]
             content, chat_id, reply_to, metadata, at_send, native_pending = sent[0]
             assert native_pending is accepted, "the ack must follow real agent acceptance or rejection"
             expected, forbidden = ("steered", "queued") if accepted else ("queued", "steered")
@@ -82,6 +106,7 @@ async def test_busy_image_ack_waits_for_native_transfer(setup, monkeypatch, acce
         await async_wait_until(lambda: not authority._mutation_tasks, timeout=10, what="redelivery completion")
         assert len(rows()) == 2
         assert len(sent) == int(expected_ack), "redelivery must not send a second acknowledgement"
+        assert arrivals() == expected_metrics, "redelivery must not count the arrival twice"
         assert bool(agent.withdraw_steer(row["admission_id"])) is accepted
         assert not agent.withdraw_steer(row["admission_id"])
     finally:

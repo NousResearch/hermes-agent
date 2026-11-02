@@ -5,6 +5,7 @@ import logging
 from dataclasses import replace
 from functools import partial
 
+from hermes_cli.observability.shared_metrics_busy import note_busy_outcome
 from hermes_state_runtime import RuntimeStoreError, get_session_admission, revert_steer_input, steer_session_input
 from gateway.session_queued_controls import _receiving_agent, _register, _unregister
 from gateway.session_runtime_workers import tracked_write
@@ -59,6 +60,7 @@ async def transfer_native_images(authority, ref, row, event):
     key, adapter, state, agent, outcome = pending_ack
     outcome = replace(outcome, effective_mode='steer' if delivered else 'queue', steered=delivered)
     with authority.runner._profile_scope_for_source(event.source):
+        note_busy_outcome(event, outcome)
         await authority.runner._busy_interrupt_and_ack(
             event, key, adapter, state, agent, outcome, steer_parent_only=True,
         )

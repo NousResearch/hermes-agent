@@ -311,3 +311,47 @@ async def test_closed_conversation_with_a_running_refine_review_stays(tmp_path, 
         assert checked == [False] and authority.sessions.get(ref.session_id) is live
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_restored_conversation_retire_timer_firing_mid_close_keeps_the_close(tmp_path, monkeypatch):
+    """A restored conversation's re-retire timer fires while its last viewer's close is off the loop
+    (releasing the editor MCP): the close still stamps the row, and the conversation retires after."""
+    import threading
+
+    from gateway import session_local_mcp, session_retirement
+    from gateway.session_mutations import mutate_session
+    monkeypatch.setattr(session_retirement, 'RESTORED_IDLE_S', 0.05)
+    _runner, authority, db = await _owner(tmp_path, monkeypatch)
+    held, release = threading.Event(), threading.Event()
+    try:
+        ref = _create(authority)
+        await _close(authority, ref)
+        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                               what="the closed session to leave memory")
+        handle = authority._handle(ref)  # a rename restores it and arms its re-retire timer
+        await mutate_session(authority, _viewer(), ref, dict(
+            session_id=ref.session_id, request_id='rename1', operation='rename', payload={'title': 'Renamed'},
+            expected_revision=handle.revision, expected_generation=handle.execution_generation))
+        subscription = (await authority.attach(_viewer(), ref)).subscription_id
+        live = authority.sessions[ref.session_id]
+        armed = live.retire_timer
+        assert armed is not None
+
+        def held_release(_authority, _session_ids):
+            held.set()
+            assert release.wait(10)
+        monkeypatch.setattr(session_local_mcp, 'release_editor_mcp', held_release)
+        detach = asyncio.create_task(authority.detach(_viewer(), subscription, end_reason='tui_shutdown'))
+        await async_wait_until(held.is_set, timeout=10, what="the close to go off the loop")
+        # Fired: cleared, or re-armed by a refused check.
+        await async_wait_until(lambda: live.retire_timer is not armed, timeout=10, what="the re-retire timer to fire")
+        release.set()
+        await asyncio.wait_for(detach, 10)
+        assert db.get_session(ref.session_id)["end_reason"] == "tui_shutdown"
+        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                               what="the closed conversation to retire")
+    finally:
+        release.set()
+        db.close()
+

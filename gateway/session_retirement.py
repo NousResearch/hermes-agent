@@ -28,7 +28,7 @@ def _pinned(authority, session_id, live):
     return (authority.sessions.get(session_id) is not live
             or live.source is None or live.source.platform not in _RETIRABLE
             or live.subscribers or live.event_stream.observers or live.rescan or live.settling
-            or live.detached or is_history_mount(live)
+            or live.detached or live.detaching or is_history_mount(live)
             or live.mutation_lock.locked() or live.claim_gate.locked()
             or (task is not None and not task.done() and task is not asyncio.current_task())
             or session_id in authority.executing or session_id in authority.pending_closes

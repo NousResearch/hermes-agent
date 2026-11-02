@@ -312,15 +312,30 @@ def recover_authority_api_turns(adapter, authority):
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
 
 
-async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):
-    admitted = await admit_api_turn_async(adapter, **kwargs)
+async def run_api_turn(
+        adapter, *, approval_notify_callback=None, approval_session_key=None,
+        admission_future=None, **kwargs):
+    admitted = None
+    try:
+        admitted = await admit_api_turn_async(adapter, **kwargs)
+    finally:
+        # A disconnect may already be waiting to stop the row that admission commits. ``None``
+        # means no row exists to stop; the agent task remains the source of the actual error.
+        if admitted is None and admission_future is not None and not admission_future.done():
+            admission_future.set_result(None)
     if approval_notify_callback is None or not approval_session_key:
+        if admission_future is not None and not admission_future.done():
+            admission_future.set_result(admitted)
         return await observe_api_turn(admitted, **kwargs)
     # A streaming surface advertises its own run id (``chatcmpl-*`` / ``run_*``): bind it to this
     # exact admission so ``/v1/runs/{id}/approval`` answers the shared, generation-fenced prompt,
     # and hand that prompt to the stream's notifier in the event shape it already emits.
     aliases = adapter._run_admission_aliases
     aliases[approval_session_key] = admitted[2]['admission_id']
+    if admission_future is not None and not admission_future.done():
+        # Publish only after the public stream id resolves to this exact durable row. A client
+        # disconnect waiting on the future can now use the normal generation-fenced Stop flow.
+        admission_future.set_result(admitted)
 
     def sink(event_type, prompt):
         if event_type == 'approval.request':

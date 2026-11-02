@@ -45,7 +45,8 @@ class GatewayDiscovery:
     reason_code: str | None = None
     # Human-readable cause behind a bounded ``reason_code`` when the owner published one (the
     # multiplexer's park reason), or the redacted output tail of a start this call made that died
-    # (``runtime_exited``); never raw peer data.
+    # (``runtime_exited``), or the unsafe local control node a discovery refused (path, owner uid or
+    # mode, and the fix); never raw peer data.
     detail: str | None = None
 
 
@@ -63,6 +64,35 @@ def attachable(result: GatewayDiscovery) -> bool:
 
 def _canonical_home(home: str | Path) -> str:
     return os.path.normcase(str(Path(home).expanduser().resolve()))
+
+
+def gateway_profile_home(home: str | Path) -> Path:
+    """The profile home whose gateway serves *home*: the home itself, or for a private overlay home
+    (a task dir mirroring a profile through symlinks, its ``gateway.lock`` among them) the profile its
+    lock names. A client compares the owner's ``profile_id`` with this, never the overlay path.
+    Not normcased: ``profile_id`` keeps the owner's own spelling (Windows)."""
+    return _overlay_owner_home(Path(home).expanduser().resolve())
+
+
+def _overlay_owner_home(home: Path) -> Path:
+    """Return the owner named by a private overlay's gateway lock, if it has one."""
+    if os.name == "nt":
+        return home
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_lock, _private_node
+    lock = home / "gateway.lock"
+    try:
+        # An overlay home intentionally shares only the owner's lock.  Do not turn an arbitrary
+        # link into a profile alias: both homes and the target lock must meet ordinary discovery's
+        # private-control checks.
+        _private_node(home, kind="directory", home=True)
+        target = lock.resolve(strict=True)
+        if not lock.is_symlink() or target.name != "gateway.lock":
+            return home
+        _private_node(target.parent, kind="directory", home=True)
+        _private_lock(target)
+    except (FileNotFoundError, OSError, DiscoveryError):
+        return home
+    return target.parent
 
 
 def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> GatewayDiscovery:
@@ -168,6 +198,14 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
     return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=str(reason)[:500] or None)
 
 
+def _refused_owner_verdict(exc: PermissionError) -> GatewayDiscovery | None:
+    """The named refusal when the client proved the boundary from the control pipe, else None."""
+    from gateway.runtime_bootstrap_windows import RefusedOwner
+    if isinstance(exc, RefusedOwner):
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
+    return None
+
+
 def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | None:
     """A served secondary has no socket of its own: the default multiplexer's control socket
     answers for it, and its ``identify`` lists the home under ``served_profiles``. Only the
@@ -179,13 +217,73 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
         return None
     try:
         payload = query_identify(root, timeout=timeout)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError, PermissionError,
+    except PermissionError as exc:
+        # The multiplexer's pipe proved the boundary: name it for the secondary too (#140706), unless
+        # the boot policy never serves this home (a standalone secondary starts its own gateway). Any
+        # other refusal is "not served" before a config is read, as on POSIX, where none is proven.
+        named = _refused_owner_verdict(exc)
+        if named is None:
+            return None
+        from hermes_cli.gateway_multiplex_mode import host_serves_named_profile
+        if host_serves_named_profile(root, home) is False:
+            return None
+        return named
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError,
             OSError, ValueError, TypeError):
         return None
     result = _endpoint(payload, home, control_home=root)
     if result.state == "inaccessible" and result.reason_code == "profile_mismatch":
         return _parked_by_multiplexer(payload, home)  # else: the multiplexer does not serve this profile
     return result
+
+
+_NATIVE_WINDOWS = os.name == "nt"
+
+
+def _owner_pid(home: Path) -> int | None:
+    """The PID a refusal may name: one of *home*'s gateway records whose process is provably that
+    gateway, else None (the caller keeps the generic ``authorization``).
+
+    Proof is the shared identity chain: alive, its recorded start time known and equal to the live
+    one (a recycled PID differs), its recorded home not another profile's, and its live command line
+    (or, when that is unreadable across the elevation boundary, its record) a gateway's. A stale
+    ``gateway.pid`` falls through to ``gateway.lock`` instead of masking it."""
+    from gateway.status import (
+        _get_process_start_time,
+        _live_pid_from_record,
+        _read_json_file,
+        _record_matches_live_gateway_pid,
+        recorded_gateway_home_conflicts,
+    )
+    for name in ("gateway.pid", "gateway.lock"):
+        record = _read_json_file(home / name, bare_pid_ok=True)
+        pid = _live_pid_from_record(record)
+        if pid is None or pid == os.getpid():
+            continue
+        recorded = record.get("start_time")
+        if recorded is None or recorded != _get_process_start_time(pid):
+            continue  # unverifiable or recycled: never name it
+        if recorded_gateway_home_conflicts(record, expected_home=home):
+            continue
+        if not _record_matches_live_gateway_pid(record, pid):
+            continue
+        return pid
+    return None
+
+
+def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery:
+    """The owner's control channel refused this same-user client. On Windows (*windows*, the host
+    fact) name the boundary (an elevated owner, or one in another logon session) with its remedy
+    instead of the generic ``authorization`` that reads as a credential failure (#139845, #140252)."""
+    if windows and (pid := _owner_pid(home)) is not None:
+        from gateway.runtime_bootstrap_windows import probe_refused_owner
+        try:
+            named = probe_refused_owner(pid)
+        except OSError:
+            named = None
+        if named is not None:
+            return GatewayDiscovery("inaccessible", reason_code=named[0], detail=named[1])
+    return GatewayDiscovery("inaccessible", reason_code="authorization")
 
 
 def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0) -> GatewayDiscovery:
@@ -198,7 +296,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     try:
         return _endpoint(query_identify(home, timeout=timeout), home)
     except (FileNotFoundError, ConnectionRefusedError):
@@ -214,9 +312,11 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
     except DiscoveryError as exc:
-        return GatewayDiscovery("inaccessible", reason_code=exc.reason)
-    except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        # The code stays bounded; the detail names the local node, its owner or mode, and the fix.
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason, detail=exc.bounded_detail(500))
+    except PermissionError as exc:
+        named = _refused_owner_verdict(exc)  # the client proved the boundary from the control pipe (#140706)
+        return named if named is not None else _refused(home)
     except (OSError, ValueError, TypeError):
         # Raw peer data, paths and URLs may contain secrets; report bounded codes.
         return GatewayDiscovery("inaccessible", reason_code="invalid_control_peer")
@@ -313,7 +413,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     deadline = time.monotonic() + timeout
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     requested = False
     child = None
     child_home, child_offset = home, 0
@@ -390,6 +490,6 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     except RuntimeStartError as exc:
         return GatewayDiscovery(exc.state, reason_code=exc.reason)
     except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        return _refused(home)
     except OSError:
         return GatewayDiscovery("inaccessible", reason_code="runtime_start_failed")

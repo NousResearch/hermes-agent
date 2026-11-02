@@ -61,7 +61,11 @@ test('clarify and approval prompts round-trip exactly once', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('prompts')
   writeProviderHome(sandbox.hermesHome, provider.url, '', 'manual')
-  const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
+  // Keep this explicit gateway home distinct from the sandbox account default:
+  // launchd belongs to the real UID, not HOME, and must never select its bare service.
+  const accountHome = path.join(sandbox.root, 'account-home')
+  fs.mkdirSync(accountHome)
+  const { app, page } = await launchCoreApp(coreAppEnv(sandbox, { HOME: accountHome }))
   const ws = recordWebSockets(page)
   const session: OracleTarget = { sessionId: '', expectUserMarkers: [] }
 
@@ -95,6 +99,16 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       const openForms = page.locator('form[data-clarify-choices], form[data-clarify-batch]').filter({ visible: true })
       await expect(openForms).toHaveCount(1, { timeout: 120_000 })
       await expect(viewport(page).getByText(question)).toHaveCount(1)
+
+      // Switching away must not settle a question whose tool is still waiting.
+      const waitingSession = await currentSessionId(page)
+      await page.evaluate(() => { window.location.hash = '#/' })
+      await expect.poll(() => currentSessionId(page)).toBe('')
+      await page.evaluate(id => { window.location.hash = `#/${id}` }, waitingSession)
+      await expect.poll(() => currentSessionId(page)).toBe(waitingSession)
+      await expect(openForms).toHaveCount(1)
+      await expect(viewport(page).getByText(question)).toHaveCount(1)
+
       await openForms.getByRole('button', { name: new RegExp(pick) }).click()
       const submit = openForms.locator('button[type="submit"]')
       await expect(submit).toBeEnabled()

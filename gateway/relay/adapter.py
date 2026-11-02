@@ -27,7 +27,6 @@ from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
-from hermes_state_runtime import RuntimeStoreError
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
@@ -153,6 +152,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self._auto_thread_waiters: dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: dict[str, None] = {}
+        # Discord chat labels the text lane carries and a forwarded interaction does not:
+        # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
+        self._discord_chat_labels: dict[tuple, tuple] = {}
+        self._discord_labels_recorded: dict[tuple, tuple] = {}
+        # (platform, chat_id) -> the chat's latest off-reader admission task (inbound_admission).
+        self._admission_lanes: dict[tuple[str, str], asyncio.Task] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -873,8 +878,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+    async def _on_inbound(self, event) -> Optional[asyncio.Task]:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path; a task when its
+        admission runs off the reader (``admit_relay_delivery``) and the transport ACKs on its end."""
         # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
@@ -888,41 +894,31 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 return
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
-            return
-        await self._localize_inbound_media(event)
+        try:
+            self._capture_ingress_scope(event)
+            await self._remember_discord_labels(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                return
+            await self._localize_inbound_media(event)
+        except asyncio.CancelledError:
+            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
+            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if dedupe_key is not None:
+                self._seen_inbound.pop(dedupe_key, None)
+            raise
         if native:
-            from datetime import datetime, timezone
-            from gateway.platforms.webhook_ingress import admit_producer
+            from datetime import datetime
+            from gateway.relay.inbound_admission import admit_relay_delivery
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
-            # Wait only for the SQLite receipt, never inference or outbound ACKs
-            # (those need this same WS reader). A permanent refusal returns, so the
-            # transport ACKs it (a replay would be refused again: main's runner dropped
-            # it too); any other failure withholds the ACK so the connector redelivers.
-            try:
-                receipt = await admit_producer(self, event)
-            except RuntimeStoreError as exc:
-                if exc.reason not in _PERMANENT_REFUSALS:
-                    raise
-                logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",
-                               exc.reason, event.source.platform.value, event.source.chat_id)
-                return
-            if receipt is None and getattr(event, '_consumer_reply', None):
-                # A post_gateway_admission plugin consumed it (never committed); its reply is
-                # sent off this reader, like an executed admission's.
-                from gateway.session_ingress import deliver_response
-                task = asyncio.create_task(deliver_response(
-                    self, event, runner._session_key_for_source(event.source), event._consumer_reply))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-        else:
-            await self.handle_message(event)
+            # Never wait for inference or outbound ACKs (those need this same WS reader).
+            return await admit_relay_delivery(self, runner, event)
+        await self.handle_message(event)
+        return None
 
     _SEEN_INBOUND_MAX = 512
 
@@ -1039,28 +1035,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             urls = list(getattr(event, "media_urls", None) or [])
             if not urls:
                 return
-            # media_types is INDEXED IN PARALLEL with media_urls by every downstream
-            # classifier: carry (url, mime) PAIRS through the loop or surviving
-            # attachments inherit a neighbour's type.
-            types = list(getattr(event, "media_types", None) or [])
-            pairs = [(u, types[i] if i < len(types) else "") for i, u in enumerate(urls)]
+            # media_types / media_filenames are INDEXED IN PARALLEL with media_urls downstream:
+            # carry (url, mime, name) TRIPLES or survivors inherit a neighbour's type or name.
+            types = list(getattr(event, "media_types", None) or []) + [""] * len(urls)
+            names = list(getattr(event, "media_filenames", None) or []) + [""] * len(urls)
             client = self._get_media_client()
-            localized: list[tuple[str, str]] = []
-            for url, mime in pairs:
+            localized: list[tuple[str, str, str]] = []
+            for url, mime, name in zip(urls, types, names):
                 if not isinstance(url, str) or not url:
                     continue
                 if client is None:
                     if "/relay/media/" not in url:
-                        localized.append((url, mime))
+                        localized.append((url, mime, name))
                     continue
-                path = await client.download(url)
-                if path:
-                    localized.append((path, mime))
+                # The path is a random temp name; the original name rides beside it.
+                got = await client.download_with_name(url, suggested_name=name or None)
+                if got:
+                    localized.append((got[0], mime, got[1]))
                 elif "/relay/media/" not in url:
                     # A public URL still has value as a URL; a dead re-host does not.
-                    localized.append((url, mime))
-            event.media_urls = [u for u, _ in localized]
-            event.media_types = [m for _, m in localized]
+                    localized.append((url, mime, name))
+            event.media_urls, event.media_types, event.media_filenames = (
+                [entry[i] for entry in localized] for i in range(3))
         except Exception:
             logger.debug("relay inbound media localization failed", exc_info=True)
 
@@ -1146,31 +1142,6 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the per-session interrupt path."""
         await self.interrupt_session_activity(session_key, chat_id)
-
-    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
-        """Handle a connector-forwarded passthrough request. The connector answered the
-        provider's latency-critical ACK at the edge, verified the signature and vaulted
-        any shared-identity credential; the agent later acts via the token-less
-        ``send_follow_up`` path. A Discord interaction becomes a normalized
-        ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
-        try:
-            platform = getattr(forward, "platform", "") or ""
-            if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
-                if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
-                    await self.handle_message(event)
-                    return
-            logger.info(
-                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
-                platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
-            )
-        except Exception:
-            logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     async def disconnect(self) -> None:
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor

@@ -119,12 +119,13 @@ def test_fragmented_resume_obeys_connection_limit(tmp_path):
                     maximum = max(maximum, active)
                     entered.set()
                 release.wait(timeout=8)
-            try:
-                self.wfile.write(payload[start:end + 1])
-            finally:
-                if not is_probe:
-                    with lock:
-                        active -= 1
+                # Leave the count BEFORE the body goes out: once the client has the bytes it opens its next
+                # sequential range, and a decrement after the write let this thread lose that race and read
+                # back as two concurrent requests (main run 37594754436). A truly concurrent request has
+                # already entered while this one sat on the release, so the overlap is still caught.
+                with lock:
+                    active -= 1
+            self.wfile.write(payload[start:end + 1])
 
         def log_message(self, *args):
             pass
@@ -203,14 +204,12 @@ def test_processes_share_partial_ownership_without_losing_destinations(tmp_path)
                     if active > 1:
                         both.set()
                 release.wait(timeout=15)
+                with lock:  # before the body, same reason as the single-process test above
+                    active -= 1
             try:
                 self.wfile.write(payload[start:end + 1])
             except (BrokenPipeError, ConnectionResetError):
                 pass
-            finally:
-                if not probe:
-                    with lock:
-                        active -= 1
 
         def log_message(self, *args):
             pass

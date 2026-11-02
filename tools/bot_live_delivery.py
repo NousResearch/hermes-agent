@@ -12,7 +12,8 @@ import os
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 
 from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
@@ -61,16 +62,35 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
                 lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
 
 
+class PreDialError(ValueError):
+    """The authority call died before its RPC reached the socket: nothing was admitted, so
+    this is a definite no-send the sender may safely retry — never the ambiguous
+    post-admission state that orders 'do not resend' (#139303). A ``ValueError`` like the
+    "authority is not ready" refusals it wraps, so existing ``except ValueError`` callers hold."""
+
+
 def authority_delivery(home, params):
     """Call only this home's already-running authority; never start a fallback."""
+    return _authority_rpc(home, 'bot_relay.deliver', params)
+
+
+def authority_settle(home, params):
+    """The same authority's ``bot_relay.settle``: the delivery id settled as never sent, or its
+    existing receipt (``gateway/session_bot.py:_settle``)."""
+    return _authority_rpc(home, 'bot_relay.settle', params)
+
+
+def _authority_rpc(home, method, params):
     import asyncio
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
     home = Path(home).resolve()
+    rpc_started = False
 
     async def request():
+        nonlocal rpc_started
         discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=5)
         if discovery.state != 'ready' or discovery.endpoint is None:
             raise ValueError('profile authority is not ready')
@@ -82,9 +102,22 @@ def authority_delivery(home, params):
             if ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
-                return await client.rpc('bot_relay.deliver', **params)
+                rpc_started = True  # the RPC is going out: past here a failure may have been admitted
+                return await client.rpc(method, **params)
 
-    return asyncio.run(request())
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(request())
+        # A gateway-hosted tool call runs on a thread with a live loop, where asyncio.run() raises
+        # before anything is dialed (#139303).
+        from model_tools import _run_async
+        return _run_async(request())
+    except Exception as exc:
+        if not rpc_started:
+            raise PreDialError(str(exc)) from exc
+        raise
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:
@@ -115,13 +148,75 @@ def has_mailbox(profile_home: Path | str) -> bool:
     return _root(profile_home).is_dir()
 
 
-@contextmanager
-def _locked(home: Path | str):
-    root = _root(home)
+_warned_unhardened: set[Path] = set()
+# Mailbox dirs already reported unusable by this process: WARNING once per dir, DEBUG after,
+# because the receipt readers re-enter ``_locked`` while Bot Chat is waiting.
+_warned_unusable: set[Path] = set()
+
+
+class MailboxUnusable(PermissionError):
+    """This token cannot list, create or lock inside the mailbox dir (#139485, #138872).
+
+    On Windows an elevated install/update creates ``runtime/bot_live_delivery`` owned by
+    Administrators with no entry for the user; the same user's non-elevated gateway then
+    cannot even open ``.lock``. Bot Chat deliveries pause; nothing else depends on the dir.
+    A ``PermissionError`` subclass so every existing caller keeps its handling.
+    """
+
+
+def _dir_owner(path: Path) -> str:
+    """Best-effort owner name for the log line; never raises (an ACL that hides it is the reported case)."""
+    if os.name == "nt":
+        try:
+            import pywintypes
+            import win32security
+        except ImportError as exc:
+            return f"unknown ({exc})"
+        try:
+            descriptor = win32security.GetFileSecurity(str(path), win32security.OWNER_SECURITY_INFORMATION)
+            name, domain, _ = win32security.LookupAccountSid(None, descriptor.GetSecurityDescriptorOwner())
+        except pywintypes.error as exc:
+            return f"unknown ({exc})"
+        return f"{domain}\\{name}" if domain else name
+    import pwd  # windows-footgun: ok — POSIX branch only
+
+    try:
+        uid = path.stat().st_uid
+    except OSError as exc:
+        return f"unknown ({exc})"
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f"uid {uid}"
+
+
+def _unusable(root: Path, exc: PermissionError) -> MailboxUnusable:
+    remedy = unusable_dir_remedy(root)
+    level = logging.DEBUG if root in _warned_unusable else logging.WARNING
+    _warned_unusable.add(root)
+    log.log(level, "bot_live_delivery: mailbox directory %s (owner %s) is not usable by this process (%s); "
+            "Bot Chat deliveries are paused until it is repaired, other clients are unaffected. To repair, %s",
+            root, _dir_owner(root), exc, remedy)
+    return MailboxUnusable(exc.errno, f"bot mailbox directory is not usable: {exc}", str(root))
+
+
+def _prepare(root: Path) -> Path:
+    """Create/harden the mailbox dir and its ``.lock`` file; returns the lock path."""
     created = not root.is_dir()
-    root.parent.mkdir(parents=True, exist_ok=True)
-    root.mkdir(mode=0o700, exist_ok=True)
-    root.chmod(0o700)
+    make_user_dir(root.parent, parents=True, exist_ok=True)
+    make_user_dir(root, mode=0o700, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError as exc:
+        # On POSIX chmod fails only when another uid owns the dir: refuse a mailbox someone else controls.
+        if os.name != "nt" and root.stat().st_uid != os.getuid():  # windows-footgun: ok — POSIX only
+            raise
+        # A foreign Windows ACL can deny FILE_WRITE_ATTRIBUTES even when this process can
+        # still use the existing mailbox. Hardening must not abort recovery. The poller
+        # re-enters twice a second, so WARNING once per dir and DEBUG after.
+        level = logging.DEBUG if root in _warned_unhardened else logging.WARNING
+        _warned_unhardened.add(root)
+        log.log(level, "bot_live_delivery: could not harden mailbox directory %s (%s)", root, exc)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two
@@ -131,7 +226,20 @@ def _locked(home: Path | str):
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
-    with _FileLock(lock):
+    return lock
+
+
+@contextmanager
+def _locked(home: Path | str):
+    """Hold the mailbox dir lock. A dir this token cannot use raises ``MailboxUnusable``
+    (logged once per dir with its owner and the remedy); errors inside the body pass through."""
+    root = _root(home)
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_FileLock(_prepare(root)))
+        except PermissionError as exc:
+            raise _unusable(root, exc) from exc
+        _warned_unusable.discard(root)
         yield root
 
 
@@ -232,6 +340,19 @@ def deliver_to_live_owner(
     Retry with the same id AND pinned owner/message to inspect the existing
     state. Reusing an id with a different payload is an error, never an overwrite.
     """
+    return _door(authority_delivery, profile_home, owner, message, delivery_id=delivery_id, author=author,
+                 notification_category=notification_category)
+
+
+def settle_held_delivery(profile_home: Path | str, owner: dict[str, Any], message: str, *, delivery_id: str,
+                         author: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Finalize a refusal marked ``admitted: false`` under the same identity: the owner's terminal
+    not-sent receipt (``refused``), or the receipt of an attempt that admitted the id meanwhile."""
+    return _door(authority_settle, profile_home, owner, message, delivery_id=delivery_id, author=author)
+
+
+def _door(call: Callable[[Path, dict], dict], profile_home, owner, message, *, delivery_id=None, author=None,
+          notification_category="result"):
     pinned = _owner(profile_home, owner)
     if not isinstance(message, str):
         raise ValueError("message must be a string")
@@ -241,7 +362,7 @@ def deliver_to_live_owner(
     category = {"notification_category": "diagnostic"} if notification_category == "diagnostic" else {}
     # The authority refuses a category-changing replay (admission_conflict), so the admitted
     # category is the producer's; echo it so callers can check the receipt's identity.
-    return {**authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
+    return {**call(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
         profile=home.name if home.parent.name == "profiles" else "default",
         message=message, **({"session_id": pinned["session_id"]} if pinned["session_id"] else {}),
         **({"author": dict(author)} if author else {}), **category)), **category}

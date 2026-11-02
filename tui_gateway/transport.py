@@ -152,7 +152,11 @@ class FanoutTransport:
     Other sockets are unaffected. A write already in the OS cannot be revoked.
     """
 
-    _MAX_PENDING_FRAMES = 256
+    # The byte cap is what bounds a slow viewer; the frame cap only backstops a flood of empty
+    # frames. Streamed text is a few hundred bytes per frame, so a 256-frame cap dropped a viewer
+    # that fell ~95 KB behind on a loaded host (a `chat -q` turn then ended `session_replay_gap`)
+    # while the 4 MB budget was 2% used.
+    _MAX_PENDING_FRAMES = 16384
     _MAX_PENDING_BYTES = 4 * 1024 * 1024
 
     def __init__(self, *transports: Transport) -> None:

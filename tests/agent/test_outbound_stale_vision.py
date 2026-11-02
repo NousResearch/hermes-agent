@@ -316,7 +316,9 @@ class TestOutboundStaleVisionEviction:
             history.extend(_image_tool(i))
         outbound = sanitize_api_messages(history)
         evict_stale_outbound_tool_images(outbound)
-        assert len(_image_bearing_tool_ids(outbound)) == OUTBOUND_IMAGE_FLOOR
+        # At least the floor survives; retirement still moves in whole batches (#133999).
+        kept = len(_image_bearing_tool_ids(outbound))
+        assert OUTBOUND_IMAGE_FLOOR <= kept < OUTBOUND_IMAGE_FLOOR + IMAGE_EVICTION_BATCH
 
     def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
         """A whole-batch retire must not take the newest frames when the floor already fits.

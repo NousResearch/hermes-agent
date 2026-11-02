@@ -91,9 +91,11 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
-        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
+        """HERMES_EPHEMERAL_SYSTEM_PROMPT env first (a local session's: its client's), then
+        ``display.personality`` / ``agent.system_prompt``."""
+        from agent.session_client_env import session_env
         from gateway.run import _load_gateway_config
-        prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
+        prompt = session_env("HERMES_EPHEMERAL_SYSTEM_PROMPT")
         if prompt:
             return prompt
         return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
@@ -105,6 +107,49 @@ class GatewayConfigLoadersMixin:
         if not config:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
+
+    def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
+        """Evaluate existing exemptions before consulting the optional room permission."""
+        from gateway.response_filters import silence_allowed
+        return silence_allowed(display_kind, reply_expected) or silence_allowed(
+            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
+            agent_result=agent_result)
+
+    def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
+        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
+        from gateway.config import GatewayConfig
+        from gateway.config_loader import merge_platform_sections, platform_section
+        from gateway.run import _get_channel_override, _load_gateway_config
+        from gateway.session_identity import identity_of
+        config = getattr(self, "config", None)
+        identity = identity_of(source)
+        runtime = identity.runtime_profile if identity is not None else (source.profile or None)
+        # ``self.config`` (including a ``gateway --config`` file) serves the primary profile; only a
+        # turn routed to another profile reads that profile's config.yaml.
+        routed = bool(runtime) and runtime != (getattr(self, "_primary_profile_name", None) or "default")
+        try:
+            if config is None or routed:
+                raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
+                # The loader's own two steps: merge every nested platform block, then the overrides of
+                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
+                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
+                name, gateway_section = str(source.platform.value), raw.get("gateway")
+                overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
+                section, _ = platform_section(raw, name, (
+                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
+                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
+                    overrides = section["channel_overrides"]
+                config = GatewayConfig.from_dict({"platforms": {name: {
+                    "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+            override = _get_channel_override(
+                config, source.platform, source.chat_id,
+                thread_id=source.thread_id, parent_id=source.parent_chat_id)
+        except Exception:
+            # No permission means the default reply rule; a lookup failure must not become an error reply.
+            logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
+                           source.chat_id, exc_info=True)
+            return None
+        return override.allow_silence if override is not None else None
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
@@ -530,6 +575,7 @@ class GatewayConfigLoadersMixin:
         and keeps one last-known-good chain per home: a single runner-wide slot filled from the launch
         home handed every secondary profile the default profile's fallback chain.
         """
+        from hermes_cli.config_backend import config_exists
         from gateway.run import _gateway_config_home
         from hermes_constants import hermes_home_key
         home = _gateway_config_home()
@@ -540,7 +586,7 @@ class GatewayConfigLoadersMixin:
         try:
             from hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
-            if not cfg_path.exists():
+            if not config_exists(cfg_path):
                 by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
             # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain

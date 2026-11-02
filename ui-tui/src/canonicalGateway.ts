@@ -16,6 +16,10 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     params.request_id ??= randomUUID()
 
     if (!contract?.sources.includes('tui')) { throw new Error(t('canonical.launch.noTuiPolicy')) }
+
+    // The shell's environment is context, not a launch option: a gateway predating it runs the session
+    // with its own environment, as before.
+    if (!contract.parameters.includes('client_env')) { delete params.client_env }
     const unsupported = Object.keys(params).filter(key => !contract.parameters.includes(key))
 
     if (unsupported.length) { throw new Error(t('canonical.launch.unsupportedOptions', unsupported.join(', '))) }
@@ -111,6 +115,12 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   if (skills.length) { options.skills = skills }
 
+  // The launcher's shell environment (allowlisted by `hermes --tui`): this session's HERMES_* behaviour
+  // values and tool PATH/venv on the shared gateway, as main's own process had them.
+  const clientEnv = parseClientEnv(env.HERMES_TUI_CLIENT_ENV)
+
+  if (clientEnv) { options.client_env = clientEnv }
+
   // The launcher exports `--max-turns 5` as the string "5": numbers ride as
   // ints (0 / -1 = unlimited), and a word ("none", "unlimited") stays text
   // for the policy to read — `Number` would turn it into NaN, sent as null.
@@ -136,6 +146,23 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   }
 
   return options
+}
+
+function parseClientEnv(raw?: string): Record<string, string> | undefined {
+  if (!raw) { return undefined }
+
+  try {
+    const value: unknown = JSON.parse(raw)
+
+    if (value && typeof value === 'object' && !Array.isArray(value)
+      && Object.values(value).every(item => typeof item === 'string')) {
+      return value as Record<string, string>
+    }
+  } catch {
+    // An unreadable hand-off sends nothing: the session keeps the gateway's environment.
+  }
+
+  return undefined
 }
 
 const TOOL_PROGRESS_MODES = new Set(['off', 'new', 'all', 'verbose'])

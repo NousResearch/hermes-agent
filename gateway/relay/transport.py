@@ -9,13 +9,15 @@ until >=2 Class-1 platforms validate it. See website/docs/developer-guide/relay-
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
 
 from gateway.platforms.event import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
 
-# Callback the transport invokes for each inbound normalized event.
-InboundHandler = Callable[[MessageEvent], Awaitable[None]]
+# Callback the transport invokes for each inbound normalized event: a task it returns is the
+# event's admission still running off the reader, and the frame is ACKed when that task succeeds.
+InboundHandler = Callable[[MessageEvent], Awaitable[Optional["asyncio.Task[None]"]]]
 
 # Callback for each forwarded passthrough request (§5.1): ``(forward, buffer_id)``.
 # ``forward`` is a ws_transport.PassthroughForward, typed Any here because

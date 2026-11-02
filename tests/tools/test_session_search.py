@@ -10,7 +10,7 @@ All run zero LLM calls.
 """
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -115,7 +115,7 @@ class TestBrowseShape:
                 return []
 
         db = _DB()
-        monkeypatch.setattr("hermes_state_registry.acquire", lambda: db)
+        monkeypatch.setattr("hermes_state.SessionDB", lambda **kwargs: db)
         monkeypatch.setattr(
             "hermes_state_registry.release_or_close",
             lambda _: setattr(db, "released", db.released + 1),
@@ -1120,7 +1120,7 @@ class TestNewResetLineageBrowse:
 
 
 def _unix(year, month, day):
-    return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+    return int(datetime(year, month, day, tzinfo=UTC).timestamp())
 
 
 def _set_started(db, **started_at_by_sid):

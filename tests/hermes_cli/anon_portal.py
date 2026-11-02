@@ -51,6 +51,9 @@ class FakePortal:
         self.challenge_status_errors: list[int] = []
         self.challenge_url = f"{PORTAL}/challenge?code=ticket"
         self.optional_challenge = False
+        # NAS since hermes-portal#1516: ``purpose: "connectors"`` mints a ``connectors:invoke``-only
+        # JWT with any CHALLENGE rule waived. False = an older NAS that drops the unknown key.
+        self.honours_purpose = True
         self.token_requests: list[dict] = []
         self.create_requests: list[dict] = []
 
@@ -87,20 +90,22 @@ class FakePortal:
                 {"body": json.loads(request.content), "user_agent": request.headers.get("user-agent")})
             if self.token_response is not None:
                 return self.token_response
-            if self.challenge_required:
+            connectors = self.honours_purpose and json.loads(request.content).get("purpose") == "connectors"
+            token = json.loads(request.content)["token"]
+            if token in self.dead_tokens:      # NAS validates the credential before any gate
+                return httpx.Response(404, json={"error": "unknown_token"})
+            if self.challenge_required and not connectors:
                 return httpx.Response(428, json={
                     "error": "challenge_required", "message": "A quick check first.",
                     "challenges": [{"type": "browser", "url": self.challenge_url, "state": "pending",
                                     "required": True, "expires_in": 600, "interval": 2}],
                     "fallback_url": f"{PORTAL}/login"})
-            token = json.loads(request.content)["token"]
-            if token in self.dead_tokens:
-                return httpx.Response(404, json={"error": "unknown_token"})
-            body = {"access_token": make_jwt(), "token_type": "Bearer", "expires_in": 900,
+            body = {"access_token": make_jwt(**({"scope": "connectors:invoke"} if connectors else {})),
+                    "token_type": "Bearer", "expires_in": 900,
                     "user_id": "nas_user:1", "org_id": "nas_org:1"}
             if self.inference_base_url:
                 body["inference_base_url"] = self.inference_base_url
-            if self.optional_challenge:
+            if self.optional_challenge and not connectors:
                 body["challenges"] = [{"type": "browser", "url": self.challenge_url, "state": "pending",
                                        "required": False, "expires_in": 600, "interval": 2}]
             return httpx.Response(200, json=body)
@@ -119,7 +124,6 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
     monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     real_client = httpx.Client
@@ -130,7 +134,7 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     anon_auth.reset_mint_memo_for_tests()
     free_tier_bootstrap.reset_for_tests()
     from hermes_cli import anon_challenge
@@ -141,3 +145,29 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
     # by an earlier test must not be served to this one.
     monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
     return fake
+
+
+def as_local_desktop_backend(monkeypatch) -> None:
+    """Every activity in this test is work for the local Desktop (``process_identity.serving_local_desktop``),
+    threads included."""
+    from contextvars import ContextVar
+    from hermes_cli import process_identity
+    monkeypatch.setattr(process_identity, "_SERVING_LOCAL_DESKTOP", ContextVar("serving_local_desktop_test", default=True))
+
+
+def off_local_desktop(monkeypatch) -> None:
+    """From here on the activity is not the local Desktop's: a CLI shell beside it, another client."""
+    from contextvars import ContextVar
+    from hermes_cli import process_identity
+    monkeypatch.setattr(process_identity, "_SERVING_LOCAL_DESKTOP", ContextVar("serving_local_desktop_test", default=False))
+
+
+def claimed_trial(monkeypatch) -> dict:
+    """A guest that claimed the welcome trial, read on the desktop's local backend: the state every
+    free-model surface needs. Mints through the fake portal installed by ``install_portal``."""
+    from hermes_cli import welcome_trial
+
+    as_local_desktop_backend(monkeypatch)
+    state = welcome_trial.claim_desktop_free_tier()
+    assert state is not None, welcome_trial.claim_blocker()
+    return state

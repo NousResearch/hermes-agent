@@ -17,7 +17,9 @@ running worker had no runtime bound before the 4 h/1 h stale window. Precedence:
    estimated is still bounded when an operator opts in.
 
 Host-local only: the dispatcher signals a PID whose spawn fingerprint it can
-verify, never a recycled one. Every hermes import is lazy so this module can be
+verify, never a recycled one, and stands down on a task whose owner receipt is
+unresolved (``kanban_owner_recovery``), same as the other reclaim sweeps. Every
+hermes import is lazy so this module can be
 imported from the dispatch facade without an import cycle.
 """
 from __future__ import annotations
@@ -70,7 +72,8 @@ def effective_runtime_limit(
         return int(explicit), "max_runtime"
     est = kb._opt_int(estimate)
     if est is not None and est > 0:
-        return int(ceil(est * ESTIMATE_GRACE_FACTOR)), "estimate"
+        # ceil() already returns an int; ruff 0.15.22 (upstream's pin) rejects the cast.
+        return ceil(est * ESTIMATE_GRACE_FACTOR), "estimate"
     if default_limit and default_limit > 0:
         return int(default_limit), "default"
     return None, None
@@ -103,13 +106,16 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
     for row in rows:
+        if owner_reclaim_blocked(conn, row["id"]):
+            continue
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
-        elapsed = now - int(row["active_started_at"])
+        elapsed = now - (kb._to_epoch(row["active_started_at"]) or now)  # unreadable clock: never kill
         limit, limit_source = effective_runtime_limit(
             row["max_runtime_seconds"], row["estimated_runtime_seconds"], default_limit)
         if limit is None or elapsed < limit:
@@ -139,6 +145,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s ({limit_source})"
         with kb.write_txn(conn):
+            # Again under the write lock, after the kill wait: an interpreter that bound
+            # meanwhile is invisible to the pid/claim CAS below. Host-local by the filter above.
+            if owner_reclaim_blocked_after_kill(conn, tid, signalled=True):
+                continue
             retry_status = kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "

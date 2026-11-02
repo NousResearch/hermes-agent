@@ -17,8 +17,8 @@ import pytest
 import pm
 from pm.environments import activation_environment, runtime_facts_path, selected_venv, site_packages
 from pm.environments import venv_python
-from tests.pm._fixtures import isolated_python  # noqa: F401
-from tests.pm.test_source_update_launch import source_launch  # noqa: F401
+from tests.pm._fixtures import isolated_python
+from tests.pm.test_source_update_launch import source_launch
 
 
 @pytest.fixture

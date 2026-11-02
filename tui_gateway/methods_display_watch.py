@@ -168,7 +168,7 @@ def _ensure_lease_watcher() -> None:
                 _poll_lease_files()
                 _poll_idle_screens()
                 _poll_runtime_files()
-            except Exception:  # noqa: BLE001 - a torn read must not kill the watcher
+            except Exception:
                 logger.debug("lease watcher poll failed", exc_info=True)
             time.sleep(_LEASE_POLL_S)
     threading.Thread(target=_loop, name="hermes-lease-watcher", daemon=True).start()

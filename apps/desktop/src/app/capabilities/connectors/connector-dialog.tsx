@@ -42,6 +42,8 @@ const RULEABLE = {
 const ruleable = (way: ConnectorWayHosted | null): boolean => way !== null && way.connected && RULEABLE[way.state]
 
 export interface ConnectorDialogProps {
+  /** The app's account list, drawn between the lead and the tools. */
+  accounts?: ReactNode
   advanced?: ReactNode
   card: ConnectorCardModel
   connectElement?: ReactNode
@@ -52,6 +54,8 @@ export interface ConnectorDialogProps {
   onAuthenticate?: () => void
   onConnect?: () => void
   onDisconnect?: () => void
+  /** Escape inside the dialog; return true when it cancelled something, so the dialog stays open. */
+  onEscape?: () => boolean
   onInstall?: (env: Record<string, string>) => void
   onOpenAdmin?: () => void
   onOpenChange: (open: boolean) => void
@@ -70,7 +74,15 @@ export interface ConnectorDialogProps {
 
 const localTarget = (card: ConnectorCardModel): string | undefined => card.ways.local?.target
 
-export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: ConnectorDialogProps) {
+export function ConnectorDialog({
+  accounts,
+  card,
+  onEscape,
+  onOpenChange,
+  open,
+  tools,
+  ...rest
+}: ConnectorDialogProps) {
   const { t } = useI18n()
   const local = card.residency === 'local'
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -80,6 +92,12 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
         className="max-h-[85vh] max-w-lg"
+        onEscapeKeyDown={event => {
+          // One cancel gesture does one thing: Escape abandons an open name edit first.
+          if (onEscape?.()) {
+            event.preventDefault()
+          }
+        }}
         onOpenAutoFocus={event => {
           event.preventDefault()
           titleRef.current?.focus()
@@ -90,6 +108,8 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
 
         <div className="flex min-h-0 flex-1 flex-col">
           {card.ways.hosted ? <HostedLead card={card} {...rest} /> : <LocalLead card={card} {...rest} />}
+
+          {accounts}
 
           {tools}
 
@@ -102,7 +122,7 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
   )
 }
 
-type PartProps = Omit<ConnectorDialogProps, 'onOpenChange' | 'open' | 'tools'>
+type PartProps = Omit<ConnectorDialogProps, 'accounts' | 'onEscape' | 'onOpenChange' | 'open' | 'tools'>
 
 function Header({ card, titleRef, ...rest }: PartProps & { titleRef: RefObject<HTMLHeadingElement | null> }) {
   const { t } = useI18n()

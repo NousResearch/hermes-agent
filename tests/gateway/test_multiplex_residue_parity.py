@@ -30,7 +30,7 @@ def two_homes(tmp_path, monkeypatch):
 
 
 def test_served_profile_reads_its_own_sessions_settings(two_homes, monkeypatch):
-    root, alpha = two_homes
+    _root, alpha = two_homes
     from hermes_state_fts import _cjk_fts_config_enabled
     from hermes_state_search import _search_slow_ms
     # The multiplexer bridged the LAUNCH (default) profile's sessions.* into env at import.
@@ -46,7 +46,7 @@ def test_served_profile_reads_its_own_sessions_settings(two_homes, monkeypatch):
 
 
 def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
-    root, alpha = two_homes
+    _root, alpha = two_homes
     from gateway import run as gw_run
     monkeypatch.delenv("HERMES_CJK_FTS", raising=False)
     ss.set_multiplex_active(True)
@@ -56,7 +56,7 @@ def test_per_turn_sessions_bridge_skips_secondary_scope(two_homes, monkeypatch):
 
 
 def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
-    root, alpha = two_homes
+    _root, _alpha = two_homes
     from gateway.platforms.base import resolve_proxy_url
     monkeypatch.setenv("TELEGRAM_PROXY", "socks5://default-proxy:1080")  # launch profile's .env
     ss.set_multiplex_active(True)
@@ -78,7 +78,7 @@ def test_resolve_proxy_url_reads_routed_profile_scope(two_homes, monkeypatch):
 def test_stale_served_turn_never_recreates_archived_profile(two_homes):
     """#94590: a multiplexer still holding an archived profile's route must not re-scaffold it."""
     import shutil
-    root, alpha = two_homes
+    _root, alpha = two_homes
     from gateway import run as gw_run
     shutil.rmtree(alpha)
     ss.set_multiplex_active(True)

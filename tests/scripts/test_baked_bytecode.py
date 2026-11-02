@@ -75,7 +75,7 @@ def _load_wrapper():
     text = render_wrapper("stubmod.entry:main", "../hermes-agent", "../venv/Lib/site-packages")
     namespace: dict = {"__name__": "launcher_wrapper_under_test"}
     wrapper = Path("scripts/build/launcher_wrapper.py")
-    exec(compile(text, str(wrapper), "exec"), namespace)  # noqa: S102 - test fixture
+    exec(compile(text, str(wrapper), "exec"), namespace)
     return namespace
 
 

@@ -17,7 +17,7 @@ def _flush_probe(monkeypatch, observe):
 
 
 def test_install_selection_is_committed_only_after_its_tree_is_flushed(tmp_path, monkeypatch):
-    import pm.install as install
+    from pm import install
     from pm import paths
     from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 

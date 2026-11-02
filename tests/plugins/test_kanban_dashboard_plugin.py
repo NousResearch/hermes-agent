@@ -1123,6 +1123,7 @@ def test_touch_card_tap_opens_instead_of_dragging():
     result = subprocess.run(
         [node, str(probe), str(bundle)],
         capture_output=True, text=True, timeout=30,
+        check=False,
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
@@ -1225,7 +1226,7 @@ def test_ws_events_for_archived_board_does_not_recreate_it(tmp_path, monkeypatch
                 ws.receive_json()
             except WebSocketDisconnect:
                 recv["closed"] = True
-            except Exception as exc:  # noqa: BLE001 - reported via the dict
+            except Exception as exc:
                 recv["error"] = exc
 
         thread = threading.Thread(target=_recv, daemon=True)

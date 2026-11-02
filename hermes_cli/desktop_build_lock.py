@@ -147,7 +147,7 @@ class DesktopBuildLock:
             finally:
                 self._release_checkout()  # the narrower lock first: the order is checkout, build
 
-    def __enter__(self) -> "DesktopBuildLock":
+    def __enter__(self) -> DesktopBuildLock:
         if not self.acquire():
             raise RuntimeError("desktop build lock is already held")
         return self

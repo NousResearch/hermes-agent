@@ -4,12 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  SessionActiveItem,
-  SessionActiveListResponse,
-  SessionCloseResponse,
-  SessionDeleteResponse
-} from '../gatewayTypes.js'
+import type { SessionActiveItem, SessionActiveListResponse, SessionCloseResponse } from '../gatewayTypes.js'
+import { useSessionDelete } from '../hooks/useSessionDelete.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -317,6 +313,8 @@ export function ActiveSessionSwitcher({
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListRow[]>([])
   const [err, setErr] = useState('')
+  // A close/delete failure: kept apart from `err`, which every quiet poll rewrites.
+  const [actionErr, setActionErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
   const [draft, setDraft] = useState('')
@@ -328,7 +326,6 @@ export function ActiveSessionSwitcher({
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
-  const [deleting, setDeleting] = useState(false)
   const T = useT()
   const S = T.pickers.session
   const C = T.pickers.common
@@ -371,11 +368,28 @@ export function ActiveSessionSwitcher({
         // Fetch independently (allSettled) so a failing session.list can't
         // wipe the live-session list: live sessions still render and the
         // resumable history degrades on its own.
+        const canonicalList = gw.isCanonical
+          ? gw.request<{ scope?: string; sessions?: (SessionListRow & { running?: boolean })[] }>('session.list', {
+              limit: 200
+            })
+          : null
+
         const [liveRes, histRes] = await Promise.allSettled([
-          gw.request<SessionActiveListResponse>('session.active_list', {
-            current_session_id: currentSessionId
-          }),
-          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
+          canonicalList
+            ? canonicalList.then(value => ({
+                sessions: value.sessions?.map(row => ({
+                  ...row,
+                  current: row.id === currentSessionId,
+                  status: row.running ? ('working' as const) : ('idle' as const)
+                }))
+              }))
+            : gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: currentSessionId }),
+          includeHistory
+            ? gw.request<SessionListResult>('session.list', {
+                limit: 200,
+                ...(canonicalList ? { scope: 'stored' } : {})
+              })
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
@@ -491,7 +505,7 @@ export function ActiveSessionSwitcher({
       return
     }
 
-    setErr('')
+    setActionErr('')
     setClosingId(target.id)
 
     try {
@@ -499,7 +513,13 @@ export function ActiveSessionSwitcher({
       const closed = Boolean(result?.closed ?? result?.ok)
 
       if (!closed) {
-        setErr(messages().pickers.session.errors.alreadyClosed)
+        // A canonical view closes only what it holds: a null answer means no close was attempted, not
+        // that main refused one. Only a receipt can say the session was already closed.
+        setActionErr(
+          gw.isCanonical && result === null
+            ? messages().pickers.session.errors.notAttached
+            : messages().pickers.session.errors.alreadyClosed
+        )
 
         return
       }
@@ -515,49 +535,33 @@ export function ActiveSessionSwitcher({
         setSel(s => Math.max(0, Math.min(s, remaining.length + history.length)))
       }
     } catch (e: unknown) {
-      setErr(rpcErrorMessage(e))
+      setActionErr(rpcErrorMessage(e))
     } finally {
       setClosingId('')
     }
-  }, [closingId, currentSessionId, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
+  }, [closingId, currentSessionId, gw.isCanonical, history.length, items, load, onClose, onNew, onSelect, rowKind, sel])
 
-  const performDelete = useCallback(
+  const removeDeleted = useCallback(
     (id: string) => {
-      const target = history.find(h => h.id === id)
-
-      if (!target || deleting) {
-        return
-      }
-
-      setDeleting(true)
-      gw.request<SessionDeleteResponse>('session.delete', { session_id: target.id })
-        .then(raw => {
-          const r = asRpcResult<SessionDeleteResponse>(raw)
-
-          if (!r || r.deleted !== target.id) {
-            setErr(messages().pickers.common.invalidResponse('session.delete'))
-            setDeleting(false)
-
-            return
-          }
-
-          rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
-          setHistory(prev => prev.filter(h => h.id !== target.id))
-          setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
-          setErr('')
-          setDeleting(false)
-        })
-        .catch((e: unknown) => {
-          setErr(rpcErrorMessage(e))
-          setDeleting(false)
-        })
+      rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== id)
+      setHistory(prev => prev.filter(h => h.id !== id))
+      setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
     },
-    [deleting, gw, history, items.length]
+    [history.length, items.length]
   )
+
+  const keepView = useCallback((resolved: string) => resolved === currentSessionId, [currentSessionId])
+  const { deletePending, deleting, performDelete } = useSessionDelete(gw, removeDeleted, setActionErr, keepView)
 
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
+
+      // Keys are held while a delete is pending; a click must not open the row mid-delete either.
+      if (deletePending()) {
+        return
+      }
+
       const kind = rowKind(index)
       const clamped = Math.max(0, Math.min(index, total - 1))
 
@@ -577,7 +581,7 @@ export function ActiveSessionSwitcher({
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [deletePending, history, items, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -585,7 +589,7 @@ export function ActiveSessionSwitcher({
   const draftHasText = Boolean(draft.trim())
 
   useInput((ch, key) => {
-    if (pickingModel || deleting) {
+    if (pickingModel || deletePending()) {
       return
     }
 
@@ -593,9 +597,8 @@ export function ActiveSessionSwitcher({
     // other key cancels the prompt (mirrors the standalone resume picker).
     if (confirmDelete !== null) {
       if (ch?.toLowerCase() === 'd') {
-        const id = confirmDelete
         setConfirmDelete(null)
-        performDelete(id)
+        performDelete(history.find(h => h.id === confirmDelete))
       } else {
         setConfirmDelete(null)
       }
@@ -715,7 +718,7 @@ export function ActiveSessionSwitcher({
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
-      {err && <Text color={t.color.label}>{C.error(err)}</Text>}
+      {(actionErr || err) && <Text color={t.color.label}>{C.error(actionErr || err)}</Text>}
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>

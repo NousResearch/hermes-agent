@@ -22,7 +22,7 @@ from tools.environments.file_sync import FileSyncManager
 
 def _make_manager() -> FileSyncManager:
     return FileSyncManager(
-        get_files_fn=lambda: {},
+        get_files_fn=dict,
         upload_fn=lambda *a, **k: None,
         delete_fn=lambda *a, **k: None,
     )

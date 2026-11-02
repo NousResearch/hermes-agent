@@ -104,7 +104,7 @@ def _complete_locked(
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.
         expose_pm_git(root)
-    except Exception as exc:  # noqa: BLE001 — git-less steps below still complete
+    except Exception as exc:
         print(f"⚠ Could not provide git for the source completion: {exc}", file=sys.stderr)
     owed: list[tuple[str, str]] = []
 

@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
@@ -71,7 +71,7 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
-def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
+def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
     downstream failure makes cheap models loop. Required-field probe first, then the same
@@ -136,7 +136,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
-def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
     Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
@@ -163,7 +163,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     if not isinstance(raw_calls, list) or not raw_calls:
         return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
 
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for position, raw in enumerate(raw_calls):
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
@@ -193,7 +193,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
 _ECHO_ARGS_MAX_CHARS = 1500
 
 
-def local_batch_error(entries: List[Dict[str, Any]]) -> str:
+def local_batch_error(entries: list[dict[str, Any]]) -> str:
     """Rejection for a multi-entry batch that names a local tool. Restates the valid
     shape with the caller's OWN first entry: small models re-send an identical batch
     when told only the constraint, and the echoed payload is what gets them unstuck."""
@@ -201,7 +201,7 @@ def local_batch_error(entries: List[Dict[str, Any]]) -> str:
     args = json.dumps(first.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
     if len(args) > _ECHO_ARGS_MAX_CHARS:
         args = "{...}"  # keep the correction readable; the model still has its own arguments
-    retry = '{"calls":[{"name":%s,"arguments":%s}]}' % (json.dumps(first["name"], ensure_ascii=False), args)
+    retry = '{{"calls":[{{"name":{},"arguments":{}}}]}}'.format(json.dumps(first["name"], ensure_ascii=False), args)
     remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
                  if len(entries) > 1 else "")
     return (
@@ -210,14 +210,47 @@ def local_batch_error(entries: List[Dict[str, Any]]) -> str:
     )
 
 
-def not_deferrable_error(name: str) -> str:
+def unavailable_in_session_reason(name: str) -> str:
+    """Why a registered tool absent from THIS session cannot be reached, whatever its door.
+
+    Deferral is a property of the tool, availability one of the session: a deferred tool the
+    session does not carry (``defer: [delegate_task]`` in a worker) is no more findable through
+    ``tool_search`` than a stripped core tool is callable directly."""
+    return (f"'{name}' is not available in this execution context. "
+            "Don't retry it — state the assumption and proceed with the work.")
+
+
+def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[str]]) -> Optional[str]:
+    """The unavailability message when a core tool is missing from the session's own tool list,
+    whether or not ``defer:`` moved it behind the bridge; None without session context, when
+    the session carries it, or for MCP/plugin/unregistered names (an absent one may be a stale
+    catalog that ``tool_search`` can still refresh). A missing GUI surface keeps its own reason."""
+    if session_tool_names is None or name in set(session_tool_names):
+        return None
+    from tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
+    if name not in _core_tool_names() or _registry_entry(name) is None:
+        return None
+    return out_of_scope_reason(name) or unavailable_in_session_reason(name)
+
+
+def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
-    the second group 'call it directly' is the opposite of what they must do."""
+    the second group 'call it directly' is the opposite of what they must do.
+
+    ``_HERMES_CORE_TOOLS`` is a *static* list, so a core tool stripped from this session's
+    toolset (clarify in a subagent, kanban worker) otherwise gets told "call it directly"
+    — an instruction that can never resolve, burning a turn on a confident wrong answer.
+    When the caller passes the session-scoped names, absence is reported as unavailability
+    instead. Stays None for callers with no session context; deliberately never consults the
+    global blocklist, because a top-level session legitimately has these tools.
+    """
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
+        if session_tool_names is not None and name not in set(session_tool_names):
+            return unavailable_in_session_reason(name)
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

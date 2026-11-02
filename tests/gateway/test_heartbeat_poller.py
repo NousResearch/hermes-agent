@@ -62,7 +62,6 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
         received.append(event)
         started.set()
         await release.wait()
-        return None
 
     adapter.set_message_handler(handler)
     # A remembered topic must not redirect the watched session or introduce an
@@ -103,7 +102,6 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
     async def handler(event):
         event._heartbeat_execution_started = True  # fake agent execution boundary
-        return None
 
     adapter.set_message_handler(handler)
     for state in (runner._running_agents, adapter._active_sessions, adapter._pending_messages):
@@ -125,7 +123,7 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
     identical paused notices in 5h); the tick fires normally after `hermes resume`."""
     from agent import estop
 
-    runner, adapter, watch, key, clock = poller
+    runner, adapter, watch, _key, clock = poller
     runner._is_user_authorized = lambda source: True
     sent, received = [], []
 
@@ -151,7 +149,6 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
     async def agent_turn(event):
         event._heartbeat_execution_started = True  # fake agent execution boundary
         received.append(event)
-        return None
 
     estop.disengage()
     adapter.set_message_handler(agent_turn)
@@ -165,7 +162,7 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
 async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(poller, monkeypatch):
     from agent import estop
 
-    runner, adapter, watch, key, clock = poller
+    runner, adapter, watch, key, _clock = poller
     source = watch[key][0]
     runner._is_user_authorized = lambda source: True
     sent = []

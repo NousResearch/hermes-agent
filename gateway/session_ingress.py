@@ -291,6 +291,8 @@ async def execute_admission(authority, ref, row):
     if policy is not None:
         return await admit_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
+    # The key the turn registers its post-delivery slot under; a rebind mid-turn must not move the take.
+    route = live.route
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
     if 'native_text_v1' in row['payload']:
@@ -381,7 +383,7 @@ async def execute_admission(authority, ref, row):
         if not native:
             # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
             # once the turn settled and its reply went out (``fire_post_delivery``).
-            _take_post_delivery(authority, row['admission_id'], event.source, live.route)
+            _take_post_delivery(authority, row['admission_id'], event.source, route)
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)

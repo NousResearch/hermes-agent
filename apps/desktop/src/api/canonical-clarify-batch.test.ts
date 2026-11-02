@@ -21,21 +21,41 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
       const reply = (result: unknown) => socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
 
       if (frame.method === 'client.capabilities') {
-        if (frame.params.server_requests) { advertised++ }
+        if (frame.params.server_requests) {
+          advertised++
+        }
 
         return capabilities
           ? reply({ server_requests: ['clarify'], ...capabilities })
-          : socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, error: { code: -32601, message: 'unknown method' } }))
+          : socket.send(
+              JSON.stringify({ jsonrpc: '2.0', id: frame.id, error: { code: -32601, message: 'unknown method' } })
+            )
       }
 
       if (frame.method === 'session.resume') {
-        return reply({ session_id: 's', revision: 1, execution_generation: 1, replay_epoch: 'e', last_sequence: 0, prompts: [] })
+        return reply({
+          session_id: 's',
+          revision: 1,
+          execution_generation: 1,
+          replay_epoch: 'e',
+          last_sequence: 0,
+          prompts: []
+        })
       }
 
-      if (frame.method === 'prompt.submit') { submits.push(frame.params) }
+      if (frame.method === 'prompt.submit') {
+        submits.push(frame.params)
+      }
 
-      reply({ admission_id: `a${submits.length}`, ref: { session_id: 's' }, sequence: 1, status: 'queued', outcome: null,
-        authority_epoch: 1, execution_generation: 1 })
+      reply({
+        admission_id: `a${submits.length}`,
+        ref: { session_id: 's' },
+        sequence: 1,
+        status: 'queued',
+        outcome: null,
+        authority_epoch: 1,
+        execution_generation: 1
+      })
     })
   })
   const client = new HermesGateway()
@@ -52,7 +72,9 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
 
     await new Promise<void>(resolve => server.close(() => resolve()))
   }

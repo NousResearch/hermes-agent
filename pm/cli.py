@@ -425,7 +425,7 @@ def cmd_env(args) -> int:
 
 def cmd_doctor(args) -> int:
     from pm.install import _identity, _installed_location
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     lockfile = _lockfile()
     facts = _facts()
@@ -464,7 +464,7 @@ def cmd_doctor(args) -> int:
             bad += 1
             continue
         recorded = fact.get("digest")
-        if recorded is not None and tree_digest(entry) != recorded:
+        if recorded is not None and not digest_matches(entry, recorded):
             # Doctor is the expensive-path tool: re-hash the realized
             # bytes. Boot checks stay O(1) json compares.
             print(f"✗ {name}: realized bytes do not match recorded digest")

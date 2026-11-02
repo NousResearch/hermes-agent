@@ -1043,6 +1043,10 @@ export interface Translations extends NoticeTranslations {
       active: string
       takenBy: string
       invalidShortcut: string
+      targetTitle: string
+      targetDesc: string
+      targetCurrent: string
+      targetNew: string
     }
     credentials: {
       pasteKey: string

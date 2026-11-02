@@ -1296,7 +1296,11 @@ export const zhOverrides = {
       shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
       active: '快捷键已生效。',
       takenBy: '此快捷键已被其他应用占用，请换一个。',
-      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'
+      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。',
+      targetTitle: '发送提示到',
+      targetDesc: '快速输入默认发送的位置。你仍可在窗口内为单条提示选择其他目标。',
+      targetCurrent: '当前会话',
+      targetNew: '新建会话'
     },
     credentials: {
       pasteKey: '粘贴密钥',

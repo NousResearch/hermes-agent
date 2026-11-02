@@ -864,7 +864,11 @@ export const zhHantSettings = {
       shortcutDesc: '至少需要一個修飾鍵，例如 CommandOrControl+Shift+Space。',
       active: '快速鍵已生效。',
       takenBy: '此快速鍵已被其他應用程式占用，請換一個。',
-      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。'
+      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。',
+      targetTitle: '傳送提示到',
+      targetDesc: '快速輸入預設傳送的位置。你仍可在視窗內為單一提示選擇其他目標。',
+      targetCurrent: '目前工作階段',
+      targetNew: '新工作階段'
     },
     credentials: {
       pasteKey: '貼上金鑰',

@@ -204,30 +204,45 @@ describe('parseQuickEntryShortcut', () => {
 })
 
 describe('sanitizeQuickEntrySettings', () => {
-  it('defaults to enabled with the default shortcut', () => {
-    expect(sanitizeQuickEntrySettings(undefined)).toEqual({ enabled: true, shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT })
+  it('defaults to enabled with the default shortcut and the current-chat target', () => {
+    expect(sanitizeQuickEntrySettings(undefined)).toEqual({
+      enabled: true,
+      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT,
+      target: 'current'
+    })
     expect(sanitizeQuickEntrySettings('not an object')).toEqual({
       enabled: true,
-      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT
+      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT,
+      target: 'current'
     })
   })
 
   it('keeps an explicit disable and normalizes a stored shortcut', () => {
     expect(sanitizeQuickEntrySettings({ enabled: false, shortcut: 'alt+j' })).toEqual({
       enabled: false,
-      shortcut: 'Alt+J'
+      shortcut: 'Alt+J',
+      target: 'current'
     })
   })
 
   it('falls back to the default when the stored shortcut is unusable', () => {
     expect(sanitizeQuickEntrySettings({ enabled: true, shortcut: 'Q' })).toEqual({
       enabled: true,
-      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT
+      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT,
+      target: 'current'
     })
   })
 
   it('treats a non-boolean enabled as off (only `true` opts in once present)', () => {
     expect(sanitizeQuickEntrySettings({ enabled: 'yes' }).enabled).toBe(false)
+  })
+
+  it('round-trips a stored new-session target and rejects anything else', () => {
+    expect(sanitizeQuickEntrySettings({ target: 'new' }).target).toBe('new')
+    // A stale or hand-edited value must not leave Quick Entry unsummonable or
+    // pointing at a session id that sanitization cannot validate.
+    expect(sanitizeQuickEntrySettings({ target: 'session-42' }).target).toBe('current')
+    expect(sanitizeQuickEntrySettings({ target: null }).target).toBe('current')
   })
 })
 

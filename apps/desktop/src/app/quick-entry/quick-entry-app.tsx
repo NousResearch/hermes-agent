@@ -76,6 +76,11 @@ export function QuickEntryApp() {
     const offState = api?.onState(payload => {
       dispatch({
         connected: payload?.connected === true,
+        // Omit the field when main did not supply one: the reducer keeps the
+        // last known default instead of snapping back to the current chat.
+        ...(payload?.defaultTarget === QUICK_TARGET_NEW || payload?.defaultTarget === QUICK_TARGET_CURRENT
+          ? { defaultTarget: payload.defaultTarget }
+          : {}),
         sessions: Array.isArray(payload?.sessions) ? payload.sessions : [],
         type: 'state'
       })
@@ -194,7 +199,19 @@ export function QuickEntryApp() {
             aria-label="Target session"
             disabled={!state.connected}
             id="quick-entry-target"
-            onChange={event => dispatch({ target: event.target.value, type: 'target' })}
+            onChange={event => {
+              const target = event.target.value
+
+              dispatch({ target, type: 'target' })
+
+              // "Current chat" / "New session" is a standing choice, not a
+              // per-prompt one: write it back as the default so the picker is
+              // still there on the next summon, and Settings agrees. A picked
+              // stored session stays a one-off for this send.
+              if (target === QUICK_TARGET_CURRENT || target === QUICK_TARGET_NEW) {
+                void window.hermesDesktop?.quickEntry?.setSettings?.({ target })
+              }
+            }}
             onKeyDown={event => {
               if (event.key === 'Escape') {
                 event.preventDefault()

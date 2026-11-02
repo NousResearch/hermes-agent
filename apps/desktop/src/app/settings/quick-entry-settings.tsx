@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import {
@@ -9,6 +10,8 @@ import {
   canUseQuickEntry,
   loadQuickEntrySettings,
   QUICK_ENTRY_DEFAULT_SHORTCUT,
+  QUICK_TARGET_CURRENT,
+  QUICK_TARGET_NEW,
   saveQuickEntrySettings
 } from '@/store/quick-entry'
 
@@ -101,6 +104,28 @@ export function QuickEntrySettings() {
         description={q.shortcutDesc}
         id={settingElementId(SETTING_IDS.advanced.quickEntryShortcut)}
         title={q.shortcutTitle}
+      />
+      <ListRow
+        action={
+          <Select
+            disabled={!state.enabled}
+            onValueChange={next =>
+              void saveQuickEntrySettings({ target: next === QUICK_TARGET_NEW ? QUICK_TARGET_NEW : QUICK_TARGET_CURRENT })
+            }
+            value={state.target}
+          >
+            <SelectTrigger aria-label={q.targetTitle}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={QUICK_TARGET_CURRENT}>{q.targetCurrent}</SelectItem>
+              <SelectItem value={QUICK_TARGET_NEW}>{q.targetNew}</SelectItem>
+            </SelectContent>
+          </Select>
+        }
+        description={q.targetDesc}
+        id={settingElementId(SETTING_IDS.advanced.quickEntryTarget)}
+        title={q.targetTitle}
       />
     </>
   )

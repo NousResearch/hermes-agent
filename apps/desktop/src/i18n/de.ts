@@ -1591,7 +1591,12 @@ export const deOverrides = {
       shortcutDesc: 'Benötigt mindestens eine Zusatztaste, z. B. CommandOrControl+Shift+Leertaste.',
       active: 'Das Tastaturkürzel ist aktiv.',
       takenBy: 'Eine andere App verwendet dieses Tastaturkürzel bereits — wählen Sie ein anderes.',
-      invalidShortcut: 'Kein gültiges Tastaturkürzel. Fügen Sie mindestens eine Zusatztaste hinzu.'
+      invalidShortcut: 'Kein gültiges Tastaturkürzel. Fügen Sie mindestens eine Zusatztaste hinzu.',
+      targetTitle: 'Prompts senden an',
+      targetDesc:
+        'Wohin die Schnelleingabe standardmäßig sendet. Im Fenster können Sie das Ziel für einen einzelnen Prompt weiterhin ändern.',
+      targetCurrent: 'Aktueller Chat',
+      targetNew: 'Neue Session'
     },
     credentials: {
       pasteKey: 'Schlüssel einfügen',

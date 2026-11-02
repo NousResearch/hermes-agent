@@ -487,9 +487,10 @@ import {
 import {
   createQuickEntryShortcut,
   createQuickEntrySubmitRelay,
-  quickEntryWindowBounds,
-  sanitizeQuickEntrySettings
+  quickEntryWindowBounds
 } from './quick-entry'
+import { initQuickEntrySettings, readQuickEntrySettings } from './quick-entry-settings'
+import { registerQuickEntrySettingsIpc } from './quick-entry-settings-ipc'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -13329,30 +13330,27 @@ function closeHudWindow() {
 // the shortcut on a cold launch without the renderer ever visiting Settings),
 // same authority split as keep-awake. Registration failure is surfaced, never
 // swallowed: a chord another app already owns comes back as `error: 'taken'`.
-const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.json')
-
-let quickEntryWindow = null
+// The persisted file lives in electron/quick-entry-settings.ts, the settings
+// IPC in electron/quick-entry-settings-ipc.ts.
+let quickEntryWindow: null | BrowserWindow = null
 
 // Latest state push from the primary renderer (connection + recent sessions),
 // replayed to a quick window that spawns after the push happened.
-let quickEntryLastState = null
+let quickEntryLastState: null | Record<string, unknown> = null
 
-function readQuickEntrySettings() {
-  try {
-    return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
-  } catch {
-    // Missing / unreadable / malformed → shipped defaults (enabled, default chord).
-    return sanitizeQuickEntrySettings(undefined)
+/**
+ * The payload a quick window receives: the primary renderer's pushed truth
+ * (connection + recent sessions) plus the main-owned default target. The target
+ * preference has to live in main — it must survive a cold launch without the
+ * renderer visiting Settings — so folding it in here keeps the quick window from
+ * asking for it on every summon.
+ */
+function quickEntryWindowState() {
+  if (!quickEntryLastState) {
+    return null
   }
-}
 
-function writeQuickEntrySettings(settings) {
-  try {
-    fs.mkdirSync(path.dirname(QUICK_ENTRY_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(QUICK_ENTRY_CONFIG_PATH, JSON.stringify(settings, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[quick-entry] write failed: ${error.message}`)
-  }
+  return { ...quickEntryLastState, defaultTarget: readQuickEntrySettings().target }
 }
 
 function quickEntryUrl() {
@@ -13441,8 +13439,10 @@ function spawnQuickEntryWindow() {
   // freshly spawned quick window must not sit "disconnected" when the primary
   // renderer already reported a live gateway.
   win.webContents.on('did-finish-load', () => {
-    if (!win.isDestroyed() && quickEntryLastState) {
-      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+    const payload = quickEntryWindowState()
+
+    if (!win.isDestroyed() && payload) {
+      win.webContents.send('hermes:quick-entry:state', payload)
     }
   })
 
@@ -13525,7 +13525,7 @@ function applyQuickEntrySettings(settings) {
     rememberLog(`[quick-entry] shortcut ${state.shortcut} is not a valid accelerator`)
   }
 
-  return { ...state, enabled: settings.enabled }
+  return { ...state, enabled: settings.enabled, target: settings.target }
 }
 
 function closeQuickEntryWindow() {
@@ -16718,35 +16718,25 @@ function applyKeepAwake(working = isAnyTurnInFlight()) {
 ipcMain.on('hermes:keep-awake', (_event, value) => keepAwake.setMode(value))
 
 // Quick Entry: the renderer reads the live registration state on settings mount
-// and writes the preference back. Main is authoritative — it owns the OS
-// accelerator — so both handlers return the state that ACTUALLY resulted,
-// including `registered: false` + `error: 'taken'` when another app owns the
-// chord. See electron/quick-entry.ts + store/quick-entry.
-ipcMain.handle('hermes:quick-entry:settings:get', async () => {
-  const settings = readQuickEntrySettings()
-  const state = quickEntryShortcut.current()
+// and writes the preference back; the handlers live in
+// electron/quick-entry-settings-ipc.ts, the persisted file in
+// electron/quick-entry-settings.ts.
+initQuickEntrySettings(rememberLog)
 
-  // Ground truth is what the last apply produced; the shortcut we report is the
-  // live one (a saved-but-rejected chord still shows what the user asked for).
-  return {
-    enabled: settings.enabled,
-    error: state.error,
-    registered: state.registered,
-    shortcut: settings.enabled ? state.shortcut : settings.shortcut
-  }
-})
+registerQuickEntrySettingsIpc({
+  apply: applyQuickEntrySettings,
+  notifyWindow: () => {
+    if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
+      return
+    }
 
-ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
-  const current = readQuickEntrySettings()
+    const pushed = quickEntryWindowState()
 
-  const next = sanitizeQuickEntrySettings({
-    enabled: patch?.enabled === undefined ? current.enabled : patch.enabled === true,
-    shortcut: typeof patch?.shortcut === 'string' && patch.shortcut.trim() ? patch.shortcut : current.shortcut
-  })
-
-  writeQuickEntrySettings(next)
-
-  return applyQuickEntrySettings(next)
+    if (pushed) {
+      quickEntryWindow.webContents.send('hermes:quick-entry:state', pushed)
+    }
+  },
+  shortcutState: () => quickEntryShortcut.current()
 })
 
 // Quick window → main → PRIMARY renderer. We never submit here: the renderer
@@ -16818,8 +16808,13 @@ ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
 ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
   quickEntryLastState = payload ?? null
 
-  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
-    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+  // Forward main's own view (pushed truth + the persisted default target), not
+  // the raw renderer payload: the target preference is main-owned, and a bare
+  // forward would let the window fall back to "current chat" on every push.
+  const pushed = quickEntryWindowState()
+
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed() && pushed) {
+    quickEntryWindow.webContents.send('hermes:quick-entry:state', pushed)
   }
 })
 

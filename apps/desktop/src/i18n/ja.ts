@@ -966,7 +966,11 @@ export const jaOverrides = {
       shortcutDesc: '修飾キーが 1 つ以上必要です（例: CommandOrControl+Shift+Space）。',
       active: 'ショートカットは有効です。',
       takenBy: 'このショートカットは他のアプリが使用しています。別のものを選んでください。',
-      invalidShortcut: '有効なショートカットではありません。修飾キーを 1 つ以上含めてください。'
+      invalidShortcut: '有効なショートカットではありません。修飾キーを 1 つ以上含めてください。',
+      targetTitle: 'プロンプトの送信先',
+      targetDesc: 'クイック入力が既定で送信する先です。ウィンドウ内ではプロンプトごとに別の送信先を選べます。',
+      targetCurrent: '現在のチャット',
+      targetNew: '新しいセッション'
     },
     credentials: {
       pasteKey: 'キーを貼り付け',

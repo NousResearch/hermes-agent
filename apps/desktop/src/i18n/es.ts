@@ -1590,7 +1590,12 @@ export const esOverrides = {
       shortcutDesc: 'Necesita al menos un modificador, p. ej. CommandOrControl+Shift+Espacio.',
       active: 'El atajo está activo.',
       takenBy: 'Otra app ya usa este atajo — elige uno diferente.',
-      invalidShortcut: 'No es un atajo válido. Incluye al menos una tecla modificadora.'
+      invalidShortcut: 'No es un atajo válido. Incluye al menos una tecla modificadora.',
+      targetTitle: 'Enviar los prompts a',
+      targetDesc:
+        'Dónde entrega la entrada rápida por defecto. En la ventana aún puedes elegir otro destino para un prompt concreto.',
+      targetCurrent: 'Chat actual',
+      targetNew: 'Nueva sesión'
     },
     credentials: {
       pasteKey: 'Pegar clave',

@@ -17,6 +17,17 @@
 
 import { atom } from 'nanostores'
 
+/** Send into whatever chat the main window currently has in front. */
+export const QUICK_TARGET_CURRENT = 'current'
+/** Start a brand-new session for this prompt. */
+export const QUICK_TARGET_NEW = 'new'
+
+/**
+ * The two persisted default targets. Declared here (above the settings state)
+ * because the atom, the pushed payload, and the composer reducer all read it.
+ */
+export type QuickEntryTarget = typeof QUICK_TARGET_CURRENT | typeof QUICK_TARGET_NEW
+
 export interface QuickEntryState {
   enabled: boolean
   /** null before the first read; the settings row shows a skeleton until then. */
@@ -24,6 +35,8 @@ export interface QuickEntryState {
   /** Why the OS shortcut isn't live: taken by another app, or unusable. */
   error: null | QuickEntryRegistrationError
   shortcut: string
+  /** Where a submit lands when the window's picker was never touched. */
+  target: QuickEntryTarget
 }
 
 export type QuickEntryRegistrationError = 'invalid' | 'taken'
@@ -33,6 +46,7 @@ export interface QuickEntryStatus {
   error: null | QuickEntryRegistrationError
   registered: boolean
   shortcut: string
+  target: QuickEntryTarget
 }
 
 export const QUICK_ENTRY_DEFAULT_SHORTCUT = 'CommandOrControl+Shift+Space'
@@ -41,7 +55,8 @@ export const $quickEntry = atom<QuickEntryState>({
   enabled: true,
   error: null,
   registered: null,
-  shortcut: QUICK_ENTRY_DEFAULT_SHORTCUT
+  shortcut: QUICK_ENTRY_DEFAULT_SHORTCUT,
+  target: QUICK_TARGET_CURRENT
 })
 
 function applyStatus(status: QuickEntryStatus | undefined): void {
@@ -53,7 +68,8 @@ function applyStatus(status: QuickEntryStatus | undefined): void {
     enabled: status.enabled === true,
     error: status.error ?? null,
     registered: status.registered === true,
-    shortcut: typeof status.shortcut === 'string' && status.shortcut ? status.shortcut : QUICK_ENTRY_DEFAULT_SHORTCUT
+    shortcut: typeof status.shortcut === 'string' && status.shortcut ? status.shortcut : QUICK_ENTRY_DEFAULT_SHORTCUT,
+    target: status.target === QUICK_TARGET_NEW ? QUICK_TARGET_NEW : QUICK_TARGET_CURRENT
   })
 }
 
@@ -92,7 +108,11 @@ export async function loadQuickEntrySettings(): Promise<void> {
  * rejected shortcut or an already-taken chord comes back as an error state
  * instead of a silently-lost setting.
  */
-export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcut?: string }): Promise<void> {
+export async function saveQuickEntrySettings(patch: {
+  enabled?: boolean
+  shortcut?: string
+  target?: QuickEntryTarget
+}): Promise<void> {
   const setSettings = quickEntrySettingsCall('setSettings')
 
   if (!setSettings) {
@@ -119,20 +139,19 @@ export interface QuickEntrySessionOption {
   title: string
 }
 
-/** Send into whatever chat the main window currently has in front. */
-export const QUICK_TARGET_CURRENT = 'current'
-/** Start a brand-new session for this prompt. */
-export const QUICK_TARGET_NEW = 'new'
-
 /**
  * The primary renderer's push into the quick window: is the gateway usable, and
  * which recent sessions can be targeted. The quick window has NO gateway of its
  * own, so this pushed copy is its only view of backend truth — it starts
  * disconnected (input disabled) until the first push proves otherwise.
+ *
+ * `defaultTarget` is folded in by main (it owns the persisted preference), so
+ * the window learns where a submit should land without a second round-trip.
  */
 export interface QuickEntryStatePush {
   connected: boolean
   sessions: QuickEntrySessionOption[]
+  defaultTarget?: QuickEntryTarget
 }
 
 /** What a quick-window submit carries back to the primary renderer. */
@@ -162,6 +181,8 @@ export interface QuickEntrySubmitResult {
 export interface QuickComposerState {
   /** Last pushed gateway truth. False (the initial value) disables submit. */
   connected: boolean
+  /** Where a fresh summon starts: main's persisted target preference. */
+  defaultTarget: QuickEntryTarget
   draft: string
   /** Recent sessions the picker offers, pushed by the primary renderer. */
   sessions: QuickEntrySessionOption[]
@@ -191,7 +212,7 @@ export type QuickComposerEvent =
   | { type: 'dismiss' }
   | { type: 'edit'; draft: string }
   | { type: 'shown' }
-  | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
+  | { type: 'state'; connected: boolean; defaultTarget?: QuickEntryTarget; sessions: QuickEntrySessionOption[] }
   | { type: 'submit'; submitId?: number }
   | { type: 'submit-error'; message: string; submitId: number }
   | { message: string; submitId: number; type: 'submit-unknown' }
@@ -234,6 +255,8 @@ export const initialQuickComposerState: QuickComposerState = {
   // Disconnected until the primary renderer's first push proves otherwise — a
   // capture window that accepts text it can never deliver is a lie.
   connected: false,
+  // Current chat until main's push says otherwise: the shipped preference.
+  defaultTarget: QUICK_TARGET_CURRENT,
   draft: '',
   error: null,
   lastSubmitText: '',
@@ -244,6 +267,31 @@ export const initialQuickComposerState: QuickComposerState = {
   target: QUICK_TARGET_CURRENT,
   unknownSubmitId: null,
   visible: true
+}
+
+/**
+ * Where a pushed state leaves the send target. Main owns the persisted default:
+ * adopt it when pushed, and fall back to it (not to whatever chat happens to be
+ * open) when the picked target no longer exists — a prompt must not land
+ * somewhere the user did not choose. A picker still sitting on the previous
+ * default follows the new one (the first push after a cold launch has to move
+ * the picker even though the surface never saw `shown`); an explicit pick wins
+ * for this generation.
+ */
+function resolveComposerTarget(
+  state: Pick<QuickComposerState, 'defaultTarget' | 'target'>,
+  event: Extract<QuickComposerEvent, { type: 'state' }>
+): string {
+  const defaultTarget = event.defaultTarget ?? state.defaultTarget
+  const followsDefault = state.target === state.defaultTarget
+
+  const targetStillValid =
+    event.connected &&
+    (state.target === QUICK_TARGET_CURRENT ||
+      state.target === QUICK_TARGET_NEW ||
+      event.sessions.some(session => session.id === state.target))
+
+  return targetStillValid ? (followsDefault ? defaultTarget : state.target) : defaultTarget
 }
 
 export function quickComposerReducer(state: QuickComposerState, event: QuickComposerEvent): QuickComposerTransition {
@@ -267,7 +315,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
               orphanedFailure: null,
               pendingSubmitId: null,
               submitting: false,
-              target: QUICK_TARGET_CURRENT,
+              target: state.defaultTarget,
               unknownSubmitId: null,
               visible: false
             }
@@ -297,7 +345,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           orphanedFailure: null,
           pendingSubmitId: null,
           submitting: false,
-          target: QUICK_TARGET_CURRENT,
+          target: state.defaultTarget,
           unknownSubmitId: null,
           visible: true
         }
@@ -305,21 +353,15 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
     }
 
     case 'state': {
-      // Adopt the pushed truth. A selected session that no longer exists in the
-      // pushed list must not silently swallow the prompt — fall back to current.
-      const targetStillValid =
-        event.connected &&
-        (state.target === QUICK_TARGET_CURRENT ||
-          state.target === QUICK_TARGET_NEW ||
-          event.sessions.some(session => session.id === state.target))
-
+      // Adopt the pushed truth; resolveComposerTarget owns the target rule.
       return {
         send: null,
         state: {
           ...state,
           connected: event.connected,
+          defaultTarget: event.defaultTarget ?? state.defaultTarget,
           sessions: event.sessions,
-          target: targetStillValid ? state.target : QUICK_TARGET_CURRENT
+          target: resolveComposerTarget(state, event)
         }
       }
     }

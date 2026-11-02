@@ -1251,7 +1251,11 @@ export const en: Translations = {
       shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
       active: 'Shortcut is active.',
       takenBy: 'Another app already uses this shortcut — pick a different one.',
-      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.',
+      targetTitle: 'Send prompts to',
+      targetDesc: 'Where Quick Entry delivers by default. You can still pick a different target for a single prompt in the window.',
+      targetCurrent: 'Current chat',
+      targetNew: 'New session'
     },
     credentials: {
       pasteKey: 'Paste key',

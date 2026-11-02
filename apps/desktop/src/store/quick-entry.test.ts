@@ -45,10 +45,14 @@ const connect: QuickComposerEvent = {
   type: 'state'
 }
 
+// The same push once the user has set Quick Entry to start a new session.
+const newSessionDefault: QuickComposerEvent = { ...connect, defaultTarget: QUICK_TARGET_NEW }
+
 describe('quickComposerReducer', () => {
   it('starts visible, empty, DISCONNECTED, and targeting the current chat', () => {
     expect(initialQuickComposerState).toEqual({
       connected: false,
+      defaultTarget: QUICK_TARGET_CURRENT,
       draft: '',
       error: null,
       lastSubmitText: '',
@@ -203,6 +207,46 @@ describe('quickComposerReducer', () => {
     const { state } = run([connect, { target: 's1', type: 'target' }, connect])
 
     expect(state.target).toBe('s1')
+  })
+
+  it('a pushed new-session default starts every summon on New session', () => {
+    const { sent, state } = run([
+      newSessionDefault,
+      { draft: 'ship it', type: 'edit' },
+      { submitId: 1, type: 'submit' },
+      { submitId: 1, type: 'submit-ok' },
+      { type: 'shown' }
+    ])
+
+    expect(sent).toEqual([{ target: QUICK_TARGET_NEW, text: 'ship it' }])
+    expect(state.defaultTarget).toBe(QUICK_TARGET_NEW)
+    expect(state.target).toBe(QUICK_TARGET_NEW)
+  })
+
+  it('a default pushed while the window is open applies to the next summon, not mid-composition', () => {
+    const { sent, state } = run([
+      connect,
+      { target: 's1', type: 'target' },
+      newSessionDefault,
+      { draft: 'still going to s1', type: 'edit' },
+      { submitId: 1, type: 'submit' }
+    ])
+
+    // The explicit pick wins for this window generation...
+    expect(sent).toEqual([{ target: 's1', text: 'still going to s1' }])
+    // ...but the preference is adopted, so the next summon starts there.
+    const acknowledged = quickComposerReducer(state, { submitId: 1, type: 'submit-ok' }).state
+    expect(quickComposerReducer(acknowledged, { type: 'shown' }).state.target).toBe(QUICK_TARGET_NEW)
+  })
+
+  it('a picked session that vanishes falls back to the pushed default, not the open chat', () => {
+    const { state } = run([
+      newSessionDefault,
+      { target: 's2', type: 'target' },
+      { connected: true, defaultTarget: QUICK_TARGET_NEW, sessions: [{ id: 's1', title: 'Fix the build' }], type: 'state' }
+    ])
+
+    expect(state.target).toBe(QUICK_TARGET_NEW)
   })
 
   it('Escape dismisses without sending, discards the draft, and resets the target', () => {
@@ -465,7 +509,13 @@ describe('Quick Entry settings bridge', () => {
   const initialHermesDesktop = desktopWindow.hermesDesktop
   const initialState = $quickEntry.get()
 
-  const status = (shortcut: string): QuickEntryStatus => ({ enabled: true, error: null, registered: true, shortcut })
+  const status = (shortcut: string): QuickEntryStatus => ({
+    enabled: true,
+    error: null,
+    registered: true,
+    shortcut,
+    target: QUICK_TARGET_CURRENT
+  })
 
   afterEach(() => {
     if (initialHermesDesktop) {

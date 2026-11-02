@@ -348,10 +348,25 @@ function canonicalKey(key: string): string {
   return key
 }
 
+/**
+ * Where a Quick Entry submit lands when the user has not touched the window's
+ * target picker. Persisted next to the shortcut because "always start a fresh
+ * session" is a workflow choice, not a per-prompt one; the picker still
+ * overrides it for a single send.
+ */
+export type QuickEntryTarget = 'current' | 'new'
+
+export const DEFAULT_QUICK_ENTRY_TARGET: QuickEntryTarget = 'current'
+
+export function isQuickEntryTarget(value: unknown): value is QuickEntryTarget {
+  return value === 'current' || value === 'new'
+}
+
 /** The persisted shape of `quick-entry.json` (main-process owned). */
 export interface QuickEntrySettings {
   enabled: boolean
   shortcut: string
+  target: QuickEntryTarget
 }
 
 /**
@@ -366,7 +381,10 @@ export function sanitizeQuickEntrySettings(raw: unknown): QuickEntrySettings {
   return {
     // Default ON: the feature is inert until the shortcut is pressed.
     enabled: record.enabled === undefined ? true : record.enabled === true,
-    shortcut: parsed.ok ? parsed.accelerator : DEFAULT_QUICK_ENTRY_SHORTCUT
+    shortcut: parsed.ok ? parsed.accelerator : DEFAULT_QUICK_ENTRY_SHORTCUT,
+    // Default to the current chat: sending into the conversation in front is
+    // the least surprising landing spot for someone who never opens Settings.
+    target: isQuickEntryTarget(record.target) ? record.target : DEFAULT_QUICK_ENTRY_TARGET
   }
 }
 
@@ -396,7 +414,7 @@ export interface QuickEntryShortcutController {
   /** Release the shortcut (quit / feature off). Idempotent. */
   dispose(): void
   /** Re-register to match `settings`. Returns the resulting state. */
-  apply(settings: QuickEntrySettings): QuickEntryRegistration
+  apply(settings: Pick<QuickEntrySettings, 'enabled' | 'shortcut'>): QuickEntryRegistration
 }
 
 /**

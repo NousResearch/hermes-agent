@@ -1595,7 +1595,12 @@ export const frOverrides = {
       shortcutDesc: 'Nécessite au moins un modificateur, par ex. CommandOrControl+Shift+Espace.',
       active: 'Le raccourci est actif.',
       takenBy: 'Une autre application utilise déjà ce raccourci — choisissez-en un autre.',
-      invalidShortcut: 'Raccourci invalide. Incluez au moins une touche modificateur.'
+      invalidShortcut: 'Raccourci invalide. Incluez au moins une touche modificateur.',
+      targetTitle: 'Envoyer les invites vers',
+      targetDesc:
+        'Destination par défaut de la saisie rapide. Dans la fenêtre, vous pouvez toujours choisir une autre destination pour une invite donnée.',
+      targetCurrent: 'Conversation actuelle',
+      targetNew: 'Nouvelle session'
     },
     credentials: {
       pasteKey: 'Coller la clé',

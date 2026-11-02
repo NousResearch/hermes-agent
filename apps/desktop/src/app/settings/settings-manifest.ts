@@ -175,6 +175,12 @@ export const SETTINGS_MANIFEST = {
       keywords: ['quick entry', 'shortcut', 'hotkey', 'keybind', 'chord'],
       available: canUseQuickEntry,
       copy: t => ({ label: t.settings.quickEntry.shortcutTitle, description: t.settings.quickEntry.shortcutDesc })
+    },
+    quickEntryTarget: {
+      subpage: 'desktop',
+      keywords: ['quick entry', 'target', 'new session', 'current chat', 'deliver', 'start fresh'],
+      available: canUseQuickEntry,
+      copy: t => ({ label: t.settings.quickEntry.targetTitle, description: t.settings.quickEntry.targetDesc })
     }
   },
   keybinds: {

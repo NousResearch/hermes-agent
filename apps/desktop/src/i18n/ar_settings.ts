@@ -645,7 +645,11 @@ export const arSettings = {
       shortcutDesc: 'يحتاج إلى مفتاح تعديل واحد على الأقل، مثل CommandOrControl+Shift+Space.',
       active: 'الاختصار مفعّل.',
       takenBy: 'يستخدم تطبيق آخر هذا الاختصار — اختر اختصارا مختلفا.',
-      invalidShortcut: 'ليس اختصارا صالحا. أضف مفتاح تعديل واحدا على الأقل.'
+      invalidShortcut: 'ليس اختصارا صالحا. أضف مفتاح تعديل واحدا على الأقل.',
+      targetTitle: 'إرسال الطلبات إلى',
+      targetDesc: 'إلى أين يرسل الإدخال السريع افتراضيا. يمكنك دائما اختيار وجهة أخرى لطلب واحد من داخل النافذة.',
+      targetCurrent: 'المحادثة الحالية',
+      targetNew: 'جلسة جديدة'
     },
     credentials: {
       pasteKey: 'لصق المفتاح',

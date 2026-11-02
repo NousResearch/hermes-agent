@@ -1168,7 +1168,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if key is not None and key not in warned:
                 warned.add(key)
                 logger.warning("Async completion held: %s", _held_reason(
-                    source, platform, getattr(self.config, "multiplex_profiles", False)))
+                    source, platform, getattr(getattr(self, "config", None), "multiplex_profiles", False)))
             return False
         warned.discard(key)
         if not adapter_supports_push(adapter):

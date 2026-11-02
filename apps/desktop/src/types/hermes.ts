@@ -733,6 +733,7 @@ export interface SessionMessage {
     | 'auto_continue'
     | 'failed_turn'
     | 'hidden'
+    | 'internal_notification'
     | 'model_switch'
     | 'personality_switch'
     | 'process_complete'

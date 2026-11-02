@@ -178,6 +178,7 @@ function transcriptContent(
 const NOTICE_DISPLAY_KINDS = [
   'model_switch',
   'async_delegation_complete',
+  'internal_notification',
   'process_complete',
   'auto_continue',
   'personality_switch',
@@ -502,7 +503,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const rawDisplayContent = transcriptContent(
       message.display_kind,
       message.role,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      timelineDisplayContent(
+        message,
+        displayContentForMessage(message.display_kind === 'internal_notification' ? 'system' : message.role, content)
+      )
     )
 
     const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role

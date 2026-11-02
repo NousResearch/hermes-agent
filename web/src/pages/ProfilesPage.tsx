@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
@@ -263,6 +263,18 @@ export default function ProfilesPage() {
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
   const { setProfile } = useProfileScope();
+  const location = useLocation();
+  // ProfileBuilderPage unmounts on navigate, so it hands its create result to
+  // this page. Read at mount: ProfileProvider's ?profile= re-assert replaces
+  // the history entry, state and all, before the list has loaded.
+  const [handedToast] = useState(
+    () =>
+      (
+        location.state as {
+          toast?: { message: string; type: "success" | "error" };
+        } | null
+      )?.toast,
+  );
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
@@ -408,6 +420,19 @@ export default function ProfilesPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!loading && handedToast) {
+      showToast(handedToast.message, handedToast.type);
+    }
+  }, [loading, handedToast, showToast]);
+
+  // Back/forward onto this entry must not replay the handed-over toast.
+  useEffect(() => {
+    if (location.state) {
+      navigate(location.pathname + location.search, { replace: true });
+    }
+  }, [location, navigate]);
+
   // Lazily load the model picker the first time the create modal opens.
   useEffect(() => {
     if (createModalOpen) loadModelChoices();
@@ -451,7 +476,7 @@ export default function ProfilesPage() {
       showToast(`${t.profiles.created}: ${name}`, "success");
       if (picked && res.model_set === false) {
         showToast(
-          `Profile created, but the model could not be saved — set it from the profile editor.`,
+          `Profile created, but the model could not be saved — ${res.model_error || "set it from the profile editor."}`,
           "error",
         );
       }

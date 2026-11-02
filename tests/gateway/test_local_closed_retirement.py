@@ -355,3 +355,41 @@ async def test_restored_conversation_retire_timer_firing_mid_close_keeps_the_clo
         release.set()
         db.close()
 
+
+@pytest.mark.asyncio
+async def test_conversation_closed_during_a_refine_review_retires_once_the_review_ends(tmp_path, monkeypatch):
+    """The review pins the closed conversation only while it runs: its end retires it."""
+    import threading
+    from contextlib import nullcontext
+
+    from agent import background_review
+    from gateway import session_refine, session_tui_side
+    _runner, authority, db = await _owner(tmp_path, monkeypatch)
+    finish = threading.Event()
+    threads = []
+    monkeypatch.setattr(session_tui_side, '_side_scope', lambda *a: nullcontext())
+    monkeypatch.setattr(session_tui_side, '_side_agent', lambda *a, **k: type('A', (), {
+        'valid_tool_names': set(), 'release_clients': lambda self: None})())
+    monkeypatch.setattr(background_review, 'spawn_background_review_thread',
+                        lambda *a, **k: (lambda: finish.wait(10), ''))
+
+    def spawn(_authority, _ref, _task_id, _event_type, body, **_kw):
+        threads.append(threading.Thread(target=body, daemon=True))
+        threads[-1].start()
+    monkeypatch.setattr(session_tui_side, '_spawn', spawn)
+    try:
+        ref = _create(authority)
+        db.append_message(ref.session_id, 'user', 'hello')
+        live = authority.sessions[ref.session_id]
+        reply = await session_refine.refine_local_session(authority.runner, live.source, None)
+        assert threads, reply
+        await _close(authority, ref)
+        await async_wait_until(lambda: live.closed_stamp is not None, timeout=10, what="the close to settle")
+        assert authority.sessions.get(ref.session_id) is live  # the running review pins it
+        finish.set()
+        threads[0].join(10)
+        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                               what="the closed conversation to retire once its review ended")
+    finally:
+        finish.set()
+        db.close()

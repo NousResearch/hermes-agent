@@ -222,7 +222,9 @@ import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
+  desktopConnectionRequestInheritsPrimary,
   type DesktopProfileRoute,
+  registerDesktopProfilePreferenceIpc,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch
 } from './desktop-profile'
@@ -325,7 +327,7 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
-import { applyLaunchProfileOverride } from './launch-profile'
+import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -437,13 +439,11 @@ import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-off
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
-import {
-  createPrimaryRemoteConnection,
-  FirstRunSetupResetError,
-  runPrimaryBackendStartup
-} from './primary-backend-startup'
+import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
+import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfileRestorable } from './primary-boot-join'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -3161,13 +3161,6 @@ function getVenvPython(venvRoot) {
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
-function makeDashboardReadyFile() {
-  const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
-
-  return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
-}
-
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
 // install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
@@ -3293,10 +3286,6 @@ function resolveGhBinary() {
   _ghBinaryCache = selected || findOnPath('gh') || 'gh'
 
   return _ghBinaryCache
-}
-
-function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
 }
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
@@ -9515,8 +9504,12 @@ async function ensureTerminalBackend(webContentsId: number) {
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
+  // No window route: follow the primary, like a profile-less hermes:connection.
+  const inheritsPrimary = !windowRoute?.profile
 
-  return backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
+  return backendDialClaims.run(primaryDialClaimKey(backendScopeKey(null, profile), inheritsPrimary), () =>
+    ensureBackend(profile, { inheritsPrimary })
+  )
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that
@@ -10538,9 +10531,10 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
 
 async function ensureBackend(
   profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}
+  opts: { inheritsPrimary?: boolean; passive?: boolean; request?: { method?: string; path?: string } } = {}
 ) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const request = primaryBootRequest(profile, primaryProfileKey(), opts.inheritsPrimary)
+  const key = request.key
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -10553,19 +10547,15 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    const connection = await startHermes(key)
-    setWslBridgeProfileState(key, connection.mode !== 'remote')
+    const joined = await joinPrimaryBoot(request, route, {
+      primaryKey: primaryProfileKey,
+      resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
+      start: boot => startHermes(boot.key, boot.inheritsPrimary)
+    })
 
-    // A shared backend still owes the caller its profile scope, so renderer-side
-    // WebSocket, filesystem, and cache routing target the selected profile.
-    // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag. The
-    // unshared primary carries its own key too: a profile-less descriptor
-    // reads as "default" downstream, which breaks per-source profile memory
-    // (the primary IS "default" only when it actually booted as default).
-    return route.descriptorProfile
-      ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
-      : { ...connection, profile: key }
+    setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
+
+    return joined.descriptor
   }
 
   const existing = backendPool.get(key)
@@ -11751,7 +11741,7 @@ function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function startHermes(requestedProfile?: string) {
+async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -11817,16 +11807,15 @@ async function startHermes(requestedProfile?: string) {
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. An explicit profile-scoped caller names both.
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
+  const launch = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
     : resolveLaunchProfile(readActiveDesktopProfile)
 
-  // Pin the routing table to the profile this primary actually boots as; a
-  // later hermes:profile:remember must not retarget requests mid-life.
-  primaryProfilePin.pin(primaryProfile)
+  const activeProfile = launch.argvProfile
+  let primaryProfile = launch.routingProfile
 
-  // Legacy path callers without an explicit profile belong to the primary
-  // window backend. Profile-scoped callers still pass their key directly.
+  // Keep routing and native paths on this attempt's effective launch profile.
+  primaryProfilePin.pin(primaryProfile)
   setActiveGatewayProfile(primaryProfile)
 
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
@@ -11835,29 +11824,28 @@ async function startHermes(requestedProfile?: string) {
   let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
-    const connectRemote = async remote => {
-      // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
-      // mint). If a newer attempt started meanwhile (e.g. the user switched
-      // remotes and Apply invalidated this attempt), bail before probing.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
-
-      // Second async boundary: the health probe itself can outlive the
-      // attempt. A late success here must not publish a stale descriptor.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      updateBootProgress({
-        phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
-        progress: 94,
-        running: true,
-        error: null
+    const connectRemote = remote =>
+      connectPrimaryRemote(remote, {
+        profile: primaryProfile,
+        restoreRememberedProfile: () =>
+          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig().profiles?.default),
+        signal: localBackendLifecycle.signal,
+        assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+        advanceBootProgress,
+        waitForRemote: waitForRemoteHermes,
+        readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        readStatus: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }),
+        connectionProfile: desktopProfilePreferences.connectionProfile,
+        // The machine-local preference stays: only this remote does not serve it.
+        onProfileRestored: profile => {
+          rememberLog(`[profile] remote primary does not serve "${primaryProfile}"; booting it as "${profile}"`)
+          primaryProfile = primaryProfilePin.pin(profile)
+          setActiveGatewayProfile(profile)
+        },
+        updateBootProgress,
+        logs: () => hermesLog.slice(-80),
+        windowState: getWindowState
       })
-
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
-    }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
@@ -14039,24 +14027,25 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {
-  const route = resolveDesktopConnectionRequest(
-    profile,
-    windowConnectionRoutes.get(event.sender.id),
-    primaryProfileKey()
-  )
+  const source = windowConnectionRoutes.get(event.sender.id) ?? null
+  const route = resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
 
-  return connectDesktopProfileRoute(route, event.sender)
+  // A profile-less request follows the primary even though the route carries its name.
+  return connectDesktopProfileRoute(route, event.sender, desktopConnectionRequestInheritsPrimary(profile, source))
 })
 
-async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents) {
+async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents, inherits = false) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  const scopeKey = backendScopeKey(route.connectionId, route.profile)
+  const inheritsPrimary = !route.connectionId && inherits
+  const scopeKey = primaryDialClaimKey(backendScopeKey(route.connectionId, route.profile), inheritsPrimary)
 
   const connection = await backendDialClaims.run(scopeKey, () =>
-    route.connectionId ? ensureRegistryBackend(route.connectionId, route.profile) : ensureBackend(route.profile)
+    route.connectionId
+      ? ensureRegistryBackend(route.connectionId, route.profile)
+      : ensureBackend(route.profile, { inheritsPrimary })
   )
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
@@ -15562,8 +15551,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
+registerDesktopProfilePreferenceIpc(ipcMain, desktopProfilePreferences, connectionId =>
+  readDesktopConnectionsRegistry().connections.some(connection => connection.id === connectionId)
+)
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
 // Desktop last used WITHOUT tearing down the backend or reloading the window.
@@ -17862,6 +17852,15 @@ app.whenReady().then(() => {
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
+  // Before the first profile read: a remembered local profile this HERMES_HOME
+  // no longer has would fail every boot with `Profile '<name>' does not exist`.
+  desktopProfilePreferences.forgetMissingLocalProfiles({
+    globalRemote: globalRemoteActive(),
+    hasRemoteOverride: profileHasRemoteOverride,
+    launchProfile: parseLaunchProfile(process.argv),
+    log: rememberLog,
+    profileExists: profile => fs.statSync(path.join(HERMES_HOME, 'profiles', profile), { throwIfNoEntry: false })?.isDirectory() ?? false
+  })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
   const primaryProfile = primaryProfileKey()

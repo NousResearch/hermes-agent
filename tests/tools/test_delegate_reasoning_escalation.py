@@ -93,11 +93,19 @@ class _FakeChild:
         self._calls = outcome["calls"] if kind != "timeout0" else 0
         if kind in ("timeout", "timeout0"):
             self._stop.wait(10)
-            return {"final_response": "", "interrupted": True, "api_calls": self._calls, "messages": []}
+            return self._finalize({"final_response": "", "interrupted": True, "api_calls": self._calls, "messages": []})
         if kind == "raise":
             raise RuntimeError("transport exploded")
         result = {"final_response": outcome["summary"] or "", "api_calls": self._calls, "messages": []}
         result.update(_RESULT_BY_KIND.get(kind, {}))
+        return self._finalize(result)
+
+    def _finalize(self, result):
+        """The turn finalizer's contract (``agent/turn_finalizer.py``): a steer still queued when the turn ends is
+        drained into ``result["pending_steer"]``."""
+        leftover = self._drain_pending_steer()
+        if leftover:
+            result["pending_steer"] = leftover
         return result
 
     def get_activity_summary(self):
@@ -239,6 +247,34 @@ def test_the_runtimes_own_budget_warning_is_never_handed_off_as_a_missed_parent_
     handoff = log[1].messages[0]
     assert "[delegation budget warning]" not in handoff
     assert "use the v2 API" in handoff
+
+
+def test_a_budget_warning_the_turn_finalizer_returned_is_never_handed_off_as_a_parent_steer(monkeypatch):
+    """A warning still queued when the turn ends comes back in the turn result's ``pending_steer`` (the finalizer
+    drains it there), not through the registry's close: it is filtered from that channel too."""
+    from tools import delegate_tool_child_run
+    from tools.delegate_tool_registry import steer_subagent
+
+    def low(child, *_):
+        delegate_tool_child_run._warn_child_budget(child, 80, 100)
+        assert steer_subagent(child._subagent_id, "use the v2 API")
+        return M()
+
+    _entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="medium")
+    handoff = log[1].messages[0]
+    assert "[delegation budget warning]" not in handoff
+    assert handoff.count("use the v2 API") == 1
+
+
+def test_a_finished_child_whose_only_leftover_steer_is_a_budget_warning_reports_no_missed_steer(monkeypatch):
+    from tools import delegate_tool_child_run
+
+    def low(child, *_):
+        delegate_tool_child_run._warn_child_budget(child, 80, 100)
+        return D("done")
+
+    entry, _log, _ = _run_direct(monkeypatch, {"low": low}, effort="low", ceiling="medium")
+    assert entry["summary"] == "done" and "missed_steer" not in entry
 
 
 def test_a_timeout_with_zero_api_calls_never_reached_the_model_and_does_not_retry(monkeypatch):

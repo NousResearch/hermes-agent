@@ -549,11 +549,15 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
 def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child: Any) -> None:
     """Linearization boundary for registry steering: from here the child cannot consume another steer. Closing under
     the registry lock either rejects a concurrent caller or drains every accepted exact text into the result before
-    callbacks/result assembly run."""
-    late = _parent_steer_text(_close_subagent_steering(subagent_id, child) if subagent_id else None)
-    if late:
-        existing = result.get("pending_steer")
-        result["pending_steer"] = f"{existing}\n{late}" if isinstance(existing, str) and existing else late
+    callbacks/result assembly run. Both channels drop the runtime's budget warnings: the turn finalizer already put
+    whatever was queued at the turn's end into ``pending_steer``, and this drain adds what arrived after it."""
+    late = _close_subagent_steering(subagent_id, child) if subagent_id else None
+    existing = result.get("pending_steer")
+    steer = _parent_steer_text("\n".join(t for t in (existing, late) if isinstance(t, str) and t))
+    if steer:
+        result["pending_steer"] = steer
+    else:
+        result.pop("pending_steer", None)
 
 
 @dataclass

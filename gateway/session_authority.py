@@ -90,6 +90,8 @@ class LiveSession:
     # A conversation retirement let go that an RPC brought back: its re-retirement check
     # (``session_retirement.touch_restored``), pushed back by each authorize.
     retire_timer: object = None
+    # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
+    detaching: int = 0
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -419,7 +421,11 @@ class SessionAuthority:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
-                    await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
+                    try:
+                        await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    finally:
+                        live.detaching -= 1
                     if end_reason:
                         from gateway.session_viewer_close import close_viewer_session
                         await close_viewer_session(self, session_id, end_reason)

@@ -1708,6 +1708,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
+        # Expand @-references BEFORE prepending sender context, vision descriptions, voice STT, or
+        # document notes: vision_analyze descriptions of screenshots (e.g. an @-completion menu)
+        # or transcribed speech can contain literal "@file:", "@diff", "@staged", etc. that were
+        # never typed by the user and must never trigger local file/git expansion.
+        from gateway.session_context_refs import turn_references
+        message_text = await turn_references(self, event, source, session_key, message_text)
+        if message_text is None:
+            return None
+
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
@@ -1717,10 +1726,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         message_text = self._prepend_inbound_media_file_notes(
             message_text, audio_file_paths, video_paths, self._inbound_original_names(event))
         message_text = self._prepend_inbound_document_notes(event, message_text)
-        from gateway.session_context_refs import turn_references
-        message_text = await turn_references(self, event, source, session_key, message_text)
-        if message_text is None:
-            return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         return self._prepend_inbound_reply_context(event, source, message_text)

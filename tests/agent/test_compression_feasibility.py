@@ -394,6 +394,33 @@ def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
     assert mock_ctx_len.call_args.kwargs["provider"] == "openai-codex"
 
 
+def test_dead_pin_rescued_by_main_model_still_warns_and_names_it():
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    main_client = MagicMock()
+    main_client.base_url = "https://openrouter.ai/api/v1"
+    main_client.api_key = "k"
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("alibaba", "retired-model", None, None, None),
+    ), patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(None, None),
+    ), patch(
+        "agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+        return_value=(main_client, "main-model", "main-agent(openrouter)"),
+    ), patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=200_000,
+    ):
+        agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "'alibaba' is unavailable" in messages[0] and "main-model" in messages[0]
+
+
 
 
 

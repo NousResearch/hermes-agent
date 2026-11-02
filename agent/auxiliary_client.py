@@ -4344,12 +4344,12 @@ def _try_configured_fallback_chain(
 def _try_configured_fallback_for_unavailable_client(
     task: Optional[str], failed_provider: str
 ) -> tuple[Optional[Any], Optional[str], str]:
-    """Task fallback_chain when an explicit aux provider cannot build a client (no key/OAuth/pool creds);
-    stops at the per-task chain — the main-agent model stays the runtime last resort."""
+    """Task fallback_chain, then the main-agent model, for an explicit aux provider with no client (#147153)."""
     explicit = (failed_provider or "").strip().lower()
     if not task or not explicit or explicit in {"auto"}:
         return None, None, ""
-    return _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
+    fb = _try_configured_fallback_chain(task, explicit, reason="provider unavailable")
+    return fb if fb[0] is not None else _try_main_agent_model_fallback(explicit, task, reason="provider unavailable")
 
 
 def _fallback_entry_api_key(entry: dict[str, Any]) -> Optional[str]:

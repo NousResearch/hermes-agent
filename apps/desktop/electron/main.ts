@@ -194,6 +194,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
+  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -510,6 +511,7 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { collectRegistrySessionSources } from './registry-session-sources'
 import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -15921,63 +15923,46 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
-// Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources list every pooled
-// (connection, profile) backend: the default one reads every profile through the
-// remote aggregate, the rest serve older runtimes' per-profile lists; remote/cloud
-// sources are one shared host.
-// The primary local connection is excluded for the legacy unpinned path — the
-// primary aggregate carries local rows there. A registry-pinned aggregate opts
-// in so forced-local backends remain visible when the legacy primary is remote.
+// Every CONNECTED registry gateway as a session source (see the module); never dials.
 async function pooledRegistrySessionSources(includeLocal = false): Promise<RegistrySessionSource[]> {
   const registry = readDesktopConnectionsRegistry()
-  const sources: RegistrySessionSource[] = []
 
-  for (const connection of registry.connections) {
-    if (connection.kind === 'local' && !includeLocal) {
-      continue
-    }
+  return collectRegistrySessionSources(
+    {
+      connections: registry.connections,
+      pool: backendPool.entries(),
+      scopePrefix: backendScopePrefix,
+      reusedPrimary: connectionId => reusedPrimarySshDescriptor(registry, connectionId),
+      installId: (connectionId, descriptor) => boundedInstallId(probeConnectionInstallId(connectionId, descriptor)),
+      sharedProfiles: sharedSshProfiles
+    },
+    includeLocal
+  )
+}
 
-    const prefix = backendScopePrefix(connection.id)
+// The running primary descriptor when it IS this registry SSH connection: its
+// registry routes reuse it rather than pooling a backend. Never starts one.
+async function reusedPrimarySshDescriptor(registry, connectionId: string) {
+  const pending = connectionId === registry.primary ? backendConnectionState.getPromise() : null
 
-    const pooled = [...backendPool.entries()].filter(
-      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-    )
-
-    if (pooled.length === 0) {
-      continue
-    }
-
-    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
-
-    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
-
-    for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
-      try {
-        // Already-resolved for a connected backend; a still-dialing entry is
-        // skipped via the timeout guard rather than blocking the sidebar.
-        const descriptor = await Promise.race([
-          entry.connectionPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-        ])
-
-        backends.push({
-          descriptor,
-          profileLabel: perProfile ? key.slice(prefix.length) || 'default' : null
-        })
-      } catch {
-        // Dead or still-connecting backend — contributes nothing this refresh.
-      }
-    }
-
-    if (backends.length) {
-      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      const sharedProfiles = connection.kind === 'ssh' ? sharedSshProfiles(connection.id, backends) : undefined
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind, sharedProfiles })
-    }
+  if (!pending) {
+    return null
   }
 
-  return sources
+  try {
+    const descriptor = await Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
+    ])
+
+    return descriptor?.mode === 'remote' &&
+      descriptor.remoteKind === 'ssh' &&
+      registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)
+      ? descriptor
+      : null
+  } catch {
+    return null
+  }
 }
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).

@@ -108,14 +108,15 @@ function withPalette(svg: string, vars: string): string {
 // did. Pele sizes each label from the measurement below. It is taken in a
 // shadow root, which the app stylesheet can't reach (it enlarges KaTeX's
 // `.katex` wrapper and restyles bare elements), so the size matches what the
-// stylesheet-free SVG draws. TeX KaTeX can't parse
-// returns null, and Pele shows the source.
+// stylesheet-free SVG draws. Display mode, as mermaid used: inline mode
+// rejects display-only TeX such as \tag. TeX KaTeX can't parse returns null,
+// and Pele shows the source.
 const typesetMath: MathResolver = (tex, size) => {
   let html: string
 
   try {
     html = katex
-      .renderToString(tex, { output: 'mathml', strict: 'ignore', throwOnError: true })
+      .renderToString(tex, { displayMode: true, output: 'mathml', strict: 'ignore', throwOnError: true })
       .replace(/^<span class="katex">([\s\S]*)<\/span>$/, '$1')
   } catch {
     return null

@@ -1,0 +1,25 @@
+name: cli-session-tabs
+title: CLI Session Tabs
+repo: https://github.com/cryptobredda/hermes-cli-tabs
+sha: bb0a6ac0b54a44991f48cdf6df198ca43f0098f8
+subdir: ""
+description: "Directory-scoped session tabs across the terminal. Disclosure — Requires OS-installed tmux; starts private, long-running tmux/Hermes clients only when invoked. Stores non-secret workspace metadata in profile plugin-data, filters child environments, and confirms closes. Does not patch Hermes or read conversations/credentials."
+maintainer: cryptobredda
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+version: "1.0.0"
+docs_url: https://github.com/cryptobredda/hermes-cli-tabs#readme
+image: https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/bb0a6ac0b54a44991f48cdf6df198ca43f0098f8/docs/tabs-demo.png
+screenshots:
+  - https://raw.githubusercontent.com/cryptobredda/hermes-cli-tabs/bb0a6ac0b54a44991f48cdf6df198ca43f0098f8/docs/tabs-demo.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - Requires tmux 3.2+ and an interactive terminal; launch outside an existing tmux client.
+  - Each tab is a separate normal Hermes client, not an in-process TUI widget. Explicitly closing a client discards its unsent draft; switching or detaching preserves it.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

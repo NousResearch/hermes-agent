@@ -1,0 +1,7 @@
+name: deepinfra
+version: 1.0.0
+description: "DeepInfra video generation (text-to-video & image-to-video) via the OpenAI-compatible /v1/openai/videos endpoint. Catalog discovered live from api.deepinfra.com."
+author: Georgi Atsev
+kind: backend
+requires_env:
+  - DEEPINFRA_API_KEY

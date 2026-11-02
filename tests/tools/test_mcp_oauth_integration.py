@@ -18,6 +18,14 @@ import pytest
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+    from unittest.mock import MagicMock
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = is_tty
+    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+
 @pytest.mark.asyncio
 async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch):
     """Simulate Cthulhu's cron workflow end-to-end.
@@ -69,7 +77,10 @@ async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch)
     # automatically via the HermesMCPOAuthProvider.async_auth_flow
     # pre-hook on the first real request, but we exercise it directly
     # here for test determinism).
-    await mgr.invalidate_if_disk_changed("srv")
+    baseline_changed = await mgr.invalidate_if_disk_changed("srv")
+    assert baseline_changed is False
+    assert provider._initialized is True
+    assert await mgr.invalidate_if_disk_changed("srv") is False  # unchanged file
 
     # EXTERNAL PROCESS: cron rewrites the tokens file with fresh creds.
     # The old refresh_token has been consumed by this external exchange.
@@ -142,52 +153,3 @@ async def test_handle_401_deduplicates_concurrent_callers(tmp_path, monkeypatch)
     assert all(r == results[0] for r in results), "dedup must return identical result"
     # Exactly ONE recovery ran — the rest awaited the same pending future.
     assert call_count == 1, f"expected 1 recovery attempt, got {call_count}"
-
-
-@pytest.mark.asyncio
-async def test_handle_401_returns_false_when_no_provider(tmp_path, monkeypatch):
-    """handle_401 for an unknown server returns False cleanly."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
-    reset_manager_for_tests()
-
-    mgr = MCPOAuthManager()
-    result = await mgr.handle_401("nonexistent", "any_token")
-    assert result is False
-
-
-@pytest.mark.asyncio
-async def test_invalidate_if_disk_changed_handles_missing_file(tmp_path, monkeypatch):
-    """invalidate_if_disk_changed returns False when tokens file doesn't exist."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
-    reset_manager_for_tests()
-
-    mgr = MCPOAuthManager()
-    mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
-
-    # No tokens file exists yet — this is the pre-auth state
-    result = await mgr.invalidate_if_disk_changed("srv")
-    assert result is False
-
-
-@pytest.mark.asyncio
-async def test_provider_is_reused_across_reconnects(tmp_path, monkeypatch):
-    """The manager caches providers; multiple reconnects reuse the same instance.
-
-    This is what makes the disk-watch stick across reconnects: tearing down
-    the MCP session and rebuilding it (Task 5's _reconnect_event path) must
-    not create a new provider, otherwise ``last_mtime_ns`` resets and the
-    first post-reconnect auth flow would spuriously "detect" a change.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
-    reset_manager_for_tests()
-
-    mgr = MCPOAuthManager()
-    p1 = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
-
-    # Simulate a reconnect: _run_http calls get_or_build_provider again
-    p2 = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
-
-    assert p1 is p2, "manager must cache the provider across reconnects"

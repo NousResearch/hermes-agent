@@ -1,423 +1,43 @@
-#!/usr/bin/env python3
-"""Hermes Agent Release Script
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
+"""Hermes Agent release entrypoint.
 
-Generates changelogs and creates GitHub releases with CalVer tags.
-
-Usage:
-    # Preview changelog (dry run)
-    python scripts/release.py
-
-    # Preview with semver bump
-    python scripts/release.py --bump minor
-
-    # Create the release
-    python scripts/release.py --bump minor --publish
-
-    # First release (no previous tag)
-    python scripts/release.py --bump minor --publish --first-release
-
-    # Override CalVer date (e.g. for a belated release)
-    python scripts/release.py --bump minor --publish --date 2026.3.15
+Stable releases use the ``release``, ``publish``, and ``abandon`` subcommands.
+Canary, commit, and dynamic-channel operations retain their top-level flags.
+See ``website/docs/developer-guide/stable-releases.md`` for the operator flow.
 """
 
 import argparse
+import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
+# Bootstrap the repo root onto sys.path so this script can import the
+# canary-tag authority from hermes_cli.update_channel (hermes_cli/__init__.py
+# is import-light: only os/sys + version constants).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from hermes_cli.update_channel import (
+    _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
+    is_canary_tag,
+)
+from scripts.releases.authors import resolve_author
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
-PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
-
-# ──────────────────────────────────────────────────────────────────────
-# Git email → GitHub username mapping
-# ──────────────────────────────────────────────────────────────────────
-
-# Auto-extracted from noreply emails + manual overrides
-AUTHOR_MAP = {
-    # teknium (multiple emails)
-    "teknium1@gmail.com": "teknium1",
-    "teknium@nousresearch.com": "teknium1",
-    "127238744+teknium1@users.noreply.github.com": "teknium1",
-    "343873859@qq.com": "DrStrangerUJN",
-    # contributors (from noreply pattern)
-    "david.vv@icloud.com": "davidvv",
-    "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
-    "snreynolds2506@gmail.com": "snreynolds",
-    "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
-    "71184274+MassiveMassimo@users.noreply.github.com": "MassiveMassimo",
-    "massivemassimo@users.noreply.github.com": "MassiveMassimo",
-    "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
-    "keifergu@tencent.com": "keifergu",
-    "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
-    "abner.the.foreman@agentmail.to": "Abnertheforeman",
-    "harryykyle1@gmail.com": "hharry11",
-    "kshitijk4poor@gmail.com": "kshitijk4poor",
-    "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
-    "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
-    "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
-    "255305877+ismell0992-afk@users.noreply.github.com": "ismell0992-afk",
-    "valdi.jorge@gmail.com": "jvcl",
-    "francip@gmail.com": "francip",
-    "omni@comelse.com": "omnissiah-comelse",
-    "oussama.redcode@gmail.com": "mavrickdeveloper",
-    "126368201+vilkasdev@users.noreply.github.com": "vilkasdev",
-    "137614867+cutepawss@users.noreply.github.com": "cutepawss",
-    "96793918+memosr@users.noreply.github.com": "memosr",
-    "milkoor@users.noreply.github.com": "milkoor",
-    "xuerui911@gmail.com": "Fatty911",
-    "131039422+SHL0MS@users.noreply.github.com": "SHL0MS",
-    "77628552+raulvidis@users.noreply.github.com": "raulvidis",
-    "145567217+Aum08Desai@users.noreply.github.com": "Aum08Desai",
-    "256820943+kshitij-eliza@users.noreply.github.com": "kshitij-eliza",
-    "44278268+shitcoinsherpa@users.noreply.github.com": "shitcoinsherpa",
-    "104278804+Sertug17@users.noreply.github.com": "Sertug17",
-    "112503481+caentzminger@users.noreply.github.com": "caentzminger",
-    "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
-    "sir_even@icloud.com": "sirEven",
-    "36056348+sirEven@users.noreply.github.com": "sirEven",
-    "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
-    "254021826+dodo-reach@users.noreply.github.com": "dodo-reach",
-    "259807879+Bartok9@users.noreply.github.com": "Bartok9",
-    "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
-    "268667990+Roy-oss1@users.noreply.github.com": "Roy-oss1",
-    "27917469+nosleepcassette@users.noreply.github.com": "nosleepcassette",
-    "241404605+MestreY0d4-Uninter@users.noreply.github.com": "MestreY0d4-Uninter",
-    "109555139+davetist@users.noreply.github.com": "davetist",
-    "39405770+yyq4193@users.noreply.github.com": "yyq4193",
-    "Asunfly@users.noreply.github.com": "Asunfly",
-    "2500400+honghua@users.noreply.github.com": "honghua",
-    "462836+jplew@users.noreply.github.com": "jplew",
-    "nish3451@users.noreply.github.com": "nish3451",
-    "Mibayy@users.noreply.github.com": "Mibayy",
-    "mibayy@users.noreply.github.com": "Mibayy",
-    "135070653+sgaofen@users.noreply.github.com": "sgaofen",
-    "nocoo@users.noreply.github.com": "nocoo",
-    "30841158+n-WN@users.noreply.github.com": "n-WN",
-    "tsuijinglei@gmail.com": "hiddenpuppy",
-    "jerome@clawwork.ai": "HiddenPuppy",
-    "wysie@users.noreply.github.com": "Wysie",
-    "leoyuan0099@gmail.com": "keyuyuan",
-    "bxzt2006@163.com": "Only-Code-A",
-    "i@troy-y.org": "TroyMitchell911",
-    "mygamez@163.com": "zhongyueming1121",
-    "hansnow@users.noreply.github.com": "hansnow",
-    "134848055+UNLINEARITY@users.noreply.github.com": "UNLINEARITY",
-    "ben.burtenshaw@gmail.com": "burtenshaw",
-    "roopaknijhara@gmail.com": "rnijhara",
-    "josephzcan@gmail.com": "j0sephz",
-    # contributors (manual mapping from git names)
-    "ahmedsherif95@gmail.com": "asheriif",
-    "dyxushuai@gmail.com": "dyxushuai",
-    "33860762+etcircle@users.noreply.github.com": "etcircle",
-    "liujinkun@bytedance.com": "liujinkun2025",
-    "dmayhem93@gmail.com": "dmahan93",
-    "fr@tecompanytea.com": "ifrederico",
-    "cdanis@gmail.com": "cdanis",
-    "samherring99@gmail.com": "samherring99",
-    "desaiaum08@gmail.com": "Aum08Desai",
-    "shannon.sands.1979@gmail.com": "shannonsands",
-    "shannon@nousresearch.com": "shannonsands",
-    "abdi.moya@gmail.com": "AxDSan",
-    "eri@plasticlabs.ai": "Erosika",
-    "hjcpuro@gmail.com": "hjc-puro",
-    "xaydinoktay@gmail.com": "aydnOktay",
-    "abdullahfarukozden@gmail.com": "Farukest",
-    "lovre.pesut@gmail.com": "rovle",
-    "xjtumj@gmail.com": "mengjian-github",
-    "kevinskysunny@gmail.com": "kevinskysunny",
-    "xiewenxuan462@gmail.com": "yule975",
-    "yiweimeng.dlut@hotmail.com": "meng93",
-    "hakanerten02@hotmail.com": "teyrebaz33",
-    "linux2010@users.noreply.github.com": "Linux2010",
-    "elmatadorgh@users.noreply.github.com": "elmatadorgh",
-    "alexazzjjtt@163.com": "alexzhu0",
-    "1180176+Swift42@users.noreply.github.com": "Swift42",
-    "ruzzgarcn@gmail.com": "Ruzzgar",
-    "yukipukikedy@gmail.com": "Yukipukii1",
-    "alireza78.crypto@gmail.com": "alireza78a",
-    "brooklyn.bb.nicholson@gmail.com": "brooklynnicholson",
-    "withapurpose37@gmail.com": "StefanIsMe",
-    "4317663+helix4u@users.noreply.github.com": "helix4u",
-    "ifkellx@users.noreply.github.com": "Ifkellx",
-    "331214+counterposition@users.noreply.github.com": "counterposition",
-    "blspear@gmail.com": "BrennerSpear",
-    "akhater@gmail.com": "akhater",
-    "Cos_Admin@PTG-COS.lodluvup4uaudnm3ycd14giyug.xx.internal.cloudapp.net": "akhater",
-    "239876380+handsdiff@users.noreply.github.com": "handsdiff",
-    "hesapacicam112@gmail.com": "etherman-os",
-    "mark.ramsell@rivermounts.com": "mark-ramsell",
-    "taeng02@icloud.com": "taeng0204",
-    "gpickett00@gmail.com": "gpickett00",
-    "mcosma@gmail.com": "wakamex",
-    "clawdia.nash@proton.me": "clawdia-nash",
-    "pickett.austin@gmail.com": "austinpickett",
-    "dangtc94@gmail.com": "dieutx",
-    "jaisehgal11299@gmail.com": "jaisup",
-    "percydikec@gmail.com": "PercyDikec",
-    "noonou7@gmail.com": "HenkDz",
-    "dean.kerr@gmail.com": "deankerr",
-    "socrates1024@gmail.com": "socrates1024",
-    "seanalt555@gmail.com": "Salt-555",
-    "satelerd@gmail.com": "satelerd",
-    "numman.ali@gmail.com": "nummanali",
-    "0xNyk@users.noreply.github.com": "0xNyk",
-    "0xnykcd@googlemail.com": "0xNyk",
-    "buraysandro9@gmail.com": "buray",
-    "contact@jomar.fr": "joshmartinelle",
-    "camilo@tekelala.com": "tekelala",
-    "vincentcharlebois@gmail.com": "vincentcharlebois",
-    "aryan@synvoid.com": "aryansingh",
-    "johnsonblake1@gmail.com": "blakejohnson",
-    "hcn518@gmail.com": "pedh",
-    "haileymarshall005@gmail.com": "haileymarshall",
-    "greer.guthrie@gmail.com": "g-guthrie",
-    "kennyx102@gmail.com": "bobashopcashier",
-    "shokatalishaikh95@gmail.com": "areu01or00",
-    "bryan@intertwinesys.com": "bryanyoung",
-    "christo.mitov@gmail.com": "christomitov",
-    "hermes@nousresearch.com": "NousResearch",
-    "hermes@noushq.ai": "benbarclay",
-    "chinmingcock@gmail.com": "ChimingLiu",
-    "openclaw@sparklab.ai": "openclaw",
-    "semihcvlk53@gmail.com": "Himess",
-    "erenkar950@gmail.com": "erenkarakus",
-    "adavyasharma@gmail.com": "adavyas",
-    "acaayush1111@gmail.com": "aayushchaudhary",
-    "jason@outland.art": "jasonoutland",
-    "73175452+Magaav@users.noreply.github.com": "Magaav",
-    "mrflu1918@proton.me": "SPANISHFLU",
-    "morganemoss@gmai.com": "mormio",
-    "kopjop926@gmail.com": "cesareth",
-    "fuleinist@gmail.com": "fuleinist",
-    "jack.47@gmail.com": "JackTheGit",
-    "dalvidjr2022@gmail.com": "Jr-kenny",
-    "m@statecraft.systems": "mbierling",
-    "balyan.sid@gmail.com": "alt-glitch",
-    "oluwadareab12@gmail.com": "bennytimz",
-    "simon@simonmarcus.org": "simon-marcus",
-    "xowiekk@gmail.com": "Xowiek",
-    "1243352777@qq.com": "zons-zhaozhy",
-    "e.silacandmr@gmail.com": "Es1la",
-    # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
-    #    crossref, and GH contributor list matching (April 2026 audit) ──
-    "1115117931@qq.com": "aaronagent",
-    "1506751656@qq.com": "hqhq1025",
-    "364939526@qq.com": "luyao618",
-    "hgk324@gmail.com": "houziershi",
-    "176644217+PStarH@users.noreply.github.com": "PStarH",
-    "51058514+Sanjays2402@users.noreply.github.com": "Sanjays2402",
-    "906014227@qq.com": "bingo906",
-    "aaronwong1999@icloud.com": "AaronWong1999",
-    "agents@kylefrench.dev": "DeployFaith",
-    "angelos@oikos.lan.home.malaiwah.com": "angelos",
-    "aptx4561@gmail.com": "cokemine",
-    "arilotter@gmail.com": "ethernet8023",
-    "ben@nousresearch.com": "benbarclay",
-    "birdiegyal@gmail.com": "yyovil",
-    "boschi1997@gmail.com": "nicoloboschi",
-    "chef.ya@gmail.com": "cherifya",
-    "chlqhdtn98@gmail.com": "BongSuCHOI",
-    "coffeemjj@gmail.com": "Cafexss",
-    "dalianmao0107@gmail.com": "dalianmao000",
-    "der@konsi.org": "konsisumer",
-    "dgrieco@redhat.com": "DomGrieco",
-    "dhicham.pro@gmail.com": "spideystreet",
-    "dipp.who@gmail.com": "dippwho",
-    "don.rhm@gmail.com": "donrhmexe",
-    "dorukardahan@hotmail.com": "dorukardahan",
-    "dsocolobsky@gmail.com": "dsocolobsky",
-    "dylan.socolobsky@lambdaclass.com": "dsocolobsky",
-    "ignacio.avecilla@lambdaclass.com": "IAvecilla",
-    "duerzy@gmail.com": "duerzy",
-    "emozilla@nousresearch.com": "emozilla",
-    "fancydirty@gmail.com": "fancydirty",
-    "farion1231@gmail.com": "farion1231",
-    "floptopbot33@gmail.com": "flobo3",
-    "fontana.pedro93@gmail.com": "pefontana",
-    "francis.x.fitzpatrick@gmail.com": "fxfitz",
-    "frank@helmschrott.de": "Helmi",
-    "gaixg94@gmail.com": "gaixianggeng",
-    "geoff.wellman@gmail.com": "geoffwellman",
-    "han.shan@live.cn": "jamesarch",
-    "haolong@microsoft.com": "LongOddCode",
-    "hata1234@gmail.com": "hata1234",
-    "hmbown@gmail.com": "Hmbown",
-    "iacobs@m0n5t3r.info": "m0n5t3r",
-    "jiayuw794@gmail.com": "JiayuuWang",
-    "jonny@nousresearch.com": "jquesnelle",
-    "juan.ovalle@mistral.ai": "jjovalle99",
-    "julien.talbot@ergonomia.re": "Julientalbot",
-    "kagura.chen28@gmail.com": "kagura-agent",
-    "1342088860@qq.com": "youngDoo",
-    "kamil@gwozdz.me": "kamil-gwozdz",
-    "skmishra1991@gmail.com": "bugkill3r",
-    "karamusti912@gmail.com": "MustafaKara7",
-    "kira@ariaki.me": "kira-ariaki",
-    "knopki@duck.com": "knopki",
-    "limars874@gmail.com": "limars874",
-    "lisicheng168@gmail.com": "lesterli",
-    "mingjwan@microsoft.com": "MagicRay1217",
-    "orangeko@gmail.com": "GenKoKo",
-    "82095453+iacker@users.noreply.github.com": "iacker",
-    "sontianye@users.noreply.github.com": "sontianye",
-    "jackjin1997@users.noreply.github.com": "jackjin1997",
-    "1037461232@qq.com": "jackjin1997",
-    "danieldoderlein@users.noreply.github.com": "danieldoderlein",
-    "lrawnsley@users.noreply.github.com": "lrawnsley",
-    "taeuk178@users.noreply.github.com": "taeuk178",
-    "ogzerber@users.noreply.github.com": "ogzerber",
-    "cola-runner@users.noreply.github.com": "cola-runner",
-    "ygd58@users.noreply.github.com": "ygd58",
-    "vominh1919@users.noreply.github.com": "vominh1919",
-    "iamagenius00@users.noreply.github.com": "iamagenius00",
-    "9219265+cresslank@users.noreply.github.com": "cresslank",
-    "trevmanthony@gmail.com": "trevthefoolish",
-    "ziliangpeng@users.noreply.github.com": "ziliangpeng",
-    "centripetal-star@users.noreply.github.com": "centripetal-star",
-    "LeonSGP43@users.noreply.github.com": "LeonSGP43",
-    "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
-    "Lubrsy706@users.noreply.github.com": "Lubrsy706",
-    "niyant@spicefi.xyz": "spniyant",
-    "olafthiele@gmail.com": "olafthiele",
-    "oncuevtv@gmail.com": "sprmn24",
-    "programming@olafthiele.com": "olafthiele",
-    "r2668940489@gmail.com": "r266-tech",
-    "s5460703@gmail.com": "BlackishGreen33",
-    "saul.jj.wu@gmail.com": "SaulJWu",
-    "shenhaocheng19990111@gmail.com": "hcshen0111",
-    "sjtuwbh@gmail.com": "Cygra",
-    "srhtsrht17@gmail.com": "Sertug17",
-    "stephenschoettler@gmail.com": "stephenschoettler",
-    "tanishq231003@gmail.com": "yyovil",
-    "taosiyuan163@153.com": "taosiyuan163",
-    "tesseracttars@gmail.com": "tesseracttars-creator",
-    "tianliangjay@gmail.com": "xingkongliang",
-    "tranquil_flow@protonmail.com": "Tranquil-Flow",
-    "unayung@gmail.com": "Unayung",
-    "vorvul.danylo@gmail.com": "WorldInnovationsDepartment",
-    "win4r@outlook.com": "win4r",
-    "xush@xush.org": "KUSH42",
-    "yangzhi.see@gmail.com": "SeeYangZhi",
-    "yongtenglei@gmail.com": "yongtenglei",
-    "young@YoungdeMacBook-Pro.local": "YoungYang963",
-    "ysfalweshcan@gmail.com": "Junass1",
-    "ysfwaxlycan@gmail.com": "WAXLYY",
-    "yusufalweshdemir@gmail.com": "Dusk1e",
-    "zhouboli@gmail.com": "zhouboli",
-    "zqiao@microsoft.com": "tomqiaozc",
-    "zzn+pa@zzn.im": "xinbenlv",
-    "zaynjarvis@gmail.com": "ZaynJarvis",
-    "zhiheng.liu@bytedance.com": "ZaynJarvis",
-    "mbelleau@Michels-MacBook-Pro.local": "malaiwah",
-    "michel.belleau@malaiwah.com": "malaiwah",
-    "gnanasekaran.sekareee@gmail.com": "gnanam1990",
-    "jz.pentest@gmail.com": "0xyg3n",
-    "hypnosis.mda@gmail.com": "Hypn0sis",
-    "ywt000818@gmail.com": "OwenYWT",
-    "dhandhalyabhavik@gmail.com": "v1k22",
-    "rucchizhao@zhaochenfeideMacBook-Pro.local": "RucchiZ",
-    "tannerfokkens@Mac.attlocal.net": "tannerfokkens-maker",
-    "lehaolin98@outlook.com": "LehaoLin",
-    "yuewang1@microsoft.com": "imink",
-    "1736355688@qq.com": "hedgeho9X",
-    "bernylinville@devopsthink.org": "bernylinville",
-    "brian@bde.io": "briandevans",
-    "hubin_ll@qq.com": "LLQWQ",
-    "memosr_email@gmail.com": "memosr",
-    "anthhub@163.com": "anthhub",
-    "shenuu@gmail.com": "shenuu",
-    "xiayh17@gmail.com": "xiayh0107",
-    "zhujianxyz@gmail.com": "opriz",
-    "asurla@nvidia.com": "anniesurla",
-    "limkuan24@gmail.com": "WideLee",
-    "aviralarora002@gmail.com": "AviArora02-commits",
-    "draixagent@gmail.com": "draix",
-    "junminliu@gmail.com": "JimLiu",
-    "jarvischer@gmail.com": "maxchernin",
-    "levantam.98.2324@gmail.com": "LVT382009",
-    "zhurongcheng@rcrai.com": "heykb",
-    "withapurpose37@gmail.com": "StefanIsMe",
-    "261797239+lumenradley@users.noreply.github.com": "lumenradley",
-    "166376523+sjz-ks@users.noreply.github.com": "sjz-ks",
-    "haileymarshall005@gmail.com": "haileymarshall",
-    "aniruddhaadak80@users.noreply.github.com": "aniruddhaadak80",
-    "zheng.jerilyn@gmail.com": "jerilynzheng",
-    "asslaenn5@gmail.com": "Aslaaen",
-    "shalompmc0505@naver.com": "pinion05",
-    "105142614+VTRiot@users.noreply.github.com": "VTRiot",
-    "vivien000812@gmail.com": "iamagenius00",
-    "89228157+Feranmi10@users.noreply.github.com": "Feranmi10",
-    "simon@gtcl.us": "simon-gtcl",
-    "suzukaze.haduki@gmail.com": "houko",
-    "cliff@cigii.com": "cgarwood82",
-    "anna@oa.ke": "anna-oake",
-    "jaffarkeikei@gmail.com": "jaffarkeikei",
-    "hxp@hxp.plus": "hxp-plus",
-    "3580442280@qq.com": "Tianworld",
-    "wujianxu91@gmail.com": "wujhsu",
-    "zhrh120@gmail.com": "niyoh120",
-    "vrinek@hey.com": "vrinek",
-    "268198004+xandersbell@users.noreply.github.com": "xandersbell",
-    "somme4096@gmail.com": "Somme4096",
-    "brian@tiuxo.com": "brianclemens",
-    "25944632+yudaiyan@users.noreply.github.com": "yudaiyan",
-    "chayton@sina.com": "ycbai",
-    "longsizhuo@gmail.com": "longsizhuo",
-    "chenb19870707@gmail.com": "ms-alan",
-    "276886827+WuTianyi123@users.noreply.github.com": "WuTianyi123",
-    "22549957+li0near@users.noreply.github.com": "li0near",
-    "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
-    "haimu0x0@proton.me": "haimu0x",
-    "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
-    "projectadmin@wit.id": "projectadmin-dev",
-    "mrigankamondal10@gmail.com": "Dev-Mriganka",
-    "132275809+shushuzn@users.noreply.github.com": "shushuzn",
-    "ibrahimozsarac@gmail.com": "iborazzi",
-    "130149563+A-afflatus@users.noreply.github.com": "A-afflatus",
-    "huangkwell@163.com": "huangke19",
-    "tanishq@exa.ai": "10ishq",
-    "363708+christopherwoodall@users.noreply.github.com": "christopherwoodall",
-    "zhang9w0v5@qq.com": "zhang9w0v5",
-    "fuleinist@outlook.com": "fuleinist",
-    "43494187+Llugaes@users.noreply.github.com": "Llugaes",
-    "fengtianyu88@users.noreply.github.com": "fengtianyu88",
-    "l.moncany@gmail.com": "lmoncany",
-    "fatinghenji@users.noreply.github.com": "fatinghenji",
-    "xin.peng.dr@gmail.com": "xinpengdr",
-    "mike@mikewaters.net": "mikewaters",
-    "65117428+WadydX@users.noreply.github.com": "WadydX",
-    "216480837+isaachuangGMICLOUD@users.noreply.github.com": "isaachuangGMICLOUD",
-    "nukuom976228@gmail.com": "hsy5571616",
-    "11462216+Nan93@users.noreply.github.com": "Nan93",
-    "l973401489@126.com": "zhouxiaoya12",
-    "373119611@qq.com": "roytian1217",
-    "brett@brettbrewer.com": "minorgod",
-    "67779267+wenhao7@users.noreply.github.com": "wenhao7",
-    "git@yzx9.xyz": "yzx9",
-    "nilesh@cloudgeni.us": "lvnilesh",
-    "63502660+azhengbot@users.noreply.github.com": "azhengbot",
-    "sharvil.saxena@gmail.com": "sharziki",
-    "yuanhe@minimaxi.com": "RyanLee-Dev",
-    "curtis992250@gmail.com": "TaroballzChen",
-    "92638503+Lind3ey@users.noreply.github.com": "Lind3ey",
-    "1352808998@qq.com": "phpoh",
-    "caliberoviv@gmail.com": "vivganes",
-    "michaelfackerell@gmail.com": "MikeFac",
-    "18024642@qq.com": "GuyCui",
-}
 
 
 def git(*args, cwd=None):
     """Run a git command and return stdout."""
     result = subprocess.run(
         ["git"] + list(args),
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
         print(f"git {' '.join(args)} failed: {result.stderr}", file=sys.stderr)
@@ -430,141 +50,129 @@ def git_result(*args, cwd=None):
     return subprocess.run(
         ["git"] + list(args),
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         cwd=cwd or str(REPO_ROOT),
+        check=False,
     )
 
 
-def get_last_tag():
-    """Get the most recent CalVer tag."""
-    tags = git("tag", "--list", "v20*", "--sort=-v:refname")
-    if tags:
-        return tags.split("\n")[0]
-    return None
+def list_remotes() -> list[str]:
+    """The configured git remote names, in git's order."""
+    result = git_result("remote")
+    if result.returncode != 0:
+        return []
+    return [name for name in result.stdout.split() if name]
 
 
-def next_available_tag(base_tag: str) -> tuple[str, str]:
-    """Return a tag/calver pair, suffixing same-day releases when needed."""
-    if not git("tag", "--list", base_tag):
-        return base_tag, base_tag.removeprefix("v")
+def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
+    """Dispatch the release pipeline after its draft exists.
 
-    suffix = 2
-    while git("tag", "--list", f"{base_tag}.{suffix}"):
-        suffix += 1
-    tag_name = f"{base_tag}.{suffix}"
-    return tag_name, tag_name.removeprefix("v")
-
-
-def get_current_version():
-    """Read current semver from __init__.py."""
-    content = VERSION_FILE.read_text()
-    match = re.search(r'__version__\s*=\s*"([^"]+)"', content)
-    return match.group(1) if match else "0.0.0"
-
-
-def bump_version(current: str, part: str) -> str:
-    """Bump a semver version string."""
-    parts = current.split(".")
-    if len(parts) != 3:
-        parts = ["0", "0", "0"]
-    major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
-
-    if part == "major":
-        major += 1
-        minor = 0
-        patch = 0
-    elif part == "minor":
-        minor += 1
-        patch = 0
-    elif part == "patch":
-        patch += 1
-    else:
-        raise ValueError(f"Unknown bump part: {part}")
-
-    return f"{major}.{minor}.{patch}"
-
-
-def update_version_files(semver: str, calver_date: str):
-    """Update version strings in source files."""
-    # Update __init__.py
-    content = VERSION_FILE.read_text()
-    content = re.sub(
-        r'__version__\s*=\s*"[^"]+"',
-        f'__version__ = "{semver}"',
-        content,
-    )
-    content = re.sub(
-        r'__release_date__\s*=\s*"[^"]+"',
-        f'__release_date__ = "{calver_date}"',
-        content,
-    )
-    VERSION_FILE.write_text(content)
-
-    # Update pyproject.toml
-    pyproject = PYPROJECT_FILE.read_text()
-    pyproject = re.sub(
-        r'^version\s*=\s*"[^"]+"',
-        f'version = "{semver}"',
-        pyproject,
-        flags=re.MULTILINE,
-    )
-    PYPROJECT_FILE.write_text(pyproject)
-
-
-def build_release_artifacts(semver: str) -> list[Path]:
-    """Build sdist/wheel artifacts for the current release.
-
-    Returns the artifact paths when the local environment has ``python -m build``
-    available. If build tooling is missing or the build fails, returns an empty
-    list and lets the release proceed without attached Python artifacts.
+    Both channels run the default-branch workflow with the tag as an input, so
+    caches share one scope and scripts come from main. A stable run resolves its
+    claim tag to the commit under test. Its gate owns artifact publication and
+    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
-    dist_dir = REPO_ROOT / "dist"
-    shutil.rmtree(dist_dir, ignore_errors=True)
+    canary = _CANARY_TAG_RE.fullmatch(tag) is not None
+    if not canary and not STABLE_TAG_RE.fullmatch(tag):
+        raise ValueError("Expected an exact stable or canary release tag")
+    workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
+    cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
+    if canary:
+        cmd += ["-f", "upload_release=true"]
+    if gh_repo:
+        cmd += ["--repo", gh_repo]
+
+    if not shutil.which("gh"):
+        print("  ✗ Cannot start the release pipeline: `gh` CLI not found.")
+        print(f"    Start it manually: {' '.join(cmd)}")
+        return False
+
+    dispatch_ref = _default_branch(gh_repo) or "main"
+    cmd[cmd.index("--ref") + 1] = dispatch_ref
 
     result = subprocess.run(
-        [sys.executable, "-m", "build", "--sdist", "--wheel"],
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(REPO_ROOT),
+        check=False,
     )
     if result.returncode != 0:
-        print("  ⚠ Could not build Python release artifacts.")
-        stderr = result.stderr.strip()
-        stdout = result.stdout.strip()
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        elif stdout:
-            print(f"    {stdout.splitlines()[-1]}")
-        print("    Install the 'build' package to attach semver-named sdist/wheel assets.")
-        return []
+        print(f"  ✗ Could not start the release pipeline: {result.stderr.strip()}")
+        print(f"    Start it manually: {' '.join(cmd)}")
+        return False
 
-    artifacts = sorted(p for p in dist_dir.iterdir() if p.is_file())
-    matching = [p for p in artifacts if semver in p.name]
-    if not matching:
-        print("  ⚠ Built artifacts did not match the expected release version.")
-        return []
-    return matching
+    print(f"  ✓ {workflow} started for {tag} (workflow from {dispatch_ref})")
+    return True
 
 
-def resolve_author(name: str, email: str) -> str:
-    """Resolve a git author to a GitHub @mention."""
-    # Try email lookup first
-    gh_user = AUTHOR_MAP.get(email)
-    if gh_user:
-        return f"@{gh_user}"
+def _default_branch(gh_repo: str | None) -> str | None:
+    """The repo's default branch, resolved via gh. None on any failure."""
+    cmd = ["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]
+    if gh_repo:
+        cmd += [gh_repo]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(REPO_ROOT),
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
-    # Try noreply pattern
-    noreply_match = re.match(r"(\d+)\+(.+)@users\.noreply\.github\.com", email)
-    if noreply_match:
-        return f"@{noreply_match.group(2)}"
 
-    # Try username@users.noreply.github.com
-    noreply_match2 = re.match(r"(.+)@users\.noreply\.github\.com", email)
-    if noreply_match2:
-        return f"@{noreply_match2.group(1)}"
+def resolve_push_remote(requested: str | None) -> str:
+    """Pick the remote that receives the release push (and the GitHub
+    release). One configured remote: use it. More than one: the release
+    lands on whichever repo the tag is pushed to, so an implicit default
+    is a foot-gun — require an explicit --remote.
+    """
+    remotes = list_remotes()
+    if not remotes:
+        raise SystemExit("release: no git remotes configured — nothing to push to")
+    if requested:
+        if requested not in remotes:
+            raise SystemExit(
+                f"release: remote {requested!r} is not configured "
+                f"(available: {', '.join(remotes)})"
+            )
+        return requested
+    if len(remotes) == 1:
+        return remotes[0]
+    raise SystemExit(
+        "release: multiple remotes are configured "
+        f"({', '.join(remotes)}) — pass --remote <name> to say which one "
+        "receives the release push"
+    )
 
-    # Fallback to git name
-    return name
+
+def remote_github_repo(remote: str) -> str | None:
+    """Read the GitHub repository that receives the remote's pushes."""
+    result = git_result("remote", "get-url", "--push", remote)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    match = re.fullmatch(
+        r"(?:https?://(?:[^/@\s]+@)?github\.com/|"
+        r"ssh://(?:[^/@\s]+@)?github\.com(?::\d+)?/|"
+        r"git://github\.com/|[^/@:\s]+@github\.com:)"
+        r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", url,
+    )
+    return match.group(1) if match else None
+
+
+# Stable tags are matched with STABLE_TAG_RE and canary tags
+# with _CANARY_TAG_RE, both imported from hermes_cli.update_channel — the
+# single authority for both tag shapes (the stable major is capped at three
+# digits so historical CalVer tags like v2026.7.20 never match; the canary
+# identity is the exact stable core plus full UTC build metadata.
+# Second precision allows several canaries per day; the fixed-width UTC stamp
+# sorts chronologically even though SemVer ignores it for precedence.
+
+
+def get_last_canary_tag():
+    """The newest canonical canary receipt, by embedded build time."""
+    raw = git("tag", "--list", "v*+canary.*")
+    tags = [tag for tag in (raw.split("\n") if raw else []) if is_canary_tag(tag)]
+    return max(tags, key=lambda tag: canary_timestamp(tag) or "", default=None)
 
 
 def categorize_commit(subject: str) -> str:
@@ -635,19 +243,20 @@ def parse_coauthors(body: str) -> list:
     return results
 
 
-def get_commits(since_tag=None):
-    """Get commits since a tag (or all commits if None)."""
+def get_commits(since_tag=None, until="HEAD", cwd=None):
+    """Get commits in ``since_tag..until`` (or all of ``until`` if since_tag is None)."""
     if since_tag:
-        range_spec = f"{since_tag}..HEAD"
+        range_spec = f"{since_tag}..{until}"
     else:
-        range_spec = "HEAD"
+        range_spec = until
 
-    # Format: hash|author_name|author_email|subject\0body
-    # Using %x00 (null) as separator between subject and body
+    # Format: hash<US>author_name<US>author_email<US>subject\0body
+    # Using %x1f (unit separator) to avoid conflict with | in author names
     log = git(
         "log", range_spec,
-        "--format=%H|%an|%ae|%s%x00%b%x00",
+        "--format=%H%x1f%an%x1f%ae%x1f%s%x00%b%x00",
         "--no-merges",
+        cwd=cwd,
     )
 
     if not log:
@@ -660,14 +269,14 @@ def get_commits(since_tag=None):
         entry = entry.strip()
         if not entry:
             continue
-        # Split on first null to separate "hash|name|email|subject" from "body"
+        # Split on first null to separate "hash<US>name<US>email<US>subject" from "body"
         if "\0" in entry:
             header, body = entry.split("\0", 1)
             body = body.strip()
         else:
             header = entry
             body = ""
-        parts = header.split("|", 3)
+        parts = header.split("\x1f", 3)
         if len(parts) != 4:
             continue
         sha, name, email, subject = parts
@@ -687,7 +296,7 @@ def get_commits(since_tag=None):
     return commits
 
 
-def get_pr_number(subject: str) -> str:
+def get_pr_number(subject: str) -> str | None:
     """Extract PR number from commit subject if present."""
     match = re.search(r"#(\d+)", subject)
     if match:
@@ -696,7 +305,7 @@ def get_pr_number(subject: str) -> str:
 
 
 def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/NousResearch/hermes-agent",
-                       prev_tag=None, first_release=False):
+                       prev_tag=None, first_release=False, no_changelog=False):
     """Generate markdown changelog from categorized commits."""
     lines = []
 
@@ -707,64 +316,75 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     lines.append("")
     lines.append(f"**Release Date:** {date_str}")
     lines.append("")
+    # The builds-pending job in desktop-bundled-release.yml replaces this
+    # marker with a "builds in progress" link to the run as soon as the
+    # workflow starts. The builds-table job then replaces the link with
+    # the download tables once every matrix leg has uploaded its
+    # artifacts to the R2 bucket (real object names, never predicted
+    # ones; the release body links point at the R2 public URL). A release
+    # whose matrix never finishes keeps the link — visibly unfinished,
+    # and it points at the run that stopped.
+    lines.append("<!-- HERMES_BUILDS_TABLE -->")
+    lines.append("")
 
     if first_release:
         lines.append("> 🎉 **First official release!** This marks the beginning of regular weekly releases")
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
         lines.append("")
 
-    # Group commits by category
-    categories = defaultdict(list)
     all_authors = set()
     teknium_aliases = {"@teknium1"}
+    if not no_changelog:
+        # Group commits by category
+        categories = defaultdict(list)
 
-    for commit in commits:
-        categories[commit["category"]].append(commit)
-        author = commit["github_author"]
-        if author not in teknium_aliases:
-            all_authors.add(author)
-        for coauthor in commit.get("coauthors", []):
-            if coauthor not in teknium_aliases:
-                all_authors.add(coauthor)
-
-    # Category display order and emoji
-    category_order = [
-        ("breaking", "⚠️ Breaking Changes"),
-        ("features", "✨ Features"),
-        ("improvements", "🔧 Improvements"),
-        ("fixes", "🐛 Bug Fixes"),
-        ("docs", "📚 Documentation"),
-        ("tests", "🧪 Tests"),
-        ("chore", "🏗️ Infrastructure"),
-        ("other", "📦 Other Changes"),
-    ]
-
-    for cat_key, cat_title in category_order:
-        cat_commits = categories.get(cat_key, [])
-        if not cat_commits:
-            continue
-
-        lines.append(f"## {cat_title}")
-        lines.append("")
-
-        for commit in cat_commits:
-            subject = clean_subject(commit["subject"])
-            pr_num = get_pr_number(commit["subject"])
+        for commit in commits:
+            categories[commit["category"]].append(commit)
             author = commit["github_author"]
-
-            # Build the line
-            parts = [f"- {subject}"]
-            if pr_num:
-                parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
-            else:
-                parts.append(f"([`{commit['short_sha']}`]({repo_url}/commit/{commit['sha']}))")
-
             if author not in teknium_aliases:
-                parts.append(f"— {author}")
+                all_authors.add(author)
+            for coauthor in commit.get("coauthors", []):
+                if coauthor not in teknium_aliases:
+                    all_authors.add(coauthor)
 
-            lines.append(" ".join(parts))
+        # Category display order and emoji
+        category_order = [
+            ("breaking", "⚠️ Breaking Changes"),
+            ("features", "✨ Features"),
+            ("improvements", "🔧 Improvements"),
+            ("fixes", "🐛 Bug Fixes"),
+            ("docs", "📚 Documentation"),
+            ("tests", "🧪 Tests"),
+            ("chore", "🏗️ Infrastructure"),
+            ("other", "📦 Other Changes"),
+        ]
 
-        lines.append("")
+        for cat_key, cat_title in category_order:
+            cat_commits = categories.get(cat_key, [])
+            if not cat_commits:
+                continue
+
+            lines.append(f"## {cat_title}")
+            lines.append("")
+
+            for commit in cat_commits:
+                subject = clean_subject(commit["subject"])
+                pr_num = get_pr_number(commit["subject"])
+                author = commit["github_author"]
+
+                # Build the line
+                parts = [f"- {subject}"]
+                if pr_num:
+                    parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
+                else:
+                    parts.append(f"([`{commit['short_sha']}`]({repo_url}/commit/{commit['sha']}))")
+
+                if author not in teknium_aliases:
+                    parts.append(f"— {author}")
+
+                lines.append(" ".join(parts))
+
+            lines.append("")
 
     # Contributors section
     if all_authors:
@@ -799,171 +419,306 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     return "\n".join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
-    parser.add_argument("--bump", choices=["major", "minor", "patch"],
-                        help="Which semver component to bump")
-    parser.add_argument("--publish", action="store_true",
-                        help="Actually create the tag and GitHub release (otherwise dry run)")
-    parser.add_argument("--date", type=str,
-                        help="Override CalVer date (format: YYYY.M.D)")
-    parser.add_argument("--first-release", action="store_true",
-                        help="Mark as first release (no previous tag expected)")
-    parser.add_argument("--output", type=str,
-                        help="Write changelog to file instead of stdout")
-    args = parser.parse_args()
+def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path | None = None) -> None:
+    """Converge a tag-pushed canary through draft, dispatch, and protected head."""
+    ref = f"refs/tags/{tag}"
+    local_object = git("rev-parse", ref)
+    commit = git("rev-parse", f"{ref}^{{commit}}")
+    if git("cat-file", "-t", local_object) != "tag":
+        raise ValueError("Canary receipt must be an annotated tag")
+    remote_refs = dict(line.split()[::-1] for line in git(
+        "ls-remote", remote, ref, f"{ref}^{{}}",
+    ).splitlines())
+    if remote_refs.get(ref) != local_object or remote_refs.get(f"{ref}^{{}}") != commit:
+        raise ValueError("Canary receipt differs from its exact remote tag object")
 
-    # Determine CalVer date
-    if args.date:
-        calver_date = args.date
+    view = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        check=False,
+    )
+    # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
+    # answer is the only working link to it.
+    if view.returncode != 0:
+        create = [
+            "gh", "release", "create", tag, "--repo", repository,
+            "--verify-tag", "--draft", "--prerelease",
+            "--title", f"Hermes Agent canary {tag}",
+        ]
+        create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
+        created = subprocess.run(
+            create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            check=False,
+        )
+        if created.returncode != 0:
+            raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
+        draft_url = created.stdout.strip()
     else:
-        now = datetime.now()
-        calver_date = f"{now.year}.{now.month}.{now.day}"
+        release = json.loads(view.stdout)
+        if (release.get("tagName") != tag or not isinstance(release.get("isDraft"), bool)
+                or release.get("isPrerelease") is not True):
+            raise ValueError("Canary release state differs from its receipt")
+        draft_url = release.get("url") or ""
 
-    base_tag = f"v{calver_date}"
-    tag_name, calver_date = next_available_tag(base_tag)
-    if tag_name != base_tag:
-        print(f"Note: Tag {base_tag} already exists, using {tag_name}")
+    from scripts.releases.versioning import published_channel_identity
+    published = published_channel_identity(repository, "canary")
+    if published is not None and published == (tag[1:], commit):
+        print(f"✓ {tag} is already published.")
+        return
+    if not dispatch_desktop_build(tag, repository):
+        raise SystemExit(1)
+    print(f"Resumed canary publication for {tag}.")
+    print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
+    print("Wait for that workflow to finish. It builds this canary and publishes the draft when the build is green.")
+    print(f"The draft is at {draft_url}.")
 
-    # Determine semver
-    current_version = get_current_version()
-    if args.bump:
-        new_version = bump_version(current_version, args.bump)
-    else:
-        new_version = current_version
 
-    # Get previous tag
-    prev_tag = get_last_tag()
-    if not prev_tag and not args.first_release:
-        print("No previous tags found. Use --first-release for the initial release.")
-        print(f"Would create tag: {tag_name}")
-        print(f"Would set version: {new_version}")
+def cmd_canary(args) -> None:
+    """--canary: tag + draft a canary source identity.
 
-    # Get commits
-    commits = get_commits(since_tag=prev_tag)
-    if not commits:
-        print("No new commits since last tag.")
-        if not args.first_release:
+    The source identity is the newest stable version plus a full UTC timestamp
+    in SemVer build metadata. It therefore compares equal to that stable; only
+    the R2 canary head moves subscribers. No version-file bump or commit is
+    created — the receipt tag points at HEAD as-is.
+
+    Created as a DRAFT prerelease, for the same reason the stable path
+    drafts: a published release with no installers attached is a release
+    users can reach and cannot use. The desktop matrix attaches the
+    installers to this draft by tag, and the canary workflow's publish
+    job flips it to published only after that matrix is green. A failed
+    bundle therefore leaves an inspectable draft rather than a broken
+    canary.
+
+    Exits 0 with "nothing to do" when HEAD is already tagged by the last
+    canary — the skip-if-no-new-commits gate lives HERE, not in workflow
+    YAML.
+    """
+    date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    push_remote = resolve_push_remote(args.remote)
+    gh_repo = remote_github_repo(push_remote)
+    if not gh_repo:
+        raise ValueError("Canary publication requires a GitHub repository remote")
+    prev_canary = get_last_canary_tag()
+    if prev_canary:
+        head = git("rev-parse", "HEAD")
+        if head and head == git("rev-parse", f"{prev_canary}^{{commit}}"):
+            if args.publish:
+                _resume_canary(prev_canary, push_remote, gh_repo)
+            else:
+                print(f"✓ No new commits since {prev_canary} — nothing to do.")
             return
+    from scripts.releases.versioning import published_stable_identity
+    stable_version, stable_commit = published_stable_identity(gh_repo)
+    tag_name = canary_tag_for_date(stable_version, date_utc)
 
-    print(f"{'='*60}")
-    print(f"  Hermes Agent Release Preview")
-    print(f"{'='*60}")
-    print(f"  CalVer tag:      {tag_name}")
-    print(f"  SemVer:          v{current_version} → v{new_version}")
-    print(f"  Previous tag:    {prev_tag or '(none — first release)'}")
-    print(f"  Commits:         {len(commits)}")
-    print(f"  Unique authors:  {len(set(c['github_author'] for c in commits))}")
-    print(f"  Mode:            {'PUBLISH' if args.publish else 'DRY RUN'}")
-    print(f"{'='*60}")
-    print()
+    since = prev_canary or stable_commit
 
-    # Generate changelog
+    if git_result("rev-parse", "--verify", "--quiet", f"refs/tags/{tag_name}").returncode == 0:
+        if git("rev-parse", f"{tag_name}^{{commit}}") != git("rev-parse", "HEAD"):
+            raise ValueError(f"{tag_name} already receipts a different commit")
+        if args.publish:
+            _resume_canary(tag_name, push_remote, gh_repo)
+        else:
+            print(f"✓ {tag_name} already exists — nothing to do.")
+        return
+
+
+    commits = get_commits(since_tag=since)
+    if not commits:
+        print(f"✓ No new commits since {since} — nothing to do.")
+        return
+
+    version = tag_name.lstrip("v")
+    print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
     changelog = generate_changelog(
-        commits, tag_name, new_version,
-        prev_tag=prev_tag,
-        first_release=args.first_release,
+        commits, tag_name, version, prev_tag=since, first_release=False, no_changelog=args.no_changelog
     )
 
-    if args.output:
-        Path(args.output).write_text(changelog)
-        print(f"Changelog written to {args.output}")
-    else:
+    if not args.publish:
         print(changelog)
+        print("\nDry run complete. To publish, add --publish")
+        return
 
-    if args.publish:
-        print(f"\n{'='*60}")
-        print("  Publishing release...")
-        print(f"{'='*60}")
+    tag_result = git_result(
+        "tag", "-a", tag_name, "-m", f"Hermes Agent canary {date_utc}"
+    )
+    if tag_result.returncode != 0:
+        print(f"✗ Failed to create tag {tag_name}: {tag_result.stderr.strip()}")
+        sys.exit(1)
+    push_result = git_result("push", push_remote, f"refs/tags/{tag_name}")
+    if push_result.returncode != 0:
+        print(f"✗ Failed to push {tag_name}: {push_result.stderr.strip()}")
+        sys.exit(1)
+    print(f"✓ Pushed {tag_name} to {push_remote}")
 
-        # Update version files
-        if args.bump:
-            update_version_files(new_version, calver_date)
-            print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
+    changelog_file = REPO_ROOT / ".release_notes.md"
+    changelog_file.write_text(changelog, encoding="utf-8")
+    _resume_canary(tag_name, push_remote, gh_repo, notes_file=changelog_file)
+    changelog_file.unlink(missing_ok=True)
+    # Record the tag for any workflow step that wants it. release.py
+    # starts the build itself, so nothing consumes this today; it stays
+    # because a step output is the cheap, conventional handle for "which
+    # tag did this run cut".
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a", encoding="utf-8") as f:
+            f.write(f"tag={tag_name}\n")
 
-            # Commit version bump
-            add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
-            if add_result.returncode != 0:
-                print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
-                return
 
-            commit_result = git_result(
-                "commit", "-m", f"chore: bump version to v{new_version} ({calver_date})"
-            )
-            if commit_result.returncode != 0:
-                print(f"  ✗ Failed to commit version bump: {commit_result.stderr.strip()}")
-                return
-            print(f"  ✓ Committed version bump")
+def _canary_date(tag: str) -> str | None:
+    """The YYYYMMDD receipt date for a canonical canary tag."""
+    if not is_canary_tag(tag):
+        return None
+    return tag.split("+canary.", 1)[1][:8]
 
-        # Create annotated tag
-        tag_result = git_result(
-            "tag", "-a", tag_name, "-m",
-            f"Hermes Agent v{new_version} ({calver_date})\n\nWeekly release"
+
+def prune_old_canaries(args) -> None:
+    """--prune-canaries: delete canary releases+tags older than 14 days.
+
+    Keep-on-doubt: any parse failure keeps the release. The keep window is
+    dated by the tag's own UTC suffix, not the release timestamp, so a
+    re-published old tag never resets its clock.
+    """
+    push_remote = resolve_push_remote(args.remote)
+    gh_repo = remote_github_repo(push_remote)
+    cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
+
+    tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
+    doomed = []
+    for tag in (tags.split("\n") if tags else []):
+        date = _canary_date(tag)
+        if date is not None and date < cutoff:
+            doomed.append(tag)
+    if not doomed:
+        print("✓ No canaries older than 14 days.")
+        return
+    for tag in doomed:
+        if not args.publish:
+            print(f"Would delete {tag}")
+            continue
+        gh_cmd = ["gh", "release", "delete", tag, "--yes", "--cleanup-tag"]
+        if gh_repo:
+            gh_cmd += ["--repo", gh_repo]
+        result = subprocess.run(
+            gh_cmd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=str(REPO_ROOT),
+            check=False,
         )
-        if tag_result.returncode != 0:
-            print(f"  ✗ Failed to create tag {tag_name}: {tag_result.stderr.strip()}")
+        if result.returncode == 0:
+            print(f"✓ Deleted {tag}")
+        else:
+            print(f"⚠ Could not delete {tag}: {result.stderr.strip()}")
+    if not args.publish:
+        print("Dry run complete. No release was deleted.")
+        print("Run the same command with --publish to delete the tags above.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
+    parser.add_argument("--canary", action="store_true",
+                        help="Tag + publish a stable-core canary "
+                             "(v<stable>+canary.<YYYYMMDDTHHMMSSZ>); no-op when "
+                             "HEAD has no new commits since the last canary")
+    parser.add_argument("--build-commit", type=str, metavar="REV",
+                        help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
+                             "Add --publish to dispatch without a tag or release. The same "
+                             "direct dispatch runs from any GitHub remote; add --channel NAME "
+                             "to publish into an updatable R2 channel instead of a one-off.")
+    parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
+                        help="Bake a non-secret environment default into a commit desktop bundle. "
+                             "Repeat for multiple variables. Runtime environment values win.")
+    parser.add_argument("--bundle-unset", action="append", default=[], metavar="NAME",
+                        help="Clear an inherited variable at desktop launch, even when set. "
+                             "Uses an explicit empty value; repeat for multiple variables.")
+    parser.add_argument("--prune-canaries", action="store_true",
+                        help="Delete canary releases+tags older than 14 days")
+    parser.add_argument("--publish", action="store_true",
+                        help="Actually create the tag and GitHub release (otherwise dry run)")
+    parser.add_argument("--remote", type=str,
+                        help="Git remote that receives the release push and the GitHub "
+                             "release. Required with --publish when more than one remote "
+                             "is configured; the single remote is used when only one exists.")
+    parser.add_argument("--date", type=str,
+                        help="Override release date metadata (format: YYYY.M.D)")
+
+    parser.add_argument("--no-changelog", action="store_true",
+                        help="Skip changelog")
+    subcommands = parser.add_subparsers(dest="command")
+    release_cmd = subcommands.add_parser(
+        "release", help="Claim a version, cut a draft, and dispatch the gate")
+    release_cmd.add_argument("--commit", required=True, metavar="SHA",
+                             help="The commit to release; it must be on main or a release/* branch")
+    release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
+    release_cmd.add_argument("--autopublish", action="store_true",
+                             help="Publish on green instead of leaving a draft")
+    from scripts.releases import lanes as lane_set
+
+    release_cmd.add_argument("--only", action="append", metavar="LANES",
+                             help="Start from exactly these lanes instead of the default set "
+                                  "(comma-separated, repeatable).")
+    release_cmd.add_argument("--with", dest="with_lanes", action="append", metavar="LANES",
+                             help="Also build or test these lanes (comma-separated, repeatable).")
+    release_cmd.add_argument("--without", dest="without_lanes", action="append", metavar="LANES",
+                             help="Do not build or test these lanes (comma-separated, repeatable).")
+    release_cmd.epilog = ("Lanes (default on unless noted): "
+                          + "; ".join(f"{lane.name}{'' if lane.default else ' (off)'} = {lane.doc}"
+                                      for lane in lane_set.LANES))
+    release_cmd.formatter_class = argparse.RawDescriptionHelpFormatter
+    # SUPPRESS keeps a --no-changelog given before the subcommand from being
+    # reset by this parser's default.
+    release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,
+                             help="Leave the commit list out of the draft body")
+    release_cmd.add_argument("--remote", type=str)
+    changelog_cmd = subcommands.add_parser(
+        "changelog", help="Print the changelog the next stable release draft would carry")
+    changelog_cmd.add_argument("--commit", required=True, metavar="SHA",
+                               help="Commit the release would be cut at")
+    changelog_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
+    changelog_cmd.add_argument("--remote", type=str)
+    publish_cmd = subcommands.add_parser(
+        "publish", help="Publish a green stable release through the ordered sequencer")
+    publish_cmd.add_argument("--version", required=True)
+    publish_cmd.add_argument("--remote", type=str)
+    abandon_cmd = subcommands.add_parser(
+        "abandon", help="Clear the outstanding attempt, keeping its attempt ref and writing an abandon marker")
+    abandon_cmd.add_argument("--version", required=True)
+    abandon_cmd.add_argument("--remote", type=str)
+    from scripts.releases.channel_build import add_arguments, validate_arguments, cmd_channel
+
+    add_arguments(parser)
+    args = parser.parse_args()
+
+    from scripts.releases.entrypoint import cmd_abandon, cmd_changelog, cmd_publish, cmd_release
+
+    stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon,
+                       "changelog": cmd_changelog}
+    if args.command:
+        stable_commands[args.command](args)
+        return
+    if validate_arguments(parser, args):
+        cmd_channel(args)
+        return
+    if (args.bundle_env or args.bundle_unset) and args.build_commit is None:
+        parser.error("--bundle-env and --bundle-unset require --build-commit")
+    if args.build_commit is not None:
+        conflicting = [name for name, supplied in (
+            ("--canary", args.canary), ("--prune-canaries", args.prune_canaries),
+            ("--date", args.date), ("--no-changelog", args.no_changelog),
+        ) if supplied]
+        if conflicting:
+            parser.error("--build-commit cannot be combined with " + ", ".join(conflicting))
+    from scripts.releases.commit_build import cmd_build_commit
+
+    modes = (
+        (args.build_commit is not None, cmd_build_commit),
+        (args.canary, cmd_canary),
+        (args.prune_canaries, prune_old_canaries),
+    )
+    for selected, handler in modes:
+        if selected:
+            handler(args)
             return
-        print(f"  ✓ Created tag {tag_name}")
-
-        # Push
-        push_result = git_result("push", "origin", "HEAD", "--tags")
-        if push_result.returncode == 0:
-            print(f"  ✓ Pushed to origin")
-        else:
-            print(f"  ✗ Failed to push to origin: {push_result.stderr.strip()}")
-            print("    Continue manually after fixing access:")
-            print("    git push origin HEAD --tags")
-
-        # Build semver-named Python artifacts so downstream packagers
-        # (e.g. Homebrew) can target them without relying on CalVer tag names.
-        artifacts = build_release_artifacts(new_version)
-        if artifacts:
-            print("  ✓ Built release artifacts:")
-            for artifact in artifacts:
-                print(f"    - {artifact.relative_to(REPO_ROOT)}")
-
-        # Create GitHub release
-        changelog_file = REPO_ROOT / ".release_notes.md"
-        changelog_file.write_text(changelog)
-
-        gh_cmd = [
-            "gh", "release", "create", tag_name,
-            "--title", f"Hermes Agent v{new_version} ({calver_date})",
-            "--notes-file", str(changelog_file),
-        ]
-        gh_cmd.extend(str(path) for path in artifacts)
-
-        gh_bin = shutil.which("gh")
-        if gh_bin:
-            result = subprocess.run(
-                gh_cmd,
-                capture_output=True, text=True,
-                cwd=str(REPO_ROOT),
-            )
-        else:
-            result = None
-
-        if result and result.returncode == 0:
-            changelog_file.unlink(missing_ok=True)
-            print(f"  ✓ GitHub release created: {result.stdout.strip()}")
-            print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
-        else:
-            if result is None:
-                print("  ✗ GitHub release skipped: `gh` CLI not found.")
-            else:
-                print(f"  ✗ GitHub release failed: {result.stderr.strip()}")
-            print(f"    Release notes kept at: {changelog_file}")
-            print(f"    Tag was created locally. Create the release manually:")
-            print(
-                f"    gh release create {tag_name} --title 'Hermes Agent v{new_version} ({calver_date})' "
-                f"--notes-file .release_notes.md {' '.join(str(path) for path in artifacts)}"
-            )
-            print(f"\n  ✓ Release artifacts prepared for manual publish: v{new_version} ({tag_name})")
-    else:
-        print(f"\n{'='*60}")
-        print(f"  Dry run complete. To publish, add --publish")
-        print(f"  Example: python scripts/release.py --bump minor --publish")
-        print(f"{'='*60}")
+    parser.error("select release, publish, abandon, changelog, --canary, --build-commit, or a channel operation")
 
 
 if __name__ == "__main__":

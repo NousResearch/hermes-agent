@@ -6,6 +6,10 @@ description: "A practical guide to connecting MCP servers to Hermes Agent, filte
 
 # Use MCP with Hermes
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 This guide shows how to actually use MCP with Hermes Agent in day-to-day workflows.
 
 If the feature page explains what MCP is, this guide is about how to get value from it quickly and safely.
@@ -37,13 +41,13 @@ That last part matters. Good MCP usage is not just “connect everything.” It 
 
 ## Step 1: install MCP support
 
-If you installed Hermes with the standard install script, MCP support is already included (the installer runs `uv pip install -e ".[all]"`).
+If you installed Hermes with the standard install script, MCP support is already included. PM selects the declared `all` extra.
 
 If you installed without extras and need to add MCP separately:
 
 ```bash
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 For npm-based servers, make sure Node.js and `npx` are available.
@@ -83,6 +87,11 @@ You can verify MCP in a few ways:
 - ask Hermes what tools it has available
 - use `/reload-mcp` after config changes
 - check logs if the server failed to connect
+- run `hermes mcp test <server>` from a shell — it connects, lists the
+  discovered tools, and exits `0` on a completed connect, `1` when the
+  connection fails, and `3` when the server is not in your config (`2` is
+  argparse's usage error), so health probes and cron watchdogs can branch on
+  `$?` instead of parsing the output
 
 A practical test prompt:
 
@@ -108,6 +117,81 @@ mcp_servers:
 ```
 
 This is usually the best default for sensitive systems.
+
+## WSL2: bridge Hermes in WSL to Windows Chrome
+
+This is the practical setup when:
+
+- Hermes runs inside WSL2
+- the browser you want to control is your normal signed-in Chrome on Windows
+- `/browser connect` is awkward or unreliable from WSL
+
+In this setup, Hermes does **not** connect to Chrome directly. Instead:
+
+- Hermes runs in WSL
+- Hermes starts a local stdio MCP server
+- that MCP server is launched through Windows interop (`cmd.exe` or `powershell.exe`)
+- the MCP server attaches to your live Windows Chrome session
+
+Mental model:
+
+```text
+Hermes (WSL) -> MCP stdio bridge -> Windows Chrome
+```
+
+### Why this mode is useful
+
+- you keep your real Windows browser profile, cookies, and logins
+- Hermes stays in its supported Unix environment (WSL2)
+- browser control is exposed as MCP tools instead of relying on Hermes core browser transport
+
+### Recommended server
+
+Use `chrome-devtools-mcp`.
+
+If your Windows Chrome already has live remote debugging enabled from `chrome://inspect/#remote-debugging`, add it like this from WSL:
+
+```bash
+hermes mcp add chrome-devtools-win --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
+```
+
+After saving the server:
+
+```bash
+hermes mcp test chrome-devtools-win
+```
+
+Then start a fresh Hermes session or run:
+
+```text
+/reload-mcp
+```
+
+### Typical prompt
+
+Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example:
+
+```text
+调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
+```
+
+### When `/browser connect` is the wrong tool
+
+If Hermes runs in WSL and Chrome runs on Windows, `/browser connect` may fail even though Chrome is open and debuggable.
+
+Common reasons:
+
+- WSL cannot reach the same host-local endpoint Chrome exposes to Windows tools
+- newer Chrome live-debugging flows are not the same as a classic `ws://localhost:9222`
+- the browser is easier to attach to from a Windows-side helper like `chrome-devtools-mcp`
+
+In those cases, keep `/browser connect` for same-environment setups and use MCP for WSL-to-Windows browser bridging.
+
+### Known pitfalls
+
+- Start Hermes from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
+- If you start Hermes from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
+- If `chrome-devtools-mcp --autoConnect` times out while enumerating pages, reduce background/frozen tabs in Chrome and retry.
 
 ### Example: blacklist dangerous actions
 
@@ -189,7 +273,58 @@ Review the project structure and identify where configuration lives.
 Check the local git state and summarize what changed recently.
 ```
 
-### Pattern 2: GitHub triage assistant
+### Pattern 2: repo-native work record with Open Scaffold
+
+Use [Open Scaffold](https://github.com/graphanov/open-scaffold) when you want Hermes to read a repository's durable AI-work record: mission, plans, evidence notes, handoff packets, and review/gate results. Hermes remains the agent; Open Scaffold remains the repo-local record.
+
+Add the server for one scaffolded repository:
+
+```bash
+hermes mcp add open_scaffold --command npx --args -y open-scaffold@latest mcp serve --repo /absolute/path/to/repo
+hermes mcp test open_scaffold
+```
+
+Then keep the exposed surface read-oriented. Choose `select` in the `hermes mcp add` prompt, or edit `config.yaml` afterward:
+
+```yaml
+mcp_servers:
+  open_scaffold:
+    command: "npx"
+    args: ["-y", "open-scaffold@latest", "mcp", "serve", "--repo", "/absolute/path/to/repo"]
+    tools:
+      include:
+        - list_plans
+        - get_plan
+        - get_mission
+        - list_evidence
+        - get_evidence
+        - get_status
+        - search_plans
+        - list_amendments
+        - get_handoff
+        - analyze_loop
+        - gate_loop
+      prompts: false
+```
+
+Good prompts:
+
+```text
+Use the Open Scaffold MCP tools to compile the current handoff packet and tell me the next legal action.
+```
+
+```text
+Inspect the active plans and evidence notes, then say whether this repo is ready for human review or needs another attempt.
+```
+
+Boundary notes:
+
+- Open Scaffold MCP is local-first and read-only by default.
+- Its write tools require the server to be started with `--allow-write`; do not enable that until you explicitly want Hermes to mutate `.osc` files.
+- Open Scaffold records and gates work; it does not authorize Hermes to merge, publish, deploy, or spawn runtimes.
+- Pin `open-scaffold@<version>` instead of `@latest` if you need reproducible tool schemas.
+
+### Pattern 3: GitHub triage assistant
 
 ```yaml
 mcp_servers:
@@ -214,7 +349,7 @@ List open issues about MCP, cluster them by theme, and draft a high-quality issu
 Search the repo for uses of _discover_and_register_server and explain how MCP tools are registered.
 ```
 
-### Pattern 3: internal API assistant
+### Pattern 4: internal API assistant
 
 ```yaml
 mcp_servers:
@@ -410,6 +545,6 @@ Not-great first servers:
 
 ## Related docs
 
-- [MCP (Model Context Protocol)](/docs/user-guide/features/mcp)
-- [FAQ](/docs/reference/faq)
-- [Slash Commands](/docs/reference/slash-commands)
+- [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
+- [FAQ](../reference/faq.md)
+- [Slash Commands](../reference/slash-commands.md)

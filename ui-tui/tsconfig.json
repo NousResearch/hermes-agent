@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
+    "lib": ["ES2023"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "jsx": "react-jsx",

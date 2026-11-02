@@ -5,6 +5,7 @@ Covers the fix for slash commands not being recognized when sent via
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -104,3 +105,51 @@ class TestAutoThreadingPreservesCommand:
         response = get_response_text(discord_adapter)
         assert response is not None
         assert "/new" in response
+
+
+class TestRepliedToMediaDispatch:
+    async def test_reply_to_image_message_caches_referenced_attachment(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        """A text reply to an image-bearing Discord message should give the agent that image."""
+        cached_path = "/tmp/replied-discord-image.png"
+
+        async def fake_cache_image_from_url(url, *, ext=".jpg"):
+            assert url == "https://cdn.discordapp.com/attachments/image.png"
+            assert ext == ".png"
+            return cached_path
+
+        monkeypatch.setattr(
+            "plugins.platforms.discord.adapter.cache_image_from_url",
+            fake_cache_image_from_url,
+        )
+        discord_adapter.handle_message = AsyncMock()
+
+        attachment = SimpleNamespace(
+            content_type="image/png",
+            filename="image.png",
+            url="https://cdn.discordapp.com/attachments/image.png",
+            size=1234,
+        )
+        referenced_message = SimpleNamespace(
+            id=12345,
+            content="",
+            attachments=[attachment],
+        )
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> what's in this image?",
+            mentions=[bot_user],
+        )
+        msg.type = 19
+        msg.reference = SimpleNamespace(message_id=12345, resolved=referenced_message)
+
+        await discord_adapter._handle_message(msg)
+
+        discord_adapter.handle_message.assert_awaited_once()
+        await_args = discord_adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.reply_to_message_id == "12345"
+        assert event.media_urls == [cached_path]
+        assert event.media_types == ["image/png"]
+        assert event.message_type.value == "photo"

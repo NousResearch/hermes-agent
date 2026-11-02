@@ -1,0 +1,18 @@
+# ppq-provider — catalog manifest. Pinned to the ppq-hermes-provider commit below.
+name: ppq
+repo: https://github.com/thepurpose-npub/ppq-hermes-provider
+sha: 94a6686fe4759d6fbd627a3ad58c9e1fcdb0b081
+subdir: model-providers/ppq
+description: "PayPerQ (ppq.ai) OpenAI-compatible model provider for Hermes — per-response cost estimation from ppq's published rate card, chat model discovery from GET /v1/models, automatic per-request Zero Data Retention opt-in, and a 3-layer picker pin strategy (user-local pins file → live top chat models from ppq's public stats dashboard → generic static fallback; generic installs never get the author's personal pins). Disclosure — model provider; PPQ_API_KEY and all prompts, tool schemas and responses go to ppq.ai (PayPerQ; terms https://ppq.ai/terms, contact matt@ppq.ai), a relay that routes requests to third-party inference partners, some outside the user's jurisdiction, and frontier providers still see prompts; usage is billed per request from the user's prepaid PayPerQ balance (funded by card or cryptocurrency on ppq.ai; the plugin itself makes no payments). Privacy protections are opt-in per request: for models badged privacyLevel 'zdr' the plugin automatically sends provider={\"zdr\": true, \"data_collection\": \"deny\"} so requests route only to endpoints with a Zero Data Retention policy that do not collect data (the zdr model set refreshes hourly from an unauthenticated GET /v1/models with a pinned fallback); models badged 'e2e' run inside TEE enclaves with no opt-in flag needed — enclave coverage applies to chat by default, not to image/video/audio, and true end-to-end encryption is only available via the optional local ppq-privacy-verifier proxy. Building the model picker, for any provider, starts a background unauthenticated POST to stats.ppq.ai at most hourly to fetch the top chat models; cost estimates and personal picker pins read optional local files under HERMES_HOME/plugin-data/ppq/ (prices.json, pins.json) that the plugin does not create, so costs show as unknown without a price snapshot. Additional caveats: Claude Opus 4.8 with web search enabled drops the ZDR guarantee, and some Anthropic/Gemini models may override the provider routing fields (order/only/ignore)."
+maintainer: thepurpose-npub
+tier: community
+category: models
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/thepurpose-npub/ppq-hermes-provider#readme
+version: "0.3.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PPQ_API_KEY

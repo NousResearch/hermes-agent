@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a DingTalk chatbot"
 
 # DingTalk Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent integrates with DingTalk (钉钉) as a chatbot, letting you chat with your AI assistant through direct messages or group chats. The bot connects via DingTalk's Stream Mode — a long-lived WebSocket connection that requires no public URL or webhook server — and replies using markdown-formatted messages through DingTalk's session webhook API.
 
 Before setup, here's the part most people want to know: how Hermes behaves once it's in your DingTalk workspace.
@@ -44,14 +48,10 @@ This guide walks you through the full setup process — from creating your DingT
 Install the required Python packages:
 
 ```bash
-pip install "hermes-agent[dingtalk]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
-Or individually:
-
-```bash
-pip install dingtalk-stream httpx alibabacloud-dingtalk
-```
+This extra supplies the SDKs alongside core Hermes dependencies:
 
 - `dingtalk-stream` — DingTalk's official SDK for Stream Mode (WebSocket-based real-time messaging)
 - `httpx` — async HTTP client used for sending replies via session webhooks
@@ -123,15 +123,38 @@ DINGTALK_ALLOWED_USERS=user-id-1
 
 # Multiple allowed users (comma-separated)
 # DINGTALK_ALLOWED_USERS=user-id-1,user-id-2
+
+# Optional: group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp)
+# DINGTALK_REQUIRE_MENTION=true
+# DINGTALK_FREE_RESPONSE_CHATS=cidABC==,cidDEF==
+# DINGTALK_MENTION_PATTERNS=^小马
+# DINGTALK_HOME_CHANNEL=cidXXXX==
+# DINGTALK_ALLOW_ALL_USERS=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml
 group_sessions_per_user: true
+
+gateway:
+  platforms:
+    dingtalk:
+      extra:
+        # Require @mention in groups before the bot replies (parity with Slack/Telegram/Discord).
+        # DMs ignore this — the bot always replies in 1:1 chats.
+        require_mention: true
+
+        # Per-platform allowlist. When set, only these DingTalk user IDs can interact with the bot
+        # (same semantics as DINGTALK_ALLOWED_USERS, but scoped here instead of in .env).
+        allowed_users:
+          - user-id-1
+          - user-id-2
 ```
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
+- `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
+- `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; set one or the other (if both are set, only users present in both lists are authorized)
 
 ### Start the Gateway
 
@@ -213,7 +236,7 @@ display:
 **Fix**: Install it:
 
 ```bash
-pip install dingtalk-stream httpx
+python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
 ### "DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required"

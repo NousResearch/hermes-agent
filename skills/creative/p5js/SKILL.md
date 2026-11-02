@@ -1,7 +1,10 @@
 ---
 name: p5js
-description: "Production pipeline for interactive and generative visual art using p5.js. Creates browser-based sketches, generative art, data visualizations, interactive experiences, 3D scenes, audio-reactive visuals, and motion graphics — exported as HTML, PNG, GIF, MP4, or SVG. Covers: 2D/3D rendering, noise and particle systems, flow fields, shaders (GLSL), pixel manipulation, kinetic typography, WebGL scenes, audio analysis, mouse/keyboard interaction, and headless high-res export. Use when users request: p5.js sketches, creative coding, generative art, interactive visualizations, canvas animations, browser-based visual art, data viz, shader effects, or any p5.js project."
+description: "p5.js sketches: gen art, shaders, interactive, 3D."
 version: 1.0.0
+author: SHL0MS, Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [creative-coding, generative-art, p5js, canvas, interactive, visualization, webgl, shaders, animation]
@@ -9,6 +12,14 @@ metadata:
 ---
 
 # p5.js Production Pipeline
+
+## When to use
+
+Use when users request: p5.js sketches, creative coding, generative art, interactive visualizations, canvas animations, browser-based visual art, data viz, shader effects, or any p5.js project.
+
+## What's inside
+
+Production pipeline for interactive and generative visual art using p5.js. Creates browser-based sketches, generative art, data visualizations, interactive experiences, 3D scenes, audio-reactive visuals, and motion graphics — exported as HTML, PNG, GIF, MP4, or SVG. Covers: 2D/3D rendering, noise and particle systems, flow fields, shaders (GLSL), pixel manipulation, kinetic typography, WebGL scenes, audio analysis, mouse/keyboard interaction, and headless high-res export.
 
 ## Creative Standard
 
@@ -245,7 +256,7 @@ Key implementation patterns:
 ### Step 4: Preview & Iterate
 
 - Open HTML file directly in browser — no server needed for basic sketches
-- For `loadImage()`/`loadFont()` from local files: use `scripts/serve.sh` or `python3 -m http.server`
+- For `loadImage()`/`loadFont()` from local files: use `scripts/serve.sh` or `python -m http.server`
 - Chrome DevTools Performance tab to verify 60fps
 - Test at target export resolution, not just the window size
 - Adjust parameters until the visual matches the concept from Step 1
@@ -477,7 +488,7 @@ When building p5.js sketches:
 
 1. **Write the HTML file** — single self-contained file, all code inline
 2. **Open in browser** — `open sketch.html` (macOS) or `xdg-open sketch.html` (Linux)
-3. **Local assets** (fonts, images) require a server: `python3 -m http.server 8080` in the project directory, then open `http://localhost:8080/sketch.html`
+3. **Local assets** (fonts, images) require a server: `python -m http.server 8080` in the project directory, then open `http://localhost:8080/sketch.html`
 4. **Export PNG/GIF** — add `keyPressed()` shortcuts as shown above, tell the user which key to press
 5. **Headless export** — `node scripts/export-frames.js sketch.html --frames 300` for automated frame capture (sketch must use `noLoop()` + `_p5Ready`)
 6. **MP4 rendering** — `bash scripts/render.sh sketch.html output.mp4 --duration 30`

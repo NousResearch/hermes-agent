@@ -2,123 +2,109 @@
 { inputs, ... }:
 {
   perSystem =
-    { pkgs, inputs', ... }:
+    {
+      pkgs,
+      lib,
+      inputs',
+      ...
+    }:
     let
-      hermesVenv = pkgs.callPackage ./python.nix {
+
+      sandbox = pkgs.callPackage ./sandbox.nix { };
+
+      # pm/lock.json translated into derivations — one per tool package
+      # with an artifact for this system. The lockfile carries resolved
+      # urls + hashes, so nix consumes it as pure data. callPackage adds
+      # .override/.overrideDerivation to the returned SET; keep only the
+      # real derivations.
+      pmPackages = lib.filterAttrs (_: lib.isDerivation) (
+        pkgs.callPackage ./pm-packages.nix { }
+      );
+
+      dirtyRevision = inputs.self.dirtyRev or null;
+      # inputs.self.sourceInfo is a string (store path) in current Nix, not a
+      # record. The metadata fields are available as top-level attributes on
+      # inputs.self directly. A flake URL's requested ref is intentionally not
+      # exposed as self.ref after Nix resolves it to an immutable source, so
+      # branch is normally null for remote flakes. Preserve null rather than
+      # inventing a sentinel that could be a real branch name.
+      rev =
+        inputs.self.rev or (if dirtyRevision != null then builtins.substring 0 40 dirtyRevision else null);
+      rawRef = inputs.self.ref or null;
+      branch = if rawRef != null then builtins.replaceStrings [ "refs/heads/" ] [ "" ] rawRef else null;
+      dirty = dirtyRevision != null;
+      lastModified = inputs.self.lastModified or null;
+      minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-      };
-
-      hermesNpmLib = pkgs.callPackage ./lib.nix {
+        # Passed explicitly so `override (prev: ...)` sees it: a function form that appends to
+        # `prev.extraDependencyGroups` worked before the shipped groups moved to
+        # defaultDependencyGroups, and an argument default never lands in `prev`.
+        extraDependencyGroups = [ ];
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+        inherit pmPackages;
+        inherit
+          rev
+          branch
+          dirty
+          lastModified
+          ;
       };
 
-      hermesTui = pkgs.callPackage ./tui.nix {
-        inherit hermesNpmLib;
+      # All platform-portable optional integrations pre-built. These are the
+      # variant's own groups, not the user's extras, so an
+      # `.override { extraDependencyGroups = ...; }` adds to them.
+      full = minimal.override {
+        defaultDependencyGroups = [
+          "anthropic"
+          "azure-identity"
+          "bedrock"
+          "daytona"
+          "dingtalk"
+          "edge-tts"
+          "exa"
+          "fal"
+          "feishu"
+          "firecrawl"
+          "messaging"
+          "modal"
+          "parallel-web"
+          "tts-premium"
+          "vercel"
+          "voice"
+        ]
+        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ "matrix" ];
       };
-
-      # Import bundled skills, excluding runtime caches
-      bundledSkills = pkgs.lib.cleanSourceWith {
-        src = ../skills;
-        filter = path: _type: !(pkgs.lib.hasInfix "/index-cache/" path);
-      };
-
-      hermesWeb = pkgs.callPackage ./web.nix {
-        inherit hermesNpmLib;
-      };
-
-      runtimeDeps = with pkgs; [
-        nodejs_22
-        ripgrep
-        git
-        openssh
-        ffmpeg
-        tirith
-      ];
-
-      runtimePath = pkgs.lib.makeBinPath runtimeDeps;
-
-      # Lockfile hashes for dev shell stamps
-      pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
-      uvLockHash =
-        if builtins.pathExists ../uv.lock then
-          builtins.hashString "sha256" (builtins.readFile ../uv.lock)
-        else
-          "none";
     in
     {
       packages = {
-        default = pkgs.stdenv.mkDerivation {
-          pname = "hermes-agent";
-          version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
+        node-gyp =
+          (pkgs.callPackage ./lib.nix {
+            inherit (pkgs) npm-lockfile-fix;
+            inherit pmPackages;
+          }).node-gyp;
+        default = full;
 
-          dontUnpack = true;
-          dontBuild = true;
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+        inherit sandbox;
 
-          installPhase = ''
-            runHook preInstall
+        inherit minimal;
 
-            mkdir -p $out/share/hermes-agent $out/bin
-            cp -r ${bundledSkills} $out/share/hermes-agent/skills
-            cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
-
-            # copy pre-built TUI (same layout as dev: ui-tui/dist/ + node_modules/)
-            mkdir -p $out/ui-tui
-            cp -r ${hermesTui}/lib/hermes-tui/* $out/ui-tui/
-
-            ${pkgs.lib.concatMapStringsSep "\n"
-              (name: ''
-                makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-                  --suffix PATH : "${runtimePath}" \
-                  --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
-                  --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
-                  --set HERMES_TUI_DIR $out/ui-tui \
-                  --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-                  --set HERMES_NODE ${pkgs.nodejs_22}/bin/node
-              '')
-              [
-                "hermes"
-                "hermes-agent"
-                "hermes-acp"
-              ]
-            }
-
-            runHook postInstall
-          '';
-
-          passthru.devShellHook = ''
-            STAMP=".nix-stamps/hermes-agent"
-            STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
-            if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-              echo "hermes-agent: installing Python dependencies..."
-              uv venv .venv --python ${pkgs.python312}/bin/python3 2>/dev/null || true
-              source .venv/bin/activate
-              uv pip install -e ".[all]"
-              [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-              [ -d tinker-atropos ] && uv pip install -e ./tinker-atropos 2>/dev/null || true
-              mkdir -p .nix-stamps
-              echo "$STAMP_VALUE" > "$STAMP"
-            else
-              source .venv/bin/activate
-              export HERMES_PYTHON=${hermesVenv}/bin/python3
-            fi
-          '';
-
-          meta = with pkgs.lib; {
-            description = "AI agent with advanced tool-calling capabilities";
-            homepage = "https://github.com/NousResearch/hermes-agent";
-            mainProgram = "hermes";
-            license = licenses.mit;
-            platforms = platforms.unix;
-          };
+        # Ships discord.py + python-telegram-bot + slack-sdk so a plain
+        # `nix profile install .#messaging` connects to Discord/Telegram/Slack
+        # on first run — lazy-install can't write to the read-only /nix/store.
+        messaging = minimal.override {
+          defaultDependencyGroups = [ "messaging" ];
         };
 
-        tui = hermesTui;
-        web = hermesWeb;
+        tui = full.hermesTui;
+        web = full.hermesWeb;
+        webapp = full.hermesWebapp;
+        desktop = full.hermesDesktop;
 
-        fix-lockfiles = hermesNpmLib.mkFixLockfiles {
-          packages = [ hermesTui hermesWeb ];
-        };
-      };
+        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
+      }
+      # Every pm lockfile tool as its own installable derivation:
+      # `nix build .#pm-ripgrep`, `nix build .#pm-gh`, ...
+      // lib.mapAttrs' (name: drv: lib.nameValuePair "pm-${name}" drv) pmPackages;
     };
 }

@@ -1,9 +1,10 @@
 ---
 name: baoyu-infographic
-description: Generate professional infographics with 21 layout types and 21 visual styles. Analyzes content, recommends layout×style combinations, and generates publication-ready infographics. Use when user asks to create "infographic", "visual summary", "信息图", "可视化", or "高密度信息大图".
+description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
 version: 1.56.1
 author: 宝玉 (JimLiu)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [infographic, visual-summary, creative, image-generation]
@@ -179,7 +180,7 @@ See `references/structured-content-template.md` for detailed format.
 
 ### Step 4: Confirm Options
 
-Use the `clarify` tool to confirm options with the user. Since `clarify` handles one question at a time, ask the most important question first:
+Use the `clarify` tool to confirm options with the user. Put the independent questions below in one `questions` array (up to 5); ask separately any question whose options depend on an earlier answer:
 
 **Q1 — Combination**: Present 3+ layout×style combos with rationale. Ask user to pick one.
 

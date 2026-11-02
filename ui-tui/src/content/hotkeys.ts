@@ -1,29 +1,47 @@
-import { isMac } from '../lib/platform.js'
+import { messages } from '../i18n/runtime.js'
+import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
-export const HOTKEYS: [string, string][] = [
-  ...(isMac
-    ? ([
-        ['Cmd+C', 'copy selection'],
-        ['Ctrl+C', 'interrupt / clear draft / exit']
-      ] as [string, string][])
-    : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])),
-  [action + '+D', 'exit'],
-  [action + '+G', 'open $EDITOR for prompt'],
-  [action + '+L', 'new session (clear)'],
-  [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
-  ['Tab', 'apply completion'],
-  ['↑/↓', 'completions / queue edit / history'],
-  [action + '+A/E', 'home / end of line'],
-  [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
-  [action + '+W', 'delete word'],
-  [action + '+U/K', 'delete to start / end'],
-  [action + '+←/→', 'jump word'],
-  ['Home/End', 'start / end of line'],
-  ['Shift+Enter / Alt+Enter', 'insert newline'],
-  ['\\+Enter', 'multi-line continuation (fallback)'],
-  ['!<cmd>', 'run a shell command (e.g. !ls, !git status)'],
-  ['{!<cmd>}', 'interpolate shell output inline (e.g. "branch is {!git branch --show-current}")']
-]
+/** Hotkey table `[chord, description]`, resolved against the active language at call time. */
+export function hotkeys(): [string, string][] {
+  const h = messages().hints
+
+  const copyHotkeys: [string, string][] = isMac
+    ? [
+        ['Cmd+C', h.copySelection],
+        ['Ctrl+C', h.ctrlCMac]
+      ]
+    : isRemoteShell()
+      ? [
+          ['Cmd+C', h.copySelectionForwarded],
+          ['Ctrl+C', h.ctrlC]
+        ]
+      : [['Ctrl+C', h.ctrlC]]
+
+  return [
+    ...copyHotkeys,
+    [action + '+D', h.exit],
+    [action + '+G / Alt+G', h.openEditor],
+    [action + '+L', h.redraw],
+    [paste + '+V / /paste', h.paste],
+    ['Esc Esc', h.discardDraft],
+    ['Tab', h.applyCompletion],
+    ['↑/↓', h.arrows],
+    ['Ctrl+X', h.sessionSwitcher],
+    ['Ctrl+T', h.expandAgents],
+    ['Ctrl+R / F7', h.collapseAgents],
+    ['Ctrl+O', h.modelPicker],
+    [action + '+A/E', h.homeEnd],
+    [action + '+Z / ' + action + '+Y', h.undoRedo],
+    [action + '+W', h.deleteWord],
+    [action + '+U/K', h.killLine],
+    [action + '+←/→', h.jumpWord],
+    ['Home/End', h.lineStartEnd],
+    ['Shift+Enter / Alt+Enter', h.newline],
+    ['\\+Enter', h.continuation],
+    ['!<cmd>', h.shell],
+    ['{!<cmd>}', h.interpolate]
+  ]
+}

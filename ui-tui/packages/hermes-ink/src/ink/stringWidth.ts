@@ -4,6 +4,8 @@ import stripAnsi from 'strip-ansi'
 
 import { getGraphemeSegmenter } from '../utils/intl.js'
 
+import { lruEvict } from './lru.js'
+
 const EMOJI_REGEX = emojiRegex()
 
 /**
@@ -270,6 +272,70 @@ const bunStringWidth = typeof Bun !== 'undefined' && typeof Bun.stringWidth === 
 
 const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const
 
-export const stringWidth: (str: string) => number = bunStringWidth
+const rawStringWidth: (str: string) => number = bunStringWidth
   ? str => bunStringWidth(str, BUN_STRING_WIDTH_OPTS)
   : stringWidthJavaScript
+
+// Memoize stringWidth — it's pure, hot (~100k calls/frame per the comment
+// above), and the underlying impl scans every grapheme + tests EMOJI_REGEX.
+// CPU profile (Apr 2026) showed stringWidth dominating at 21% of total
+// runtime during scroll. Cache is global (vs per-frame) since the same
+// strings recur across frames in a stable transcript.
+//
+// Pure-ASCII short-strings (the >90% common case) skip the cache: the inline
+// loop in stringWidthJavaScript is already faster than a Map.get for them.
+const widthCache = new Map<string, number>()
+const WIDTH_CACHE_LIMIT = 8192
+
+export const stringWidth: (str: string) => number = str => {
+  if (!str) {
+    return 0
+  }
+
+  // ASCII fast-path detection — for short ASCII, skip the cache.
+  if (str.length <= 64) {
+    let asciiOnly = true
+
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i)
+
+      if (code >= 127 || code === 0x1b) {
+        asciiOnly = false
+
+        break
+      }
+    }
+
+    if (asciiOnly) {
+      return rawStringWidth(str)
+    }
+  }
+
+  const cached = widthCache.get(str)
+
+  if (cached !== undefined) {
+    // True LRU: refresh recency by re-inserting (Map iteration is insertion order).
+    widthCache.delete(str)
+    widthCache.set(str, cached)
+
+    return cached
+  }
+
+  const w = rawStringWidth(str)
+
+  if (widthCache.size >= WIDTH_CACHE_LIMIT) {
+    widthCache.delete(widthCache.keys().next().value!)
+  }
+
+  widthCache.set(str, w)
+
+  return w
+}
+
+export function widthCacheSize(): number {
+  return widthCache.size
+}
+
+export function evictWidthCache(keepRatio = 0): void {
+  lruEvict(widthCache, keepRatio)
+}

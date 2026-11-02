@@ -1,0 +1,30 @@
+name: nexus
+repo: https://github.com/Neboy72/nexus-memory
+sha: 26e09a512c24f49fc7f179ebc0a1f2ba80846d40
+subdir: plugins/memory/nexus
+version: "0.22.33"
+description: "Self-hosted long-term memory on Qdrant: automatic per-turn prefetch and write-back, plus recall/remember/forget, guardrail rules and a knowledge graph; Hermes and any MCP-connected agent share one collection. Embeddings run fully local by default (sentence-transformers with Qwen/Qwen3-Embedding-0.6B, 1024d, about 1.2 GB from Hugging Face on first use; on Apple Silicon the model is pinned to the CPU, because PyTorch's MPS backend aborts the whole process under two overlapping encodes). A cloud embedder runs only when NEXUS_EMBEDDING_PROVIDER names it and its key is present, and a key that merely sits in the environment never selects one. Access levels fail closed: a memory, a protection rule or a graph label without a known level counts as the most restrictive. A local service on 127.0.0.1:9122 serves embeddings and the full MCP toolset; its /embed and /mcp routes demand a per-installation key (service_auth.key, mode 0600) and reject non-loopback Host/Origin, while the open /healthz answers liveness only. The plugin starts that service when Hermes cannot load the embedding stack, and it keeps running afterwards. Session-end fact extraction sends conversation text to the model endpoint from Hermes config.yaml, and the consolidation daemon to its configured model, which defaults to Hermes's own default model through local Ollama; reads ~/.hermes/.env and config.yaml; state and daily backups under ~/.nexus-memory; NEXUS_UPDATE_CHECK=1 opts into a GitHub release check. Disclosure — when Hermes cannot load the embedding stack (and always on Apple Silicon unless NEXUS_EMBED_IN_HOST=1), the plugin starts `nexus-memory serve` on 127.0.0.1:9122 (embeddings, the full Nexus MCP toolset and a consolidation daemon that sends memory text to the Ollama endpoint at 127.0.0.1:11434 or NEXUS_OLLAMA_BASE under the model named by NEXUS_CONSOLIDATION_MODEL, nexus-memory.consolidation_model or Hermes's model.default, which can be an Ollama cloud model), and the service keeps running after Hermes exits; its /embed and MCP routes require a per-install key in ~/.nexus-memory/service_auth.key (0600) and a loopback Host/Origin; session-end fact extraction sends conversation text to the model endpoint in Hermes config.yaml, and the opt-in recall reranker (nexus-memory.rerank or NEXUS_RERANK=1) defaults to sending each query plus up to 20 memory snippets to that same endpoint using the provider API key it reads from config.yaml; reads ~/.hermes/.env and config.yaml; state and daily backups under ~/.nexus-memory; opt-in NEXUS_UPDATE_CHECK=1 adds a GitHub release check and an upgrade nudge to the system prompt."
+maintainer: Neboy72
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Neboy72/nexus-memory/blob/26e09a512c24f49fc7f179ebc0a1f2ba80846d40/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/26e09a512c24f49fc7f179ebc0a1f2ba80846d40/docs/images/nexus-logo-square.png
+capabilities:
+  provides_tools:
+    - nexus_recall
+    - nexus_remember
+    - nexus_forget
+    - nexus_guardrail_check
+    - nexus_guardrail_override
+    - nexus_graph_traverse
+    - nexus_find_entities
+    - nexus_get_subgraph
+    - nexus_get_related
+    - nexus_cost_routing_stats
+    - nexus_cost_routing_explain
+    - nexus_sica_run
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

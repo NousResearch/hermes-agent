@@ -3,6 +3,10 @@ import React from 'react'
 import { c as _c } from 'react/compiler-runtime'
 
 import type { Color, Styles } from '../styles.js'
+
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
+const LEGACY_APPLE_DIM_COLOR: Color = '#6B7280'
 type BaseProps = {
   /**
    * Change text color. Accepts a raw color value (rgb, hex, ansi).
@@ -61,6 +65,47 @@ type WeightProps =
       bold?: never
     }
 export type Props = BaseProps & WeightProps
+
+export function shouldUseAnsiDim(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_DIM ?? '').trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
+  return !env.VTE_VERSION
+}
+
+/**
+ * Terminals that ignore SGR 2 need a literal color instead. The tone is
+ * theme-supplied (setDimFallbackColor, called from the theme effect) so it
+ * stays inside the active palette; the slate below is only the pre-theme
+ * boot default. A hardcoded value here reads as an off-palette foreground
+ * next to themed spans on the same line — cold gray beside warm ink.
+ */
+let dimFallbackColor: Color = LEGACY_APPLE_DIM_COLOR
+
+export function setDimFallbackColor(color: Color | undefined): void {
+  dimFallbackColor = color || LEGACY_APPLE_DIM_COLOR
+}
+
+export function dimColorFallback(env: NodeJS.ProcessEnv = process.env): Color | undefined {
+  const override = (env.HERMES_TUI_DIM ?? '').trim()
+
+  if (ENV_ON_RE.test(override) || ENV_OFF_RE.test(override)) {
+    return undefined
+  }
+
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal' ? dimFallbackColor : undefined
+}
 
 const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
   wrap: {
@@ -143,6 +188,8 @@ export default function Text(t0: Props) {
   const strikethrough = t3 === undefined ? false : t3
   const inverse = t4 === undefined ? false : t4
   const wrap = t5 === undefined ? 'wrap' : t5
+  const effectiveDim = dim && shouldUseAnsiDim()
+  const effectiveColor = dim && !effectiveDim ? (color ?? dimColorFallback()) : color
 
   if (children === undefined || children === null) {
     return null
@@ -150,11 +197,11 @@ export default function Text(t0: Props) {
 
   let t6
 
-  if ($[0] !== color) {
-    t6 = color && {
-      color
+  if ($[0] !== effectiveColor) {
+    t6 = effectiveColor && {
+      color: effectiveColor
     }
-    $[0] = color
+    $[0] = effectiveColor
     $[1] = t6
   } else {
     t6 = $[1]
@@ -174,11 +221,11 @@ export default function Text(t0: Props) {
 
   let t8
 
-  if ($[4] !== dim) {
-    t8 = dim && {
-      dim
+  if ($[4] !== effectiveDim) {
+    t8 = effectiveDim && {
+      dim: effectiveDim
     }
-    $[4] = dim
+    $[4] = effectiveDim
     $[5] = t8
   } else {
     t8 = $[5]

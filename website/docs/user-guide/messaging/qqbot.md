@@ -1,5 +1,9 @@
 # QQ Bot
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Connect Hermes to QQ via the **Official QQ Bot API (v2)** — supporting private (C2C), group @-mentions, guild, and direct messages with voice transcription.
 
 ## Overview
@@ -20,7 +24,7 @@ The QQ Bot adapter uses the [Official QQ Bot API](https://bot.q.qq.com/wiki/deve
 
 2. **Dependencies** — The adapter requires `aiohttp` and `httpx`:
    ```bash
-   pip install aiohttp httpx
+   python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
    ```
 
 ## Configuration
@@ -51,10 +55,11 @@ QQ_CLIENT_SECRET=your-app-secret
 | `QQBOT_HOME_CHANNEL` | OpenID for cron/notification delivery | — |
 | `QQBOT_HOME_CHANNEL_NAME` | Display name for home channel | `Home` |
 | `QQ_ALLOWED_USERS` | Comma-separated user OpenIDs for DM access | open (all users) |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated group OpenIDs for group access | — |
 | `QQ_ALLOW_ALL_USERS` | Set to `true` to allow all DMs | `false` |
-| `QQ_SANDBOX` | Route requests to the QQ sandbox gateway for development testing | `false` |
+| `QQ_PORTAL_HOST` | Override the QQ portal host (set to `sandbox.q.qq.com` for sandbox routing) | `q.qq.com` |
 | `QQ_STT_API_KEY` | API key for voice-to-text provider | — |
-| `QQ_STT_BASE_URL` | Base URL for STT provider | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| `QQ_STT_BASE_URL` | (Not read directly — set `platforms.qqbot.extra.stt.baseUrl` in `config.yaml` instead) | n/a |
 | `QQ_STT_MODEL` | STT model name | `glm-asr` |
 
 ## Advanced Configuration
@@ -63,7 +68,7 @@ For fine-grained control, add platform settings to `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
-  qq:
+  qqbot:
     enabled: true
     extra:
       app_id: "your-app-id"
@@ -80,6 +85,7 @@ platforms:
         baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4"
         apiKey: "your-stt-key"
         model: "glm-asr"
+        timeout: 60              # seconds per transcription request (default 60)
 ```
 
 ## Voice Messages (STT)
@@ -117,6 +123,6 @@ This usually means:
 
 ### Connection errors
 
-- Ensure `aiohttp` and `httpx` are installed: `pip install aiohttp httpx`
+- Ensure `aiohttp` and `httpx` are installed: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`
 - Check network connectivity to `api.sgroup.qq.com` and the WebSocket gateway
 - Review gateway logs for detailed error messages and reconnect behavior

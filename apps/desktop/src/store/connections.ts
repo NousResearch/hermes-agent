@@ -91,11 +91,10 @@ const $activeConnectionProfile = computed(
 )
 
 // The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
-// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
-// runs inside beforeActivate — BEFORE applyActive publishes the new request
-// scope (setApiRequestConnection) — so that invalidation's refetches ride the
-// OUTGOING backend. Re-invalidate on the actual connection-id change, which
-// applyActive publishes only after the tag moved, so the refetch lands on the
+// A gateway pick runs no switch reset (only a connection apply does), so this is
+// what moves gateway-scoped caches to the picked backend. It fires on the
+// actual connection-id change, which applyActive publishes only after the
+// request scope (setApiRequestConnection) moved, so the refetches land on the
 // backend the tags now name. `listen` (not `subscribe`) skips the mount-time
 // fire, and the computed dedupes equal ids, so this only runs on a real switch.
 $activeConnectionId.listen(() => {

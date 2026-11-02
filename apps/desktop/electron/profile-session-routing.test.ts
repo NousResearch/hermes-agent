@@ -20,6 +20,7 @@ import {
   mergeProfileSessionWindow,
   mergeRegistrySessionRows,
   pathWithRemoteOwnerScope,
+  primaryAggregateConnectionId,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
@@ -1772,4 +1773,18 @@ test('all-profiles cron list merges one read per profile like the gateway', asyn
   assert.deepEqual(reads.sort(), ['/api/cron/jobs?profile=broken', '/api/cron/jobs?profile=default', '/api/cron/jobs?profile=work'])
   // A duplicate keeps its first position but the default profile's copy; id-less jobs never fold.
   assert.deepEqual(jobs.map(job => `${job.id}:${job.profile ?? job.name}`), ['shared:default', 'w:work', 'unknown:w-orphan', 'unknown:d-orphan'])
+})
+
+test('the primary aggregate names this device only for a local backend', async () => {
+  assert.equal(await primaryAggregateConnectionId(async () => ({ connectionId: 'butler', mode: 'remote' })), 'butler')
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'local' })), 'local')
+  // HERMES_DESKTOP_REMOTE_URL: remote with no registry id. Its rows are not This device's.
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'remote' })), null)
+  assert.equal(await primaryAggregateConnectionId(async () => null), null)
+  assert.equal(
+    await primaryAggregateConnectionId(async () => {
+      throw new Error('no backend')
+    }),
+    null
+  )
 })

@@ -472,13 +472,12 @@ import {
   isNotFoundApiError,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
-  primaryAggregateConnectionId,
   type RegistrySessionSource,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
-  tagPrimarySessionRows,
+  tagPrimaryAggregateRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -15874,7 +15873,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
 
   if (pinned) {
-    tagPrimarySessionRows(base, await primaryAggregateConnectionId(() => ensureBackend(null, { passive: true })), pinned)
+    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
   }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window

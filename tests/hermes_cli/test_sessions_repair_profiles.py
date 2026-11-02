@@ -36,11 +36,27 @@ def homes(tmp_path, monkeypatch):
 
 
 def _session(db: SessionDB, sid: str, key: str, *, profile: str, parent=None, messages=2, chat_id=None,
-             source="telegram"):
+             source="telegram", origin_json=None):
+    extra = {} if origin_json is None else {"origin_json": origin_json}
     db.create_session(sid, source, session_key=key, chat_id=chat_id or key.rsplit(":", 1)[-1],
-                      chat_type="dm", profile_name=profile, parent_session_id=parent, system_prompt="sys")
+                      chat_type="dm", profile_name=profile, parent_session_id=parent, system_prompt="sys",
+                      **extra)
     for i in range(messages):
         db.append_message(sid, "user" if i % 2 == 0 else "assistant", f"{sid} m{i}")
+
+
+def _local_origin(chat_id: str, profile: str = "default") -> str:
+    return json.dumps({"platform": "local", "chat_id": chat_id, "user_id": chat_id, "profile": profile})
+
+
+def _receipt(sid: str, route: str, chat_id: str, profile: str = "default") -> str:
+    return json.dumps({
+        "session_id": sid,
+        "route": route,
+        "entry": {"session_id": sid, "session_key": route,
+                  "origin": json.loads(_local_origin(chat_id, profile))},
+        "policy": {"source": "local"},
+    })
 
 
 def _seed_crossings(homes):
@@ -122,7 +138,7 @@ def _report() -> dict:
 def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     _seed_crossings(homes)
     before = {name: _dump(home / "state.db") for name, home in homes.items()}
-    files_before = {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
+    files_before = {p.name: p.read_text(encoding="utf-8-sig") for p in (homes["default"] / "gateway_voice_mode.json",
                                                     homes["default"] / "sessions" / "sessions.json")}
 
     report = _report()
@@ -150,7 +166,7 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
     assert by_kind["unclaimed_namespace"]["action"] is None and "ghost" in by_kind["unclaimed_namespace"]["reason"]
 
     assert {name: _dump(home / "state.db") for name, home in homes.items()} == before
-    assert {p.name: p.read_text() for p in (homes["default"] / "gateway_voice_mode.json",
+    assert {p.name: p.read_text(encoding="utf-8-sig") for p in (homes["default"] / "gateway_voice_mode.json",
                                             homes["default"] / "sessions" / "sessions.json")} == files_before
 
 
@@ -189,10 +205,10 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
         # 5. topic binding carries acme; voice key prefixed only for acme's chat
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="acme") is not None
         assert acme.get_telegram_topic_binding(chat_id="200", thread_id="7", profile_name="default") is None
-        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text())
+        voice = json.loads((homes["default"] / "gateway_voice_mode.json").read_text(encoding="utf-8-sig"))
         assert voice == {"acme:telegram:200": "all", "telegram:100": "voice_only"}
         # 6. ghost mirror entry dropped, the default's kept
-        mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text())
+        mirror = json.loads((homes["default"] / "sessions" / "sessions.json").read_text(encoding="utf-8-sig"))
         assert set(mirror) == {"_README", ROOT_KEY}
         # controls untouched
         assert root.get_session("ok-root")["profile_name"] == "default"
@@ -234,6 +250,156 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     finally:
         acme.close()
     assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_legacy_main_rekey_aligns_sessions_receipts_and_routing_atomically(homes):
+    """A standalone gateway's ``agent:main:`` history is one identity spread over three tables.
+
+    Rekeying only ``sessions`` leaves the receipt and the routing index naming the old route, so the
+    next resume refuses. The fix must move the row, its ``state_meta`` receipt and every scoped
+    ``gateway_routing`` row (including the entry JSON) in one transaction, and a second run must not
+    append another namespace or rewrite anything.
+    """
+    from hermes_state_local import POLICY_PREFIX
+    sid, legacy_key = "legacy-local", "agent:main:local:dm:legacy-local"
+    entry = _receipt(sid, legacy_key, "legacy-local")
+    entry_json = json.dumps(json.loads(entry)["entry"])
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        _session(acme, sid, legacy_key, profile="default", source="local",
+                 origin_json=_local_origin("legacy-local"))
+        acme.set_meta(POLICY_PREFIX + sid, entry)
+        for scope in ("", "standalone-scope"):
+            acme.save_gateway_routing_entry(legacy_key, entry_json, scope=scope)
+        assert acme.rekey_legacy_main_sessions([sid], "acme") == 1
+    finally:
+        acme.close()
+
+    new_key = "agent:acme:local:dm:legacy-local"
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        row = acme.get_session(sid)
+        assert (row["session_key"], row["profile_name"]) == (new_key, "acme")
+        assert json.loads(row["origin_json"])["profile"] == "acme"
+        receipt = json.loads(acme.get_meta(POLICY_PREFIX + sid))
+        assert receipt["route"] == new_key
+        assert receipt["entry"]["session_key"] == new_key
+        assert receipt["entry"]["origin"]["profile"] == "acme"
+        for scope in ("", "standalone-scope"):
+            routing = acme.load_gateway_routing_entries(scope=scope)
+            assert set(routing) == {new_key}
+            payload = json.loads(routing[new_key])
+            assert payload["session_key"] == new_key and payload["origin"]["profile"] == "acme"
+    finally:
+        acme.close()
+
+    before = _dump(homes["acme"] / "state.db")
+    acme = SessionDB(homes["acme"] / "state.db")
+    try:
+        assert acme.rekey_legacy_main_sessions([sid], "acme") == 0
+    finally:
+        acme.close()
+    assert _dump(homes["acme"] / "state.db") == before
+    assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_legacy_main_rekey_for_named_main_profile_is_idempotent(tmp_path, monkeypatch):
+    """A profile literally named ``main`` must be marked ``agent:main~:``, never ``agent:main~~:``."""
+    from hermes_cli.profiles import create_profile
+    from hermes_state_local import POLICY_PREFIX
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    create_profile("main", no_alias=True, no_skills=True)
+
+    cases = (("main-local-1", "agent:main:local:dm:main-local-1", "main-local-1"),
+             ("20261022_143447_custom", "agent:main:local:dm:local-f4b94d70f2379fd8f8d877267f2198c6",
+              "local-f4b94d70f2379fd8f8d877267f2198c6"))
+    db = SessionDB(root / "profiles" / "main" / "state.db")
+    try:
+        for sid, legacy_key, chat_id in cases:
+            entry = _receipt(sid, legacy_key, chat_id)
+            _session(db, sid, legacy_key, profile="default", source="local", chat_id=chat_id,
+                     origin_json=_local_origin(chat_id))
+            db.set_meta(POLICY_PREFIX + sid, entry)
+            db.save_gateway_routing_entry(legacy_key, json.dumps(json.loads(entry)["entry"]), scope="")
+    finally:
+        db.close()
+
+    for _ in range(2):
+        assert _run(apply=True, legacy_main="rekey") == 0
+        db = SessionDB(root / "profiles" / "main" / "state.db")
+        try:
+            for sid, legacy_key, _chat_id in cases:
+                new_key = "agent:main~" + legacy_key[len("agent:main"):]
+                row = db.get_session(sid)
+                assert (row["session_key"], row["profile_name"]) == (new_key, "main")
+                receipt = json.loads(db.get_meta(POLICY_PREFIX + sid))
+                assert receipt["route"] == new_key and receipt["entry"]["session_key"] == new_key
+                assert receipt["entry"]["origin"]["profile"] == "main"
+        finally:
+            db.close()
+        root_db = SessionDB(root / "state.db")
+        try:
+            assert set(root_db.load_gateway_routing_entries(scope="")) == {
+                "agent:main~" + k[len("agent:main"):] for _, k, _ in cases}
+        finally:
+            root_db.close()
+    assert not any(f["kind"] == "legacy_main" for f in _report()["findings"])
+
+
+def test_standalone_profile_is_an_island_for_rekey_and_routing(tmp_path, monkeypatch):
+    """``gateway.standalone: true`` keeps a profile's own agent:main history and routing index intact.
+
+    The host may multiplex every other profile. This one still runs its own gateway, so rekeying its
+    legacy namespace would break that gateway, and moving its routing rows to the host index would
+    strand it. A neighbouring non-standalone profile is still repaired normally.
+    """
+    from hermes_cli.profiles import create_profile
+    from hermes_state_local import POLICY_PREFIX
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    for name in ("whatsapp", "acme"):
+        create_profile(name, no_alias=True, no_skills=True)
+    wa_home, acme_home = root / "profiles" / "whatsapp", root / "profiles" / "acme"
+    (wa_home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+
+    def seed(home, sid, key, scope):
+        db = SessionDB(home / "state.db")
+        try:
+            entry = _receipt(sid, key, key.rsplit(":", 1)[-1])
+            _session(db, sid, key, profile="default", source="local",
+                     origin_json=_local_origin(key.rsplit(":", 1)[-1]))
+            db.set_meta(POLICY_PREFIX + sid, entry)
+            db.save_gateway_routing_entry(key, json.dumps(json.loads(entry)["entry"]), scope=scope)
+        finally:
+            db.close()
+
+    seed(wa_home, "wa-local", "agent:main:local:dm:wa-local", "")
+    seed(acme_home, "acme-local", "agent:main:local:dm:acme-local", "")
+
+    wa_before = _dump(wa_home / "state.db")
+    report = _report()
+    assert not [f for f in report["findings"] if f["store"] == "whatsapp"]
+    assert any(f["kind"] == "legacy_main" and f["store"] == "acme" for f in report["findings"])
+
+    assert _run(apply=True, legacy_main="rekey") == 0
+    assert _dump(wa_home / "state.db") == wa_before
+    acme = SessionDB(acme_home / "state.db")
+    try:
+        assert acme.get_session("acme-local")["session_key"] == "agent:acme:local:dm:acme-local"
+    finally:
+        acme.close()
+    assert _run(apply=True, legacy_main="rekey") == 0
+    assert _dump(wa_home / "state.db") == wa_before
 
 
 def test_move_into_a_store_that_already_holds_the_title(homes, monkeypatch):

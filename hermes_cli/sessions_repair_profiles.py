@@ -166,6 +166,11 @@ class RepairPlan:
         self.routing_store = next((s for s in stores if s.routing), None)
         self.legacy_main = legacy_main
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
+        from hermes_cli.profiles import profile_is_standalone
+        # A profile that still opts out of the host multiplexer is an island: its agent:main rows
+        # and routing index are its own live gateway's state, never strays for this command.
+        self.standalone_profiles = {
+            s.profile: s.profile != "default" and profile_is_standalone(s.home) for s in stores}
         self.findings: list[Finding] = []
         self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
 
@@ -224,6 +229,8 @@ class RepairPlan:
     def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
         """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
         if row["key_profile"] == "default" and store.profile != "default":
+            if self.standalone_profiles.get(store.profile, False):
+                return False
             return self.legacy_main == "move" and self.routing_store is not None
         return row["key_profile"] in self.claimed
 
@@ -245,6 +252,10 @@ class RepairPlan:
             _fix=self._move_batch(store, self.by_profile[key_profile]).fix_for(sid)))
 
     def _plan_legacy_main_row(self, store: Store, row: dict[str, Any], moving: set[str]) -> None:
+        if self.standalone_profiles.get(store.profile, False):
+            # The store belongs to a profile that still runs its own gateway: agent:main is the
+            # namespace its own standalone launcher minted, not a default-profile leak.
+            return
         sid = row["id"]
         detail = (f"legacy default-namespace key {row['session_key']!r} ({row['message_count']} messages) "
                   f"in the {store.profile} store")
@@ -277,6 +288,8 @@ class RepairPlan:
 
     def _scan_routing(self, session: _Session, store: Store) -> None:
         from hermes_state_profile_repair import session_key_profile
+        if self.standalone_profiles.get(store.profile, False):
+            return  # an opted-out profile owns its routing index; never move or delete its rows
         rows = session.db(store).list_gateway_routing_rows()
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -305,9 +318,24 @@ class RepairPlan:
 
     def _move_routing_row(self, session: _Session, store: Store, routing_store: Store,
                           row: dict[str, Any]) -> dict[str, int]:
+        """Move the row as it exists at apply time, not as the scan saw it.
+
+        A legacy-main rekey in the same run has already renamed the key inside the source store;
+        re-reading lets one pass finish both repairs instead of re-adopting the old key into the
+        routing index and leaving the renamed row behind for a second run.
+        """
+        from gateway.session import _session_key_namespace
+        candidates = [row["session_key"]]
+        if candidates[0].startswith("agent:main:"):
+            candidates.append(_session_key_namespace(store.profile) + candidates[0][len("agent:main"):])
+        source = session.db(store)
+        current = next((r for r in source.list_gateway_routing_rows()
+                        if r["scope"] == row["scope"] and r["session_key"] in candidates), None)
+        if current is None:
+            return {}
         adopted = session.db(routing_store).insert_gateway_routing_rows_if_absent(
-            [(row["scope"], row["session_key"], row["entry_json"], row["updated_at"])])
-        deleted = session.db(store).delete_gateway_routing_rows([(row["scope"], row["session_key"])])
+            [(current["scope"], current["session_key"], current["entry_json"], current["updated_at"])])
+        deleted = source.delete_gateway_routing_rows([(current["scope"], current["session_key"])])
         return {"routing_adopted": adopted, "routing_deleted": deleted}
 
     def _scan_voice_modes(self, session: _Session, store: Store) -> None:

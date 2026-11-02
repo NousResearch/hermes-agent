@@ -6,11 +6,16 @@ import logging
 from pathlib import Path
 
 from gateway.config import Platform
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, _session_key_namespace
 from gateway.session_contract import SessionRef
 from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+# Every pre-multiplex standalone gateway wrote its local receipts under the default namespace,
+# whatever profile it was launched as. The suffix after this prefix is the receipt's own chat.
+_LEGACY_LOCAL_PREFIX = 'agent:main:local:'
+_LEGACY_NAMESPACE = 'agent:main'
 
 
 def local_adapter_map(authority):
@@ -90,9 +95,40 @@ def _with_untracked_compression(authority, sid, receipt):
     return local_receipt(authority.db, sid)
 
 
+def _promote_legacy_local_route(receipt, source, route):
+    """Rewrite a standalone gateway's legacy local route to *source*'s profile namespace.
+
+    Any profile that ran standalone before the host multiplexed wrote ``agent:main:local:<suffix>``,
+    not only the profile literally named ``main``. The receipt is promoted only when the current
+    authority's route is its exact namespaced twin and the receipt still agrees with itself: the
+    suffix must be identical, ``entry.session_key`` must be that same legacy route, and an explicit
+    origin profile must be the default (what standalone wrote) or already this profile. A receipt
+    for a different chat, profile or route therefore still refuses.
+    """
+    profile = getattr(source, 'profile', None)
+    legacy_route = receipt.get('route')
+    if not profile or profile == 'default' or not isinstance(legacy_route, str):
+        return False
+    if not legacy_route.startswith(_LEGACY_LOCAL_PREFIX):
+        return False
+    if route != _session_key_namespace(profile) + legacy_route[len(_LEGACY_NAMESPACE):]:
+        return False
+    entry = receipt.get('entry')
+    if not isinstance(entry, dict) or entry.get('session_key') != legacy_route:
+        return False
+    origin = entry.get('origin')
+    if isinstance(origin, dict):
+        if origin.get('profile') not in (None, '', 'default', profile):
+            return False
+        origin['profile'] = profile
+    entry['session_key'] = route
+    receipt['route'] = route
+    return True
+
+
 def _checked_entry(authority, receipt, source, route):
     """*receipt*'s entry, once its route, origin and stored identity are this authority's."""
-    if receipt['route'] != route:
+    if receipt['route'] != route and not _promote_legacy_local_route(receipt, source, route):
         raise ValueError('route mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     # Older local receipts omitted the served profile from the origin. The receipt's

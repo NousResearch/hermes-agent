@@ -77,9 +77,11 @@ def _tokens_to_tex_source(text: str, store: list[tuple[str, str]]) -> str:
     return _TEX_TOKEN_RE.sub(_restore, text)
 
 
-def _sanitize_matrix_html(html: str, tex_store: list[tuple[str, str]] | None = None) -> str:
-    """Allowlist-sanitize ``html``; TeX tokens expand to ``data-mx-maths`` only in text nodes."""
-    sanitizer = _MatrixHtmlSanitizer(tex_store)
+def _sanitize_matrix_html(html: str, tex_store: list[tuple[str, str]] | None = None, *,
+                          allow_collapsible: bool = False) -> str:
+    """Allowlist-sanitize ``html``; TeX tokens expand to ``data-mx-maths`` only in text nodes.
+    ``allow_collapsible`` admits ``<details>``/``<summary>`` for one message (approval cards)."""
+    sanitizer = _MatrixHtmlSanitizer(tex_store, allow_collapsible=allow_collapsible)
     try:
         sanitizer.feed(html or "")
         sanitizer.close()
@@ -94,10 +96,13 @@ class _MatrixHtmlSanitizer(HTMLParser):
     _ALLOWED_TAGS = {
         "a", "b", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol",
         "p", "pre", "s", "strike", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"}
+    # Collapsible blocks are opt-in per message (approval cards); model output and panes stay flat.
+    _COLLAPSIBLE_TAGS = {"details", "summary"}
     _VOID_TAGS = {"br", "hr"}
 
-    def __init__(self, tex_store: list[tuple[str, str]] | None = None) -> None:
+    def __init__(self, tex_store: list[tuple[str, str]] | None = None, *, allow_collapsible: bool = False) -> None:
         super().__init__(convert_charrefs=False)
+        self._allowed_tags = self._ALLOWED_TAGS | (self._COLLAPSIBLE_TAGS if allow_collapsible else set())
         self._parts: list[str] = []
         self._skip_depth = 0
         self._tex_store = tex_store or []
@@ -128,7 +133,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
         tag = tag.lower()
         if tag in {"script", "style"}:
             self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
+        elif not self._skip_depth and tag in self._allowed_tags:
             self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
 
     def handle_endtag(self, tag: str) -> None:
@@ -136,7 +141,7 @@ class _MatrixHtmlSanitizer(HTMLParser):
         if tag in {"script", "style"} and self._skip_depth:
             self._skip_depth -= 1
             return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
+        if self._skip_depth or tag not in self._allowed_tags or tag in self._VOID_TAGS:
             return
         self._parts.append(f"</{tag}>")
 

@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
@@ -13,17 +14,20 @@ import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connections'
 import { $bindings } from '@/store/keybinds'
 
 import { setTerminalTakeover } from '../store'
 
+import { NewTerminalButton } from './rail-new-terminal'
+import { terminalHost } from './terminal-gateway'
 import {
   $activeTerminalId,
+  $terminalHostsMixed,
   $terminals,
   closeAllTerminals,
   closeOtherTerminals,
   closeTerminal,
-  createTerminal,
   selectTerminal,
   type TerminalEntry
 } from './terminals'
@@ -40,7 +44,6 @@ export function TerminalRail() {
   const activeId = useStore($activeTerminalId)
   const bindings = useStore($bindings)
   const toggleHint = bindings['view.showTerminal']?.[0]
-  const newHint = bindings['view.newTerminal']?.[0]
 
   return (
     <div
@@ -66,21 +69,7 @@ export function TerminalRail() {
             toggleHint={toggleHint}
           />
         ))}
-        <li className="flex w-full justify-center">
-          <Tip
-            label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
-            placement="right-rail"
-          >
-            <button
-              aria-label={t.rightSidebar.terminalNew}
-              className={cn(RAIL_ACTION, 'size-7 text-(--ui-text-quaternary)')}
-              onClick={() => createTerminal()}
-              type="button"
-            >
-              <Codicon name="add" size="0.8125rem" />
-            </button>
-          </Tip>
-        </li>
+        <NewTerminalButton className={RAIL_ACTION} />
       </ul>
 
       <div className="flex shrink-0 flex-col items-center pb-1.5">
@@ -109,7 +98,13 @@ interface TerminalRailItemProps {
 
 function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: TerminalRailItemProps) {
   const { t } = useI18n()
-  const label = `${index + 1}. ${term.title}`
+  const registry = useStore($connectionsRegistry)
+  const mixed = useStore($terminalHostsMixed)
+  const host = terminalHost(term, registry)
+  // Where the shell runs. This device stays unlabeled until a tab runs elsewhere.
+  const shown = host === 'removed' || (host && (mixed || host.connection.kind !== 'local')) ? host : null
+  const hostLabel = shown === 'removed' ? t.rightSidebar.terminalGatewayRemoved : shown?.connection.label
+  const label = `${index + 1}. ${term.title}${hostLabel ? ` · ${hostLabel}` : ''}`
 
   return (
     <ContextMenu>
@@ -129,7 +124,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
               aria-label={label}
               aria-selected={active}
               className={cn(
-                'grid size-7 place-items-center rounded-md transition-colors',
+                'relative grid size-7 place-items-center rounded-md transition-colors',
                 active
                   ? 'bg-(--chrome-action-hover) text-foreground'
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -145,6 +140,18 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
                 name={term.kind === 'agent' ? 'agent' : 'terminal'}
                 size="0.875rem"
               />
+              {shown && (
+                <span
+                  className="pointer-events-none absolute bottom-0 right-0.5 grid place-items-center rounded-sm bg-(--ui-terminal-surface-background)"
+                  data-terminal-host={shown === 'removed' ? 'removed' : shown.connection.id}
+                >
+                  {shown === 'removed' ? (
+                    <Codicon className="text-(--ui-text-quaternary)" name="debug-disconnect" size="0.625rem" />
+                  ) : (
+                    <ConnectionGlyph className="size-2.5 [&_svg]:size-2.5" connection={shown.connection} />
+                  )}
+                </span>
+              )}
             </button>
           </Tip>
         </li>

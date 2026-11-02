@@ -55,6 +55,12 @@ verificationWritePath?: string
  * handle's `path` to let the test decide when the process exits.
  */
 backgroundReleasePath?: string
+/**
+ * Spawn the E2E_SIDEBAR_CROSS background process without `notify_on_complete`
+ * (default: notify). A silent process sends no completion event, so the only
+ * thing that can clear its sidebar state is a backend read.
+ */
+backgroundSilent?: boolean
 
 /**
  * Port to bind (default: any free port). An install/update journey runs its
@@ -244,7 +250,7 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   ].join(' && ')
 }
 
-function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
+function sidebarCrossScript(releasePath?: string, silent = false): ScriptedTurn[] {
   return [
     {
       text: 'Starting a long background task and delegating work.',
@@ -254,7 +260,7 @@ function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
           args: {
             command: sidebarCrossBgCommand(releasePath),
             background: true,
-            notify_on_complete: true,
+            notify_on_complete: !silent,
           },
         },
         {
@@ -892,7 +898,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           }
 
           if (isSidebarCrossTrigger) {
-            const script = sidebarCrossScript(options.backgroundReleasePath)
+            const script = sidebarCrossScript(options.backgroundReleasePath, options.backgroundSilent)
             const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
             _sidebarCrossIndex++
 

@@ -81,7 +81,7 @@ from hermes_cli.update_cmd_stash import (
     _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
     _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
     _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
-    _stash_local_changes_if_needed, _unrestored_autostash_notice,
+    _stash_local_changes_if_needed, _target_would_move_head, _unrestored_autostash_notice,
     _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
@@ -586,6 +586,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
 
     child_env = dict(os.environ if env is None else env)
     child_env.setdefault("PYTHONUNBUFFERED", "1")
+    # detached-spawn: ok — awaited update step; a cancel tree-kills its group (kill_process_tree)
     spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
     proc = subprocess.Popen(
         cmd, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
@@ -1407,8 +1408,16 @@ def _prepare_checkout_for_update(
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
         # Before the stash: its refs/stash would contain HEAD until it is dropped.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
+    # A local terminal answers "keep local changes?" before anything moves (declining discards,
+    # so nothing is stashed); a no-op update never asks. Forks stay unscoped: the upstream sync
+    # lands on a ref fetched only later.
+    prompt_for_restore = not assume_yes and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+    ask_first = prompt_for_restore and not gateway_mode and (
+        (not release_tag and not in_place_update and current_branch != branch)
+        or _target_would_move_head(git_cmd, _m().PROJECT_ROOT, target_ref))
     auto_stash_ref = _m()._stash_local_changes_if_needed(
-        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume))
+        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume), ask_first=ask_first,
+        untracked_targets=() if is_fork else (target_ref, f"origin/{branch}", f"refs/heads/{branch}"))
     moved_from_sha = None
     rollback_branch = None
     if not release_tag and not in_place_update and current_branch != branch:
@@ -1427,10 +1436,7 @@ def _prepare_checkout_for_update(
             _exit_after_failed_branch_switch(
                 git_cmd, branch, track_result, auto_stash_ref, gw_input_fn, _windows_gateway_resume)
 
-    prompt_for_restore = (
-        auto_stash_ref is not None
-        and not assume_yes
-        and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+    prompt_for_restore = auto_stash_ref is not None and prompt_for_restore and not ask_first
 
     if release_tag:
         # An ancestor release still needs applying when switching channels.
@@ -1808,6 +1814,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # declare this local, so only they hand off through retired shims.
     _hermes_current_updater_frame = True
     _commit.begin_update_attempt()  # nothing an earlier update in this process armed is ours (O5)
+    from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
+    prefer_dotenv_proxy_env()  # the .env loaded at import beats a system proxy the Desktop injected
     git_operation = git_operation_in_progress(_m().PROJECT_ROOT)
     if git_operation:
         root = _m().PROJECT_ROOT
@@ -1927,6 +1935,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
             sys.exit(1)
 
+        _check.fetch_release_tag(git_cmd, _m().PROJECT_ROOT, completion_request)
         current_branch = _current_branch_name(git_cmd, check=True)
         _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
         held_message = None

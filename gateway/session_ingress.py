@@ -2,11 +2,14 @@
 import asyncio
 import logging
 from contextvars import ContextVar
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
+from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
+from hermes_cli.observability.shared_metrics_busy import (
+    busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -25,6 +28,7 @@ busy_commit = ContextVar('busy_commit', default=None)
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
+    'media_filenames', 'media_filenames_length',
 })
 
 # Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
@@ -73,6 +77,7 @@ async def admit_message(authority, event):
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(authority.db, admission_id=receipt.admission_id)
     status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
+    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))
     if status in ('terminal', 'unknown'):
         authority.native_waiters.discard(receipt.admission_id)
         if authority.waiters.get(receipt.admission_id) is waiter:
@@ -90,6 +95,8 @@ async def admit_message(authority, event):
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')
+        if row is not None:
+            note_busy_parked(event)  # still queued (saved): answered after the pause, not dropped
         return pause_notice(authority, receipt.ref, exc.reason)
     finally:
         if adopters.get(receipt.admission_id) is event:
@@ -229,6 +236,7 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    busy_turn_started(row['admission_id'])
     from gateway.session_completion_notes import note_if_unviewed
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
@@ -285,7 +293,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        async with _admission_scope(authority, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -353,6 +361,15 @@ def _launch_body_if_launch_owner(authority):
     return launch_body()
 
 
+@asynccontextmanager
+async def _admission_scope(authority, home, row, event, captured):
+    """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
+    turn (``session_producer_lifecycle``; a no-op for every other admission)."""
+    async with producer_turn(authority, row, event, captured):
+        with await _execution_scope(authority, home):
+            yield
+
+
 async def _execution_scope(authority, home):
     """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
@@ -394,11 +411,14 @@ async def deliver_settled(authority, admission_id):
         if held is not None:
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
+        # Settled with nothing (left) to send: its reply streamed, or it had none.
+        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
         return
     adapter, event, session_key, response, home = delivery
+    delivered = False
     try:
         with await _execution_scope(authority, home):
-            await deliver_response(adapter, event, session_key, response)
+            delivered = await deliver_response(adapter, event, session_key, response)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
     finally:
@@ -406,13 +426,17 @@ async def deliver_settled(authority, admission_id):
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
+        await close_producer_turn(
+            authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
 
 
 async def deliver_response(adapter, event, session_key, response):
+    """Send a turn's reply; whether it was delivered (``_process_message_background``'s verdict:
+    nothing to send, or at least one send that succeeded)."""
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
-        return
+        return True
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
     results = []
@@ -421,6 +445,7 @@ async def deliver_response(adapter, event, session_key, response):
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
                                        record_delivery=results.append)
+    return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
@@ -453,6 +478,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
+            settle_busy_arrival(event)
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)

@@ -833,7 +833,7 @@ class SessionSessionsMixin:
 
     def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
         """Get a session by ID (drains queued token deltas first so cost readers see exact totals)."""
-        self.flush_token_counts()
+        self.flush_for_read()
         row = self._read_one(
             "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved, "
             "COALESCE(tp.prompt, s.tool_names) AS _tool_names_resolved "
@@ -859,7 +859,7 @@ class SessionSessionsMixin:
         highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
         ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
         it SQLite's temp-sort order is unspecified and the retired route can win."""
-        self.flush_token_counts()
+        self.flush_for_read()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
                       api_call_count
@@ -1315,7 +1315,7 @@ class SessionSessionsMixin:
         filters except archived: a pin is an explicit keep, so a pinned row stamped
         archived must still return. ``local_created_sources`` restricts ``source='local'``
         rows to those surfaces before LIMIT/OFFSET."""
-        self.flush_token_counts()  # rows carry token/cost totals
+        self.flush_for_read()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,

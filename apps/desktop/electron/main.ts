@@ -55,7 +55,7 @@ import {
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
-import { relaunchApp } from './app-relaunch'
+import { createAppRelauncher, relaunchApp } from './app-relaunch'
 import {
   appVersionInfo,
   type AppVersionInfo,
@@ -263,6 +263,7 @@ import {
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
+import { directoryExists, fileExists, isGitCheckout } from './fs-probes'
 import { downloadViaTokenToFile as downloadViaNativeGatewayToFile } from './gateway-download-transport'
 import type {
   GatewayFileSaveContext,
@@ -328,6 +329,7 @@ import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
+  clearLinuxGpuBootMarker,
   createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
@@ -343,9 +345,11 @@ import {
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
+import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
-import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
+import { resolveDesktopClientVersion } from './local-runtime-version'
+import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
@@ -504,6 +508,7 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -530,7 +535,7 @@ import {
 } from './remote-ws-headers'
 import { enableRendererAccessibility } from './renderer-accessibility'
 import { missingRendererAssets, presentRendererIndexes } from './renderer-bundle'
-import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
+import { applyLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
@@ -567,6 +572,7 @@ import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
+import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
@@ -584,6 +590,7 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import { registerMachineUiPreferences } from './ui-preferences-ipc'
 import {
   UPDATE_HANDOFF_DWELL_MS,
   UPDATE_WAIT_POLL_MS,
@@ -645,6 +652,7 @@ import {
 import { startUpdateRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
+import { filenameFromUrl } from './url-filename'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -652,12 +660,7 @@ import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
-import {
-  appliedPrimaryWindowRoute,
-  registrySshPoolScopeByConnectionId,
-  registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
+import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { isAppSized, registerWindowSizing } from './window-growth'
@@ -747,6 +750,7 @@ function acquireSingleInstanceLock(): boolean {
 }
 
 const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+const relauncher = createAppRelauncher(app)
 
 if (!isPrimaryInstance) {
   console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
@@ -931,7 +935,7 @@ const nvidiaEglRecovery = createNvidiaEglRecovery({
   },
   relaunch: extraArgs => {
     // The persisted witness selects ANGLE next launch; argv carries it only when unwritable.
-    relaunchApp(app, { args: [...process.argv.slice(1), ...extraArgs] })
+    relaunchApp(relauncher, { args: [...process.argv.slice(1), ...extraArgs] })
     void exitAfterBackendShutdown(0)
   }
 })
@@ -1112,7 +1116,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
 
     try {
-      relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
       void exitAfterBackendShutdown(0)
     } catch (error) {
       console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1164,7 +1168,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1191,7 +1195,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(relauncher, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
@@ -1276,17 +1280,16 @@ let desktopSshPathOverride = ''
     process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = '0'
   }
 
-  for (const planned of planLaunchSwitches(desktopLaunchConfig, process.argv.slice(1))) {
-    if (planned.value === undefined) {
-      app.commandLine.appendSwitch(planned.name)
-    } else {
-      app.commandLine.appendSwitch(planned.name, planned.value)
-    }
+  applyLaunchSwitches(app.commandLine, desktopLaunchConfig, process.argv.slice(1))
+}
 
-    console.log(
-      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
-    )
-  }
+// Linux: a runtime `--no-sandbox` kills renderers on /dev/shm (linux-sandbox-relaunch.ts).
+if (isPrimaryInstance) {
+  // A deliberate restart is no GPU failure: settle both ladders' boot witnesses before it.
+  relaunchIfNoSandboxCameTooLate(relauncher, () => {
+    nvidiaEglRecovery.cleanExit()
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
+  })
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -2696,26 +2699,6 @@ async function advanceBootProgress(phase, message, progress) {
   }
 }
 
-function fileExists(filePath) {
-  try {
-    return fs.statSync(filePath).isFile()
-  } catch {
-    return false
-  }
-}
-
-function isGitCheckout(root: string): boolean {
-  return fs.existsSync(path.join(root, '.git'))
-}
-
-function directoryExists(filePath) {
-  try {
-    return fs.statSync(filePath).isDirectory()
-  } catch {
-    return false
-  }
-}
-
 // --- in-app update mutual exclusion (#50238) -------------------------------
 // The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
@@ -2846,7 +2829,8 @@ async function waitForUpdateToFinish() {
     log: rememberLog,
     dialog,
     shell,
-    openUpdates: sendOpenUpdatesRequested
+    openUpdates: sendOpenUpdatesRequested,
+    closeHoldersAndRetry: releaseHolderRetry({ isWindows: IS_WINDOWS, resolveUpdateRoot, applyUpdates, log: rememberLog })
   })
 
   if (outcome === 'cancelled') {
@@ -2868,7 +2852,7 @@ async function waitForUpdateToFinish() {
       running: INSTALL_STAMP,
       resourcesPath: process.resourcesPath,
       relaunch: extraArgs =>
-        relaunchApp(app, { args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
+        relaunchApp(relauncher, { args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
       exit: () => void exitAfterBackendShutdown(0),
       log: rememberLog
     })
@@ -3675,7 +3659,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         throw new Error(message)
       }
 
-      preflightStateDb({
+      await preflightStateDb({
         python: managed ? null : await findPythonForRoot(root),
         launcher,
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
@@ -5482,17 +5466,6 @@ function extensionForMimeType(mimeType) {
   }
 
   return ''
-}
-
-function filenameFromUrl(rawUrl, fallback = 'image') {
-  try {
-    const parsed = new URL(rawUrl)
-    const base = path.basename(decodeURIComponent(parsed.pathname || ''))
-
-    return base && base.includes('.') ? base : fallback
-  } catch {
-    return fallback
-  }
 }
 
 async function resourceBufferFromUrl(rawUrl) {
@@ -9479,26 +9452,13 @@ function activeSshTerminalTarget(webContentsId?: number) {
   const windowRoute = typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
 
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    const scope = registrySshScopeForWindowRoute(windowRoute, readDesktopConnectionsRegistry())
+    const target = terminalGatewayTarget(
+      { connectionId: windowRoute.connectionId, profile: windowRoute.profile },
+      readDesktopConnectionsRegistry(),
+      sshConnections
+    )
 
-    if (!scope) {
-      return null
-    }
-
-    const state = sshConnections.get(scope)
-
-    if (state && state.ssh) {
-      return { ssh: state.ssh, scope }
-    }
-
-    // The pool's single writer publishes under the per-profile bootstrap key
-    // while stamping the entry with its registry connection id (#97345), so a
-    // composite-key miss must still resolve the live tunnel by that identity
-    // instead of reporting 'pending' forever.
-    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
-    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
-
-    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
+    return typeof target === 'string' && target !== 'pending' ? null : target
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -11704,7 +11664,7 @@ async function exitAfterBackendShutdown(code) {
 
   // app.exit() skips will-quit, and every in-app relaunch lands here.
   killTimedGitChildren()
-  app.exit(code)
+  relauncher.exit(code)
 }
 
 // Returns the profile name whose backend was torn down, or null when the
@@ -13897,7 +13857,7 @@ function createWindow() {
           )
 
           try {
-            relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+            relaunchApp(relauncher, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
             void exitAfterBackendShutdown(0)
           } catch (err) {
             rememberLog(`[renderer] GPU-disable relaunch failed: ${err?.message || err}`)
@@ -13951,7 +13911,7 @@ function createWindow() {
         rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
         try {
-          relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
           void exitAfterBackendShutdown(0)
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
@@ -17098,18 +17058,10 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
   flushDesktopLogBufferSync()
 })
 
-// The preload reads this small, sanitized payload synchronously so the renderer
-// can register the local skin before its first theme paint. It stays independent
-// of the selected gateway, which can be an offline remote primary.
-ipcMain.on('hermes:skin:local', event => {
-  // The window route is more specific than the global next-launch preference:
-  // a peer can be booting another profile while that preference changes.
-  event.returnValue = readLocalSkinPayload(
-    HERMES_HOME,
-    windowConnectionRoutes.get(event.sender.id)?.profile,
-    primaryProfileKey()
-  )
-})
+// Pre-paint payloads the preload reads synchronously: the local skin, and this
+// machine's shared UI preferences (#145213) — see local-skin.ts, ui-preferences.ts.
+registerLocalSkinIpc(ipcMain, HERMES_HOME, id => windowConnectionRoutes.get(id)?.profile, primaryProfileKey)
+registerMachineUiPreferences(HERMES_HOME)
 
 // Renderer error toasts (notifyError): the toast shows the summarized copy,
 // so the caller posts the full error here for desktop.log. Fire-and-forget,
@@ -17151,7 +17103,12 @@ const terminalIpc = registerTerminalIpc({
   activeSshTerminalTarget,
   sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
-  getSshConnectionState: scope => sshConnections.get(scope)
+  getSshConnectionState: scope => sshConnections.get(scope),
+  gatewayTarget: owner => terminalGatewayTarget(owner, readDesktopConnectionsRegistry(), sshConnections),
+  ensureGatewayBackend: owner =>
+    backendDialClaims.run(backendScopeKey(owner.connectionId, owner.profile), () =>
+      ensureRegistryBackend(owner.connectionId, owner.profile)
+    )
 })
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
@@ -17208,12 +17165,11 @@ async function detectRendererSkew() {
   return checkRendererSkew(resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
-// an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
-// other platforms don't use this menu item.
+// Re-resolve the focused window's live Hermes version just before showing the native About
+// panel, so an in-place `hermes update` shows without a restart. macOS only (no-op elsewhere).
 function showAboutPanelFresh(): void {
-  void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+  const scope = windowConnectionRoutes.versionScopeFor(BrowserWindow.getFocusedWindow() ?? mainWindow)
+  void Promise.all([detectRendererSkew(), resolveHermesVersion(scope)]).then(([skew, version]) => {
     const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
     // The product name already identifies canary and commit builds. Never pass
     // through empty/placeholder: the panel would render the bundle's 0.0.0 (#124581).
@@ -17228,10 +17184,17 @@ function showAboutPanelFresh(): void {
 }
 
 ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+  const [skew, version, clientVersion] = await Promise.all([
+    detectRendererSkew(),
+    resolveHermesVersion(scope),
+    resolveDesktopClientVersion(INSTALL_STAMP, resolveUpdateRoot(), HERMES_HOME, app.getVersion())
+  ])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
+    // Both sides, labelled: the backend the active connection runs, and this machine's install.
+    backendVersion: version,
+    clientVersion,
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -17265,11 +17228,10 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
 
 // The About page's "Restart Hermes" button (shown when bundleSwapPending):
 // load the already-swapped bundle without asking the user to quit manually.
-// app.relaunch() re-executes by path, so the fresh process picks up whatever
-// bundle now lives there.
+// The relaunch re-executes by path, so the fresh process loads the bundle now there.
 ipcMain.handle('hermes:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  relaunchApp(relauncher, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
 
@@ -18218,13 +18180,8 @@ app.on('before-quit', event => {
   }
 
   // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
-  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
-  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
-    try {
-      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
-    } catch {
-      void 0
-    }
+  if (process.platform === 'linux') {
+    clearLinuxGpuBootMarker(app.getPath('userData'), linuxGpuFallbackSticky)
   }
 
   // The always-on-top overlay isn't a "real" app window; close it so a stray

@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
 import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
+import { zhHantMemoryLayers } from './zh-hant_memory_layers'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -16,6 +17,7 @@ export const zhHantSettings = {
   },
 
   settings: {
+    memoryLayers: zhHantMemoryLayers,
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',
@@ -88,6 +90,14 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        legacyBackendConfirm:
+          '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
+        installAnyway: '仍要安裝',
+        partialInstall: sha =>
+          sha
+            ? `外掛只安裝了一部分：代理部分已安裝在提交 ${sha}，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。`
+            : '外掛只安裝了一部分：代理部分已安裝，但由於儲存庫在你審閱後有變更，桌面部分未能隨之安裝。在「進階」中開啟強制重新安裝，可用顯示的版本取代兩部分；或取消，只保留代理部分。',
         nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
@@ -232,6 +242,17 @@ export const zhHantSettings = {
         plugin: {
           label: '外掛通知',
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
+        }
+      },
+      browserPermission: {
+        title: '瀏覽器通知',
+        allow: '允許',
+        states: {
+          default: '分頁在背景時由此瀏覽器顯示提醒。在你允許之前，只有分頁標題會閃爍。',
+          granted: '已允許。此分頁在背景時會顯示提醒，分頁標題也會閃爍。',
+          denied: '已在此瀏覽器的網站設定中被封鎖。分頁標題仍會閃爍。',
+          insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
+          unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
         }
       },
       test: '傳送測試通知',
@@ -995,6 +1016,7 @@ export const zhHantSettings = {
         unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,
         restartBusy: '已儲存。有對話正在進行，因此閘道沒有重新啟動。對話結束後請選擇「重新啟動閘道」。',
         restartFailed: '已儲存，但閘道無法重新啟動。請選擇「重新啟動閘道」重試。',
+        restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
         startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
         stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
         start: '啟動',
@@ -1531,7 +1553,7 @@ export const zhHantSettings = {
       autoArchiveFailed: '無法更新自動封存設定',
       defaultDirTitle: '預設專案目錄',
       defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
-      defaultDirUpdated: '預設專案目錄已更新',
+      defaultDirUpdated: () => '預設專案目錄已更新',
       defaultsTo: label => `預設使用 ${label}。`,
       change: '變更',
       choose: '選擇',

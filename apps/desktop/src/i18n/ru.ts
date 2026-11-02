@@ -6,9 +6,11 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
 import { ruGatewayHost } from './ru_gateway_host'
+import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -147,7 +149,8 @@ export const ruOverrides = {
       microphoneConstraintsUnsupported: 'Ограничения микрофона не поддерживаются этим устройством.',
       microphoneFailed: 'Ошибка микрофона',
       microphoneInUse: 'Микрофон уже используется другим приложением.',
-      microphoneNeedsHttps: 'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
+      microphoneNeedsHttps:
+        'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
@@ -331,6 +334,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    memoryLayers: ruMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -1001,7 +1005,7 @@ export const ruOverrides = {
       intro:
         'Управляйте этим устройством и всеми шлюзами Hermes, до которых можно дотянуться через удалённые, SSH или Cloud-соединения.',
       stagedNote:
-        'Переключайтесь между шлюзами из раздела «Сеансы». Профили, чаты, мессенджеры и cron-задачи остаются за своим шлюзом; работа на других шлюзах продолжается.',
+        'Все шлюзы остаются подключёнными. Профили, чаты, мессенджеры и cron-задачи остаются за своим шлюзом, а «Сеансы» могут показывать их все сразу.',
       launchModeTitle: 'При запуске возвращаться к «Сеансам» на последнем шлюзе',
       launchModeDesc: 'Если выключено, «Сеансы» открываются на основном шлюзе.',
       searchPlaceholder: 'Поиск шлюзов…',
@@ -1317,8 +1321,8 @@ export const ruOverrides = {
       defaultDirTitle: 'Папка проекта по умолчанию',
       defaultDirDesc:
         'Новые сеансы начинаются в этой папке, если вы не выбрали другую. Оставьте пустым, чтобы использовать домашнюю директорию.',
-      defaultDirUpdated:
-        'Папка проекта по умолчанию обновлена — начните новый чат (Ctrl/⌘+N), чтобы она вступила в силу',
+      defaultDirUpdated: shortcut =>
+        `Папка проекта по умолчанию обновлена — начните новый чат${shortcut ? ` (${shortcut})` : ''}, чтобы она вступила в силу`,
       defaultsTo: label => `По умолчанию: ${label}.`,
       change: 'Изменить',
       choose: 'Выбрать',
@@ -1471,6 +1475,10 @@ export const ruOverrides = {
     changesApplyNewSessions: 'Изменения применяются к новым сеансам.',
     skillUpdated: 'Навык обновлён',
     edit: 'Изменить',
+    lock: 'Заблокировать',
+    locked: 'Заблокирован',
+    lockHint: 'Пока навык заблокирован, агент не может его менять. Вы по-прежнему можете редактировать его сами.',
+    unlockedHint: 'Заблокируйте навык, чтобы агент не мог его менять. Вы по-прежнему можете редактировать его сами.',
     archive: 'В архив',
     skillArchivedTitle: 'Навык в архиве',
     skillArchivedMessage: 'Восстановить через hermes curator restore.',
@@ -1769,9 +1777,6 @@ export const ruOverrides = {
       resume: 'Продолжить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
       memoryFile: 'Память агента (MEMORY.md)',
       userFile: 'Профиль пользователя (USER.md)',
       bytes: size => size,
@@ -2071,7 +2076,8 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
-    exportNeedsHost: name => `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
     notServedHere: 'Здесь не обслуживается',
@@ -2082,10 +2088,7 @@ export const ruOverrides = {
     connectGateway: 'Управлять шлюзами…',
     fleet: {
       localDevice: 'Это устройство (локальный бэкенд — установит Hermes, если его нет, иначе откроет новую сессию)',
-      switchDeviceTitle: 'Переключиться на это устройство?',
-      switchDeviceDesc: 'Откроется новая сессия на этом компьютере. Текущий разговор останется на другом шлюзе.',
-      switchDeviceConfirm: 'Переключить',
-      installDeviceTitle: 'Переключиться на это устройство?',
+      installDeviceTitle: 'Установить Hermes на это устройство?',
       installDeviceDesc:
         'Hermes будет установлен локально, затем откроется новая сессия на этом компьютере. Установка не начнётся, пока вы не подтвердите.',
       installDeviceConfirm: 'Установить локально',
@@ -2174,6 +2177,7 @@ export const ruOverrides = {
   },
 
   cron: {
+    control: ruCronControl,
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
@@ -2914,6 +2918,8 @@ export const ruOverrides = {
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'Это устройство',
+    versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',
@@ -3331,6 +3337,14 @@ export const ruOverrides = {
     terminalNew: 'Новый терминал',
     terminalCloseOthers: 'Закрыть другие',
     terminalCloseAll: 'Закрыть все',
+    terminalNewOn: 'Новый терминал на…',
+    terminalGatewayRemoved: 'Удалённый шлюз',
+    terminalGatewayRemovedBody:
+      'Шлюз, на котором работал этот терминал, удалён, поэтому его нельзя открыть снова. Закройте эту вкладку.',
+    terminalGatewayNoShellBody:
+      'У этого шлюза нет доступа к оболочке, поэтому терминал нельзя открыть снова. Закройте эту вкладку.',
+    terminalDisconnectedBody:
+      'Терминал отключён. Нажмите Enter, чтобы запустить новую оболочку; история прокрутки сохранена.',
     addToChat: 'Добавить в чат'
   },
   preview: {
@@ -3453,7 +3467,8 @@ export const ruOverrides = {
     saveApply: 'Сохранить и применить',
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
-    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
+    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
+    tabActions: title => `Действия: ${title}`
   },
   contextMenu: {
     link: {
@@ -3487,6 +3502,18 @@ export const ruOverrides = {
       errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
       errorAddCredits: 'Пополнить кредиты',
       errorOpenBillingSettings: 'Открыть настройки оплаты',
+      errorHideDetails: 'Скрыть подробности ошибки',
+      errorDetailsCopy: 'Копировать подробности',
+      errorCopyRaw: 'Копировать ошибку',
+      errorContinue: 'Продолжить',
+      errorOpenProviderSettings: provider => `Открыть настройки ${provider}`,
+      errorOpenSetupGuide: 'Открыть руководство по настройке',
+      errorSetupGuideLink: 'Руководство по настройке',
+      errorOpenModelSettings: 'Открыть настройки модели',
+      errorStartNewChatLink: 'Начать новый чат',
+      errorChooseModelLink: 'Выбрать другую модель',
+      errorRetryAtResetShort: time => `Повторить в ${time}`,
+      errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',

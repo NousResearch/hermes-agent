@@ -22,6 +22,7 @@ import uuid
 from functools import partial
 from pathlib import Path
 
+from gateway.session_history_mount import is_history_mount
 from hermes_state_local import local_receipt
 from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from hermes_state_runtime import RuntimeStoreError
@@ -83,8 +84,8 @@ async def close_viewer_session(authority, session_id, reason):
     live = authority.sessions[session_id]
     if live.subscribers:
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
-    if live.superseded:
-        return  # a read-only historic mount: its route's delegations and agent are the newer session's
+    if is_history_mount(live):
+        return  # stored history: no route, agent or delegation of its own
     from tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
@@ -155,7 +156,7 @@ def rearm_persisted_closes(authority):
     for key, record in stored:
         session_id = key[len(CLOSE_PREFIX):]
         live = authority.sessions.get(session_id)
-        if live is None or live.superseded:
+        if live is None or is_history_mount(live):
             continue  # not restored (paused, retired): left stored for a later recovery
         if live.subscribers:
             forget_persisted_close(authority, session_id, record)
@@ -221,7 +222,7 @@ def arm_orphan_close(authority, session_id, reason, grace):
     close it as a viewer would, without stopping its turn or its async delegations (#106742). A
     stopping owner arms nothing; the next boot does (``recover_local_sessions``)."""
     live = authority.sessions.get(session_id)
-    if not grace or live is None or live.subscribers or live.superseded or _stopping(authority):
+    if not grace or live is None or live.subscribers or is_history_mount(live) or _stopping(authority):
         return
     cancel_orphan_close(authority, session_id)
     authority.orphan_closes[session_id] = _call_later(
@@ -237,9 +238,14 @@ async def arm_detached_orphan_close(authority, session_id):
 
 def _idle_s(authority, session_id):
     from hermes_state_common import _sql_session_last_active
+    # Resolve the target BEFORE opening a read context: ``_physical_target`` reads the receipt, and
+    # a read that lands on the degraded path (non-WAL, or every read permit spent) waits on the
+    # writer's non-reentrant lock. Nested inside this block it would wait on the lock this thread
+    # already holds — a boot-time self-deadlock the watchdog can only answer by killing the gateway.
+    target = _physical_target(authority, session_id)
     with authority.db._read_ctx() as conn:
         row = conn.execute(f'SELECT {_sql_session_last_active("s")} FROM sessions s WHERE s.id = ?',
-                           (_physical_target(authority, session_id),)).fetchone()
+                           (target,)).fetchone()
     return time.time() - row[0] if row and row[0] else 0.0
 
 

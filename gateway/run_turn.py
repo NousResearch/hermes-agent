@@ -26,8 +26,8 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
-    silence_allowed,
+    display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
+    reply_expected_metadata,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
@@ -188,17 +188,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             return adapter._post_delivery_callbacks.pop(key, None)
         return None
 
-    @staticmethod
-    def _is_intentional_silence(agent_result, response) -> bool:
-        try:
-            from gateway.response_filters import is_intentional_silence_agent_result
-            return is_intentional_silence_agent_result(agent_result, response)
-        except Exception:
-            return False
-
-
-
-
     async def _hmwa_stop_typing_for_turn(self, event, source):
         """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
         workspace, so preserve the routing metadata used by the response delivery path."""
@@ -276,7 +265,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **display_metadata_for_event(event),
+                    "gateway_input_owner": prepared.persistence_owner, **persisted_user_metadata_for_event(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
@@ -330,6 +319,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            await self._record_room_silence_decision(
+                session_key, agent_result, _intentional_silence,
+                display_kind=prepared.persist_user_display_kind, reply_expected=event.reply_expected)
             return await self._deliver_turn_response_then_limit_offer(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -1778,8 +1770,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
+        _silent = False
         if self._is_intentional_silence(_delivery_result, first_response):
-            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):
+            _silent = self._silence_allowed_for_source(
+                turn_ctx.source, turn_ctx.persist_user_display_kind, turn_ctx.reply_expected, _delivery_result)
+            if _silent:
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -1792,6 +1787,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 )
                 first_response = _unexpected_silence_reply()
                 _already_streamed = False
+        await self._record_room_silence_decision(
+            session_key, _delivery_result, _silent,
+            display_kind=turn_ctx.persist_user_display_kind, reply_expected=turn_ctx.reply_expected)
         # Failed turns deliver their text but never their attachments (completed-turn parity).
         _deliver_media = not _delivery_result.get("failed")
         if first_response:
@@ -1997,6 +1995,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
                 "queued_terminal_reply_expected": next_reply_expected,
+                "queued_terminal_source": next_source,
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
@@ -2321,17 +2320,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         from run_agent import AIAgent
 
-        disp = self._run_agent_display_settings(source)
+        disp = await asyncio.to_thread(self._run_agent_display_settings, source)  # auth lock + config I/O; scope rides the copied context
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
-            # Keep status callbacks intact for approvals and actionable failures.
+            # Keep status callbacks intact for approvals and actionable failures. Interim messages keep the chat's
+            # setting (TurnRunner drops them for a heartbeat): an agent this turn builds takes its mode from it.
             disp = dataclasses.replace(
-                disp,
-                tool_progress_enabled=False,
-                interim_assistant_messages_enabled=False,
-                _thinking_enabled=False,
-                _native_slack_task_cards=False,
+                disp, tool_progress_enabled=False, _thinking_enabled=False, _native_slack_task_cards=False,
                 needs_progress_queue=False,
             )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(

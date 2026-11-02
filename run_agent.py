@@ -867,16 +867,8 @@ class AIAgent(
     def shutdown_memory_provider(self, messages: list | None = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
-        if getattr(self, "_memory_provider_shutdown", False):
-            return
-        self._memory_provider_shutdown = True
-        if self._memory_manager and self._memory_manager.claim_teardown(session_end=True):
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
-            _quietly(lambda: self._memory_manager.shutdown_all())
-        _notify_context_engine_session_end(self, messages)
+        from agent.context_engine import shutdown_memory_and_context
+        shutdown_memory_and_context(self, messages)
 
     def commit_memory_session(self, messages: list | None = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
@@ -934,6 +926,21 @@ class AIAgent(
             _quietly(self._memory_manager.release_soft)
         from agent.prepared_compaction import release_for_agent
         _quietly(release_for_agent, self)
+        # A context-engine clone holds instance-opened resources (an LCM-style engine reopens its
+        # own SQLite connection in clone_for_agent(): connection + WAL/SHM fds). The gateway evicts
+        # cached agents through this soft path, not close(), so releasing the engine only at hard
+        # teardown grows the fd count monotonically for the gateway's lifetime (#147087). Engines
+        # installed through agent_init._select_context_engine are always per-agent
+        # (load_context_engine builds a fresh instance; the registered shared instance is only ever
+        # reached through clone_for_agent()); a path that installs a process-shared engine sets
+        # _context_engine_owned = False and it stays open. Idempotency rides
+        # agent.context_engine.shutdown_context_engine's once-flag — no second latch.
+        if getattr(self, "_context_engine_owned", True):
+            from agent.context_engine import shutdown_context_engine
+            # soft=True: a session-end claim (taken before the gateway queues its hard cleanup)
+            # keeps on_session_end ahead of engine.shutdown(); without one, this release owns the
+            # shutdown and stays idempotent through the module once-flag.
+            _quietly(lambda: shutdown_context_engine(self, soft=True))
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -1029,6 +1036,7 @@ class AIAgent(
             # See #90837.
             from hermes_state_registry import release_or_close
             release_or_close(session_db)
+            self._session_db = None
 
     def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only

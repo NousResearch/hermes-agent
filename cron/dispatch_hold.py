@@ -25,6 +25,8 @@ from typing import Optional
 _FILE = "dispatch_held.json"
 # A held tick refreshes ``last`` once per ticker interval; the hold may have lasted this much longer.
 TICK_SLACK_SECONDS = 60.0
+# The longest a restart drain waits on in-flight turns by default (agent.restart_after_turn_timeout).
+MAX_EXTENSION_SECONDS = 1800.0
 
 
 def note_held(now: Optional[float] = None) -> None:
@@ -60,8 +62,10 @@ def read(cron_dir: Path) -> Optional[dict]:
 
 def grace_starts_at(cron_dir: Path, due_at: float, grace: float) -> float:
     """When a one-shot due at *due_at* starts its *grace*: the end of a hold it came due in,
-    else its due time."""
+    else its due time. Only a one-shot due within MAX_EXTENSION_SECONDS of the hold's end is
+    extended: an external drain has no time limit, and a reminder due hours into it is stale."""
     held = read(cron_dir)
-    if held and held["since"] - grace <= due_at <= held["last"] + TICK_SLACK_SECONDS:
+    if (held and held["since"] - grace <= due_at <= held["last"] + TICK_SLACK_SECONDS
+            and due_at >= held["last"] - MAX_EXTENSION_SECONDS):
         return max(due_at, held["last"] + TICK_SLACK_SECONDS)
     return due_at

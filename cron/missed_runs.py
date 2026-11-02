@@ -131,8 +131,10 @@ def retire_expired_oneshot(d: Any) -> bool:
 
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
-    # Due while a gateway drain held dispatch: its grace counts from the end of the hold.
-    grace_start = grace_starts_at(
+    # Due while a gateway drain held dispatch: its grace counts from the end of the hold. A claimed
+    # one-shot already fired once, so it never gets the extension (that would re-dispatch it).
+    claimed = d.job.get("run_claim") or d.job.get("fire_claim")
+    grace_start = d.next_run_dt.timestamp() if claimed else grace_starts_at(
         _current_cron_store().cron_dir, d.next_run_dt.timestamp(), ONESHOT_GRACE_SECONDS)
     if d.scan.now.timestamp() - grace_start <= ONESHOT_GRACE_SECONDS:
         return False

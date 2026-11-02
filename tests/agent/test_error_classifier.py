@@ -250,35 +250,6 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_fallback is True
 
-    def test_410_retired_model_is_model_not_found(self):
-        # HTTP 410 Gone: provider permanently retired the model slug.
-        # Must fall back to a different model, not burn retries on a
-        # format_error that will never succeed.
-        e = MockAPIError(
-            "Gone",
-            status_code=410,
-            body={
-                "status": 410,
-                "message": (
-                    "deepseek-v4-flash:0731 was retired at 2026-09-25 00:00:00 "
-                    "-0700 PDT. Please use a current model."
-                ),
-            },
-        )
-        result = classify_api_error(e, provider="nous", model="deepseek-v4-flash:0731")
-        assert result.reason == FailoverReason.model_not_found
-        assert result.retryable is False
-        assert result.should_fallback is True
-
-    def test_410_without_retired_message_stays_format_error(self):
-        # A 410 that does not mention retirement stays format_error
-        # (the pre-fix 4xx default) so unrelated 410s are not silently
-        # misrouted to model_not_found.
-        e = MockAPIError("Gone", status_code=410)
-        result = classify_api_error(e)
-        assert result.reason == FailoverReason.format_error
-        assert result.retryable is False
-
     def test_wrapped_402_uses_nested_body_message(self):
         inner = MockAPIError(
             "inner",

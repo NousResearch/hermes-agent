@@ -38,11 +38,6 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # Bounding message COUNT (head/tail) is not enough when content per message is
 # unbounded; the agent can scroll around a message for detail (#114344).
 _READ_MAX_CONTENT = 2000
-# Result caps: a no-argument call browses recent sessions, where the caller wants to see
-# enough of the list to pick one; a query is discovery, where three ranked hits suffice.
-_DEFAULT_BROWSE_LIMIT = 10
-_DEFAULT_DISCOVERY_LIMIT = 3
-_MAX_SESSION_SEARCH_LIMIT = 10
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
@@ -587,11 +582,11 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         if around_message_id is not None:
             return _scroll(db, session_id.strip(), around_message_id, window, current_session_id)
         return _read_scoped(db, session_id.strip(), profile)
-    if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(
-            db, _clamp_int(limit, _DEFAULT_BROWSE_LIMIT, 1, _MAX_SESSION_SEARCH_LIMIT),
-            current_session_id, link_profile=profile)
-    limit = _clamp_int(limit, _DEFAULT_DISCOVERY_LIMIT, 1, _MAX_SESSION_SEARCH_LIMIT)
+    browse = not query or not isinstance(query, str) or not query.strip()
+    # Browse lists enough recent sessions to pick from; discovery returns a few ranked hits.
+    limit = _clamp_int(limit, 10 if browse else 3, 1, 10)
+    if browse:
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)

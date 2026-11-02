@@ -193,3 +193,56 @@ def test_async_delegation_completion_is_deliverable_and_a_held_lane_logs_once(ri
     with caplog.at_level(logging.WARNING):
         assert asyncio.run(r._completion_delivery_ready(evt)) is False
     assert len([rec for rec in caplog.records if "Async completion held" in rec.getMessage()]) == 2
+
+
+def _store(tmp_path):
+    from gateway.session import SessionStore
+    return SessionStore(sessions_dir=tmp_path / "routes", config=GatewayConfig(multiplex_profiles=True))
+
+
+def _inferred(r, chat_id):
+    from gateway.session_identity import identity_of, resolve_identity
+    source = _restored("ops", chat_id=chat_id)
+    resolve_identity(source, runner=r)
+    assert identity_of(source).transport_inferred is True
+    return source
+
+
+def test_inferred_transport_is_not_saved_as_the_receiving_bot_across_a_restart(rig, tmp_path):
+    """A session created from a source whose transport was only guessed must not come back from disk
+    pinned to the primary bot: the restored identity is trusted, so an unrouted chat would borrow it."""
+    from gateway.session_identity import resolve_identity
+
+    r = rig.runner
+    key = _store(tmp_path).get_or_create_session(_inferred(r, "999")).session_key
+    entry = _store(tmp_path).lookup_by_session_key(key)
+    assert entry.transport_profile is None
+    assert r._resolve_injection_adapter("discord", r._restored_source(entry)) is None
+    # Genuine provenance (the primary bot received a routed chat) still survives the restart.
+    live = _restored("ops")
+    resolve_identity(live, runner=r, adapter=rig.primary_discord)
+    entry = _store(tmp_path).lookup_by_session_key(_store(tmp_path).get_or_create_session(live).session_key)
+    assert entry.transport_profile == "default"
+    assert r._resolve_injection_adapter("discord", r._restored_source(entry)) is rig.primary_discord
+
+
+def test_recovered_rows_and_saved_guesses_never_lend_the_primary_bot(rig, tmp_path):
+    """The recovery writers drop a guessed transport too, and a route an older gateway already saved
+    with the primary guess borrows the primary bot only where a default-bot route sends the chat."""
+    from datetime import datetime
+
+    r = rig.runner
+    store, inferred = _store(tmp_path), _inferred(r, "999")
+    recovered = store._create_entry_from_recovered_row(
+        row={"id": "s1", "started_at": 0}, session_key="agent:ops:discord:thread:999", source=inferred,
+        now=datetime.now())
+    assert recovered.transport_profile is None
+    assert store._session_create_kwargs(
+        session_id="s2", session_key="k", origin=inferred, source_value="discord", display_name=None,
+        parent_session_id=None)["transport_profile"] is None
+
+    def saved_guess(chat_id):
+        return r._restored_source(SimpleNamespace(origin=_restored("ops", chat_id=chat_id), transport_profile="default"))
+
+    assert r._resolve_injection_adapter("discord", saved_guess("999")) is None
+    assert r._resolve_injection_adapter("discord", saved_guess("123")) is rig.primary_discord

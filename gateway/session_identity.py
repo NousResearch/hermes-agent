@@ -107,17 +107,18 @@ def clear_identity(source: Any) -> None:
 
 
 def transport_profile_of(source: Any) -> Optional[str]:
-    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``);
-    None outside multiplexing or when nothing resolved the source (an unknown transport is never guessed)."""
+    """The receiving bot's profile to persist alongside a routing entry (``SessionEntry.transport_profile``,
+    ``sessions.transport_profile``): the bot a live adapter or a persisted record named. None outside
+    multiplexing, when nothing resolved the source, or when a messaging transport was only inferred:
+    a restored row is trusted as the receiving bot, so the primary-profile guess must never be saved.
+    A LOCAL chat has no bot; its inferred transport is the launch profile's authority (#139060), a fact."""
+    from gateway.config import Platform
     identity = identity_of(source)
-    return identity.transport_profile if identity is not None and identity.multiplexed else None
-
-
-def known_transport_profile(source: Any) -> Optional[str]:
-    """:func:`transport_profile_of` minus inferred identities: the bot a live adapter or a persisted
-    record named, never the primary-profile guess a source with no transport evidence falls back to."""
-    identity = identity_of(source)
-    return transport_profile_of(source) if identity is not None and not identity.transport_inferred else None
+    if identity is None or not identity.multiplexed:
+        return None
+    if identity.transport_inferred and getattr(source, "platform", None) != Platform.LOCAL:
+        return None
+    return identity.transport_profile
 
 
 def replace_source(source: SessionSource, **changes: Any) -> SessionSource:

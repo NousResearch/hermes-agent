@@ -888,7 +888,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # primary's for a shared-bot satellite; a disconnected bot fails closed to ``{}``.
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        pinned = identity is not None and identity.multiplexed and not identity.transport_inferred
+        pinned = (identity is not None and identity.multiplexed and not identity.transport_inferred
+                  and self._restored_transport_trusted(source, identity))
         adapters = self._adapters_for_profile(
             identity.transport_profile if pinned else getattr(source, "profile", None))
         try:

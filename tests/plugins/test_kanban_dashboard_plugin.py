@@ -134,6 +134,42 @@ def test_patch_board_sets_project_directory(client, tmp_path):
         project_dir.resolve()
     )
 
+@pytest.mark.parametrize("include_archived", [False, True])
+def test_retired_task_display_preserves_status_and_tenant_filter(client, include_archived):
+    """Legacy terminal cards follow archive visibility without changing stored state (#147729)."""
+    with contextlib.closing(kbc.connect()) as conn:
+        ids = {}
+        for status in ("cancelled", "failed", "archived", "todo", "ready", "mystery"):
+            ids[status] = kb.create_task(conn, title=status, tenant="selected")
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, ids[status]))
+        other = kb.create_task(conn, title="other tenant", tenant="other")
+        conn.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ?", (other,))
+        conn.commit()
+
+    response = client.get(
+        "/api/plugins/kanban/board",
+        params={"tenant": "selected", "include_archived": str(include_archived).lower()},
+    )
+    assert response.status_code == 200, response.text
+    columns = {column["name"]: column["tasks"] for column in response.json()["columns"]}
+    assert {task["id"] for task in columns["todo"]} == {ids["todo"], ids["mystery"]}
+    assert [task["id"] for task in columns["ready"]] == [ids["ready"]]
+    if include_archived:
+        assert {task["id"]: task["status"] for task in columns["archived"]} == {
+            ids["cancelled"]: "cancelled", ids["failed"]: "failed", ids["archived"]: "archived",
+        }
+    else:
+        assert "archived" not in columns
+        assert {task["id"] for tasks in columns.values() for task in tasks} == {
+            ids["todo"], ids["mystery"], ids["ready"],
+        }
+
+    for status, task_id in ids.items():
+        detail = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["task"]["status"] == status
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

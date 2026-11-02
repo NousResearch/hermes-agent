@@ -43,8 +43,8 @@ export interface CompletionEvent {
 type ToastKind = 'error' | 'success' | 'warning'
 
 /** Terminal kinds → toast severity + i18n title key. Mirrors the gateway
- *  watcher's ping set (gateway/kanban_watchers.py) minus the intentionally
- *  silent kinds (status/archived/unblocked, which only advance the cursor). */
+ *  watcher's ping set (gateway/kanban_watchers.py) minus silent lifecycle
+ *  kinds. `blocked` is additionally gated by isExplicitInputGate below. */
 const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>([
   ['blocked', { titleKey: 'notify.blockedTitle', toast: 'warning' }],
   ['block_loop_detected', { titleKey: 'notify.blockLoopTitle', toast: 'warning' }],
@@ -118,6 +118,12 @@ async function ensureBaseline(slug: string): Promise<void> {
 
 function trimmed(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function isExplicitInputGate(ev: CompletionEvent): boolean {
+  // Gate names are board-defined (for example ACCOUNT_OWNER_GATE); the
+  // notifier only needs the explicit `*_GATE:` contract, never an owner name.
+  return ev.payload?.kind === 'needs_input' && /^[A-Z][A-Z0-9_]*_GATE:/.test(trimmed(ev.payload.reason))
 }
 
 /** The human handoff carried in the event payload, per kind (mirrors the
@@ -223,7 +229,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     seenEventIdByBoard.set(slug, cursor)
     const kind = ev.kind ?? ''
     const taskId = (ev.task_id ?? '').trim()
-    const spec = TERMINAL_NOTIFY.get(kind)
+    const spec = kind === 'blocked' && !isExplicitInputGate(ev) ? undefined : TERMINAL_NOTIFY.get(kind)
 
     if (spec) {
       try {

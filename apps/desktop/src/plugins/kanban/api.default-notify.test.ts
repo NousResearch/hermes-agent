@@ -169,11 +169,16 @@ describe('default board event notifications', () => {
       cursor: 102,
       events: [
         { id: 99, kind: 'completed' },
-        { id: 102, kind: 'blocked', task_id: 'task', payload: { reason: 'Need approval' } }
+        {
+          id: 102,
+          kind: 'blocked',
+          task_id: 'task',
+          payload: { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: Need approval' }
+        }
       ]
     })
     await vi.waitFor(() => expect(doors.notify).toHaveBeenCalledTimes(1))
-    expect(doors.notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'Need approval' }))
+    expect(doors.notify).toHaveBeenCalledWith(expect.objectContaining({ message: 'ACCOUNT_OWNER_GATE: Need approval' }))
     callbacks[0]({ cursor: 102, events: [{ id: 102, kind: 'blocked' }] })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(doors.notify).toHaveBeenCalledTimes(1)

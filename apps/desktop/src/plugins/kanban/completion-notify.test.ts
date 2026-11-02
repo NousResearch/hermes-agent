@@ -404,8 +404,8 @@ describe('terminal kinds beyond completed', () => {
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     await m.onKanbanEventsFrame('smoke', [
-      ev(101, 'blocked', { reason: 'task A blocked' }, 'task-a'),
-      ev(102, 'blocked', { reason: 'task B blocked' }, 'task-b')
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: task A blocked' }, 'task-a'),
+      ev(102, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: task B blocked' }, 'task-b')
     ])
     expect(hostMock.notify.mock.calls[0][0]).toMatchObject({ id: 'kanban:smoke:task-a' })
     expect(hostMock.notify.mock.calls[1][0]).toMatchObject({ id: 'kanban:smoke:task-b' })
@@ -428,18 +428,38 @@ describe('terminal kinds beyond completed', () => {
     expect(hostMock.dismissNotification).toHaveBeenCalledExactlyOnceWith('kanban:smoke:task-a')
   })
 
-  it('blocked notifies with the payload reason and a warning toast', async () => {
+  it('needs_input with an explicit account-owner gate notifies with the input title', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs API key' })])
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: choose a release channel' })
+    ])
 
     expect(fired).toBe(true)
     expect(lastNotify()).toMatchObject({
       kind: 'warning',
-      message: 'needs API key',
+      title: 'Task blocked — needs your input',
+      message: 'ACCOUNT_OWNER_GATE: choose a release channel',
       detail: 't101'
     })
+  })
+
+  it.each<[string, string]>([
+    ['capability', 'The card declares completion_contract = local-only'],
+    ['dependency', 'ACCOUNT_OWNER_GATE: dependency is not a human gate'],
+    ['transient', 'ACCOUNT_OWNER_GATE: transient is not a human gate'],
+    ['needs_input', 'Choose a release channel']
+  ])('does not address %s blocks to the board owner without the complete gate contract', async (blockKind, reason) => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: blockKind, reason }, 'task-capability')
+    ])
+
+    expect(fired).toBe(false)
+    expect(hostMock.notify).not.toHaveBeenCalled()
   })
 
   it('block_loop_detected notifies that a decision is needed', async () => {
@@ -492,9 +512,12 @@ describe('terminal kinds beyond completed', () => {
     expect(hostMock.notify).not.toHaveBeenCalled()
 
     // Cursor moved past 103: a replayed blocked at 102 stays silent, 104 fires.
-    await m.onKanbanEventsFrame('smoke', [ev(102, 'blocked'), ev(104, 'blocked')])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(102, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: replay' }),
+      ev(104, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: new blocker' })
+    ])
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
-    expect(lastNotify().message).toBe('t104')
+    expect(lastNotify().message).toBe('ACCOUNT_OWNER_GATE: new blocker')
   })
 })
 
@@ -504,10 +527,12 @@ describe('native OS door', () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never, undefined, os)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked', { reason: 'needs input' })])
+    await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: needs input' })
+    ])
 
     expect(os.notify).toHaveBeenCalledTimes(1)
-    expect(os.notify.mock.calls[0][0]).toMatchObject({ body: 'needs input\nt101' })
+    expect(os.notify.mock.calls[0][0]).toMatchObject({ body: 'ACCOUNT_OWNER_GATE: needs input\nt101' })
   })
 
   it('an os door that throws never breaks the toast or the frame result', async () => {
@@ -534,7 +559,10 @@ describe('native OS door', () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'blocked')])
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: 'needs_input', reason: 'ACCOUNT_OWNER_GATE: needs input' })
+    ])
+
     expect(fired).toBe(true)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
   })

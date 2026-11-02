@@ -611,7 +611,7 @@ export const host = {
   notify,
   notifyError,
   /** Remove one named toast without producing replacement feedback. */
-  dismissNotification,
+  dismissNotification: (id: string): void => dismissNotification(id),
 
   // NOTE: every host door is async-safe — wrapped so a sync throw from an
   // internal helper (e.g. no desktop bridge in a plain browser) becomes a

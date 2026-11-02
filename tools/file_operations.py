@@ -149,6 +149,30 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
 
+# Echoed when a path is present but unreadable (``[ -f ]`` true, ``[ -r ]`` false) or
+# ``[ -e ]`` fails and ``ls`` reports EACCES/EPERM (no search permission on a parent, a
+# sandbox that denies metadata reads). Neither is "missing".
+DENIED_SENTINEL = "__hermes_denied__"
+
+_PROBE_SENTINEL_STATUS = {
+    MISSING_SENTINEL: "missing",
+    NOT_REGULAR_SENTINEL: "not_regular",
+    DENIED_SENTINEL: "denied",
+}
+
+
+def _read_probe_branches(arg: str, body: str) -> str:
+    """Every read probe: run ``body`` on a readable regular file, else classify the path
+    (denied, not regular, missing). ``ls`` is only asked when ``[ -e ]`` already failed,
+    and ``LC_ALL=C`` pins the strerror text the ``case`` matches."""
+    return (
+        f"if [ -f {arg} ] && [ -r {arg} ]; then {body}; "
+        f"elif [ -f {arg} ]; then echo {DENIED_SENTINEL}; "
+        f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+        f"else case \"$(LC_ALL=C ls -d -- {arg} 2>&1)\" in "
+        f"*'Permission denied'|*'Operation not permitted') echo {DENIED_SENTINEL};; "
+        f"*) echo {MISSING_SENTINEL};; esac; fi")
+
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
 _BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
@@ -649,9 +673,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
-        ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
-        ``"env_unavailable"``, or the named working-directory error when the exec
-        wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
+        ``"missing"``, ``"not_regular"``, ``"denied"`` (the path cannot be stat'ed),
+        ``"bad_size"`` (unparseable ``wc``), ``"env_unavailable"``, or the named
+        working-directory error when the exec wrapper itself failed (``_probe_error``
+        surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
         is a stat (symlinks followed) so it answers without touching content. A dangling
@@ -661,15 +686,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # A missing path ECHOES its sentinel: a non-zero exit with no sentinel means the shell itself did
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
-        stat_result = self._exec(
-            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
-            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+        stat_result = self._exec(_read_probe_branches(arg, f"wc -c < {arg} 2>/dev/null"))
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
-        if stat_output == MISSING_SENTINEL:
-            return 0, "missing"
-        if stat_output == NOT_REGULAR_SENTINEL:
-            return 0, "not_regular"
+        if stat_output in _PROBE_SENTINEL_STATUS:
+            return 0, _PROBE_SENTINEL_STATUS[stat_output]
         if stat_result.exit_code != 0:
             return 0, stat_result.cwd_error or "env_unavailable"
         try:
@@ -677,7 +697,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except ValueError:
             return 0, "bad_size"
 
-    def _env_unavailable_error(self, path: str, status: str = "env_unavailable") -> ReadResult:
+    def _probe_error(self, path: str, status: str) -> ReadResult:
+        """Error for any ``_probe_regular_file`` status that is neither ``ok``, ``bad_size``
+        nor ``missing``."""
+        if status == "not_regular":
+            return self._not_regular_error(path)
+        if status == "denied":
+            return ReadResult(error=f"Permission denied: cannot access {path}")
         if status != "env_unavailable":
             return ReadResult(error=status)
         return ReadResult(error=(f"Terminal environment unavailable: could not stat {path} "
@@ -848,11 +874,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         if sentinel not in output:
             # Single-line replies: the path is missing or not a regular file.
-            marker = _strip_terminal_fence_leaks(output).strip()
-            if marker == MISSING_SENTINEL:
+            probe_status = _PROBE_SENTINEL_STATUS.get(_strip_terminal_fence_leaks(output).strip())
+            if probe_status == "missing":
                 return self._read_file_missing(path, offset, limit)
-            if marker == NOT_REGULAR_SENTINEL:
-                return self._not_regular_error(path)
+            if probe_status:
+                return self._probe_error(path, probe_status)
             logger.debug(
                 "read_file: compound probe reply for %s has no sentinel "
                 "(exit %s, %d chars); falling back to sequential probes",
@@ -1031,22 +1057,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         newline, then the base64 and page pipeline statuses. Probes run only inside
         ``[ -f ]`` (stat-not-open, like ``_probe_regular_file``) so a FIFO/device never
         reaches ``head``/``sed``. A missing path echoes ``MISSING_SENTINEL`` (a compound
-        command only reports its last status). Every stage silences stderr: the local
-        backend merges stderr into stdout and a stray diagnostic would land inside a
-        segment. The byte clamp is ``4 * max_line_length + 1``; see ``_read_file_sequential``."""
+        command only reports its last status), an unreadable one ``DENIED_SENTINEL``.
+        Every stage silences stderr: the local backend merges stderr into stdout and a
+        stray diagnostic would land inside a segment. The byte clamp is
+        ``4 * max_line_length + 1``; see ``_read_file_sequential``."""
         arg = self._escape_shell_arg(path)
         mark = f"echo {sentinel}"
-        return (
-            f"if [ -f {arg} ]; then "
+        return _read_probe_branches(
+            arg,
             f"wc -c < {arg} 2>/dev/null; {mark}; "
             f"head -c 1000 {arg} 2>/dev/null | base64 2>/dev/null; __hs=$?; {mark}; "
             f"sed -n '{offset},{end_line}p' {arg} 2>/dev/null"
             f" | cut -b1-{line_clamp_bytes} 2>/dev/null; __hr=$?; {mark}; "
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
-            f'echo "$__hs $__hr"; '
-            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else echo {MISSING_SENTINEL}; fi")
+            f'echo "$__hs $__hr"')
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
         """Not-found recovery shared by every read path. Unicode-equivalent spellings
@@ -1089,10 +1114,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return self._read_file_missing(path, offset, limit)
-        if status == "not_regular":
-            return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
-            return self._env_unavailable_error(path, status)
+            return self._probe_error(path, status)
         if self._is_image(path):  # never inlined — redirect to the vision tool
             return self._image_redirect_result(file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -1254,10 +1277,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return self._suggest_similar_files(path)
-        if status == "not_regular":
-            return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
-            return self._env_unavailable_error(path, status)
+            return self._probe_error(path, status)
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -1281,10 +1302,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
             return ReadResult(error=f"File not found: {path}", not_found=True)
-        if status == "not_regular":
-            return self._not_regular_error(path)
         if status not in ("ok", "bad_size"):
-            return self._env_unavailable_error(path, status)
+            return self._probe_error(path, status)
         if status == "bad_size":
             return ReadResult(error=f"Could not determine file size: {path}")
         if max_bytes is not None and file_size > max_bytes:

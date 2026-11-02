@@ -347,17 +347,15 @@ def test_add_requires_transport(hermes_root):
     assert resp["error"]["code"] == 4063
 
 
-def _catalog_http_entry(*, auth: str | None = None):
-    """A real HTTP catalog entry. Assertions compare the saved block to this manifest."""
-    from hermes_cli.mcp_catalog import list_catalog
+# A former bundled-catalog id: no CLI preset carries it.
+FORMER_CATALOG_ID = "linear"
 
-    for entry in list_catalog():
-        if entry.transport.type != "http" or not entry.transport.url:
-            continue
-        if auth is not None and entry.auth.type != auth:
-            continue
-        return entry
-    raise AssertionError(f"catalog has no http entry with auth={auth!r}")
+
+@pytest.fixture
+def no_catalog(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "hermes_cli.mcp_catalog", None)
 
 
 def _saved_server(root: Path, profile: str, name: str) -> dict:
@@ -365,92 +363,50 @@ def _saved_server(root: Path, profile: str, name: str) -> dict:
     return (_read_yaml(path).get("mcp_servers") or {}).get(name) or {}
 
 
-def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(hermes_root):
-    """Desktop add-from-catalog sends {profile, name, preset} with a catalog id."""
-    entry = _catalog_http_entry()
+def test_mcp_catalog_is_an_empty_list_that_matches_its_contract(hermes_root, no_catalog):
+    """Older Bot Mode builds and catalog plugins still call mcp.catalog; it answers empty."""
+    from tui_gateway.contracts.tools_mcp_plugins import McpCatalogResult
+
+    result = _result(_call("mcp.catalog", {"profile": "work"}))
+    assert result == {"servers": []}
+    McpCatalogResult.model_validate(result)
+
+
+@pytest.mark.parametrize("params", [
+    {"profile": "work", "name": FORMER_CATALOG_ID, "preset": FORMER_CATALOG_ID},  # old Bot Mode add
+    {"name": FORMER_CATALOG_ID, "preset": FORMER_CATALOG_ID},  # old SDK completeMcpOAuth({catalogPreset})
+])
+def test_a_former_catalog_id_without_a_transport_returns_4063_and_writes_nothing(hermes_root, no_catalog, params):
+    resp = _call("mcp.servers.add", params)
+
+    assert resp["error"]["code"] == 4063
+    assert "catalog" not in resp["error"]["message"]
+    assert not _saved_server(hermes_root, "work", FORMER_CATALOG_ID)
+    assert not _saved_server(hermes_root, "", FORMER_CATALOG_ID)
+
+
+def test_a_former_catalog_id_beside_an_explicit_url_adds_the_server(hermes_root, no_catalog):
     result = _result(
         _call(
             "mcp.servers.add",
-            {"profile": "work", "name": entry.name, "preset": entry.name},
-        )
-    )
-
-    assert result["ok"] is True
-    assert result["server"]["transport"] == "http"
-    saved = _saved_server(hermes_root, "work", entry.name)
-    assert saved["url"] == entry.transport.url
-    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
-    other = _read_yaml(hermes_root / "profiles" / "other" / "config.yaml").get("mcp_servers") or {}
-    assert entry.name not in other
-
-
-def test_oauth_catalog_add_follows_routed_profile_not_payload(hermes_root):
-    """OAuth add sends {name, preset} only. requestGatewayForAgent carries the
-    profile as routing metadata, so the write follows the bound scope."""
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    entry = _catalog_http_entry(auth="oauth")
-    routed = hermes_root / "profiles" / "work"
-    previous = is_multiplex_active()
-    set_multiplex_active(False)
-    token = set_hermes_home_override(routed)
-    try:
-        result = _result(
-            _call("mcp.servers.add", {"name": entry.name, "preset": entry.name})
-        )
-    finally:
-        reset_hermes_home_override(token)
-        set_multiplex_active(previous)
-
-    assert result["server"]["transport"] == "http"
-    assert result["server"]["auth"] == "oauth"
-    saved = _saved_server(hermes_root, "work", entry.name)
-    assert saved["url"] == entry.transport.url
-    assert saved["auth"] == "oauth"
-    assert entry.auth.type == "oauth"
-    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
-    assert not _saved_server(hermes_root, "other", entry.name)
-
-
-def test_explicit_transport_wins_over_catalog_or_unknown_preset(hermes_root):
-    entry = _catalog_http_entry()
-    catalog = _result(
-        _call(
-            "mcp.servers.add",
             {
                 "profile": "work",
-                "name": "kept-catalog",
-                "preset": entry.name,
-                "config": {"command": "explicit-bin"},
-            },
-        )
-    )
-    unknown = _result(
-        _call(
-            "mcp.servers.add",
-            {
-                "profile": "work",
-                "name": "kept-unknown",
-                "preset": "not-a-catalog-entry",
+                "name": FORMER_CATALOG_ID,
+                "preset": FORMER_CATALOG_ID,
                 "config": {"url": "https://override.example/mcp"},
             },
         )
     )
 
-    assert catalog["server"]["command"] == "explicit-bin"
-    assert catalog["server"]["url"] != entry.transport.url
-    saved_catalog = _saved_server(hermes_root, "work", "kept-catalog")
-    assert saved_catalog["command"] == "explicit-bin"
-    assert saved_catalog.get("url") != entry.transport.url
-    assert unknown["server"]["url"] == "https://override.example/mcp"
-    assert _saved_server(hermes_root, "work", "kept-unknown")["url"] == "https://override.example/mcp"
+    assert result["server"]["url"] == "https://override.example/mcp"
+    assert _saved_server(hermes_root, "work", FORMER_CATALOG_ID)["url"] == "https://override.example/mcp"
+    assert not _saved_server(hermes_root, "", FORMER_CATALOG_ID)
 
 
 def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
     resp = _call(
         "mcp.servers.add",
-        {"profile": "work", "name": "unknown", "preset": "not-a-catalog-entry"},
+        {"profile": "work", "name": "unknown", "preset": "not-a-preset"},
     )
 
     assert resp["error"]["code"] == 4063
@@ -458,14 +414,10 @@ def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
     assert "unknown" not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
 
 
-def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
+def test_cli_preset_still_fills_transport(hermes_root, no_catalog):
     from hermes_cli import mcp_config
-    from hermes_cli.mcp_catalog import get_entry
 
-    preset_name = next(
-        name for name in mcp_config._MCP_PRESETS if get_entry(name) is None
-    )
-    expected = mcp_config._MCP_PRESETS[preset_name]
+    preset_name, expected = next(iter(mcp_config._MCP_PRESETS.items()))
     result = _result(
         _call(
             "mcp.servers.add",

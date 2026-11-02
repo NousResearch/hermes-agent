@@ -1754,7 +1754,7 @@
     },
     {
       "name": "mcp.catalog",
-      "summary": "Curated MCP presets with per-profile installed/enabled state and the env keys each needs.",
+      "summary": "Deprecated: always ``{servers: []}`` (the bundled MCP catalog is gone); removed next release.",
       "params": [
         {
           "name": "params",
@@ -1772,7 +1772,7 @@
     },
     {
       "name": "mcp.servers.add",
-      "summary": "Add a server to the profile's config from a catalog preset and/or an explicit config.",
+      "summary": "Add a server to the profile's config from a CLI preset and/or an explicit config.",
       "params": [
         {
           "name": "params",
@@ -23079,7 +23079,7 @@
       },
       "McpServersAddParams": {
         "additionalProperties": false,
-        "description": "``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a\n``bearer_token`` is written to the profile's .env, only the header template persists.",
+        "description": "``preset`` (a CLI preset name) and/or ``config`` (url/command/args/env/headers/auth/tools); a\n``bearer_token`` is written to the profile's .env, only the header template persists.",
         "properties": {
           "profile": {
             "anyOf": [

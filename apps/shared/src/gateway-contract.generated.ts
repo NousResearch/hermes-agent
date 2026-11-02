@@ -4286,7 +4286,7 @@ export interface McpServerRuntimeRow {
   plugin?: string | null
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
-/** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
+/** ``preset`` (a CLI preset name) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
 export interface McpServersAddParams {
   profile?: string | null
   name: string
@@ -6245,9 +6245,9 @@ export interface RpcMethods {
   'llm.oneshot': { params: LlmOneshotParams; result: LlmOneshotResult }
   /** Facts about the machine running this backend and its OS account, for the desktop first run. */
   'machine.facts': { params: Params; result: MachineFactsResult }
-  /** Curated MCP presets with per-profile installed/enabled state and the env keys each needs. */
+  /** Deprecated: always ``{servers: []}`` (the bundled MCP catalog is gone); removed next release. */
   'mcp.catalog': { params: ProfileParams; result: McpCatalogResult }
-  /** Add a server to the profile's config from a catalog preset and/or an explicit config. */
+  /** Add a server to the profile's config from a CLI preset and/or an explicit config. */
   'mcp.servers.add': { params: McpServersAddParams; result: McpServersAddResult }
   /** Configured MCP servers for the (scoped) profile, secrets redacted to env-key names. */
   'mcp.servers.list': { params: ProfileParams; result: McpServersListResult }

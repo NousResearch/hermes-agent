@@ -354,7 +354,7 @@ method("learning.edit", params=LearningEditParams, result=LearningMutationResult
        doc="Rewrite a node's content (SKILL.md or memory chunk).")
 
 
-# ── MCP catalog + per-profile server lifecycle ────────────────────────────────────────────────
+# ── per-profile MCP server lifecycle ──────────────────────────────────────────────────────────
 
 
 class McpCatalogEntry(Result):
@@ -372,7 +372,7 @@ class McpCatalogResult(Result):
 
 
 method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
-       doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
+       doc="Deprecated: always ``{servers: []}`` (the bundled MCP catalog is gone); removed next release.")
 
 
 class McpServerSource(WireEnum):
@@ -441,7 +441,7 @@ class McpServerNameParams(ProfileParams):
 
 
 class McpServersAddParams(McpServerNameParams):
-    """``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a
+    """``preset`` (a CLI preset name) and/or ``config`` (url/command/args/env/headers/auth/tools); a
     ``bearer_token`` is written to the profile's .env, only the header template persists."""
 
     preset: str | None = None
@@ -456,7 +456,7 @@ class McpServersAddResult(Result):
 
 
 method("mcp.servers.add", params=McpServersAddParams, result=McpServersAddResult,
-       doc="Add a server to the profile's config from a catalog preset and/or an explicit config.")
+       doc="Add a server to the profile's config from a CLI preset and/or an explicit config.")
 
 
 class McpServersSetApiKeyParams(McpServerNameParams):

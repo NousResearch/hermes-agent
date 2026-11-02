@@ -808,3 +808,20 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
     slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
               for i in range(3)]
     assert sorted(f for s in slices for f in s) == sorted(files)
+
+
+def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
+    """A slow file submitted last runs alone at the end of the run; start it first."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_order", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    root = Path("/repo")
+    a, b, c, d = (root / f"tests/test_{n}.py" for n in "abcd")
+    files = [a, b, c, d]
+    cache = {"tests/test_b.py": 1.0, "tests/test_c.py": 90.0, "tests/test_d.py": 5.0}
+    # Uncached a gets the 2.0s default estimate, between d and b.
+    assert rtp._longest_first(files, cache, root) == [c, d, a, b]
+    assert rtp._longest_first(files, {}, root) == files

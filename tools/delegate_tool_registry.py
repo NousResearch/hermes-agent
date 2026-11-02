@@ -105,8 +105,12 @@ def interrupt_subagent(subagent_id: str) -> bool:
         if agent is None:
             return False
         # The stop ends the subagent, not just its current attempt: a reasoning-escalation chain checks this mark
-        # before it starts (or after it builds) the next attempt.
+        # before it starts (or after it builds) the next attempt. A later attempt also marks the chain's first one,
+        # whose mark every next attempt's admission reads — so a stop landing after a retry was queued still holds.
         agent._delegate_unit_cancelled = True
+        first_attempt = getattr(agent, "_delegate_first_attempt", None)
+        if first_attempt is not None:
+            first_attempt._delegate_unit_cancelled = True
     try:
         return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
     except Exception as exc:

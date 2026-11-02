@@ -407,6 +407,8 @@ def _run_single_child(
         else:
             _detach_child(parent_agent, child)
         first_child._delegate_last_attempt = child
+        if child is not first_child:
+            child._delegate_first_attempt = first_child  # a stop by subagent id marks the chain through it
         first_child._delegate_attempt_seq = getattr(first_child, "_delegate_attempt_seq", 0) + 1
         entry = _run_child_attempt(task_index, attempt_goal, child, parent_agent, chain, **owner)
     if chain.attempts:  # at least one retry ran: record the attempt that ended the chain

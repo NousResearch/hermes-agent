@@ -332,6 +332,28 @@ def test_a_subagent_stopped_by_id_never_escalates(monkeypatch, stop_at):
     assert all(c.closed for c in log)
 
 
+def test_a_stop_of_a_later_attempt_after_its_retry_was_built_ends_the_whole_chain(monkeypatch):
+    """The stop names the subagent, not one attempt: one landing on attempt 2 after its post-build check (the retry
+    is already queued, attempt 2 still registered) must keep attempt 3 from running."""
+    from tools import delegate_tool_child_run
+    from tools.delegate_tool_registry import interrupt_subagent
+    stops = []
+    modified = delegate_tool_child_run._ChildRun.modified_parent_paths
+
+    def stop_after_the_build_check(self):
+        if _effort_ran(self.child) == "medium":
+            stops.append(interrupt_subagent(self.subagent_id))
+        return modified(self)
+
+    monkeypatch.setattr(delegate_tool_child_run._ChildRun, "modified_parent_paths", stop_after_the_build_check)
+    entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": M(), "high": D("high ran after the stop")},
+                                effort="low", ceiling="high")
+    assert stops == [True]
+    assert _efforts(log) == ["low", "medium", "high"] and not log[2].messages
+    assert entry["status"] == "interrupted" and entry["summary"] != "high ran after the stop"
+    assert all(c.closed for c in log)
+
+
 # ── Where the climb starts and stops ─────────────────────────────────────────
 
 @pytest.mark.parametrize("first_attrs, expected", [

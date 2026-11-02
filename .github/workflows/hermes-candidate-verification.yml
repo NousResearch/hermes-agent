@@ -63,7 +63,7 @@ jobs:
           )
           echo "verified_asset=$asset"
           echo "window_focus_listener_count=$focus_count"
-          echo "verified_asset=$asset" >> "$GITHUB_STEP_SUMMARY"
+          test "$focus_count" -eq 1
           echo "window_focus_listener_count=$focus_count" >> "$GITHUB_STEP_SUMMARY"
           {
             echo "asset=$asset"
@@ -77,14 +77,31 @@ jobs:
         with:
           python-version: '3.14'
 
+      - name: Configure fixture Git identity
+        run: |
+          git config --global user.name "Hermes CI Fixture"
+          git config --global user.email "hermes-ci-fixture@example.invalid"
+
       - name: Install test dependencies
         run: python -m pip install --disable-pip-version-check uv && uv sync --group dev --no-install-project
 
+      - name: Isolate updater tests from the owning install redirect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hermes-test-bootstrap"
+          cat > "$RUNNER_TEMP/hermes-test-bootstrap/hermes_ci_plugin.py" <<'PY'
+          """CI-only pytest plugin: updater fixtures must stay in throwaway Git repos."""
+          def pytest_configure(config):
+              import hermes_cli.update_owning_install as _owning
+              _owning.retarget_to_owning_install = lambda project_root: None
+          PY
+
       - name: Run targeted updater and boundary tests
         env:
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ runner.temp }}/hermes-test-bootstrap:${{ github.workspace }}
         run: |
-          .venv/bin/python -m pytest -q -o addopts= \
+          .venv/bin/python -m pytest -q -p hermes_ci_plugin \
             tests/hermes_cli/test_update_diverged_rescue_ref.py \
             tests/hermes_cli/test_update_existing_branch_baseline.py \
             tests/hermes_cli/test_update_head_moved_gate.py \
@@ -92,9 +109,12 @@ jobs:
             tests/hermes_cli/test_update_parked_branch_guard.py \
             tests/hermes_cli/test_web_server_host_header.py \
             tests/agent/test_cline_daily_limit_cooldown.py \
+            tests/agent/test_credential_pool_interrupt.py \
+            tests/agent/test_retry_delay_parsers_shared.py \
             -k 'not treeless and not promisor and not partial_clone'
 
       - name: Upload verified dashboard artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hermes-dashboard-web-dist-${{ github.sha }}

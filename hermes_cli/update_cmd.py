@@ -871,8 +871,9 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", merge_ref])
     has_common_ancestor = bool(
         merge_base_result.returncode == 0 and merge_base_result.stdout.strip())
-    if not pre_pull_sha:
-        print("✗ Could not capture the pre-update HEAD; refusing to merge history without a recovery anchor.")
+    from hermes_cli._early_recovery import is_object_id
+    if not is_object_id(pre_pull_sha):
+        print("✗ Captured pre-update HEAD is invalid; refusing to merge history without a recovery anchor.")
         _record_stop("checkout_move_failed")
         sys.exit(1)
 

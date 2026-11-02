@@ -191,33 +191,7 @@ def ws_client_reason(ws, state) -> Optional[str]:
         return f"missing_or_empty_peer bound={bound_host or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
-    # Uvicorn may expose X-Forwarded-For as ws.client when proxy headers are
-    # enabled.  A loopback dashboard behind the local Nginx hop is still safe
-    # only when the complete Host/forwarded-host/Origin tuple is proven below;
-    # never trust Host alone as a proxy signal.
-    if _ws_loopback_reverse_proxy_request(ws, bound_host):
-        return None
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
-
-
-def _ws_loopback_reverse_proxy_request(ws, bound_host: str) -> bool:
-    """Accept only the narrow local reverse-proxy browser request shape."""
-    if bound_host not in _LOOPBACK_HOSTS:
-        return False
-    host_header = ws.headers.get("host", "")
-    forwarded_host = (ws.headers.get("x-forwarded-host") or "").strip()
-    origin = ws.headers.get("origin", "")
-    if not (forwarded_host and origin and _is_accepted_host(host_header, bound_host)):
-        return False
-    try:
-        parsed = urllib.parse.urlparse(origin)
-    except ValueError:
-        return False
-    return (
-        parsed.scheme in {"http", "https"}
-        and bool(parsed.netloc)
-        and parsed.netloc.lower() == forwarded_host.lower()
-    )
 
 
 def ws_host_origin_reason(ws, state) -> Optional[str]:
@@ -233,15 +207,7 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
         return None
     trusted_public_hosts = getattr(state, "trusted_public_hosts", frozenset())
     host_header = ws.headers.get("host", "")
-    forwarded_host = (ws.headers.get("x-forwarded-host") or "").strip()
-    reverse_proxy_public_host = ""
-    if (
-        bound_host in _LOOPBACK_HOSTS
-        and forwarded_host
-        and _is_accepted_host(host_header, bound_host, trusted_public_hosts)
-    ):
-        reverse_proxy_public_host = forwarded_host
-    elif not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
+    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
     origin = ws.headers.get("origin", "")
     if not origin:
@@ -253,7 +219,5 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
     if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
-        if reverse_proxy_public_host and parsed is not None and parsed.netloc.lower() == reverse_proxy_public_host.lower():
-            return None
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None

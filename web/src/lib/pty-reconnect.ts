@@ -5,7 +5,7 @@ export type PtyConnectionState = 'connecting' | 'open' | 'reconnecting' | 'close
 export const PTY_RECONNECT_INPUT_MESSAGE = 'Chat is reconnecting. Input will resume when connected.'
 
 // Minimum gap (ms) between page-resume-triggered reconnect attempts, so a
-// burst of visibilitychange/pageshow/online events on tab-return
+// burst of visibilitychange/pageshow/focus/online events on tab-return
 // collapses into a single reconnect.
 export const PTY_RESUME_RECONNECT_THROTTLE_MS = 1000
 

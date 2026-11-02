@@ -126,19 +126,7 @@ def _session_filter_where(
     if exclude_children and include_subagents:
         where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
     elif exclude_children:
-        # Include intermediate compression anchors so repeated context compaction
-        # can project through to the latest visible tip, while retaining the
-        # upstream sub-agent and delegate filtering semantics.
-        where += [
-            f"({_LISTABLE_CHILD_SQL}"
-            " OR (s.end_reason = 'compression'"
-            "     AND NOT EXISTS (SELECT 1 FROM sessions p"
-            "                     WHERE p.id = s.parent_session_id"
-            "                       AND p.end_reason = 'compression'"
-            "                       AND s.started_at >= p.ended_at))"
-            ")",
-            f"{_delegate_from_json('s.model_config')} IS NULL",
-        ]
+        where += [_LISTABLE_CHILD_SQL, f"{_delegate_from_json('s.model_config')} IS NULL"]
     # Show roots and user-visible branch/reset sessions, while still hiding sub-agent runs and compression
     # continuations. All four carry parent_session_id, so the shared predicate classifies the edge from
     # stable markers plus legacy-compatible parent metadata. Branch sessions are identified two ways, OR'd

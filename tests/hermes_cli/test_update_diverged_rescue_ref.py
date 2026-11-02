@@ -1,12 +1,10 @@
-"""`hermes update` must not drop local commits without leaving a named way back.
+"""`hermes update` must preserve local commits when histories diverge.
 
-When the checkout sits on the update's target branch and its history has
-diverged, the update resets hard to ``origin/<branch>``. Divergence there has
-two indistinguishable causes: an upstream force-push (nothing local is lost)
-and local commits on that branch (everything is). The update must park the old
-HEAD under ``refs/hermes-update-backups/`` first and tell the user the ref name.
-The installer update paths are covered in
-``tests/scripts/install/test_install_diverged_rescue_ref.py``.
+When the checkout sits on the update target and its history has diverged, the
+updater pins the pre-update HEAD under ``refs/hermes-update-backups/`` and
+merges the fetched target. A merge conflict aborts and stops the update; local
+work remains reachable and the recovery ref is retained. The installer update
+paths are covered in ``tests/scripts/install/test_install_diverged_rescue_ref.py``.
 """
 
 from __future__ import annotations
@@ -97,7 +95,10 @@ def test_hermes_update_stops_on_merge_conflict_and_retains_recovery_ref(
     _git(upstream, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
          "commit", "-q", "-m", "conflicting upstream")
     upstream_sha = _git(upstream, "rev-parse", "HEAD").stdout.strip()
-    _git(checkout, "update-ref", "refs/remotes/origin/main", upstream_sha)
+    # Fetch the newly-created upstream commit so the checkout owns the object before
+    # moving origin/main; a ref update alone is invalid in a freshly-cloned repo.
+    _git(checkout, "fetch", "-q", "origin", "main")
+    assert _git(checkout, "rev-parse", "origin/main").stdout.strip() == upstream_sha
     monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
 
     with pytest.raises(SystemExit) as exc:

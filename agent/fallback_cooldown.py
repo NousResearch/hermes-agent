@@ -61,20 +61,7 @@ def _arm_rate_limit_cooldown(
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1
-    # Prefer the provider-reported reset time when the credential pool has one.
-    # Daily/free-tier quota errors can say "try again in 23h 26m"; falling back
-    # to the generic 60s backoff causes the next turn to probe the same exhausted
-    # key and emit another 429. ``next_available_at`` is fail-open and may be
-    # absent on legacy or test pool implementations.
-    provider_reset_at = None
-    try:
-        pool = getattr(agent, "_credential_pool", None)
-        provider_reset_at = getattr(pool, "next_available_at", lambda: None)()
-    except Exception:
-        provider_reset_at = None
     provider_delay = _provider_reset_delay(reset_at)
-    if isinstance(provider_reset_at, (int, float)) and provider_reset_at > time.time():
-        provider_delay = max(provider_delay or 0, provider_reset_at - time.time())
     if provider_delay is not None:
         backoff_seconds = math.ceil(provider_delay)
         source = "provider reset"

@@ -1,0 +1,28 @@
+name: hermes-live
+title: Hermes Live
+repo: https://github.com/dandacompany/hermes-live
+sha: ad9a770ea092ccb0b56122228478bac23fa8f378
+description: Multi-provider live voice calls with Gemini, Grok, Qwen, and a Codex subscription in Hermes Desktop.
+maintainer: dandacompany
+tier: community
+category: voice
+requires_hermes: ">=0.22.5"
+version: "0.9.0"
+docs_url: https://github.com/dandacompany/hermes-live#readme
+readme: true
+platforms: [macos]
+screenshots:
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/settings-v0.9.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/providers.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/audio-settings.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/api-usage.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-live/64c111162caa340d416c4339191b0b47cddad83d/assets/codex-usage.png
+known_issues:
+  - "Codex voice and quota use the backend user's Codex CLI ChatGPT login, not Hermes-owned subscription authentication. Catalog rule 11 review is pending."
+  - "Profiles sharing an OS user and CODEX_HOME can share the Codex account. Remote end-to-end calls and Windows/Linux have not been verified."
+  - "Voice can keep waiting when a delegated Hermes task pauses for user input; answer in the chat. End another active voice call before starting."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

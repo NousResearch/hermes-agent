@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { FadeScroll } from '@/components/ui/fade-scroll'
 import { useI18n } from '@/i18n'
 import { iconSize, Loader2, Mic, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -173,11 +174,13 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   const recording = state.status === 'recording'
   const title = recording ? t.composer.dictating : t.composer.transcribing
 
+  // Rows are one icon tall (leading-5 = size-5) and the pane pads them back to
+  // the h-8 it had as a single line, so the status-only pane keeps its size.
   return (
     <div
       aria-live="polite"
       className={cn(
-        'flex h-8 items-center gap-2 rounded-xl border border-border/55 bg-muted/55 px-2.5 text-xs text-muted-foreground',
+        'flex min-h-8 items-start gap-2 rounded-xl border border-border/55 bg-muted/55 px-2.5 py-[calc(--spacing(1.5)-1px)] text-xs leading-5 text-muted-foreground',
         'shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] backdrop-blur-sm'
       )}
       role="status"
@@ -191,17 +194,40 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
         {recording ? <Mic className={iconSize.xs} /> : <Loader2 className={cn('animate-spin', iconSize.xs)} />}
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-medium text-foreground/85" title={state.partial || undefined}>
-          {state.partial || title}
-        </span>
-        <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
+      <div className="flex min-w-0 flex-1 items-start gap-2">
+        {state.partial ? (
+          <LiveTranscript text={state.partial} title={title} />
+        ) : (
+          <span className="truncate font-medium text-foreground/85">{title}</span>
+        )}
+        <span aria-hidden="true" className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground/85">
           {formatElapsed(state.elapsedSeconds)}
         </span>
       </div>
 
-      <VoiceLevelBars active={recording} level={state.level} />
+      <div className="flex h-5 shrink-0 items-center">
+        <VoiceLevelBars active={recording} level={state.level} />
+      </div>
     </div>
+  )
+}
+
+/**
+ * Live STT text (stt.streaming). It wraps up to three lines, then scrolls,
+ * pinned to the newest words: what is being said right now stays readable.
+ * The status label stays in the live region for screen readers; the text
+ * itself is `aria-live="off"`, so each partial is not read out again in full.
+ */
+function LiveTranscript({ text, title }: { text: string; title: string }) {
+  return (
+    <>
+      <span className="sr-only">{title}</span>
+      <div aria-live="off" className="min-w-0 font-medium text-foreground/85">
+        <FadeScroll className="wrap-anywhere" deps={text} fade="0.625rem" maxHeight="3.75rem">
+          {text}
+        </FadeScroll>
+      </div>
+    </>
   )
 }
 

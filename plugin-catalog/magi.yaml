@@ -1,7 +1,7 @@
 name: magi
 repo: https://github.com/MarcosAlves90/magi
 sha: 3c08b45466c6d4c5f0047a24175c6734accb9c7e
-description: Review pending Hermes memory writes and inspect, add, edit, delete, or AI-compact stored memory from Desktop.
+description: "Review pending Hermes memory writes and inspect, add, edit, delete, or AI-compact stored memory from Desktop. Disclosure — while the Agent plugin is loaded it runs a profile-local Unix socket (owner-only 0600, same-OS-user peers only; under $TMPDIR/magi-ipc for very long profile paths) through which its Dashboard backend sends structured AI-compaction requests to Hermes' configured model, so any process running as the same OS user can make model calls through it; explicit model overrides additionally require the llm.model_override capability."
 maintainer: MarcosAlves90
 tier: community
 category: desktop

@@ -18,6 +18,10 @@ from gateway.status import flush_runtime_status
 
 
 class _FakeAdapter:
+    # Real adapters subclass BasePlatformAdapter, which owns these; the runtime-status stamp reads them.
+    send_path_degraded = False
+    DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
+
     def __init__(self, token=None, config=None):
         self.token = token
         self.config = config
@@ -180,11 +184,13 @@ class TestProfileRuntimeStatus:
 
 class _SecondaryRecoveryAdapter:
     platform = Platform.DISCORD
+    DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
 
-    def __init__(self, *, retryable=True):
+    def __init__(self, *, retryable=True, send_path_degraded=False):
         self.fatal_error_retryable = retryable
         self.fatal_error_code = "transport_stale" if retryable else "auth_failed"
         self.fatal_error_message = "Gateway transport stale"
+        self.send_path_degraded = send_path_degraded
         self.connected = False
         self.disconnected = False
         self._dedup = MessageDeduplicator()
@@ -407,6 +413,85 @@ class TestSecondaryProfileFatalRecovery:
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
+
+    @pytest.mark.asyncio
+    async def test_secondary_initial_connect_publishes_profile_scoped_status(self, monkeypatch):
+        """#132953: a secondary's own status key must be stamped ``connected``.
+
+        Nothing else writes it at startup, so a platform whose only status writer is a one-shot
+        fatal (email's IMAP timeout) could never read as healthy on a secondary profile.
+        """
+        runner = _secondary_recovery_runner()
+        adapter = _SecondaryRecoveryAdapter()
+        _install_secondary_reconnect_context(monkeypatch, runner, adapter)
+        monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+        monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        writes = []
+        monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
+
+        async def connect(a, platform):
+            return True
+
+        monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+        assert await runner._start_one_profile_adapters(
+            "reviewer", Path("/profiles/reviewer"), {}
+        ) == 1
+        assert writes == [
+            {
+                "platform": "reviewer:discord",
+                "platform_state": "connected",
+                "error_code": None,
+                "error_message": None,
+                "needs_attention": False,
+                "retrying_since": None,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_publishes_profile_scoped_status(self, monkeypatch):
+        """#132953: a successful secondary reconnect must replace the ``fatal`` entry, not only log.
+
+        The primary path publishes from ``_install_reconnected_adapter``; without the same stamp
+        here the failed attempt's ``fatal`` stays in gateway_state.json for the life of the gateway.
+        """
+        runner = _secondary_recovery_runner()
+        stale, replacement = _SecondaryRecoveryAdapter(), _SecondaryRecoveryAdapter()
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+        writes = []
+        monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True))
+
+        await runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale)
+        await asyncio.gather(*runner._background_tasks)
+
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+        keyed = [w for w in writes if w.get("platform") == "reviewer:discord"]
+        assert keyed[-1]["platform_state"] == "connected"
+        assert keyed[-1]["error_code"] is None
+        assert keyed[-1]["needs_attention"] is False
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_stamps_retrying_when_send_path_degraded(self, monkeypatch):
+        """A secondary that reconnects with an unconfirmed receive path must not read as healthy."""
+        runner = _secondary_recovery_runner()
+        stale = _SecondaryRecoveryAdapter()
+        replacement = _SecondaryRecoveryAdapter(send_path_degraded=True)
+        runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
+        _install_secondary_reconnect_context(monkeypatch, runner, replacement)
+        writes = []
+        monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", AsyncMock(return_value=True))
+
+        await runner._handle_profile_adapter_fatal_error("reviewer", Platform.DISCORD, stale)
+        await asyncio.gather(*runner._background_tasks)
+
+        keyed = [w for w in writes if w.get("platform") == "reviewer:discord"]
+        assert keyed[-1]["platform_state"] == "retrying"
+        assert keyed[-1]["error_message"] == replacement.DEGRADED_STATUS_MESSAGE
+        assert keyed[-1]["needs_attention"] is False
 
 
     @pytest.mark.asyncio
@@ -988,6 +1073,10 @@ class TestSecondaryProfileConfigHandling:
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _PhotonAdapter:
+            # BasePlatformAdapter owns both; the runtime-status stamp reads them.
+            send_path_degraded = False
+            DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
+
             def __init__(self, secret, port):
                 self._project_secret = secret
                 self._sidecar_bind = "127.0.0.1"
@@ -1048,6 +1137,10 @@ class TestSecondaryProfileConfigHandling:
         from gateway.config import GatewayConfig, Platform, PlatformConfig
 
         class _PhotonAdapter:
+            # BasePlatformAdapter owns both; the runtime-status stamp reads them.
+            send_path_degraded = False
+            DEGRADED_STATUS_MESSAGE = "connected but not yet confirmed active; recovering in background"
+
             def __init__(self, secret, should_connect):
                 self._project_secret = secret
                 self._sidecar_bind = "127.0.0.1"
@@ -1146,8 +1239,9 @@ class TestSecondaryProfileConfigHandling:
         assert connected == (2 if paired else 1)
         assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
         if not paired:
-            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
-            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
+            unpaired = [kw for _args, kw in statuses if kw.get("error_code") == "whatsapp_unpaired"]
+            assert unpaired, "an unpaired secondary WhatsApp adapter must be reported"
+            assert "hermes -p clientbot whatsapp" in unpaired[-1]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:

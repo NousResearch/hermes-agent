@@ -191,15 +191,24 @@ async def deliver_resolved(authority, admission_id, *, owed):
 
 
 def _take_post_delivery(authority, admission_id, source, route):
-    """Move the turn's post-delivery slot off its adapter onto this admission. A delivery waiter
-    (a messaging adapter task) runs it after its own send instead. A runner or adapter without the
-    seam (a webhook sink, a bare test double) holds none."""
+    """Move the turn's post-delivery slot off its adapter onto this admission. A native waiter (the
+    messaging adapter task that sends the reply) runs it after its own send instead. A runner or
+    adapter without the seam (a webhook sink, a bare test double) holds none."""
     resolve = getattr(authority.runner, '_adapter_for_source', None)
-    adapter = resolve(source) if resolve and source and admission_id not in authority.waiters else None
-    slots = getattr(adapter, '_post_delivery_callbacks', None)
+    native = admission_id in authority.native_waiters
+    slots = getattr(resolve(source), '_post_delivery_callbacks', None) if resolve and source and not native else None
     entry = slots.pop(route, None) if slots is not None else None
     if entry is not None:
         _registry(authority, 'post_delivery')[admission_id] = (slots, route, entry)
+
+
+def _hand_back_post_delivery(authority, admission_id):
+    """A native waiter registered after the turn started: its adapter task sends the reply and then
+    runs the slot, which goes back unless a newer turn's already took it."""
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is not None:
+        slots, route, entry = taken
+        slots.setdefault(route, entry)
 
 
 async def fire_post_delivery(authority, admission_id):
@@ -207,18 +216,15 @@ async def fire_post_delivery(authority, admission_id):
     a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
     does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
     and result) in the adapter's slot until restart."""
+    if admission_id in authority.native_waiters:
+        _hand_back_post_delivery(authority, admission_id)
+        return
     taken = _registry(authority, 'post_delivery').pop(admission_id, None)
     if taken is None:
         return
-    slots, route, entry = taken
-    if admission_id in authority.waiters:
-        # Its adapter task registered as the waiter after the turn started: it sends the reply
-        # and then runs the slot, which goes back unless a newer turn's already took it.
-        slots.setdefault(route, entry)
-        return
     from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
     from gateway.platforms.base_post_delivery import run_post_delivery_callback
-    callback = _split_post_delivery_entry(entry)[1]
+    callback = _split_post_delivery_entry(taken[2])[1]
     with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
         await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
@@ -438,6 +444,7 @@ async def deliver_settled(authority, admission_id):
         # ``admit_message`` registered its delivery waiter after this turn started: the drain
         # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
         authority.native_waiters.discard(admission_id)
+        _hand_back_post_delivery(authority, admission_id)
         authority.pending_deliveries.pop(admission_id)
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:

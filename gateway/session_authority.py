@@ -459,6 +459,9 @@ class SessionAuthority:
         wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
+        if ref.session_id not in self.sessions:
+            from gateway.session_viewer_close import restore_retired
+            restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
         if live.task is None or live.task.done():

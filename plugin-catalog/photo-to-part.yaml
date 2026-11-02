@@ -1,7 +1,7 @@
 name: photo-to-part
 repo: https://github.com/mojomast/hermes-photo-to-part
-sha: 05f205695a8984fa6ce8d65617363f47f502e278
-version: "0.1.2"
+sha: a939851ff99f244cdeb2d975070752e5f7ddec9b
+version: "0.1.3"
 description: >-
   Skill id photo-to-part:photo-to-printable-part. Turn photos, a few
   measurements, or a messy scan into a parametric printable part and check
@@ -15,14 +15,14 @@ maintainer: mojomast
 tier: community
 category: tools
 title: Photo to Part
-docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/05f205695a8984fa6ce8d65617363f47f502e278/README.md
+docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/a939851ff99f244cdeb2d975070752e5f7ddec9b/README.md
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/docs/catalog-banner.png
+image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a939851ff99f244cdeb2d975070752e5f7ddec9b/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/docs/screenshot-views.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/examples/plate-clip/renders/compare_front.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/05f205695a8984fa6ce8d65617363f47f502e278/examples/plate-clip/renders/front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a939851ff99f244cdeb2d975070752e5f7ddec9b/docs/screenshot-views.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a939851ff99f244cdeb2d975070752e5f7ddec9b/examples/plate-clip/renders/compare_front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/a939851ff99f244cdeb2d975070752e5f7ddec9b/examples/plate-clip/renders/front.png
 capabilities:
   provides_tools:
     - photo_part_validate
@@ -30,6 +30,7 @@ capabilities:
     - photo_part_heal
     - photo_part_template
     - photo_part_measure
+    - photo_part_build
   provides_hooks: []
   provides_middleware: []
   requires_env: []

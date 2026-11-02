@@ -116,7 +116,7 @@ class ReviewIdleQueue:
                 self._thread = threading.Thread(target=self._run, daemon=True, name="bg-review-idle-queue")
                 self._thread.start()
 
-    def _quiet_for(self) -> float:
+    def quiet_for(self) -> float:
         """Seconds this process has been turn-free (0 while a turn runs)."""
         with self._lock:
             if self._live_turns > 0 or self._quiet_since is None:
@@ -132,7 +132,7 @@ class ReviewIdleQueue:
             aged = [p for p in self._pending.values()
                     if now - p.enqueued_at >= defer_max_age_s(p.kwargs.get("task_cfg"))]
             candidate = min(aged, key=lambda p: p.enqueued_at) if aged else None
-        if candidate is None and (self._quiet_for() < _IDLE_SETTLE_S or not self._server_idle()):
+        if candidate is None and (self.quiet_for() < _IDLE_SETTLE_S or not self._server_idle()):
             return None
         with self._lock:
             if candidate is None:

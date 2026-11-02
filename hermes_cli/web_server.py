@@ -1424,10 +1424,10 @@ def start_server(
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    from hermes_cli.resource_limits import apply_malloc_arena_max, apply_nofile_soft_limit
 
     apply_nofile_soft_limit()
-
+    apply_malloc_arena_max()
     import uvicorn
 
     try:

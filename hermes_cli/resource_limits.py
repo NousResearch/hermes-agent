@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
+import os
+import sys
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,15 +19,16 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - Windows only
 logger = logging.getLogger(__name__)
 
 DEFAULT_NOFILE_SOFT_LIMIT = int(DEFAULT_CONFIG["runtime"]["nofile_soft_limit"])
+DEFAULT_MALLOC_ARENA_MAX = int(DEFAULT_CONFIG["runtime"]["malloc_arena_max"])
+_M_ARENA_MAX = -8  # glibc <malloc.h> mallopt parameter
 _MISSING = object()
 
 
-def configured_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> int | None:
-    """``runtime.nofile_soft_limit`` from a loaded config, or ``None`` when disabled/unresolvable.
+def _runtime_int(config: Mapping[str, Any] | None, key: str, default: int) -> int | None:
+    """Positive int ``runtime.<key>`` from a loaded config, or ``None`` when disabled/unresolvable.
 
-    Missing key → default. Explicit ``0``/``false``/``null`` disable; other non-int or negative
-    values are ignored (caller fails open). Shared by the in-process floor and service-definition
-    generators (launchd plist) so both use one knob.
+    Missing key → *default*. Explicit ``0``/``false``/``null`` disable; other non-int or negative
+    values are ignored (caller fails open).
     """
     if config is None:
         try:
@@ -32,21 +36,27 @@ def configured_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> int
             from hermes_cli.config import load_config_readonly
             config = load_config_readonly()
         except Exception:
-            logger.debug("Could not load config for RLIMIT_NOFILE", exc_info=True)
+            logger.debug("Could not load config for runtime.%s", key, exc_info=True)
             return None
     if not isinstance(config, Mapping):
         return None
     runtime = config.get("runtime", _MISSING)
     if runtime is _MISSING:
-        return DEFAULT_NOFILE_SOFT_LIMIT
+        return default
     if not isinstance(runtime, Mapping):
         return None
-    raw_value = runtime.get("nofile_soft_limit", _MISSING)
+    raw_value = runtime.get(key, _MISSING)
     if raw_value is _MISSING:
-        return DEFAULT_NOFILE_SOFT_LIMIT
+        return default
     if isinstance(raw_value, bool) or not isinstance(raw_value, int) or raw_value <= 0:
         return None
     return raw_value
+
+
+def configured_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> int | None:
+    """``runtime.nofile_soft_limit`` (see :func:`_runtime_int`). Shared by the in-process floor and
+    service-definition generators (launchd plist) so both use one knob."""
+    return _runtime_int(config, "nofile_soft_limit", DEFAULT_NOFILE_SOFT_LIMIT)
 
 
 def apply_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> bool:
@@ -79,4 +89,34 @@ def apply_nofile_soft_limit(config: Mapping[str, Any] | None = None) -> bool:
         return False
 
 
-__all__ = ["DEFAULT_NOFILE_SOFT_LIMIT", "apply_nofile_soft_limit", "configured_nofile_soft_limit"]
+def apply_malloc_arena_max(config: Mapping[str, Any] | None = None) -> bool:
+    """Cap glibc's malloc arena count for this process (``mallopt(M_ARENA_MAX)``); ``True`` iff set.
+
+    glibc gives every thread that contends on an arena lock a new arena, up to 8 x cores, and never
+    unmaps them. A long-lived server with hundreds of short-lived Python threads plus native pools
+    (tokio, rayon, sqlite) fills every slot (157 of 160 on a 20-core host), and each arena keeps its
+    own free pages, which is most of the gateway's native RSS. The GIL already serialises Python's
+    allocations, so a small cap costs no measurable throughput. Applied in-process rather than via
+    ``MALLOC_ARENA_MAX`` so children (terminal commands, MCP servers, builds) keep glibc's default.
+    Must run before the ninth arena exists: glibc latches its limit then. An operator's own
+    ``MALLOC_ARENA_MAX`` / ``glibc.malloc.arena_max`` tunable wins. Linux/glibc only; never raises.
+    """
+    if sys.platform != "linux" or os.environ.get("MALLOC_ARENA_MAX") \
+            or "arena_max" in os.environ.get("GLIBC_TUNABLES", ""):
+        return False
+    target = _runtime_int(config, "malloc_arena_max", DEFAULT_MALLOC_ARENA_MAX)
+    if target is None:
+        return False
+    try:
+        libc = ctypes.CDLL(None)
+        if not hasattr(libc, "gnu_get_libc_version"):  # musl and other libcs: no arenas to cap
+            return False
+        return bool(libc.mallopt(_M_ARENA_MAX, target))
+    except Exception:
+        logger.debug("Could not cap malloc arenas", exc_info=True)
+        return False
+
+
+__all__ = [
+    "DEFAULT_MALLOC_ARENA_MAX", "DEFAULT_NOFILE_SOFT_LIMIT", "apply_malloc_arena_max",
+    "apply_nofile_soft_limit", "configured_nofile_soft_limit"]

@@ -1,7 +1,7 @@
 name: photo-to-part
 repo: https://github.com/mojomast/hermes-photo-to-part
-sha: 2bc4813d588664252240a42bfda9a861f437da01
-version: "0.1.6"
+sha: 7b38c38d0488cddcbed783597d6c5445d28aa191
+version: "0.1.7"
 description: >-
   Skill id photo-to-part:photo-to-printable-part. Turn photos, a few
   measurements, or a messy scan into a parametric printable part and check
@@ -15,14 +15,14 @@ maintainer: mojomast
 tier: community
 category: tools
 title: Photo to Part
-docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/2bc4813d588664252240a42bfda9a861f437da01/README.md
+docs_url: https://github.com/mojomast/hermes-photo-to-part/blob/7b38c38d0488cddcbed783597d6c5445d28aa191/README.md
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/2bc4813d588664252240a42bfda9a861f437da01/docs/catalog-banner.png
+image: https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/7b38c38d0488cddcbed783597d6c5445d28aa191/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/2bc4813d588664252240a42bfda9a861f437da01/docs/screenshot-views.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/2bc4813d588664252240a42bfda9a861f437da01/examples/plate-clip/renders/compare_front.png
-  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/2bc4813d588664252240a42bfda9a861f437da01/examples/plate-clip/renders/front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/7b38c38d0488cddcbed783597d6c5445d28aa191/docs/screenshot-views.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/7b38c38d0488cddcbed783597d6c5445d28aa191/examples/plate-clip/renders/compare_front.png
+  - https://raw.githubusercontent.com/mojomast/hermes-photo-to-part/7b38c38d0488cddcbed783597d6c5445d28aa191/examples/plate-clip/renders/front.png
 capabilities:
   provides_tools:
     - photo_part_validate

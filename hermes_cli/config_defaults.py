@@ -1379,6 +1379,16 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # Image routing for delegated children: "auto" = the child's own model decides (a
+        # vision-capable child gets image_url parts even when the MAIN conversation pins
+        # auxiliary.vision) with an explicit agent.image_input_mode pin inherited; "native"/"text"
+        # pin the child. In auto, children on text-only models stay on the text lane.
+        "image_input_mode": "auto",
+        # Image routing for delegated children: "auto" = the child's own model decides (a
+        # vision-capable child gets image_url parts even when the MAIN conversation pins
+        # auxiliary.vision) with an explicit agent.image_input_mode pin inherited; "native"/"text"
+        # pin the child. In auto, children on text-only models stay on the text lane.
+        "image_input_mode": "auto",
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
@@ -2708,7 +2718,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 52,  # Config schema version - bump this when adding new required fields
+    "_config_version": 53,  # Config schema version - bump this when adding new required fields
 }
 
 

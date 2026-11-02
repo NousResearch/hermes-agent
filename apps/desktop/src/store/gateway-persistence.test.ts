@@ -40,10 +40,12 @@ const registry = (ids: string[]): DesktopConnectionsRegistry => ({
 
 let stop: () => void = () => undefined
 
-function installProbe(bootstrapNeeded: boolean): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-    probeLocalBackend: vi.fn(async () => ({ bootstrapNeeded }))
-  }
+function installProbe(bootstrapNeeded: boolean) {
+  const probeLocalBackend = vi.fn(async () => ({ bootstrapNeeded }))
+
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
+
+  return probeLocalBackend
 }
 
 beforeEach(() => {
@@ -138,4 +140,58 @@ it("dials nothing while no primary route is published, so the primary's own gate
   $primaryGatewayRoute.set({ connectionId: null, mode: null })
   vi.advanceTimersByTime(30_000)
   expect(openGatewayForAgent).not.toHaveBeenCalled()
+})
+
+it('probes This device once while it stays not installed, and again after the registry changes', async () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  const probe = installProbe(true)
+  stop = startPersistentGateways()
+
+  await vi.advanceTimersByTimeAsync(5 * 60_000)
+  expect(probe).toHaveBeenCalledTimes(1)
+
+  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(probe).toHaveBeenCalledTimes(2)
+  expect(dialedRoutes()).not.toContainEqual(['local', 'default'])
+})
+
+it('re-probes This device on a new primary route, not on each reconnect that republishes the same one', async () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  const probe = installProbe(true)
+  stop = startPersistentGateways()
+  await vi.advanceTimersByTimeAsync(0)
+
+  for (let reconnect = 0; reconnect < 3; reconnect += 1) {
+    $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  expect(probe).toHaveBeenCalledTimes(1)
+
+  $primaryGatewayRoute.set({ connectionId: 'vps', mode: 'remote' })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(probe).toHaveBeenCalledTimes(2)
+})
+
+it('a dropped probe that fails late leaves the newer cached probe in place', async () => {
+  $primaryGatewayRoute.set({ connectionId: 'homelab', mode: 'remote' })
+  let failFirst: (error: Error) => void = () => undefined
+
+  const probeLocalBackend = vi
+    .fn<() => Promise<{ bootstrapNeeded: boolean }>>()
+    .mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)))
+    .mockImplementation(async () => ({ bootstrapNeeded: true }))
+
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { probeLocalBackend }
+  stop = startPersistentGateways()
+
+  // The registry change drops the in-flight probe and starts a second one.
+  $connectionsRegistry.set(registry(['local', 'homelab', 'vps', 'nas']))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
+
+  failFirst(new Error('probe failed'))
+  await vi.advanceTimersByTimeAsync(5 * 60_000)
+  expect(probeLocalBackend).toHaveBeenCalledTimes(2)
 })

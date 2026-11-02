@@ -612,6 +612,27 @@ class TestImageApiSurface:
         assert payload["n"] == 6
         assert any("cap of 6" in n for n in notes)
 
+    def test_grok_imagine_2_knobs_follow_its_catalog_entry(self):
+        """``GET /images/models`` gives x-ai/grok-imagine-image-2.0 quality low|medium, 1K/2K and
+        the exotic ratios; anything else would be silently ignored upstream."""
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="x-ai/grok-imagine-image-2.0", prompt="p", semantic_aspect="portrait",
+            references=[], config_key="openrouter",
+            kwargs={"quality": "high", "resolution": "2K", "aspect_ratio_exact": "9:19.5"},
+        )
+        assert "quality" not in payload
+        assert any("quality" in n for n in notes)
+        assert payload["resolution"] == "2K"
+        assert payload["aspect_ratio"] == "9:19.5"
+
+        payload, _ = _build_image_api_payload(
+            model_id="x-ai/grok-imagine-image-2.0", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"quality": "medium"},
+        )
+        assert payload["quality"] == "medium"
+
     def test_unknown_model_omits_the_aspect_ratio(self):
         """An out-of-enum ratio is a hard 400, so never guess one."""
         from plugins.image_gen.openrouter import _build_image_api_payload

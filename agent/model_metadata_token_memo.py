@@ -8,14 +8,21 @@ bounded two ways, both least-recently-used first so a conversation that is still
   the dead sessions of a long-lived process age out;
 * an entry count, as a backstop for the bytes estimate.
 
+Neither bound ever evicts an entry looked up in the last ``_ACTIVE_WINDOW_S`` seconds: a conversation larger
+than the budget (image-heavy history) overshoots it while it runs instead of missing on every message, and the
+overshoot is shed by the first insert after it goes idle. The protected entries pin strings the running
+conversations hold anyway, so the overshoot costs only fingerprint structure.
+
 ``close()``, compaction and the compressor telemetry also drop entries they know are dead
 (``forget_message_token_memo``). Eviction never changes an estimate: a later lookup recomputes the same value.
 """
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import threading
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -26,8 +33,27 @@ _MSG_TOKENS_CACHE_MAX = 65536
 _MSG_TOKENS_CACHE_MAX_BYTES = 64 * 1024 * 1024
 # Measured on real histories: the fingerprint tuple, its id int and the pin slot cost ~120 B per string leaf.
 _LEAF_OVERHEAD_BYTES = 120
+# An entry looked up this recently is never evicted (see module docstring).
+_ACTIVE_WINDOW_S = 60.0
+_clock = time.monotonic
 _lock = threading.Lock()
 _retained_bytes = 0
+
+
+class MemoPins(list):
+    """An entry's pinned strings, stamped with the clock time of the entry's last lookup."""
+
+    __slots__ = ("touched",)
+
+
+def lookup_message_tokens(key: Any) -> tuple[list, int, int] | None:
+    """Return the entry for ``key`` (or None), marking it most recently used."""
+    entry = _MSG_TOKENS_CACHE.get(key)
+    if entry is not None:
+        entry[0].touched = _clock()
+        with contextlib.suppress(KeyError):  # another thread may have evicted it since the get
+            _MSG_TOKENS_CACHE.move_to_end(key)
+    return entry
 
 
 def _entry_bytes(entry: tuple[list, int, int]) -> int:
@@ -35,11 +61,15 @@ def _entry_bytes(entry: tuple[list, int, int]) -> int:
     return sum(map(sys.getsizeof, pins)) + _LEAF_OVERHEAD_BYTES * len(pins)
 
 
-def remember_message_tokens(key: Any, entry: tuple[list, int, int]) -> None:
-    """Insert ``entry`` as most recent, then evict least-recently-used entries past either bound."""
+def remember_message_tokens(key: Any, entry: tuple[MemoPins, int, int]) -> None:
+    """Insert ``entry`` as most recent, then evict least-recently-used entries past either bound, stopping at
+    the first one looked up inside the active window (everything after it is more recent)."""
     global _retained_bytes
     size = _entry_bytes(entry)
     cache = _MSG_TOKENS_CACHE
+    now = _clock()
+    entry[0].touched = now
+    idle_before = now - _ACTIVE_WINDOW_S
     with _lock:
         if not cache:  # an emptied memo (tests clear it) restarts the count
             _retained_bytes = 0
@@ -49,6 +79,8 @@ def remember_message_tokens(key: Any, entry: tuple[list, int, int]) -> None:
         cache[key] = entry
         _retained_bytes += size
         while len(cache) > 1 and (len(cache) > _MSG_TOKENS_CACHE_MAX or _retained_bytes > _MSG_TOKENS_CACHE_MAX_BYTES):
+            if next(iter(cache.values()))[0].touched >= idle_before:
+                break
             _retained_bytes -= _entry_bytes(cache.popitem(last=False)[1])
 
 

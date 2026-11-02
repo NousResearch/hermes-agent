@@ -48,15 +48,33 @@ describe('SSH named profiles share the connection backend', () => {
   })
 
   it('keeps the per-profile backend when the shared one cannot serve the profile', async () => {
-    const listed = defaultBackend({ profiles: [{ name: 'default' }] })
-    const old = defaultBackend(new Error('404 Not Found'))
+    const old = defaultBackend(Object.assign(new Error('404: Not Found'), { statusCode: 404 }))
     const pinned = defaultBackend({ profiles: [{ name: 'gamma' }] })
 
-    expect(await resolveSharedSshProfileBackend(ssh, 'gamma', listed.deps)).toBeNull()
     expect(await resolveSharedSshProfileBackend(ssh, 'gamma', old.deps)).toBeNull()
     expect(await resolveSharedSshProfileBackend({ ...ssh, remoteProfile: 'gamma' }, 'gamma', pinned.deps)).toBeNull()
     expect(await resolveSharedSshProfileBackend(ssh, 'default', pinned.deps)).toBeNull()
     expect(await resolveSharedSshProfileBackend({ id: 'lan', kind: 'remote' }, 'gamma', pinned.deps)).toBeNull()
     expect(pinned.calls.ensure).toBe(0)
+  })
+
+  it('refuses a profile the host roster does not list instead of dialing a per-profile backend', async () => {
+    // A local->SSH switch can briefly pair the SSH connection with the previous
+    // local profile; that request must not spawn a remote serve for it.
+    const { calls, deps } = defaultBackend({ profiles: [{ name: 'default' }, { name: 'gamma' }] })
+
+    await expect(resolveSharedSshProfileBackend(ssh, 'alpha', deps)).rejects.toMatchObject({
+      kind: 'remote-profile-missing',
+      profile: 'alpha'
+    })
+    expect(calls).toEqual({ ensure: 1, list: 1 })
+  })
+
+  it('surfaces a transient roster failure instead of falling back to a per-profile backend', async () => {
+    const flaky = defaultBackend(Object.assign(new Error('503: Service Unavailable'), { statusCode: 503 }))
+    const timedOut = defaultBackend(new Error('Request timed out'))
+
+    await expect(resolveSharedSshProfileBackend(ssh, 'gamma', flaky.deps)).rejects.toThrow('503')
+    await expect(resolveSharedSshProfileBackend(ssh, 'gamma', timedOut.deps)).rejects.toThrow('timed out')
   })
 })

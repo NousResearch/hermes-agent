@@ -12,8 +12,13 @@
  *
  * The isolated per-profile path stays the fallback for exactly the case the
  * shared backend cannot serve: a source pinned to one remote profile
- * (`remoteProfile`), or a remote whose `/api/profiles` does not list the
- * profile (an older runtime without the endpoint, or a profile it cannot see).
+ * (`remoteProfile`), or a remote with no `/api/profiles` roster (an older
+ * runtime answering 404). Any other roster failure is transient and surfaces. A roster that answers without the profile
+ * means the profile does not exist on that host (the endpoint lists every
+ * profile on disk), so the dial fails fast instead of spawning a remote serve
+ * that can only exit with the same error. Renderer scope races ask for exactly
+ * that, e.g. a version read carrying the new connection with the previous
+ * connection's local profile.
  */
 
 import { normalizeSshConfig } from './connection-config'
@@ -52,6 +57,24 @@ export function managedSshConfig(source: RegistryConnection, profile: null | str
 // base URL: a reconnect lands on a new forwarded port and re-checks the roster.
 const servedProfiles = new Map<string, Set<string>>()
 
+/**
+ * Named profiles a pooled SSH source serves through its default backend, from
+ * that backend's last roster read: the session aggregate covers them although
+ * none has a pooled backend of its own.
+ */
+export function sharedSshProfiles(
+  connectionId: string,
+  backends: ReadonlyArray<{ descriptor: unknown; profileLabel: null | string }>
+): string[] | undefined {
+  const base = backends.find(({ profileLabel }) => (profileLabel || 'default') === 'default')?.descriptor as
+    | { baseUrl?: string }
+    | undefined
+
+  const served = base ? servedProfiles.get(`${connectionId}\0${base.baseUrl ?? ''}`) : undefined
+
+  return served ? [...served] : undefined
+}
+
 function profileNames(body: unknown): string[] {
   const profiles = (body as { profiles?: unknown } | null)?.profiles
 
@@ -64,9 +87,18 @@ function profileNames(body: unknown): string[] {
     .filter(Boolean)
 }
 
+// Same shape remote-lifecycle gives a remote `--profile X serve` that refuses a missing profile.
+function remoteProfileMissing(profile: string): Error & { kind: string; profile: string } {
+  return Object.assign(
+    new Error(`The remote Hermes profile '${profile}' does not exist. Select an existing remote profile.`),
+    { kind: 'remote-profile-missing', profile }
+  )
+}
+
 /**
  * The shared-backend descriptor for `profile` on an SSH source, or null when
- * the caller must keep the per-profile isolated backend.
+ * the caller must keep the per-profile isolated backend. Throws
+ * `remote-profile-missing` when the host's roster has no such profile.
  */
 export async function resolveSharedSshProfileBackend<T extends { baseUrl?: string }>(
   source: Pick<RegistryConnection, 'id' | 'kind' | 'remoteProfile'>,
@@ -84,18 +116,29 @@ export async function resolveSharedSshProfileBackend<T extends { baseUrl?: strin
   let served = servedProfiles.get(cacheKey)
 
   if (!served?.has(key)) {
-    let body: unknown = null
+    let body: unknown
 
     try {
       body = await deps.listProfiles(base)
-    } catch {
-      // No roster from this backend: it cannot be trusted to scope requests.
+    } catch (error) {
+      // Only a runtime without the endpoint keeps the per-profile backend. A
+      // timeout or 5xx is transient: surface it rather than pool an isolated
+      // serve that every later request would keep using.
+      if ((error as { statusCode?: unknown } | null)?.statusCode === 404) {
+        return null
+      }
+
+      throw error
     }
 
     const names = profileNames(body)
 
-    if (!names.includes(key)) {
+    if (!names.length) {
       return null
+    }
+
+    if (!names.includes(key)) {
+      throw remoteProfileMissing(key)
     }
 
     served = new Set(names)

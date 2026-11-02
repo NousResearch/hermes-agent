@@ -78,9 +78,10 @@ let switchRevision = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
 
-$lastProfileByConnection.subscribe(value => {
-  persistStringRecord(LAST_PROFILE_STORAGE_KEY, value)
-  // Main boots the primary before this window exists, so it keeps a copy.
+$lastProfileByConnection.subscribe(value => persistStringRecord(LAST_PROFILE_STORAGE_KEY, value))
+// Main boots the primary before this window exists, so it keeps a copy. Only a
+// real change is pushed: a window with no record of its own must not erase it.
+$lastProfileByConnection.listen(value => {
   void window.hermesDesktop?.profile?.rememberConnections?.(value)?.catch(() => undefined)
 })
 

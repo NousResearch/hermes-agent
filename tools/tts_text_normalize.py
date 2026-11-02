@@ -56,6 +56,17 @@ _EMOJI_RE = re.compile(
 _VARIATION_SELECTOR_RE = re.compile("[︎️]")
 
 
+def _drop_table_delimiter_rows(text: str) -> str:
+    """Blank pipe-table delimiter rows (``|---|:---:|``, outer pipes optional).
+
+    They must go before the pipe-to-pause pass, which would leave their dashes behind as a literal "---" that
+    voices babble on. A plain per-line test, because a regex over long runs of ``-:| `` backtracks badly.
+    """
+    return "\n".join(
+        " " if "|" in line and "-" in line and not line.strip(" \t\r:|-") else line
+        for line in text.split("\n"))
+
+
 def strip_markdown_for_tts(text: str) -> str:
     """Strip Markdown/Telegram formatting while preserving readable words."""
     if not text:
@@ -77,6 +88,7 @@ def strip_markdown_for_tts(text: str) -> str:
     text = _MD_BLOCKQUOTE_RE.sub("", text)
     text = _MD_LIST_ITEM_RE.sub("", text)
     text = _MD_HR_RE.sub("", text)
+    text = _drop_table_delimiter_rows(text)
     # Leftover table pipes become pauses instead of a spoken "vertical bar".
     return _MD_TABLE_PIPE_RE.sub("; ", text)
 

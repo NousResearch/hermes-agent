@@ -297,6 +297,44 @@ def _gitlink_paths(ls_tree_z: str) -> list[str]:
     ]
 
 
+# git dies with this while checking a recorded gitlink for changes once the
+# nested repository's .git is no longer a repository (objects/ or refs/ gone).
+_BROKEN_GITLINK_RE = re.compile(r"^fatal: '(.+)/\.git' not recognized as a git repository$", re.MULTILINE)
+_MAX_BROKEN_GITLINKS = 10
+
+
+def _stage_all(store: Path, working_dir: str, index_file: Path) -> tuple[bool, str]:
+    """``git add -A`` into the per-project index.  Returns (ok, stderr).
+
+    A nested repository already recorded as a gitlink whose .git has since
+    broken makes git die on every later ``add``, so the directory would never
+    be checkpointed again.  Such a repository is left at its recorded gitlink
+    (which listings and restores already treat as not captured) and the rest
+    of the directory is staged.
+    """
+    broken: list[str] = []
+    while True:
+        pathspec = ["--", ".", *(f":(exclude,literal){p}" for p in broken)] if broken else []
+        ok, _, err = _run_git(
+            ["add", "-A", *pathspec], store, working_dir,
+            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+            allowed_returncodes={128},
+            # The message is matched below; keep it untranslated.
+            extra_env={"LC_ALL": "C", "LANGUAGE": "C"},
+        )
+        if ok:
+            if broken:
+                logger.warning("Checkpoint of %s kept nested repositories with a broken .git "
+                               "at their last recorded commit: %s", working_dir, ", ".join(broken))
+            return True, err
+        match = _BROKEN_GITLINK_RE.search(err)
+        path = match.group(1) if match else None
+        if path is None or path in broken or len(broken) >= _MAX_BROKEN_GITLINKS:
+            logger.error("Git command failed: git add -A (rc=128) stderr=%s", err)
+            return False, err
+        broken.append(path)
+
+
 def _uncaptured_note(nested_repos: list[str]) -> str:
     """Checkpoint-message suffix naming nested repositories whose files were
     not captured, so every /rollback listing discloses it."""
@@ -1465,10 +1503,7 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
-        )
+        ok, err = _stage_all(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False

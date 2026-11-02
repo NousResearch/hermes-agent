@@ -659,6 +659,15 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 # --- Handlers ---
 
+def _card_already_in_prompt(tid: str) -> bool:
+    """True for the dispatcher-owned worker's OWN task when the dispatcher put the rendered card in
+    the first prompt (``HERMES_KANBAN_CARD_IN_PROMPT``): a second ``worker_context`` is the same
+    text twice in context for the rest of the run. Other tasks' cards are never in the prompt."""
+    return (os.environ.get("HERMES_KANBAN_CARD_IN_PROMPT") == "1"  # health: allow HX002 -- worker identity pin set beside HERMES_KANBAN_TASK, not a setting
+            and _is_dispatcher_owned_worker()
+            and tid == (os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+
+
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
     """Full task state: row, parents, children, comments, runs, last 50 events."""
@@ -676,7 +685,7 @@ def _handle_show(args: dict, **kw) -> str:
         })
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
+        result = {
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
@@ -688,8 +697,15 @@ def _handle_show(args: dict, **kw) -> str:
             # Capped; full log via CLI.
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
+        }
+        if _card_already_in_prompt(tid) and not _parse_bool_arg(args, "include_worker_context"):
+            result["worker_context_omitted"] = (
+                "Your card (body, parent handoffs, prior attempts, comments) is already in the first "
+                "message of this conversation; pass include_worker_context=true to get a fresh copy.")
+        else:
             # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+            result["worker_context"] = kb.build_worker_context(conn, tid)
+        return json.dumps(result)
 
 
 @_kanban_handler("kanban_list")

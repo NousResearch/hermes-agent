@@ -164,7 +164,9 @@ def bind_worker_context(frame):
         'HERMES_KANBAN_DB': context['db'], 'HERMES_KANBAN_RUN_ID': str(context['run_id']),
         'HERMES_KANBAN_CLAIM_LOCK': context['claim_lock'], 'HERMES_KANBAN_WORKSPACE': context['workspace'],
         'HERMES_KANBAN_WORKSPACES_ROOT': context['workspaces_root'], 'HERMES_PROFILE': context['profile'],
-        'HERMES_SESSION_SOURCE': 'kanban'}
+        'HERMES_SESSION_SOURCE': 'kanban',
+        # _run_task_turns puts the rendered card in the first prompt; kanban_show then skips its copy.
+        'HERMES_KANBAN_CARD_IN_PROMPT': '1'}
     for key, value in (('HERMES_KANBAN_BRANCH', context['branch']), ('HERMES_TENANT', context['tenant'])):
         if value:
             env[key] = value

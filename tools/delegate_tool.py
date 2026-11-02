@@ -1212,6 +1212,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # When True the child's credentials are pinned to a specific
+    # delegation.credential_label entry.  In that case we must NOT share
+    # the parent's credential pool with the child: pool rotation on 429
+    # would silently switch to a different account, bypassing fail-closed.
+    override_credential_pinned: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1458,7 +1463,14 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    #
+    # Exception: when the child's credentials are pinned to a specific label
+    # (override_credential_pinned=True), also block fallback-chain inheritance.
+    # The fallback chain routes 429s to a different provider/account, which
+    # would silently bypass fail-closed exactly like pool rotation does.
+    # A pinned child must fail on 429 — not recover onto a different account.
+    _parent_fallback_raw = getattr(parent_agent, "_fallback_chain", None) or None
+    parent_fallback = None if override_credential_pinned else _parent_fallback_raw
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1567,11 +1579,18 @@ def _build_child_agent(
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
-    )
-    if child_pool is not None:
-        child._credential_pool = child_pool
+    # Exception: when credentials are pinned to a specific label
+    # (override_credential_pinned=True from delegation.credential_label), do NOT
+    # attach the parent pool — pool rotation on 429 would silently bypass
+    # fail-closed and switch to a different account (e.g. secondary-oauth
+    # instead of the configured claude_code label).  The child runs on the
+    # single fixed API key resolved from the label, and 429s surface as errors.
+    if not override_credential_pinned:
+        child_pool = _resolve_child_credential_pool(
+            effective_provider, parent_agent, effective_base_url
+        )
+        if child_pool is not None:
+            child._credential_pool = child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
@@ -2942,6 +2961,9 @@ def delegate_task(
             override_max_tokens=creds.get("max_output_tokens"),
             override_acp_command=creds.get("command"),
             override_acp_args=creds.get("args"),
+            # Propagate pinned-label flag so _build_child_agent skips pool sharing.
+            # pinned_label=True only appears when label resolution succeeded.
+            override_credential_pinned=bool(creds.get("pinned_label")),
             role=effective_role,
         )
         # Tee the child's progress events into its live transcript log.
@@ -3452,6 +3474,159 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _resolve_delegation_credentials_by_label(
+    *,
+    configured_provider: str,
+    configured_model: Optional[str],
+    credential_label: str,
+    credential_fallback: bool,
+) -> Optional[dict]:
+    """Resolve delegation credentials by selecting a specific labelled pool entry.
+
+    Returns a credential dict when a healthy labelled entry is found and
+    its runtime bundle can be constructed.
+
+    Returns ``None`` only when *credential_fallback* is True and the label
+    could not be resolved — the caller then falls through to the generic
+    resolve_runtime_provider() path.
+
+    Raises ``ValueError`` when:
+    - The labelled entry is not found and ``credential_fallback`` is False.
+    - The labelled entry is exhausted/dead and ``credential_fallback`` is False.
+    - The entry has no usable API key after refresh and ``credential_fallback``
+      is False.
+    - Any other exception occurs during resolution and ``credential_fallback``
+      is False.
+
+    Token values are never written to logs; only the label and a sanitized
+    fingerprint (first 8 chars of the entry id) are logged.
+    """
+    try:
+        from agent.credential_pool import STATUS_DEAD, STATUS_EXHAUSTED, load_pool
+        from hermes_cli.runtime_provider import _resolve_runtime_from_pool_entry
+
+        pool = load_pool(configured_provider)
+        entry = None
+        if pool is not None:
+            for e in pool.entries():
+                if getattr(e, "label", None) == credential_label:
+                    entry = e
+                    break
+
+        if entry is None:
+            _msg = (
+                f"delegation.credential_label '{credential_label}' not found in the "
+                f"'{configured_provider}' credential pool. "
+                f"Run 'hermes auth list' to see available labels, or set "
+                f"delegation.credential_fallback: true to fall back to normal pool "
+                f"selection."
+            )
+            if credential_fallback:
+                logger.debug(
+                    "delegation credential_label '%s' not found in '%s' pool; falling back",
+                    credential_label,
+                    configured_provider,
+                )
+                return None
+            raise ValueError(_msg)
+
+        entry_status = getattr(entry, "last_status", None)
+        if entry_status in (STATUS_EXHAUSTED, STATUS_DEAD):
+            _msg = (
+                f"delegation.credential_label '{credential_label}' is {entry_status} "
+                f"in the '{configured_provider}' credential pool and cannot be used. "
+                f"Set delegation.credential_fallback: true to fall back to pool "
+                f"selection, or run 'hermes auth' to refresh credentials."
+            )
+            if credential_fallback:
+                logger.debug(
+                    "delegation credential_label '%s' is %s; falling back",
+                    credential_label,
+                    entry_status,
+                )
+                return None
+            raise ValueError(_msg)
+
+        # Attempt a proactive refresh so the child agent receives a fresh token.
+        # _refresh_entry returns None when not applicable (non-OAuth, no refresh
+        # token) or on failure; in both cases we keep the original entry.
+        if pool is not None:
+            try:
+                refreshed = pool._refresh_entry(entry, force=False)  # noqa: SLF001
+                if refreshed is not None:
+                    entry = refreshed
+            except Exception as _exc:
+                logger.debug(
+                    "delegation credential_label '%s' refresh skipped: %s",
+                    credential_label,
+                    _exc,
+                )
+
+        runtime = _resolve_runtime_from_pool_entry(
+            provider=configured_provider,
+            entry=entry,
+            requested_provider=configured_provider,
+            target_model=configured_model,
+        )
+
+        api_key = runtime.get("api_key", "")
+        if not api_key:
+            _msg = (
+                f"delegation.credential_label '{credential_label}' resolved but has "
+                f"no API key. Run 'hermes auth' to refresh credentials, or set "
+                f"delegation.credential_fallback: true to fall back to pool selection."
+            )
+            if credential_fallback:
+                logger.debug(
+                    "delegation credential_label '%s' resolved but has no API key; falling back",
+                    credential_label,
+                )
+                return None
+            raise ValueError(_msg)
+
+        # Log label and sanitized fingerprint; never log the token itself.
+        entry_id_hint = str(getattr(entry, "id", "") or "")[:8] or "unknown"
+        logger.debug(
+            "delegation credential resolved via label '%s' (provider=%s, entry_id_prefix=%s)",
+            credential_label,
+            configured_provider,
+            entry_id_hint,
+        )
+
+        return {
+            "model": configured_model or runtime.get("model") or None,
+            "provider": (
+                configured_provider
+                if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM
+                else runtime.get("provider")
+            ),
+            "base_url": runtime.get("base_url"),
+            "api_key": api_key,
+            "api_mode": runtime.get("api_mode"),
+            "request_overrides": dict(runtime.get("request_overrides") or {}),
+            "max_output_tokens": runtime.get("max_output_tokens"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            # Signals to _build_child_agent that credentials are pinned to this
+            # label.  When True, the child must NOT receive the parent's shared
+            # credential pool — pool rotation on 429 would bypass fail-closed and
+            # silently switch to a different account.
+            "pinned_label": True,
+        }
+
+    except ValueError:
+        raise
+    except Exception as exc:
+        _msg = (
+            f"Failed to resolve delegation.credential_label '{credential_label}' "
+            f"for provider '{configured_provider}': {exc}"
+        )
+        if credential_fallback:
+            logger.debug("%s; falling back to pool selection", _msg)
+            return None
+        raise ValueError(_msg) from exc
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -3478,6 +3653,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    # Read credential_label early — needed before the base_url branch below
+    # to detect the mutually-exclusive combination and raise fail-closed.
+    configured_credential_label = str(cfg.get("credential_label") or "").strip()
+    configured_credential_fallback = bool(cfg.get("credential_fallback", False))
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
@@ -3490,6 +3669,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
 
     if configured_base_url and not _is_native_sdk_provider:
+        # Fail-closed: delegation.base_url and delegation.credential_label are
+        # mutually exclusive.  If both are set the label would be silently
+        # ignored (base_url wins the early return), pool sharing is not blocked,
+        # and the child is effectively unpinned.  Raise instead of letting the
+        # user believe fail-closed is active.
+        if configured_credential_label:
+            raise ValueError(
+                f"delegation.base_url ('{configured_base_url}') and "
+                f"delegation.credential_label ('{configured_credential_label}') "
+                "cannot be set simultaneously. "
+                "Use delegation.credential_label + delegation.provider for "
+                "label-based credential pinning, or delegation.base_url + "
+                "delegation.api_key for a direct endpoint without label pinning."
+            )
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This
@@ -3535,8 +3728,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": api_mode,
         }
 
+    # configured_credential_label / configured_credential_fallback are already
+    # read at the top of this function (before the base_url branch) so that
+    # the mutually-exclusive base_url+credential_label check fires early.
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        # No provider override — child inherits everything from parent.
+        # Warn if credential_label is also set: it cannot be applied without
+        # knowing which pool to search, so it will be silently ignored here.
+        # Users almost always forgot to set delegation.provider alongside it.
+        if configured_credential_label:
+            logger.warning(
+                "delegation.credential_label '%s' is set but delegation.provider is "
+                "empty; the label will be ignored and the child agent will inherit "
+                "credentials from the parent. Set delegation.provider (e.g. 'anthropic') "
+                "to enable label-based credential pinning.",
+                configured_credential_label,
+            )
         return {
             "model": configured_model,
             "provider": None,
@@ -3546,6 +3753,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "request_overrides": None,
             "max_output_tokens": None,
         }
+
+    # Provider is configured — check for credential_label before falling through
+    # to the generic resolve_runtime_provider() path.
+    # (configured_credential_label / configured_credential_fallback already read above.)
+
+    if configured_credential_label:
+        result = _resolve_delegation_credentials_by_label(
+            configured_provider=configured_provider,
+            configured_model=configured_model,
+            credential_label=configured_credential_label,
+            credential_fallback=configured_credential_fallback,
+        )
+        if result is not None:
+            return result
+        # result is None only when fallback=True and label resolution failed;
+        # fall through to resolve_runtime_provider() below.
 
     # Provider is configured — resolve full credentials
     try:

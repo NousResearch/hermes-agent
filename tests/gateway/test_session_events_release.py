@@ -58,3 +58,18 @@ def test_a_dropped_session_stream_leaves_nothing_in_the_shared_cache():
     assert not _recorded(key)
     assert stats['sessions'] >= 1
     assert [frame['payload'] for frame in kept.since(kept.epoch, 0)['events']] == [{'n': 0}, {'n': 1}, {'n': 2}]
+
+
+def test_a_finalizer_that_finds_the_lock_held_defers_the_release_without_blocking():
+    from gateway.session_events import SessionEvents
+    from tui_gateway import event_replay
+
+    dropped = SessionEvents()
+    dropped.publish('s', {'n': 0})
+    key = dropped._key
+    with event_replay._replay_lock:  # GC can run the finalizer on a thread already holding the lock
+        del dropped
+        gc.collect()
+        assert _recorded(key)  # queued, not purged: the finalizer never waited on the lock
+    event_replay.replay_stats()  # the next lock holder purges it
+    assert not _recorded(key)

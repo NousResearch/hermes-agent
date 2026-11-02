@@ -4,10 +4,10 @@ import json
 import pytest
 
 
-def _store(tmp_path, db):
+def _store(tmp_path, db, **config):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
-    store = SessionStore(config=GatewayConfig(), sessions_dir=tmp_path / 'sessions')
+    store = SessionStore(config=GatewayConfig(**config), sessions_dir=tmp_path / 'sessions')
     store._db = db
     return store
 
@@ -63,3 +63,22 @@ def test_next_inbound_turn_fills_an_origin_nothing_else_can_restore(tmp_path, to
 
     persisted = _store(tmp_path, db).lookup_by_session_key(entry.session_key)
     assert persisted.origin is not None and persisted.origin.to_dict() == source.to_dict()
+
+
+def test_named_profile_route_heals_from_row_columns_under_multiplex(tmp_path):
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from hermes_state import SessionDB
+    db = SessionDB(tmp_path / 'state.db')
+    store = _store(tmp_path, db, multiplex_profiles=True)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='-1001', chat_type='group',
+                           thread_id='600', user_id='111', profile='work')
+    entry = store.get_or_create_session(source)
+    assert entry.session_key.startswith('agent:work:')
+    _strip(db, store, entry.session_key, 'origin_json=NULL')
+
+    reloaded = _store(tmp_path, db, multiplex_profiles=True)
+    origin = reloaded.lookup_by_session_key(entry.session_key).origin
+    assert origin is not None and origin.profile == 'work' and origin.thread_id == '600'
+    db.close()
+

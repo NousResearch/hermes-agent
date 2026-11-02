@@ -130,6 +130,23 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
     : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
 }
 
+// OS file paste (file-manager copy → paste): the clipboard carries native
+// File entries plus a filename text form. The text form must never reach
+// the editor — it garbles the composer while attaching nothing (#128823).
+const consumeOsFilePaste = (
+  event: ClipboardEvent<HTMLDivElement>,
+  handlePasteFiles: (clipboard: DataTransfer) => boolean
+): boolean => {
+  if (!handlePasteFiles(event.clipboardData)) {
+    return false
+  }
+
+  event.preventDefault()
+
+  return true
+}
+
+// health: allow FUNC_LINES -- OS file paste (#128823): ChatBar only gains the handlePasteFiles binding; the branch lives in consumeOsFilePaste
 export function ChatBar({
   busy,
   cwd,
@@ -566,6 +583,7 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    if (consumeOsFilePaste(event, handlePasteFiles)) return
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
@@ -1063,7 +1081,8 @@ export function ChatBar({
     handleDragOver,
     handleDrop,
     handleInputDragOver,
-    handleInputDrop
+    handleInputDrop,
+    handlePasteFiles
   } = useComposerDrop({ cwd, insertInlineRefs, onAttachDroppedItems, recordUndoPoint, requestMainFocus, sessionId })
 
   // A bot chat is a companion conversation, not a working session, so it has no

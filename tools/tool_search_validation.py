@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import logging
@@ -136,6 +137,40 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+_MODEL_JSON_ECHO_CHARS = 300
+# literal_eval on unbounded model text is a memory bomb ([[[[…); past this size the JSON
+# error is returned as-is. Real envelopes are orders of magnitude smaller.
+_MODEL_JSON_LITERAL_EVAL_MAX_CHARS = 100_000
+
+
+def _parse_model_json(text: str) -> tuple[Any, Optional[str]]:
+    """Parse a JSON string a model emitted for a tool-call field.
+
+    Models stringify the ``calls`` envelope (or an entry's ``arguments``) and sometimes do
+    it with Python literal syntax — single quotes, ``True``/``None`` — which ``json.loads``
+    rejects at the first key. The intent is unambiguous there, so accept it before failing;
+    rejecting it only makes the model resend the same text. Returns ``(value, None)`` or
+    ``(None, reason)``.
+    """
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as json_error:
+        if len(text) <= _MODEL_JSON_LITERAL_EVAL_MAX_CHARS:
+            try:
+                return ast.literal_eval(text), None
+            except (ValueError, SyntaxError):
+                pass
+        return None, str(json_error)
+
+
+def _echo_model_json(text: str) -> str:
+    """The offending text, so the model sees what it sent instead of a bare column number."""
+    flat = re.sub(r"\s+", " ", text).strip()
+    if len(flat) > _MODEL_JSON_ECHO_CHARS:
+        flat = flat[:_MODEL_JSON_ECHO_CHARS - 3] + "..."
+    return f" Received: {flat}"
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -154,10 +189,10 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
     if isinstance(raw_calls, str):
         # Tolerate the model emitting the batch envelope as a JSON string —
         # mirror the per-entry `arguments` handling below (#114484).
-        try:
-            raw_calls = json.loads(raw_calls)
-        except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+        raw_text = raw_calls
+        raw_calls, reason = _parse_model_json(raw_text)
+        if reason is not None:
+            return [], f"tool_call 'calls' is not valid JSON: {reason}{_echo_model_json(raw_text)}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -180,10 +215,11 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
             # validate_deferred_call_args instead of an opaque JSON parse error.
             raw_args = {}
         if isinstance(raw_args, str):
-            try:
-                raw_args = json.loads(raw_args)
-            except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+            parsed_args, reason = _parse_model_json(raw_args)
+            if reason is not None:
+                return [], (f"tool_call calls[{position}].arguments is not valid JSON: "
+                            f"{reason}{_echo_model_json(raw_args)}")
+            raw_args = parsed_args
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})

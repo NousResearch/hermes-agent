@@ -376,9 +376,11 @@ def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     gateway applies to its cached agents (``GatewayRunner._refresh_fallback_model``): the config is
     read fail-closed, so a torn/invalid config.yaml keeps the agent's last known-good chain instead of
     ``_load_cfg()``'s fail-open ``{}`` reading as "chain removed" and wiping it. Never blocks the turn.
+    Under ``--ignore-user-config`` / ``--safe-mode`` the startup chain was built without config.yaml,
+    so re-reading it here would fail over to a user-configured provider (#134954).
     """
     agent = session.get("agent")
-    if agent is None:
+    if agent is None or os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1":
         return
     try:
         from gateway.run import GatewayRunner

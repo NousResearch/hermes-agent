@@ -278,7 +278,8 @@ class GatewayTurnProgressMixin:
         ):
             return None, None
         cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else t("gateway.progress.tool_head", emoji=emoji, tool=tool_name) + "\n"
+        head = t("gateway.progress.tool_head", emoji=emoji, tool=adapter.format_tool_name(tool_name))
+        header = "" if self._ctx.last_was_terminal_block[0] else head + "\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
@@ -297,6 +298,7 @@ class GatewayTurnProgressMixin:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
+        tool = adapter.format_tool_name(tool_name) if adapter is not None else tool_name
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
@@ -308,16 +310,16 @@ class GatewayTurnProgressMixin:
                 # for full detail and platform message-length limits handle the rest.
                 args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
                                                   getattr(adapter, "supports_code_blocks", False))
-                code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
+                code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(args.keys()), args=args_str)
             elif code is None:
-                code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
-                        else t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name))
+                code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=preview) if preview
+                        else t("gateway.progress.tool_pending", emoji=emoji, tool=tool))
             ctx.progress_queue.put(code)
             return None
         if code is not None:
             return code
         if not preview:
-            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name)
+            return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)
         from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
@@ -325,7 +327,7 @@ class GatewayTurnProgressMixin:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview)
+            return t("gateway.progress.tool_preview", emoji=emoji, tool=tool, preview=preview)
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:

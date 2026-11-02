@@ -36,7 +36,7 @@ class StreamEventRenderMixin:
         if not isinstance(event, ToolCallChunk):
             return None
         from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
-        emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
+        emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), self.format_tool_name(event.tool_name)
         if mode == "verbose" and event.args:
             args_str = verbose_tool_args_text(event.args, preview_max_len, self.supports_code_blocks)
             return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
@@ -54,3 +54,8 @@ class StreamEventRenderMixin:
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
         the preview's metadata (e.g. a URL shortened for display)."""
         return preview.text
+
+    def format_tool_name(self, name: str) -> str:
+        """Platform-native tool name in progress lines; markdown adapters keep its ``_`` literal
+        (Discord would otherwise read ``mcp_server_tool`` as italic/underline markup)."""
+        return name

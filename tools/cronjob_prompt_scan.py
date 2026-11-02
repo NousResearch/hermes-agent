@@ -31,7 +31,20 @@ _CRON_THREAT_PATTERNS = [
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"), (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    # Recursive `rm` spellings: a short flag group containing `r` (-rf, -fr, -r,
+    # -rfv), --recursive, or --force followed by a recursive flag. Extra flag
+    # tokens (including a bare `--`) may follow before the operand. Mirrors
+    # skills_guard's destructive_root_rm / destructive_home_rm, including the
+    # temp-root exemptions: routine cleanup under /tmp, /var/tmp, /dev/shm,
+    # /run and package caches stays allowed, while a `..` segment escaping an
+    # exempt root still blocks (see #126688, #111335). A quote before `rm`
+    # keeps quoted prose from tripping the strict user-prompt scan.
+    (r'(?<![A-Za-z0-9\"\'])rm\s+(?:-[A-Za-z]*r[A-Za-z]*|--recursive|--force\s+(?:--recursive|-[A-Za-z]*r[A-Za-z]*))(?:\s+(?:-[A-Za-z]+|--[a-z-]+|--))*\s+'
+     r'(?:/(?!(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))(?:\b|/))'
+     r'|/(?:tmp|var/tmp|dev/shm|run|var/lib/apt/lists|var/cache/(?:apt|apk|yum|dnf))/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
+     "destructive_root_rm"),
+    (r'(?<![A-Za-z0-9\"\'])rm\s+(?:-[A-Za-z]*r[A-Za-z]*|--recursive|--force\s+(?:--recursive|-[A-Za-z]*r[A-Za-z]*))(?:\s+(?:-[A-Za-z]+|--[a-z-]+|--))*\s+(?:\$\{HOME\}|\$HOME|~)(?:/|\s|$)',
+     "destructive_home_rm"),
 ]
 
 # Looser set for the assembled prompt: command-shape patterns are dropped because skill

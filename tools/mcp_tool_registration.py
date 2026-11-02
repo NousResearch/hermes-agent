@@ -542,6 +542,14 @@ def _refresh_adopter_overlays(name: str, key, server: "MCPServerTask", scopes: I
             if (config is not None and mcp_server_enabled(config) and _core._servers.get(key) is server
                     and _same_server_route(server, config)):
                 names = _register_adopted_overlay(name, key, server, config, scope)
+                # The identity check above ran before the (slow) registration: a shutdown or park
+                # that raced it has already deregistered the adopter tools, so re-check and retract
+                # what was just published. Otherwise those names would survive teardown as phantoms.
+                with _core._lock:
+                    still_serving = _core._servers.get(key) is server
+                if not still_serving:
+                    for tool_name in names:
+                        registry.deregister(tool_name, scope=scope)
         except Exception:
             logger.debug("MCP server '%s': refreshing profile scope %s failed", name, scope, exc_info=True)
         finally:

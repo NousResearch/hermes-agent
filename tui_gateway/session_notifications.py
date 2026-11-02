@@ -794,10 +794,11 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         # Addressed events parked while their owner was not live (notification_park): once this session proves it
         # owns one, it is this session's to deliver, ahead of the shared queue.
         parked = notification_park.claim(lambda evt: _session_owns_notification_event(sid, session, evt))
-        ready = take_ready(queue, 0 if parked else 0.5)
-        if not parked and not ready:
-            continue
+        ready = []
         try:
+            ready = take_ready(queue, 0 if parked else 0.5)
+            if not parked and not ready:
+                continue
             handle(parked + ready, None)
         except Exception as exc:
             # This thread is the session's only path to notifications, /loop, /heartbeat and its

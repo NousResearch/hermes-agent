@@ -4512,7 +4512,9 @@ export const frOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envoie ${level} sur cette route`,
       updateFailed: "Échec de la mise à jour de l'option du modèle",
-      fastFailed: 'Échec de la mise à jour du mode rapide'
+      fastFailed: 'Échec de la mise à jour du mode rapide',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Échec de la mise à jour de Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',

@@ -24069,6 +24069,11 @@
             "title": "Ultrafast",
             "type": "boolean"
           },
+          "daybreak": {
+            "default": false,
+            "title": "Daybreak",
+            "type": "boolean"
+          },
           "reasoning": {
             "title": "Reasoning",
             "type": "boolean"

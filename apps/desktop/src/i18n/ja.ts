@@ -2933,7 +2933,9 @@ export const jaOverrides = {
       ultra: 'ウルトラ',
       sendsOnRoute: (level: string) => `このルートでは ${level} を送信`,
       updateFailed: 'モデルオプションの更新に失敗しました',
-      fastFailed: '高速モードの更新に失敗しました'
+      fastFailed: '高速モードの更新に失敗しました',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
       gateway: 'ゲートウェイ',

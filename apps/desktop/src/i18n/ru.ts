@@ -3169,7 +3169,9 @@ export const ruOverrides = {
       ultra: 'Ультра',
       sendsOnRoute: (level: string) => `на этом маршруте отправляется ${level}`,
       updateFailed: 'Не удалось обновить опцию модели',
-      fastFailed: 'Не удалось обновить быстрый режим'
+      fastFailed: 'Не удалось обновить быстрый режим',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Не удалось обновить Daybreak'
     },
     gatewayMenu: {
       gateway: 'Шлюз',

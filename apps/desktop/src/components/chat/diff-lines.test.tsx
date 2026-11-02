@@ -78,3 +78,37 @@ describe('FileDiffPanel survives a failed lazy syntax-diff chunk', () => {
     expect(container.textContent).not.toContain(WORKSPACE_FALLBACK_TEXT)
   })
 })
+
+describe('FileDiffPanel interactive lines (review comments)', () => {
+  it('reports the clicked row with its new-file line number and marks commented rows', () => {
+    const onLineClick = vi.fn()
+
+    const { container } = render(
+      <FileDiffPanel
+        diff={DIFF}
+        interactiveLines={{ commented: new Set(['new:2']), onLineClick, selectedKey: null }}
+        path="file.ts"
+        virtualized
+      />
+    )
+
+    const added = container.querySelector('[data-review-line="new:2"]')
+    const removed = container.querySelector('[data-review-line="old:2"]')
+
+    expect(added).not.toBeNull()
+    expect(removed).not.toBeNull()
+    expect(added?.className).toContain('shadow-[inset_0.375rem_0_0_var(--ui-accent)]')
+
+    added?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onLineClick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'add', newNo: 2, text: 'const b = 3' }))
+
+    removed?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(onLineClick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'remove', oldNo: 2, text: 'const b = 2' }))
+  })
+
+  it('leaves rows inert without interactiveLines', () => {
+    const { container } = render(<FileDiffPanel diff={DIFF} path="file.ts" virtualized />)
+
+    expect(container.querySelector('[data-review-line]')).toBeNull()
+  })
+})

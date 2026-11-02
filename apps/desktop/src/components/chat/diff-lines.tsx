@@ -326,11 +326,19 @@ function PreviewDiffRows({
   afterLines = 0,
   beforeLines = 0,
   chunks,
+  interactive,
   tokens
 }: {
   afterLines?: number
   beforeLines?: number
   chunks: Array<LineChunk<DiffLine>>
+  /** Review-pane line interaction: rows become clickable and lines with a
+   *  comment get a marker dot in the gutter accent. Off everywhere else. */
+  interactive?: {
+    commented: ReadonlySet<string>
+    onLineClick: (line: DiffLine) => void
+    selectedKey: null | string
+  }
   tokens?: ThemedToken[][] | null
 }) {
   return (
@@ -341,9 +349,24 @@ function PreviewDiffRows({
           {chunk.lines.map((line, offset) => {
             const index = chunk.start + offset
             const rowTokens = tokens?.[index] ?? []
+            const lineKey = diffLineKey(line)
+            const clickable = Boolean(interactive && lineKey)
+            const commented = Boolean(lineKey && interactive?.commented.has(lineKey))
 
             return (
-              <span className={cn(PREVIEW_DIFF_LINE_BASE, DIFF_KIND_TINT[line.kind])} key={`${index}-${line.text}`}>
+              <span
+                className={cn(
+                  PREVIEW_DIFF_LINE_BASE,
+                  DIFF_KIND_TINT[line.kind],
+                  interactive && 'border-l-2',
+                  clickable && 'cursor-pointer hover:bg-(--ui-control-hover-background)',
+                  lineKey && interactive?.selectedKey === lineKey && 'bg-(--ui-control-hover-background)',
+                  commented && 'shadow-[inset_0.375rem_0_0_var(--ui-accent)]'
+                )}
+                data-review-line={interactive ? (lineKey ?? undefined) : undefined}
+                key={`${index}-${line.text}`}
+                onClick={clickable ? () => interactive?.onLineClick(line) : undefined}
+              >
                 {rowTokens.length > 0
                   ? rowTokens.map((token, tokenIndex) => (
                       <span key={`${tokenIndex}-${token.offset}`} style={tokenStyle(token)}>
@@ -361,11 +384,27 @@ function PreviewDiffRows({
   )
 }
 
+/** Stable identity of a diff row for comment anchoring: the new-file line
+ *  number when the row survives into the new file, else the old-file number
+ *  of a removal. Hunk separators (no number on either side) return null. */
+export function diffLineKey(line: DiffLine): null | string {
+  if (line.newNo != null) {
+    return `new:${line.newNo}`
+  }
+
+  if (line.oldNo != null) {
+    return `old:${line.oldNo}`
+  }
+
+  return null
+}
+
 function TokenizedDiffBody({
   afterLines,
   beforeLines,
   chunked = false,
   chunks,
+  interactive,
   language,
   lines
 }: {
@@ -373,6 +412,11 @@ function TokenizedDiffBody({
   beforeLines?: number
   chunked?: boolean
   chunks?: Array<LineChunk<DiffLine>>
+  interactive?: {
+    commented: ReadonlySet<string>
+    onLineClick: (line: DiffLine) => void
+    selectedKey: null | string
+  }
   language: string
   lines: DiffLine[]
 }) {
@@ -410,6 +454,7 @@ function TokenizedDiffBody({
         afterLines={afterLines}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
+        interactive={interactive}
       />
     ) : (
       <DiffBody lines={lines} />
@@ -422,6 +467,7 @@ function TokenizedDiffBody({
         afterLines={afterLines}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
+        interactive={interactive}
         tokens={tokens}
       />
     )
@@ -571,6 +617,13 @@ interface FileDiffPanelProps {
   /** Current file text. When provided, the panel expands hunked diffs into a
    *  full-file view so unchanged lines are preserved between hunks. */
   fullText?: string
+  /** Review-pane line comments: makes windowed rows clickable and marks
+   *  commented lines. Keys come from `diffLineKey`. Windowed panels only. */
+  interactiveLines?: {
+    commented: ReadonlySet<string>
+    onLineClick: (line: DiffLine) => void
+    selectedKey: null | string
+  }
   path?: string
   /** Render an old/new line-number gutter (the full preview diff). The compact
    *  tool-card + inline review diff leave this off. */
@@ -585,6 +638,7 @@ export function FileDiffPanel({
   className,
   diff,
   fullText,
+  interactiveLines,
   path,
   showLineNumbers = false,
   virtualized = false
@@ -626,11 +680,17 @@ export function FileDiffPanel({
       beforeLines={beforeRows}
       chunked
       chunks={visibleLineChunks}
+      interactive={interactiveLines}
       language={language}
       lines={lines}
     />
   ) : (
-    <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
+    <PreviewDiffRows
+      afterLines={afterRows}
+      beforeLines={beforeRows}
+      chunks={visibleLineChunks}
+      interactive={interactiveLines}
+    />
   )
 
   const compactBody = !canHighlight || !seen ? (

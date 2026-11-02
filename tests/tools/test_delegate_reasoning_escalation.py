@@ -269,6 +269,33 @@ def test_never_retries_once_the_parent_was_interrupted(monkeypatch):
     assert len(log) == 1 and entry["exit_reason"] == "max_iterations" and "attempts" not in entry
 
 
+@pytest.mark.parametrize("stop_at", ["after_last_iteration", "during_retry_build"])
+def test_a_subagent_stopped_by_id_never_escalates(monkeypatch, stop_at):
+    """``delegate_task(action="stop")`` / the TUI stop reach the live attempt through the registry; a stop that lands
+    after the attempt's last iteration check (it still ends on max_iterations) or while its retry is being built
+    ends the chain there."""
+    from tools.delegate_tool_registry import interrupt_subagent
+
+    def low(child, *_):
+        if stop_at == "after_last_iteration":
+            assert interrupt_subagent(child._subagent_id)
+        else:
+            builder = child._delegate_build_retry
+
+            def build(effort, goal):
+                retry = builder(effort, goal)
+                assert interrupt_subagent(child._subagent_id)
+                return retry
+            child._delegate_build_retry = build
+        return M()
+
+    entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D("medium ran despite the stop")},
+                                effort="low", ceiling="high")
+    assert not any(c.messages for c in log[1:])  # no retry ever ran
+    assert entry["exit_reason"] == "max_iterations" and "attempts" not in entry
+    assert all(c.closed for c in log)
+
+
 # ── Where the climb starts and stops ─────────────────────────────────────────
 
 @pytest.mark.parametrize("first_attrs, expected", [

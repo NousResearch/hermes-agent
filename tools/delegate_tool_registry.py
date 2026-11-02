@@ -97,9 +97,12 @@ def interrupt_subagent(subagent_id: str) -> bool:
     grandchildren via AIAgent.interrupt()). True iff a matching subagent was found."""
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
-    agent = record.get("agent") if record else None
-    if agent is None:
-        return False
+        agent = record.get("agent") if record else None
+        if agent is None:
+            return False
+        # The stop ends the subagent, not just its current attempt: a reasoning-escalation chain checks this mark
+        # before it starts (or after it builds) the next attempt.
+        agent._delegate_unit_cancelled = True
     try:
         return bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
     except Exception as exc:

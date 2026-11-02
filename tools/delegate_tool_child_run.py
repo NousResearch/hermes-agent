@@ -1022,12 +1022,17 @@ class _ChildRun:
             return _resolve_workspace_hint(self.parent_agent)
         return None
 
+    def cancelled(self) -> bool:
+        """The unit was cancelled (marked on the chain's first child) or this attempt was stopped by subagent id."""
+        first = self.chain.first_child if self.chain is not None else None
+        return any(getattr(c, "_delegate_unit_cancelled", False) is True for c in (first, self.child))
+
     def escalate(self, entry: dict[str, Any]) -> bool:
         """Decide whether this attempt hands off to a retry at the next reasoning level and, if so, build the
         retry child on the same route (same limits, fresh budget) and queue it on the chain. True = this attempt is
         intermediate: its caller skips the completion event and the worktree finalize (the chain is still live)."""
         chain = self.chain
-        if chain is None or getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
+        if chain is None or self.cancelled():
             return False
         next_effort = _next_escalation_effort(self.child, entry, self.parent_agent)
         if next_effort is None:
@@ -1046,7 +1051,7 @@ class _ChildRun:
             logger.warning("Subagent %d reasoning escalation to %s not started: %s", self.task_index, next_effort, exc,
                            exc_info=True)
             next_child = None
-        if next_child is not None and getattr(chain.first_child, "_delegate_unit_cancelled", False) is True:
+        if next_child is not None and self.cancelled():
             _signal_child_stop(next_child, "Async delegation cancelled")
             if next_child is not self.child:
                 _detach_child(self.parent_agent, next_child)

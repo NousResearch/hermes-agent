@@ -760,7 +760,13 @@ when nothing was started.
   including from the fork's own tool handler) is the exception: it
   waits up to 120 seconds for the session's running background review
   and running forks to finish, then cancels whatever is still running,
-  so do not rely on an injected turn to cancel background work. The
+  so do not rely on an injected turn to cancel background work. A person
+  never waits behind that grace: input a person sends to the session
+  while the injected turn waits ends the wait at once, the background
+  work is cancelled as for any person's turn, and the injected turn and
+  then the person's run in the order they arrived. A gateway shutdown,
+  restart or profile retirement ends the wait the same way, inside the
+  shutdown's drain budget. The
   injected turn starts from the gateway's own context: its tool calls
   carry no `turn_origin`, even when the fork injected it. `timeout`
   (seconds, at most 1800) adds a wall clock. Both are cooperative:

@@ -398,13 +398,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         if wp.is_dir():
             # Containment guard: a board's ``default_workdir`` can pair
             # ``workspace_kind='scratch'`` with a user path pointing at a real
-            # source tree; without this, completion would rmtree the user's data.
-            # See #28818. Containment runs first so an unmanaged dir that is
-            # never removed does not pay for (or log) the shared-use scan.
+            # source tree; without this, completion would rmtree the user's
+            # data. See #28818. Containment runs first so an unmanaged dir that
+            # is never removed does not pay for (or log) the shared-use scan.
             if _is_managed_scratch_path(wp):
                 if not _defer_shared_workspace_cleanup(conn, task_id, path):
                     release_lsp_clients(str(wp))
-                    shutil.rmtree(wp, ignore_errors=True)
+                    _remove_scratch_workspace(wp)
                     _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
@@ -421,6 +421,43 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def _remove_scratch_workspace(wp: Path) -> None:
+    """Remove a scratch workspace dir, retrying once with chmod for
+    non-writable files.
+
+    Read-only / non-writable files (negative-test fixtures) can defeat a
+    single ``shutil.rmtree`` pass: the top directory may survive because a file
+    inside could not be unlinked. On the first pass, make every remaining
+    entry writable and retry once. Best-effort: residuals are logged but
+    never raised so cleanup never blocks completion.
+    """
+    try:
+        shutil.rmtree(wp, ignore_errors=True)
+    except Exception:
+        pass
+    if not wp.exists():
+        return
+    for root, _dirs, files in os.walk(wp):
+        for name in files + _dirs:
+            p = Path(root) / name
+            try:
+                if p.is_symlink() or not p.exists():
+                    continue
+                st = p.lstat()
+                if not st.st_mode & 0o200:
+                    p.chmod(st.st_mode | 0o200)
+            except OSError:
+                pass
+    try:
+        shutil.rmtree(wp, ignore_errors=True)
+    except Exception:
+        pass
+    if wp.exists():
+        _kb._log.warning(
+            "Scratch workspace removal left residuals: %s (best-effort)", wp
+        )
 
 
 def _cleanup_worktree_workspace(

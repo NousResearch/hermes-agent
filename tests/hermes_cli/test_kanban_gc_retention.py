@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_ops
 
 @pytest.fixture
@@ -221,3 +222,31 @@ def test_cleanup_workspace_keeps_scratch_when_other_boards_cannot_be_listed(boar
         kbw._cleanup_workspace(conn, archived)
         assert _deferred_reasons(conn, archived) == ["shared", "shared", "unknown"]
     assert (shared / "note.txt").read_text(encoding="utf-8") == "still needed"
+
+
+def test_cleanup_workspace_reaps_read_only_scratch_files(board):
+    """Read-only / non-writable files must not defeat scratch workspace removal:
+    the first rmtree pass leaves them behind; the chmod-retry pass removes them.
+    """
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="read-only scratch")
+        ws = kb.workspaces_root() / tid
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='archived', workspace_kind='scratch', "
+                "workspace_path=? WHERE id=?",
+                (str(ws), tid),
+            )
+        ws.mkdir(parents=True)
+        (ws / "readonly.txt").write_text("read-only\n", encoding="utf-8")
+        (ws / "readonly.txt").chmod(0o444)
+        sub = ws / "sub"
+        sub.mkdir()
+        (sub / "locked").write_text("x\n", encoding="utf-8")
+        (sub / "locked").chmod(0o444)
+        sub.chmod(0o555)
+    assert ws.exists()
+    # No live task shares the path, no active children: removal proceeds.
+    with kbc.connect_closing() as conn:
+        kbw._cleanup_workspace(conn, tid)
+    assert not ws.exists(), "read-only scratch workspace was not reclaimed"

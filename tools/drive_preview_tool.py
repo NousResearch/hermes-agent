@@ -8,6 +8,7 @@ re-sending the inventory. Round-trips through the gateway's blocking-prompt brid
 the platform-injected callback. ``desktop_ui`` toolset: desktop-sourced sessions only.
 """
 
+import json
 from typing import Callable, Optional
 
 from tools.desktop_ui import passthrough_json
@@ -58,7 +59,27 @@ def drive_preview_tool(
             "No GUI window answered with a page: no preview tab is open. "
             "Open a page with open_preview first. If the pane IS open, the desktop app "
             "may be older than this backend — its bridge-unavailable error names that case.")
+    if verb == "elements" and (ref is not None or selector is not None):
+        return _bounded_inspection_json(raw)
     return passthrough_json(raw)
+
+
+def _bounded_inspection_json(raw) -> str:
+    """Keep the guest's 12,000 UTF-16-unit budget at the final tool boundary."""
+    result = json.loads(passthrough_json(raw))
+    while True:
+        # Default Python JSON separators expand the already-bounded guest JSON.
+        answer = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        if len(answer.encode("utf-16-le", errors="surrogatepass")) // 2 <= 12000:
+            return answer
+        inspection = result.get("inspection") if isinstance(result, dict) else None
+        candidates = inspection.get("candidates") if isinstance(inspection, dict) else None
+        if not isinstance(candidates, list) or not candidates:
+            return tool_error("Target inspection exceeded its response limit; no input was sent.")
+        # Account for any cross-runtime encoding growth without cutting entries
+        # or changing the total match count. Untargeted inventory is untouched.
+        candidates.pop()
+        inspection["truncated"] = True
 
 
 ACT_PREVIEW_SCHEMA = {
@@ -94,7 +115,12 @@ ACT_PREVIEW_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": list(ACTIONS),
-                "description": "Start with 'elements'.",
+                "description": (
+                    "Start with untargeted 'elements' for refs. With ref or selector, elements "
+                    "returns read-only geometry/styles and center hit testing (up to 5 matches), "
+                    "not inventory/delta. Ref wins; stale refs need a fresh untargeted inventory. "
+                    "Center hits are diagnostic, not a guarantee of interactability."
+                ),
             },
             "ref": {
                 "type": "string",
@@ -128,11 +154,11 @@ ACT_PREVIEW_SCHEMA = {
             },
             "max": {
                 "type": "integer",
-                "description": "elements: cap the inventory.",
+                "description": "elements: cap inventory; targeted inspection returns at most 5 candidates.",
             },
             "full": {
                 "type": "boolean",
-                "description": "elements: full re-read instead of a delta. Rarely needed.",
+                "description": "untargeted elements: full re-read instead of a delta. Rarely needed.",
             },
         },
         "required": ["action"],

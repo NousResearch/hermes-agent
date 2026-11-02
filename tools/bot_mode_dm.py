@@ -200,6 +200,46 @@ def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | No
     return json.dumps(payload)
 
 
+def _blocked_by_dm_policy(message: str) -> str:
+    """A dispatch-boundary policy refusal with its own reason: the message was NOT sent."""
+    return json.dumps({"error": message, "reason": "policy_refused"})
+
+
+def _outbound_dm_policy_block(author: dict, recipient: dict, target: str, message: str,
+                              task_id: Optional[str], agent: Any) -> Optional[str]:
+    """One ``pre_tool_call`` policy pass at the actual dispatch boundary, after the recipient
+    resolved. Hooks receive ``bot_sender`` (the exact turn-author identity the delivery will
+    carry) and ``bot_recipient`` (the canonical resolved recipient id ``bot:<profile>`` /
+    ``bot:<origin>/<profile>`` — aliases never reach here), beside the model-supplied
+    ``target``/``message``. A ``block`` directive (or the policy hook's fail-closed
+    timeout/exception contract) refuses the send and the block message becomes the tool result.
+
+    ``approve`` is not re-escalated here: the whole-directive pass already ran before the tool
+    call; this pass refines authorization onto the resolved recipient."""
+    try:
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        args = {"target": target, "message": message,
+                "bot_sender": dict(author), "bot_recipient": dict(recipient)}
+        directive, block_message = get_pre_tool_call_directive(
+            MESSAGE_AGENT_TOOL_NAME, args,
+            task_id=task_id or "", session_id=getattr(agent, "session_id", None) or "",
+            turn_id=getattr(agent, "_current_turn_id", None) or "",
+            api_request_id=getattr(agent, "_current_api_request_id", None) or "")
+        return block_message if directive == "block" else None
+    except Exception as exc:
+        # A policy check that cannot even be consulted must not silently open the send.
+        logger.warning("message_agent dispatch policy check failed", exc_info=True)
+        return f"the pre_tool_call policy check for this delivery failed: {exc}"
+
+
+def _local_recipient(profile: str, roster: list[str]) -> dict:
+    """The canonical recipient identity of a local teammate, in ``agent/turn_author.py`` id form."""
+    from tools.bot_mode_probe import _handle
+
+    return {"kind": "local", "id": f"bot:{profile}", "name": _handle(profile, roster), "profile": profile}
+
+
 def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
@@ -223,6 +263,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     record_feature_used("bot_mode", hermes_home=home)
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
+    from agent.turn_author import bot_author_id, local_origin
     roster_homes = dict(_roster(root))
     roster = list(roster_homes)
     peers = _peers(root)
@@ -254,9 +295,6 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         if peer_name not in peers:
             return _roster_err(f"No registered peer named '{peer_name}'.")
         dm_target = f"{peer_name}/{peer_profile}" if peer_profile else peer_name
-        # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
-        from agent.turn_author import bot_author_id, local_origin
-        peer_author = {**author, "id": bot_author_id(me, local_origin())}
         # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
         # load_config(), while the roster above reads the machine-root config — the CLI must run
         # in that same profile or a secondary-profile bot sees an empty registry.
@@ -265,6 +303,15 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
         # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
         # so the absolute path stays compatible.
+        # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
+        peer_author = {**author, "id": bot_author_id(me, local_origin())}
+        dm_policy = _outbound_dm_policy_block(
+            peer_author,
+            {"kind": "peer", "id": bot_author_id(peer_profile or peer_name, peer_name),
+             "name": dm_target, "peer": peer_name, "profile": peer_profile or ""},
+            raw_target, body, task_id, agent)
+        if dm_policy is not None:
+            return _blocked_by_dm_policy(dm_policy)
         return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
@@ -274,7 +321,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
         # The sender's own relay folder, as below: the default's would relay a named bot's DM as the default.
-        relayed = _try_relay_delivery(Path(home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(Path(home), raw_target, content, me, message=body, **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
@@ -286,7 +333,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(Path(home), raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(Path(home), raw_target, content, me, message=body, **delivery)
         if relayed is not None:
             return relayed
         if resolved == me:
@@ -296,16 +343,21 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                            "(roles are listed in your system prompt).")
     # Local teammates are admitted through the profile authority; the argv only names the
     # profile for the runner's lock/home lookups and is never executed.
+    dm_policy = _outbound_dm_policy_block(author, _local_recipient(resolved, roster), raw_target, body, task_id, agent)
+    if dm_policy is not None:
+        return _blocked_by_dm_policy(dm_policy)
     return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved, roster)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
-                        task_id: Optional[str], agent: Any) -> Optional[str]:
+                        task_id: Optional[str], agent: Any, message: Optional[str] = None) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
     to drain; a background waiter is spawned immediately so the relayed reply wakes
-    the sender through the standard completion-notification path."""
+    the sender through the standard completion-notification path. ``message`` is the
+    composed body for the dispatch-boundary policy pass (default: the prefixed
+    ``content`` direct callers already hold)."""
     try:
         from tools.bot_mode_probe import _handle, _hermes_root, _roster, local_taken_forms
         from tools.bot_relay import (
@@ -322,9 +374,18 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             forms = ", ".join(form for r, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
                               if want in _target_aliases(r))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
+        sender_handle = _handle(me, [n for n, _d in _roster(_hermes_root(root))])
+        dm_policy = _outbound_dm_policy_block(
+            {"kind": "local", "id": f"bot:{me}", "name": sender_handle, "is_bot": True},
+            {"kind": "remote", "id": f"bot:{match['connection_id']}/{match['profile']}",
+             "name": match["handle"], "profile": match["profile"],
+             "connection_id": match["connection_id"], "connection_label": match["connection_label"]},
+            raw_target, message if message is not None else content, task_id, agent)
+        if dm_policy is not None:
+            return _blocked_by_dm_policy(dm_policy)
         try:
             envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me,
-                                       sender_handle=_handle(me, [n for n, _d in _roster(_hermes_root(root))]))
+                                       sender_handle=sender_handle)
         except EnvelopeRefusedError as exc:
             # Fail fast: target definitively offline — nothing was queued.
             # Structured refusal so the agent can distinguish it from a resolution error ('runtime_offline'

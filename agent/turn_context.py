@@ -871,6 +871,9 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # Trusted author of this turn's user side (``agent/turn_author.py``): stamped by the
+            # platform adapter, the Bot-Mode DM doors, or HERMES_TURN_AUTHOR — never message text.
+            turn_author=getattr(agent, "_turn_author", None),
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

@@ -134,8 +134,8 @@ VALID_HOOKS: set[str] = {
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
-    # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
-    # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
+    # auth/pairing/dispatch, and per Bot-Mode DM delivery at its admission door (trusted sender in
+    # event.metadata['turn_author']; skip refuses it). Kwargs: event, gateway, session_store. Return {"action": "skip", "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch", "post_gateway_admission",  # post_*: fail-open consume, gateway/run_inbound_consumer.py
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,

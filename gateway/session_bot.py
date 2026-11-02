@@ -603,6 +603,12 @@ async def _maybe_retry(authority, home, path, record):
     event.metadata.update(automation_notification_metadata(record))
     if record.get('author') is not None:
         event.metadata['turn_author'] = dict(record['author'])
+    if not await _offer_bot_dm_pre_dispatch(authority, event, live.source):
+        # The original was already authorized once; a skipped derived retry is a refusal of the
+        # same delivery, projected on its receipt (nothing new admitted).
+        record['retry'] = {'identity': identity, 'refused': 'authorization_refused'}
+        await write_receipt(home, record)
+        return
     record['retry'] = {'identity': identity}
     record.update(status='queued', reply='')
     await write_receipt(home, record)
@@ -773,6 +779,26 @@ async def deliver(connection, params):
     from gateway.session_runtime_workers import track_mutation
     connection.authority._require_admission_open()
     return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
+
+
+async def _offer_bot_dm_pre_dispatch(authority, event, source) -> bool:
+    """Offer the inbound ``pre_gateway_dispatch`` hooks a Bot-Mode DM delivery before it commits.
+
+    Every ``message_agent``/``bot_relay.deliver``/peer-dm admission goes through here, so this is
+    the Bot Chat's pre-inference authorization boundary: a plugin vetoing an unverified sender
+    runs before the receiving agent's turn starts, exactly as it does for platform messages in
+    ``gateway/run_inbound.py``. ``False`` (a ``skip``) refuses the delivery as
+    ``authorization_refused`` with nothing committed — no receipt pin, no admission row — so a
+    later same-id ``deliver`` re-evaluates the (possibly changed) policy.
+
+    Hook exceptions keep the gateway's fail-open dispatch contract (logged, dispatch continues):
+    a policy plugin that wants a mandatory check must catch its own errors and return ``skip``;
+    see the hooks documentation."""
+    hook = getattr(authority.runner, '_hm_pre_gateway_dispatch_hook', None)
+    if hook is None:  # a bare runner (test harnesses) carries no hook machinery
+        return True
+    offered = await hook(event, source)
+    return offered is not None
 
 
 def _require_same_delivery(record, actor, message, author, category):
@@ -946,6 +972,10 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     event.metadata.update(notification)
     if author is not None:
         event.metadata['turn_author'] = dict(author)
+    # Authorization before commit: the receiving profile's plugins vet the sender's trusted
+    # identity. A skip refuses the delivery with nothing written, so the same id may retry later.
+    if not await _offer_bot_dm_pre_dispatch(authority, event, live.source):
+        raise RuntimeStoreError('authorization_refused')
     # Pin the physical target before committing. A process death in this
     # two-store window leaves an explicit unknown record, never a new target.
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,

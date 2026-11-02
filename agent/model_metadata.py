@@ -596,7 +596,7 @@ def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Opt
 
 # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
 _ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "k3.1-pro", "k3.1-pro-highspeed", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
     ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
 )
 

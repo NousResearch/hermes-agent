@@ -199,25 +199,16 @@ export function resolveNewSessionCwd(profile?: string): string {
   // every time. A configured default dir is the user saying where new chats go, so it still wins; only
   // when there is none does the project owning the profile workspace — where this session will actually
   // work — stand in for it (still config, never the focused session's remembered cwd, which stays
-  // deliberately ignored).
-  const configured = workspaceCwdForNewSession()
+  // deliberately ignored). A tile names its profile before $newChatProfile catches up, so the folder
+  // read is that profile's own stored default.
+  const owner = (profile?.trim() || $newChatProfile.get() || $activeGatewayProfile.get()).trim()
+  const configured = workspaceCwdForNewSession(owner)
 
   if (configured) {
     return configured
   }
 
-  // The project owning the profile workspace is where this session will actually work.
-  const workspaceProject = projectOwningProfileWorkspace()
-
-  if (workspaceProject) {
-    return workspaceProject
-  }
-
-  // A tile names its profile before $newChatProfile catches up. The folder
-  // belongs to that profile, which on a browser host is its own stored default.
-  const owner = (profile?.trim() || $newChatProfile.get() || $activeGatewayProfile.get()).trim()
-
-  return workspaceCwdForNewSession(owner)
+  return projectOwningProfileWorkspace()
 }
 
 function projectOwningProfileWorkspace(): string {

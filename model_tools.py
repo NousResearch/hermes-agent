@@ -720,26 +720,27 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
         return ts.dispatch_tool_search(args, current_tool_defs=current_defs, call=call), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs, call=call), None
-    # Session-scoped names for the error path below: a core tool stripped from this
-    # session (clarify in a subagent) must not be told to "call it directly".
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args, ts.session_tool_names(current_defs))
+    # Session-scoped names both recover provider-wrapped eager tools and keep a
+    # core tool stripped from this session from being told to "call it directly".
+    current_names = ts.session_tool_names(current_defs)
+    underlying_name, underlying_args, err = ts.resolve_underlying_call(args, current_names)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
         if not ts.connections_in_scope(current_defs):
             return tool_error("Connectors are not available in this session."), None
         return None, (underlying_name, underlying_args)
-    # Defense in depth: resolve_underlying_call only checks the global
-    # registry; also require membership in the session-scoped catalog.
+    # Defense in depth: require membership in this session's exact tool surface.
     # Session-gated GUI tools fail fast with their real reason (#120413):
     # tool_search can never surface them in this session.
-    if underlying_name not in ts.scoped_deferrable_names(current_defs):
+    if underlying_name not in current_names:
         return tool_error(ts.scope_block_reason(underlying_name)), None
     # Validate against the deferred tool's concrete schema — the generic
     # ``arguments: object`` bridge schema can't enforce it.
-    probe_err = ts.validate_deferred_call_args(underlying_name, underlying_args)
-    if probe_err is not None:
-        return probe_err, None
+    if underlying_name in ts.scoped_deferrable_names(current_defs):
+        probe_err = ts.validate_deferred_call_args(underlying_name, underlying_args)
+        if probe_err is not None:
+            return probe_err, None
     return None, (underlying_name, underlying_args)
 
 

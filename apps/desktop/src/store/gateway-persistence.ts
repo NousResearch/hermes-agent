@@ -14,6 +14,9 @@ import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-
 // rows) shows every gateway at once instead of only the one in front.
 const HOME_PROFILE = 'default'
 const REDIAL_INTERVAL_MS = 30_000
+// A missing This device install is re-probed this often, so one installed
+// while the window stays open still joins the kept gateways.
+const LOCAL_NOT_INSTALLED_RECHECK_MS = 10 * 60_000
 
 /** The window's primary socket already holds this gateway open; a second socket
  *  to the same backend would duplicate its event stream. */
@@ -60,17 +63,30 @@ export function startPersistentGateways(): () => void {
   // This device's install verdict. "Installed" is re-checked before every
   // dial (an install can go away while the window lives, and dialing it then
   // would start the installer), while "not installed" is kept until the
-  // registry or the primary route changes, so a missing install is not
-  // re-probed every tick. Concurrent dials share one probe in flight.
+  // registry or the primary route changes or LOCAL_NOT_INSTALLED_RECHECK_MS
+  // passes, so a missing install is not re-probed every tick. Concurrent dials
+  // share one probe in flight.
   let localProbe: Promise<boolean> | null = null
+  let localProbeExpiresAt = Infinity
+  // Bumped whenever a registry or primary-route change drops the probe: a dial
+  // that awaited a dropped probe must not act on its answer.
+  let localGeneration = 0
 
   const localInstalled = () => {
+    if (localProbe && Date.now() >= localProbeExpiresAt) {
+      localProbe = null
+    }
+
     if (!localProbe) {
       const probe: Promise<boolean> = localBootstrapNeeded().then(
         needed => {
           // A dropped probe's answer is for its own callers only.
-          if (!needed && localProbe === probe) {
-            localProbe = null
+          if (localProbe === probe) {
+            if (needed) {
+              localProbeExpiresAt = Date.now() + LOCAL_NOT_INSTALLED_RECHECK_MS
+            } else {
+              localProbe = null
+            }
           }
 
           return !needed
@@ -85,14 +101,16 @@ export function startPersistentGateways(): () => void {
       )
 
       localProbe = probe
+      localProbeExpiresAt = Infinity
     }
 
     return localProbe
   }
 
   // The probe takes time: by its answer the keeper may have stopped, released
-  // this route or lost its published primary.
-  const stillWanted = (connectionId: string) => pins.has(connectionId) && primaryPublished($primaryGatewayRoute.get())
+  // this route, lost its published primary, or dropped the probe for a newer one.
+  const stillWanted = (connectionId: string, generation: number) =>
+    generation === localGeneration && pins.has(connectionId) && primaryPublished($primaryGatewayRoute.get())
 
   const reconcile = () => {
     const primary = $primaryGatewayRoute.get()
@@ -102,6 +120,7 @@ export function startPersistentGateways(): () => void {
     }
 
     const wanted = new Set(persistentGatewayIds($connectionsRegistry.get(), primary))
+    const generation = localGeneration
 
     for (const [connectionId, release] of pins) {
       if (!wanted.has(connectionId)) {
@@ -118,13 +137,14 @@ export function startPersistentGateways(): () => void {
       // The kept route itself: another profile's open socket on the same
       // gateway does not carry this one.
       if (!gatewayRouteState(connectionId, HOME_PROFILE).open) {
-        void dial(connectionId, localInstalled, () => stillWanted(connectionId)).catch(() => undefined)
+        void dial(connectionId, localInstalled, () => stillWanted(connectionId, generation)).catch(() => undefined)
       }
     }
   }
 
   const recheckLocalAndReconcile = () => {
     localProbe = null
+    localGeneration += 1
     reconcile()
   }
 

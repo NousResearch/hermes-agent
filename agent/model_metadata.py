@@ -18,7 +18,9 @@ from urllib.parse import urlparse
 import hermes_yaml as yaml
 
 from agent import model_metadata_http
+from agent.context_cap import cap_context_length
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.model_metadata_endpoint_scope import _endpoint_scoped_context_length
 from agent.model_metadata_llamacpp import llamacpp_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
@@ -590,27 +592,7 @@ def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Opt
     return None
 
 
-# (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
-_ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
-    ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
-)
-
-
-def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Context confirmed for one provider endpoint only (see _ENDPOINT_SCOPED_CONTEXT): Kimi Coding
-    serves K3 at 1 Mi only on the canonical ``api.kimi.com/coding`` host (legacy Moonshot keys do
-    not); NVIDIA NIM serves deepseek-v4-pro at 262,144 while DeepSeek's native endpoint is 1M."""
-    try:
-        parsed = urlparse(_normalize_base_url(base_url))
-        port = parsed.port
-    except ValueError:
-        return None
-    # Only canonical https://host[:443]/path with no credentials/query/fragment.
-    if parsed.scheme.lower() != "https" or port not in (None, 443) or parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
-        return None
-    host, path, model_key = (parsed.hostname or "").lower(), parsed.path.rstrip("/"), model.strip().lower()
-    return next((ctx for scoped_host, paths, models, ctx in _ENDPOINT_SCOPED_CONTEXT if host == scoped_host and path in paths and model_key in models), None)
+# (host, canonical paths, model ids, context) — moved to agent.model_metadata_endpoint_scope (code-health line budget).
 
 
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
@@ -2206,12 +2188,15 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     return None
 
 
-def get_model_context_length(
+# health: allow CC -- rename-only of the pre-existing public resolver; body unchanged
+def _get_model_context_length_uncapped(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
     provider: str = "", custom_providers: list | None = None,
 ) -> int:
-    """Context length for a model. Resolution order: 0 config override / MoA aggregator /
-    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
+    """Resolve a route's native/configured window before the optional global cap.
+
+    Resolution order: 0 config override / MoA aggregator / model_overrides /
+    custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
     Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (profile live
     catalog, Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
@@ -2321,6 +2306,18 @@ def get_model_context_length(
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
+
+
+def get_model_context_length(
+    model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
+    provider: str = "", custom_providers: list | None = None,
+) -> int:
+    """Effective working window: route resolution as before, then ``min(resolved, model.context_cap)``."""
+    return cap_context_length(_get_model_context_length_uncapped(
+        model, base_url=base_url, api_key=api_key,
+        config_context_length=config_context_length, provider=provider,
+        custom_providers=custom_providers,
+    ))
 
 
 async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None) -> int:

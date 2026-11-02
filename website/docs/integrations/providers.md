@@ -1260,7 +1260,15 @@ Set `context_length` when auto-detection gets the window size wrong.
 
 Hermes uses a multi-source resolution chain to detect the correct context window for your model and provider:
 
-1. **Config override** — `model.context_length` in config.yaml (highest priority). This is an explicit **pin**: it always wins over provider metadata, so Hermes labels it `(pinned)` wherever the window is shown (welcome banner, `/model`, `/usage`, the status bar) and logs one warning at startup when the pin disagrees with the window the provider is known to advertise. The pin is dropped automatically when you switch model, provider or base URL.
+1. **Config override** — `model.context_length` in config.yaml (highest route-specific priority). This is an explicit **pin**: it always wins over provider metadata, so Hermes labels it `(pinned)` wherever the window is shown (welcome banner, `/model`, `/usage`, the status bar) and logs one warning at startup when the pin disagrees with the window the provider is known to advertise. The pin is dropped automatically when you switch model, provider or base URL.
+
+**Global working-window ceiling.** Set `model.context_cap` to keep every current and future model, provider, and session at or below one working window, independently of route-specific pins. Hermes resolves the native/configured window first and then uses `min(resolved_window, context_cap)`, so a model with a smaller window keeps its smaller value. For example, `context_cap: 350000` limits a 1M model to 350K but leaves a 128K model at 128K. Omit it or set it to `null`/`0` to disable the global cap.
+
+```yaml
+model:
+  context_cap: 350000
+```
+
 2. **Custom provider per-model** — `providers.<name>.models.<id>.context_length`
 3. **Persistent cache** — previously discovered values (survives restarts)
 4. **Endpoint `/models`** — queries your server's API (local/custom endpoints)

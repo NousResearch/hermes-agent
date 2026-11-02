@@ -8,7 +8,7 @@ from gateway.session_hosted_service import CanonicalHostedRoomService
 from hermes_state import SessionDB
 from hermes_state_runtime import begin_runtime_epoch
 from tui_gateway import methods_groups_forward, owner_forward, transport
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def test_forward_executes_owner_and_denies_untrusted_or_unowned(tmp_path, monkeypatch):

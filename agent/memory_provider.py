@@ -244,8 +244,8 @@ class MemoryProvider(ABC):
           ``old_string`` (the replaced text).
 
         Only committed writes are mirrored: failed writes and writes staged
-        for approval never reach this hook; approved staged writes fire it
-        from the approval-replay path instead.
+        for approval never reach this hook. Approved staged writes are not
+        reported yet; only writes committed directly by the tool fire it.
 
         Use to mirror built-in skill writes to your backend.
         """

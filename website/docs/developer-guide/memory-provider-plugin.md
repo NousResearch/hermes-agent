@@ -208,9 +208,8 @@ identity should skip destructive mirroring when it is absent.
 (`"skill_manage"`).
 
 Only **committed** writes are mirrored. Failed writes and writes staged by the
-`skills.write_approval` gate never reach the hook; when the user later approves
-a staged write, the hook fires from the approval-replay path with
-`execution_context: "approval_replay"`.
+`skills.write_approval` gate never reach the hook; approved staged writes are
+not mirrored yet.
 ### Oversized prefetch results
 
 External `prefetch()` results are returned in full by default, preserving the

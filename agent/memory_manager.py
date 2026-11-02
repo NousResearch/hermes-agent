@@ -874,10 +874,9 @@ class MemoryManager:
         ``build_metadata`` is an optional agent-side callable (the loop knows
         session/task/tool-call provenance the manager does not).
 
-        Staged writes (``staged: true`` results) are skipped here; when the
-        user approves one, the approval-replay path
-        (``hermes_cli.write_approval_commands._apply_one``) calls this method
-        again with the replay result, so approved writes are still mirrored.
+        Staged writes (``staged: true`` results) are skipped here. Approved
+        staged writes are not mirrored yet: the approval-replay path would
+        need to call this method again with the replay result.
         """
         if not self._memory_tool_result_succeeded(tool_result):
             return

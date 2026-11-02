@@ -391,6 +391,26 @@ def test_a_retry_with_no_working_dir_of_its_own_falls_back_to_the_parents(monkey
     assert retry.start_cwds == [str(tmp_path)] and str(tmp_path) in retry.messages[0]
 
 
+def test_a_parent_read_file_modified_by_an_earlier_attempt_is_still_reported(monkeypatch, tmp_path):
+    """The re-read reminder covers the whole chain: an attempt that wrote a file the parent read, then escalated (its
+    close releases its writer claims), still has that file named on the final result."""
+    from tools import file_state
+    shared = tmp_path / "retry.py"
+    shared.write_text("v1")
+    file_state.record_read("parent-task", str(shared))
+
+    def low(child, task_id, _record):
+        file_state.note_write(task_id, str(shared))
+        close = child.close
+        child.close = lambda: (file_state.get_registry().forget_task(task_id), close())  # as AIAgent.close does
+        return M()
+
+    entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D("verified tests pass")}, effort="low",
+                                ceiling="medium")
+    assert _efforts(log) == ["low", "medium"]
+    assert "re-read before editing" in entry["summary"] and str(shared) in entry["summary"]
+
+
 def test_only_the_final_attempt_emits_a_completion(monkeypatch):
     events = []
     _entry, log, _ = _run_direct(monkeypatch, {"low": M(), "medium": T(), "high": D()}, effort="low",

@@ -786,6 +786,11 @@ class _EscalationChain:
     attempts: list[dict[str, Any]] = field(default_factory=list)
     costs: list[tuple[float, Optional[str]]] = field(default_factory=list)
     reused_child: Any = None
+    # The sibling-write reminder spans the chain: the first attempt's start and parent-read snapshot, plus the
+    # parent-read paths each escalated attempt modified (recorded before its close releases its writer claims).
+    wall_start: float = 0.0
+    parent_reads_snapshot: list = field(default_factory=list)
+    modified_parent_paths: set[str] = field(default_factory=set)
 
     def record(self, child: Any, exit_reason: Any) -> None:
         self.attempts.append({"effort": _effort_ran(child), "exit_reason": exit_reason})
@@ -1074,6 +1079,7 @@ class _ChildRun:
             # The parent already owns these; the final attempt's result names them (and the per-subagent cap holds).
             next_child._handed_off_processes = list(self.child._handed_off_processes)
         chain.working_dir = working_dir
+        chain.modified_parent_paths |= self.modified_parent_paths()
         chain.pending = (next_child, retry_goal)
         return True
 
@@ -1139,8 +1145,13 @@ class _ChildRun:
             # the goal message instead (same turn, no system-prompt mutation).
             from tools.subagent_worktree import build_worktree_context_note
             self.goal = self.goal + build_worktree_context_note(self.worktree_info)
+        if chain is not None and retry:
+            self.wall_start, self.parent_reads_snapshot = chain.wall_start, chain.parent_reads_snapshot
+            return
         self.wall_start = time.time()
         self.parent_reads_snapshot = list(file_state.known_reads(self.parent_task_id)) if self.parent_task_id else []
+        if chain is not None:
+            chain.wall_start, chain.parent_reads_snapshot = self.wall_start, self.parent_reads_snapshot
 
     def finish_failed(
         self, entry: dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,
@@ -1361,26 +1372,32 @@ class _ChildRun:
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
 
-    def append_sibling_write_reminder(self, entry: dict[str, Any]) -> None:
-        """Warn the parent when this child wrote files the parent had already read. Checks writes by ANY non-parent
-        task_id (not just this child's) so nested orchestrator→worker chains are covered too."""
+    def modified_parent_paths(self) -> set[str]:
+        """Files the parent had read that were written since this run (any non-parent writer) — so nested
+        orchestrator→worker chains are covered too."""
         if not (self.parent_task_id and self.parent_reads_snapshot):
-            return
+            return set()
         with _quiet("file_state sibling-write check failed", exc_info=True):
             sibling_writes = file_state.writes_since(self.parent_task_id, self.wall_start, self.parent_reads_snapshot)
-            mod_paths = sorted({p for paths in sibling_writes.values() for p in paths}) if sibling_writes else []
-            if not mod_paths:
-                return
-            reminder = (
-                "\n\n[NOTE: subagent modified files the parent previously read — re-read before editing: "
-                + ", ".join(mod_paths[:8])
-                + (f" (+{len(mod_paths) - 8} more)" if len(mod_paths) > 8 else "")
-                + "]"
-            )
-            if entry.get("summary"):
-                entry["summary"] = entry["summary"] + reminder
-            else:
-                entry["stale_paths"] = mod_paths
+            return {p for paths in sibling_writes.values() for p in paths}
+        return set()
+
+    def append_sibling_write_reminder(self, entry: dict[str, Any]) -> None:
+        """Warn the parent when this child (or an earlier attempt of its chain) wrote files the parent had read."""
+        earlier = self.chain.modified_parent_paths if self.chain is not None else set()
+        mod_paths = sorted(self.modified_parent_paths() | earlier)
+        if not mod_paths:
+            return
+        reminder = (
+            "\n\n[NOTE: subagent modified files the parent previously read — re-read before editing: "
+            + ", ".join(mod_paths[:8])
+            + (f" (+{len(mod_paths) - 8} more)" if len(mod_paths) > 8 else "")
+            + "]"
+        )
+        if entry.get("summary"):
+            entry["summary"] = entry["summary"] + reminder
+        else:
+            entry["stale_paths"] = mod_paths
 
     def account_background_processes(self, entry: dict[str, Any]) -> None:
         """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now

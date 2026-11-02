@@ -56,21 +56,21 @@ jobs:
           focus_count=$(node - "$file" <<'NODE'
           const fs = require('node:fs');
           const source = fs.readFileSync(process.argv[2], 'utf8');
-          const count = source.split('window.addEventListener(').slice(1)
-            .filter((part) => part.startsWith('"focus"') || part.startsWith("'focus'")).length;
-          process.stdout.write(String(count));
+          const matches = source.match(/(?:window\.)?addEventListener\(\s*["']focus["']/g) || [];
+          process.stdout.write(String(matches.length));
           NODE
           )
           echo "verified_asset=$asset"
-          echo "window_focus_listener_count=$focus_count"
-          test "$focus_count" -eq 1
-          echo "window_focus_listener_count=$focus_count" >> "$GITHUB_STEP_SUMMARY"
+          echo "focus_listener_count=$focus_count"
+          echo "verified_asset=$asset" >> "$GITHUB_STEP_SUMMARY"
+          echo "focus_listener_count=$focus_count" >> "$GITHUB_STEP_SUMMARY"
           {
             echo "asset=$asset"
-            echo "window_focus_listener_count=$focus_count"
-            grep -oE '.{0,140}(focus|onResume|onWindowFocus).{0,180}' "$file" | head -50 || true
+            echo "focus_listener_count=$focus_count"
+            grep -oE '.{0,140}(addEventListener|focus|onResume|onWindowFocus).{0,180}' "$file" | head -50 || true
           } > hermes-dashboard-focus-snippets.txt
           tar -czf hermes-dashboard-web-dist.tgz hermes_cli/web_dist
+          test "$focus_count" -eq 1
 
       - name: Set up Python
         uses: actions/setup-python@v5

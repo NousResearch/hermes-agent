@@ -414,33 +414,16 @@ _NOUS_SHARED_STATE_KEYS = (
 _SHARED_RENEWAL_KEY = "renewal"
 
 
-def _nous_token_stamps(state: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
-    """(expires, issued) epoch seconds of a state's access token; JWT ``exp``/``iat`` fill gaps."""
-    from hermes_cli.auth import _parse_iso_timestamp
-    claims = _decode_jwt_claims(state.get("access_token"))
-    def stamp(field: str, claim: str) -> Optional[float]:
-        parsed = _parse_iso_timestamp(state.get(field))
-        if parsed is None and isinstance(claims.get(claim), (int, float)):
-            parsed = float(claims[claim])
-        return parsed
-    return stamp("expires_at", "exp"), stamp("obtained_at", "iat")
-
-
 def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
-    """1 when *a* holds the later-issued token pair than *b*, -1 the earlier, 0 tied, None unstamped.
+    """1 when *a* holds the later-ISSUED token pair than *b*, -1 the earlier, 0 tied, None unstamped.
 
-    Same ordering as the forked-grant heal (``auth_oauth_grants._oauth_freshness``): a rotation
-    always issues a later-expiring access token, so expiry decides; issue time breaks a tie. A side
-    with no stamp at all is the older one.
+    The forked-grant heal's ordering (``auth_oauth_grants.oauth_pair_order``): JWT ``iat``, then
+    ``obtained_at``; expiry only as the last fallback, since a later rotation can carry a shorter TTL.
+    A side stamped only by expiry against one stamped only by issue time is a tie (no adopt, no
+    push); JWT states carry both claims, so they always order.
     """
-    for x, y in zip(_nous_token_stamps(a), _nous_token_stamps(b)):
-        if x is not None and y is not None and x != y:
-            return 1 if x > y else -1
-    a_any, b_any = any(v is not None for v in _nous_token_stamps(a)), any(
-        v is not None for v in _nous_token_stamps(b))
-    if not a_any and not b_any:
-        return None
-    return 0 if a_any == b_any else (1 if a_any else -1)
+    from hermes_cli.auth_oauth_grants import oauth_pair_order
+    return oauth_pair_order(a, b)
 
 
 def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:

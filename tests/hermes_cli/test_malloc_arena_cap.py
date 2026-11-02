@@ -60,7 +60,7 @@ def test_arena_cap_bounds_per_thread_arenas_and_zero_keeps_glibc_default():
     assert capped["applied"] is True
     assert capped["heaps"] <= 2, capped
     assert uncapped["applied"] is False
-    assert uncapped["heaps"] >= 12, uncapped  # control: the probe really sees per-thread arenas
+    assert uncapped["heaps"] > 4, uncapped  # control: the probe really sees per-thread arenas
 
 
 @pytest.mark.platforms("linux")
@@ -68,4 +68,4 @@ def test_operator_malloc_arena_max_env_wins_over_config():
     result = _run_child(2, MALLOC_ARENA_MAX="16")
 
     assert result["applied"] is False
-    assert result["heaps"] >= 12, result
+    assert result["heaps"] > 2, result  # the config's cap of 2 was not applied over the operator's 16

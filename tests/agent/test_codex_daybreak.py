@@ -108,10 +108,10 @@ def test_offered_only_where_the_account_lists_it(catalog):
 
 
 def test_gateway_reads_the_profile_switch_each_turn(tmp_path, monkeypatch):
-    """Every chat turn (Desktop, TUI, ``hermes chat``) runs in the gateway, which copies the switch onto
-    the turn's agent from the profile's config.yaml, so a flip reaches the next turn of a running chat."""
+    """The owner's chat turns (Desktop, TUI, ``hermes chat``: ``Platform.LOCAL``) run in the gateway, which copies
+    the switch onto the turn's agent from the profile's config.yaml, so a flip reaches the next turn of a running chat."""
+    from gateway.config import Platform
     from gateway.run_config_loaders import GatewayConfigLoadersMixin
-
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -119,8 +119,24 @@ def test_gateway_reads_the_profile_switch_each_turn(tmp_path, monkeypatch):
     for value in ("true", "false", '"yes"', None):
         (home / "config.yaml").write_text("model: {}\n" if value is None else f"agent:\n  daybreak: {value}\n",
                                           encoding="utf-8")
-        seen[value] = GatewayConfigLoadersMixin._load_daybreak()
+        seen[value] = GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(platform=Platform.LOCAL))
     assert seen == {"true": True, "false": False, '"yes"': False, None: False}
+
+
+def test_messaging_platform_turns_never_carry_daybreak(tmp_path, monkeypatch):
+    """Daybreak is the approved account's own access (OpenAI: no third-party or downstream use). A messaging
+    platform's chats can be other people, so with the switch on only the owner's local surfaces carry it."""
+    from gateway import run as gateway_run
+    from gateway.config import Platform
+    from gateway.run_config_loaders import GatewayConfigLoadersMixin
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(gateway_run, "_hermes_home", home)  # frozen at import by an earlier test
+    (home / "config.yaml").write_text("agent:\n  daybreak: true\n", encoding="utf-8")
+    loaded = {platform: GatewayConfigLoadersMixin._load_daybreak(SimpleNamespace(platform=platform))
+              for platform in (Platform.LOCAL, Platform.TELEGRAM, Platform.DISCORD, Platform.API_SERVER)}
+    assert loaded == {Platform.LOCAL: True, Platform.TELEGRAM: False, Platform.DISCORD: False,
+                      Platform.API_SERVER: False}
 
 
 def test_model_menu_capability_marks_only_listed_subscription_models(catalog, monkeypatch):

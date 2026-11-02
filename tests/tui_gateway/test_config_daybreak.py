@@ -50,17 +50,48 @@ def test_a_non_boolean_is_refused_rather_than_written(homes):
     assert not (launch / "config.yaml").exists()
 
 
-def test_a_flip_reaches_only_this_profiles_live_agents(homes, monkeypatch):
+def test_a_flip_reaches_only_this_profiles_local_agents(homes, monkeypatch):
     _launch, worker = homes
-    launch_agent, worker_agent = SimpleNamespace(daybreak=False), SimpleNamespace(daybreak=False)
+    launch_agent = SimpleNamespace(daybreak=False, platform="desktop")
+    worker_agent = SimpleNamespace(daybreak=False, platform="tui")
+    bot_agent = SimpleNamespace(daybreak=False, platform="telegram")  # a plugin session in the same profile
     monkeypatch.setitem(server._sessions, "launch-sid", {"agent": launch_agent, "profile_home": None})
     monkeypatch.setitem(server._sessions, "worker-sid", {"agent": worker_agent, "profile_home": str(worker)})
+    monkeypatch.setitem(server._sessions, "bot-sid", {"agent": bot_agent, "profile_home": str(worker)})
     monkeypatch.setitem(server._sessions, "unbuilt-sid", {"agent": None, "profile_home": str(worker)})
 
     assert _call("config.set", key="daybreak", value=True, profile="code")["result"]["value"] is True
     assert worker_agent.daybreak is True
     assert launch_agent.daybreak is False  # another profile's setting
+    assert bot_agent.daybreak is False  # someone else's chat: OpenAI allows no third-party access
     assert yaml.safe_load((worker / "config.yaml").read_text())["agent"]["daybreak"] is True
 
     assert _call("config.set", key="daybreak", value=True)["result"]["value"] is True  # launch profile
     assert launch_agent.daybreak is True
+
+
+def test_only_the_owners_local_surfaces_carry_it():
+    from agent.session_source import DAYBREAK_SOURCES
+    assert DAYBREAK_SOURCES == {"tui", "desktop", "cli"}
+
+
+@pytest.mark.parametrize(("source", "expected"), [(None, True), ("desktop", True), ("telegram", False)])
+def test_new_agents_read_the_switch_only_for_local_surfaces(monkeypatch, source, expected):
+    """``_make_agent`` end to end with a stand-in agent class: the switch is on in config.yaml, and a plugin
+    session tagged ``telegram`` built by this backend still gets standard requests."""
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"daybreak": True},
+                                                       "model": {"default": "gpt-6-sol", "provider": "openai-codex"}})
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda requested=None, target_model=None: {
+                            "provider": "openai-codex", "base_url": "https://chatgpt.com/backend-api/codex",
+                            "api_key": "token", "api_mode": "codex_responses", "credential_pool": None})
+    monkeypatch.setattr("run_agent.AIAgent", lambda **kwargs: SimpleNamespace(model=kwargs.get("model")))
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda platform=None: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    agent = server._make_agent("sid", "session-key", platform_override=source)
+    assert agent.daybreak is expected

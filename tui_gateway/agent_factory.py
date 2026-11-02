@@ -686,7 +686,8 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
-    agent.daybreak = (cfg.get("agent") or {}).get("daybreak") is True  # live flips: methods_config_set._set_daybreak
+    from agent.session_source import DAYBREAK_SOURCES  # live flips: methods_config_set._set_daybreak
+    agent.daybreak = platform in DAYBREAK_SOURCES and (cfg.get("agent") or {}).get("daybreak") is True
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice

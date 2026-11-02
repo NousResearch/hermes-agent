@@ -7,8 +7,8 @@ import { keepRoute } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute, type PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
 // Every registered gateway stays connected for as long as the window lives: its
-// home socket is dialed at startup, kept against the idle pruner, and redialed
-// when it drops. Picking a gateway or opening one of its sessions then costs no
+// home socket is dialed at startup, kept against the idle pruner, and recovered
+// through the gateway's retry ladder. Picking one of its sessions then costs no
 // dial, and the unified Sessions list (Electron splices every pooled backend's
 // rows) shows every gateway at once instead of only the one in front.
 const HOME_PROFILE = 'default'
@@ -45,9 +45,8 @@ async function dial(connectionId: string): Promise<void> {
     return
   }
 
-  // A gateway that is down or needs sign-in fails this dial; the next tick
-  // (every REDIAL_INTERVAL_MS) tries again.
-  await openGatewayForAgent(connectionId, HOME_PROFILE)
+  // The gateway owns backoff and parking; maintenance is not a user retry.
+  await openGatewayForAgent(connectionId, HOME_PROFILE, { automaticReconnect: true })
 }
 
 /** Start keeping every registered gateway connected. Returns the teardown. */

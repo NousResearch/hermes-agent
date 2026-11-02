@@ -22,6 +22,11 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.fn() }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
+vi.mock('@/store/session-states', () => ({
+  reconcileBusyStatesOnReconnect: vi.fn(),
+  resetRouteOwnedTileRuntimeBindings: vi.fn(),
+  resetTileRuntimeBindings: vi.fn()
+}))
 
 const {
   closeSecondaryGateways,

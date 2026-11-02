@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import { isPaneVisible, revealTreePane, setTreePaneHidden } from '@/components/pane-shell/tree/store'
 import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
@@ -384,6 +384,9 @@ export function openReview(scopeCwd: null | string = null, scopeTarget = 'main')
 export function closeReview(): void {
   noteAreaClosed('review_pane')
   $reviewOpen.set(false)
+  // Reveal can bypass a false workspace gate. Closing must hide the tree even
+  // when that derived visibility value stays false and its listener is silent.
+  setTreePaneHidden(REVIEW_PANE_ID, true)
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   clearReviewSelection()

@@ -800,6 +800,7 @@ gateway:
     ack_generate: "AGENTS.md word vanaf 'n projekskandering gegenereer…"
   moa:
     prepare_failed: "Kon nie MoA-beurt voorberei nie."
+    managed_session: "/moa is nie in hierdie sessie beskikbaar nie: veiligemodus-, konfigurasievrye, kanban- en bestuurde-werker-sessies voer elke beurt op hul eie model uit. Stuur die opdrag sonder /moa."
   quick_command:
     no_output: "Opdrag het geen uitvoer teruggegee nie."
     timed_out: "Vinnige opdrag het uitgetel (30s)."

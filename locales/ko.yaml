@@ -800,6 +800,7 @@ gateway:
     ack_generate: "프로젝트 스캔 결과로 AGENTS.md를 생성하고 있어요…"
   moa:
     prepare_failed: "MoA 턴을 준비하지 못했어요."
+    managed_session: "이 세션에서는 /moa를 사용할 수 없습니다. 안전 모드, 설정 없음, kanban, 관리형 워커 세션은 모든 턴을 자체 모델로 실행합니다. /moa 없이 프롬프트를 보내세요."
   quick_command:
     no_output: "명령이 출력을 반환하지 않았어요."
     timed_out: "빠른 명령 시간 초과 (30초)."

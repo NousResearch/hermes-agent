@@ -116,3 +116,14 @@ def test_a_hit_racing_eviction_never_makes_it_drop_a_different_active_entry(monk
     memo.remember_message_tokens("new", (memo.MemoPins(["new text"]), 1, 0))
     assert reader_done.wait(5)
     assert "active" in cache and "new" in cache
+
+
+def test_idle_entries_never_outnumber_the_memo_main_always_had(monkeypatch):
+    """Closed sessions' entries (idle) stay within the original 4,096-entry footprint; only entries a running
+    conversation touched in the last minute may exceed it."""
+    mm._MSG_TOKENS_CACHE.clear()
+    now = _fake_clock(monkeypatch)
+    for i in range(6000):
+        now[0] += 61  # each message's session is idle before the next one arrives
+        mm.estimate_messages_tokens_rough([{"role": "tool", "content": f"closed-{i} " + "q" * 300}])
+    assert len(mm._MSG_TOKENS_CACHE) <= 4096

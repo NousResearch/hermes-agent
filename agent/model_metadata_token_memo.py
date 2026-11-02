@@ -3,10 +3,11 @@
 Each entry pins every string its fingerprint holds (the pin keeps the ``id()`` key sound), so the memo is
 bounded two ways, both least-recently-used first so a conversation that is still running never pays:
 
-* a retained-bytes budget: pinned string bytes plus the fingerprint structure around them. A real-shaped
-  1M-token history retains about 9 MB, so the default keeps several maxed conversations hot at once while
-  the dead sessions of a long-lived process age out;
-* an entry count, as a backstop for the bytes estimate.
+* a retained-bytes budget: pinned string bytes plus the fingerprint structure around them;
+* an entry count, the same 4,096 the memo always had.
+
+Both bounds only govern IDLE entries (below), so they are set to hold no more than main's 4,096-entry memo
+ever did: what a running conversation needs is protected by the active window, never by the budget.
 
 Neither bound ever evicts an entry looked up in the last ``_ACTIVE_WINDOW_S`` seconds: a conversation larger
 than the budget (image-heavy history) overshoots it while it runs instead of missing on every message, and the
@@ -28,8 +29,8 @@ from typing import Any
 # fingerprint -> (pins, text tokens, image count). Order is recency: a hit moves its entry to the end, and an
 # OrderedDict evicts from the front in O(1) where a plain dict rescans its deleted slots on every eviction.
 _MSG_TOKENS_CACHE: OrderedDict[Any, tuple[list, int, int]] = OrderedDict()
-_MSG_TOKENS_CACHE_MAX = 65536
-_MSG_TOKENS_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_MSG_TOKENS_CACHE_MAX = 4096
+_MSG_TOKENS_CACHE_MAX_BYTES = 16 * 1024 * 1024
 # Measured on real histories: the fingerprint tuple, its id int and the pin slot cost ~120 B per string leaf.
 _LEAF_OVERHEAD_BYTES = 120
 # An entry looked up this recently is never evicted (see module docstring).

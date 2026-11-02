@@ -4062,7 +4062,9 @@ export const en: Translations = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sends ${level} on this route`,
       updateFailed: 'Model option update failed',
-      fastFailed: 'Fast mode update failed'
+      fastFailed: 'Fast mode update failed',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak update failed'
     },
     gatewayMenu: {
       gateway: 'Gateway',

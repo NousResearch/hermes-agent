@@ -4503,7 +4503,9 @@ export const deOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
       updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
+      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
       gateway: 'Gateway',

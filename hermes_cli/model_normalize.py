@@ -246,6 +246,19 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return name[len("openai/"):]  # openai-codex maps openai/gpt-5.4 and openai:gpt-5.4 -> gpt-5.4
         return stripped
 
+    # --- Vertex: returns the canonical config/session model ID, which must be
+    #     ``<publisher>/<model>`` (``google/gemini-*``, ``anthropic/claude-*``) so
+    #     ``_resolve_vertex_runtime`` and ``is_anthropic_vertex_model`` accept it.
+    #     Wire-level ``anthropic/`` stripping for AnthropicVertex happens at request
+    #     build time (``normalize_model_name`` / ``_build_vertex_client``).
+    if provider == "vertex":
+        if name.lower().startswith("anthropic/"):
+            suffix = name.split("/", 1)[1]
+            if suffix.lower().startswith("claude-"):
+                suffix = _dots_to_hyphens(suffix)
+            return f"anthropic/{suffix}"
+        return name
+
     if provider == "deepseek":
         bare = _strip_matching_provider_prefix(name, provider)
         return bare if "/" in bare else _normalize_for_deepseek(bare)

@@ -44,6 +44,19 @@ def _snapshot_primary_runtime(agent):
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex needs project + region on the snapshot so
+        # restore/rebuild sites can reconstruct the AnthropicVertex client
+        # without re-reading config.yaml or credentials. Same reason bedrock
+        # stashes ``_bedrock_region`` — the rebuild path is turn-hot and
+        # should not hit disk. Guarded above by
+        # ``api_mode == "anthropic_messages"``, so ``provider == "vertex"``
+        # here unambiguously means the Claude-on-Vertex dispatch (Gemini
+        # on Vertex uses ``chat_completions`` and never reaches this branch).
+        if agent.provider == "vertex":
+            agent._primary_runtime.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
 
 
 def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
@@ -81,4 +94,16 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        # Anthropic-on-Vertex: stash project + region so restore/rebuild
+        # can reconstruct AnthropicVertex without re-reading config.yaml.
+        # Guarded above by ``api_mode == "anthropic_messages"``, so
+        # ``provider == "vertex"`` here can only mean Claude-on-Vertex.
+        # Written into ``rt``, not ``agent._primary_runtime``: the caller
+        # REPLACES the snapshot with this return value, so mutating the old
+        # one here would drop both fields.
+        if agent.provider == "vertex":
+            rt.update({
+                "vertex_project_id": getattr(agent, "_vertex_project_id", None),
+                "vertex_region": getattr(agent, "_vertex_region", None),
+            })
     return rt

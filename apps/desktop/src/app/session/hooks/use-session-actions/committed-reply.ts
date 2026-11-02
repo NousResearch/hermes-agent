@@ -87,8 +87,65 @@ export function pageReplyCommittingLiveRow(
       index > pagePrompt &&
       message.role === 'assistant' &&
       committedNew(message) &&
-      committedReplyCovers(message, said)
+      committedReplyCovers(message, said) &&
+      extendsBetweenWords(spokenText(message).trim(), said)
   )
+}
+
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+/**
+ * Whether `stored` continues `said` between two words. Model tokens mostly
+ * start at a word, so a live row cut mid-stream nearly always ends where one
+ * ends; a cut inside a word ('A8' against 'A8x ...') is where an unrelated
+ * reply sharing a short prefix looks like this one. Such a row keeps its own
+ * bubble until its completion, as before the stored body could be adopted.
+ */
+function extendsBetweenWords(stored: string, said: string): boolean {
+  const next = stored.charAt(said.length)
+
+  return !next || !WORD_CHAR.test(next) || !WORD_CHAR.test(said.charAt(said.length - 1))
+}
+
+const textAfterLastTool = (parts: ChatMessage['parts']) =>
+  parts
+    .slice(parts.findLastIndex(part => part.type === 'tool-call') + 1)
+    .flatMap(part => (part.type === 'text' ? [part.text] : []))
+    .join('')
+
+/** What the stored reply already shows past the text the live row streamed, '' when unknown. */
+function storedTailPast(stored: string, streamed: string): string {
+  const shown = stored.trimStart()
+  const said = streamed.trim()
+
+  if (!shown.startsWith(said)) {
+    return ''
+  }
+
+  const rest = shown.slice(said.length)
+  const trailing = streamed.slice(streamed.trimEnd().length)
+
+  return rest.startsWith(trailing) ? rest.slice(trailing.length) : rest
+}
+
+/**
+ * The live row with the stored body. The stream has not finished sending what
+ * that body holds past the live text: those deltas (queued, or still on the
+ * wire past the segment cursor) would append it a second time, and the
+ * completion that repairs the bubble may be lost to the same reconnect. The
+ * tail part records that text, and appendAssistantTextPart drops deltas that
+ * repeat it.
+ */
+function adoptStoredReply(live: ChatMessage, stored: ChatMessage): ChatMessage {
+  const parts = [...stored.parts]
+  const tail = parts.at(-1)
+  const covered = tail?.type === 'text' ? storedTailPast(tail.text, textAfterLastTool(live.parts)) : ''
+
+  if (tail && covered) {
+    parts[parts.length - 1] = { ...tail, storedTail: covered }
+  }
+
+  return { ...live, parts }
 }
 
 /**
@@ -112,5 +169,5 @@ export function livePlaceOnCommittedPage(
 
   const stored = page[index]
 
-  return { index, row: spokenText(stored).trim() === spokenText(live).trim() ? live : { ...live, parts: stored.parts } }
+  return { index, row: spokenText(stored).trim() === spokenText(live).trim() ? live : adoptStoredReply(live, stored) }
 }

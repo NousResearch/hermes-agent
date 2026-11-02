@@ -72,6 +72,9 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
     gateway chat ids subscribed to task events). Caller owns the transaction.
     Run on export and again on import (an archive is untrusted input)."""
     conn.execute("DELETE FROM kanban_notify_subs")
+    # Older/untrusted archives may not contain the additive owner table.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_notification_owner'").fetchone():
+        conn.execute("DELETE FROM kanban_notification_owner")
     conn.execute(
         """
         UPDATE tasks

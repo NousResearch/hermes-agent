@@ -746,6 +746,9 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        from hermes_cli.kanban_notification_owner import board_subscription_is_current
+        if not await asyncio.to_thread(board_subscription_is_current, self.board_slug, self.sub):
+            return  # Ownership changed after collection; never send to the stale chat.
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:

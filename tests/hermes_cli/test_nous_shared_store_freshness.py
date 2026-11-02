@@ -15,11 +15,13 @@ import hermes_cli.auth as auth_mod
 from hermes_cli import auth_nous
 
 
-def _jwt(tag: str, seconds: int) -> str:
+def _jwt(tag: str, seconds: int, *, issued: int | None = None, sub: str = "user-1") -> str:
     def b64(d):
         return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
-    claims = {"sub": "user-1", "scope": auth_mod.DEFAULT_NOUS_SCOPE, "exp": int(time.time() + seconds),
+    claims = {"sub": sub, "scope": auth_mod.DEFAULT_NOUS_SCOPE, "exp": int(time.time() + seconds),
               "tag": tag}
+    if issued is not None:
+        claims["iat"] = int(time.time() + issued)
     return ".".join([b64({"alg": "none"}), b64(claims), "sig"])
 
 
@@ -27,8 +29,9 @@ def _iso(seconds: int) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
-def _state(tag: str, refresh_token: str, *, issued: int, ttl: int = 3000) -> dict:
-    token = _jwt(tag, issued + ttl)
+def _state(tag: str, refresh_token: str, *, issued: int, ttl: int = 3000, sub: str = "user-1",
+           token: str | None = None) -> dict:
+    token = token or _jwt(tag, issued + ttl, issued=issued, sub=sub)
     return {
         "portal_base_url": auth_mod.DEFAULT_NOUS_PORTAL_URL, "client_id": "hermes-cli",
         "token_type": "Bearer", "scope": auth_mod.DEFAULT_NOUS_SCOPE,
@@ -97,3 +100,43 @@ def test_newer_shared_state_is_adopted_and_a_stale_renewal_cannot_overwrite_it(h
     # A renewal write carrying the older pair leaves the newer shared copy in place.
     auth_nous._write_shared_nous_state(older, renewal=True)
     assert auth_nous._read_shared_nous_state()["refresh_token"] == "RT2"
+
+
+def _single_use_portal(monkeypatch, ttl: int) -> list:
+    """Fake refresh POST: single-use refresh tokens with reuse detection, issuing *ttl*-second keys."""
+    posted: list = []
+
+    def fake_refresh(*, client, portal_base_url, client_id, refresh_token):
+        if refresh_token in posted:
+            raise auth_mod.AuthError("Refresh token reuse detected", provider="nous", code="invalid_grant",
+                                     relogin_required=True)
+        posted.append(refresh_token)
+        n = len(posted)
+        return {"access_token": _jwt(f"K-new{n}", ttl, issued=0), "refresh_token": f"RT-new{n}",
+                "expires_in": ttl, "token_type": "Bearer", "scope": auth_mod.DEFAULT_NOUS_SCOPE}
+
+    monkeypatch.setattr(auth_nous, "_refresh_access_token", fake_refresh)
+    monkeypatch.setattr(auth_mod, "_refresh_access_token", fake_refresh, raising=False)
+    return posted
+
+
+def test_a_later_rotation_with_a_shorter_ttl_is_still_the_newer_pair(homes, monkeypatch):
+    """Expiry is not issue order: the Portal sets access TTLs per client and per issue."""
+    hermes_home, _ = homes
+    in_sync = _state("K1", "RT1", issued=-60, ttl=3600)
+    _seed(hermes_home, in_sync, in_sync)
+    posted = _single_use_portal(monkeypatch, ttl=900)  # the next rotation issues 15-minute keys
+
+    auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+    assert auth_nous._read_shared_nous_state()["refresh_token"] == "RT-new1"
+    auth_mod.resolve_nous_runtime_credentials()
+    auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+    assert posted == ["RT1", "RT-new1"]  # the redeemed RT1 is never replayed
+    assert _profile_refresh_token(hermes_home) == "RT-new2"
+
+    # A sibling's later, shorter-lived rotation is adopted over this profile's longer-lived pair.
+    _seed(hermes_home, _state("K2", "RT2", issued=-600, ttl=3600), _state("K3", "RT3", issued=-5, ttl=900))
+    auth_mod.resolve_nous_runtime_credentials()
+    assert auth_nous._read_shared_nous_state()["refresh_token"] == "RT3"  # never rolled back to RT2
+    auth_mod.resolve_nous_runtime_credentials(force_refresh=True)
+    assert posted[-1] == "RT3"

@@ -414,19 +414,36 @@ def _oauth_identity(entry: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _oauth_freshness(entry: dict[str, Any]) -> float:
-    """Best-effort 'how recently was this pair issued' score (epoch seconds).
+def _oauth_stamps(entry: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+    """(issued, expires) epoch seconds of an OAuth pair; server-stamped JWT claims first."""
+    from agent.credential_pool_timestamps import _parse_absolute_timestamp
+    claims = _decode_jwt_claims(entry.get("access_token"))
 
-    A rotation always issues a later-expiring access token, so ``expires_at`` ordering identifies
-    the live copy; ``last_refresh`` and the JWT ``exp`` claim are fallbacks.
+    def first(*values: Any) -> Optional[float]:
+        return next((ts for ts in map(_parse_absolute_timestamp, values) if ts), None)
+    return (first(claims.get("iat"), entry.get("last_refresh"), entry.get("obtained_at")),
+            first(claims.get("exp"), entry.get("expires_at_ms"), entry.get("expires_at")))
+
+
+def oauth_pair_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
+    """1 when *a* holds the later-issued OAuth pair than *b*, -1 the earlier, 0 tied, None unstamped.
+
+    ISSUE time decides: a rotation always issues later, but not always later-expiring (the Portal
+    sets access TTLs per client and per issue), so expiry only orders pairs lacking an issue stamp
+    on either side. A side with no stamp at all is the older one.
     """
-    from agent.credential_pool import _parse_absolute_timestamp
-    stamps = [entry.get(k) for k in ("expires_at_ms", "expires_at", "last_refresh")]
-    best = max((ts for ts in map(_parse_absolute_timestamp, stamps) if ts), default=0.0)
-    if best == 0.0:
-        exp = _decode_jwt_claims(entry.get("access_token")).get("exp")
-        best = _parse_absolute_timestamp(exp) or 0.0
-    return best
+    sa, sb = _oauth_stamps(a), _oauth_stamps(b)
+    for x, y in zip(sa, sb):
+        if x is not None and y is not None and x != y:
+            return 1 if x > y else -1
+    a_any, b_any = any(v is not None for v in sa), any(v is not None for v in sb)
+    if not a_any and not b_any:
+        return None
+    return 0 if a_any == b_any else (1 if a_any else -1)
+
+
+def _oauth_fresher(candidate: dict[str, Any], target: dict[str, Any]) -> bool:
+    return oauth_pair_order(candidate, target) == 1
 
 
 def _find_root_counterpart(
@@ -537,7 +554,7 @@ def _heal_forked_provider_block(
         for key in ("access_token", "refresh_token")
     ):
         return None
-    adopted = _oauth_freshness(p_flat) > _oauth_freshness(r_flat)
+    adopted = _oauth_fresher(p_flat, r_flat)
     if adopted:
         r_providers[provider_id] = dict(p_block)
     del p_providers[provider_id]
@@ -577,7 +594,7 @@ def owned_profile_reads_root_state(
 def _adopt_if_fresher(
     target: dict[str, Any], candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
     """*target* carrying *candidate*'s pair when the candidate rotated later, else None."""
-    fresher = _oauth_freshness(candidate) > _oauth_freshness(target)
+    fresher = _oauth_fresher(candidate, target)
     return _adopt_oauth_material(target, candidate) if fresher else None
 
 
@@ -695,11 +712,10 @@ class _HealPass:
         if pkce_idx is None:
             return
         pkce_row = self.r_rows[pkce_idx]
-        row_fresh = _oauth_freshness(pkce_row)
-        single_fresh = _oauth_freshness(self.root_singleton_row)
-        if row_fresh > single_fresh:
+        order = oauth_pair_order(pkce_row, self.root_singleton_row)
+        if order == 1:
             self.root_singleton_row = _adopt_oauth_material(self.root_singleton_row, pkce_row)
-        elif single_fresh > row_fresh:
+        elif order == -1:
             self.r_rows[pkce_idx] = _adopt_oauth_material(pkce_row, self.root_singleton_row)
             self.root_changed = True
 

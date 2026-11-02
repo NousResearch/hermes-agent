@@ -317,6 +317,36 @@ class TestSignalPhoneRedaction:
         assert "+155" in result  # Prefix preserved
         assert "4567" in result  # Suffix preserved
 
+    @pytest.mark.parametrize("text, expected", [
+        ("Call +15551234567 now", "Call +155****4567 now"),
+        ("+15551234567", "+155****4567"),
+        ("/call/+15551234567", "/call/+155****4567"),
+        ("Tel:+819012345678", "Tel:+819****5678"),
+        ("(+442071838750)", "(+442****8750)"),
+        ("電話+819012345678", "電話+819****5678"),
+        ("ref.+14155550100", "ref.+141****0100"),
+        ("id-+14155550100", "id-+141****0100"),
+        ("contact_+14155550100", "contact_+141****0100"),
+    ])
+    def test_real_numbers_still_masked(self, text, expected):
+        from agent.redact import redact_sensitive_text
+        assert redact_sensitive_text(text) == expected
+
+    @pytest.mark.parametrize("text", [
+        "/home/u/.hermes/tools/python-3.14.7+20260901-darwin-x64/bin/python3",
+        "pkg==1.2.3+20260901",
+        "build 1.0+1234567",
+        # Glued to a word: deliberately left alone, like the version suffixes above.
+        "foo+15551234567",
+        "Call+15551234567",
+    ])
+    def test_plus_inside_a_word_is_not_a_phone_number(self, text):
+        """A ``+`` glued to a letter or digit is not a phone number: version/build
+        suffixes like ``3.14.7+20260901`` must survive intact, because masking them
+        breaks paths the agent copies from tool output."""
+        from agent.redact import redact_sensitive_text
+        assert redact_sensitive_text(text) == text
+
 
 # ---------------------------------------------------------------------------
 # Authorization in run.py

@@ -1010,9 +1010,9 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Return freed heap pages to the OS (glibc-only). No forced full collection: in a gateway this runs
-        on every agent close, and a full pass over the shared heap freezes every other session's thread."""
-        from hermes_cli.mem_trim import trim_memory
+        """Return freed pages to the OS; no full GC here (it would freeze every other session), the idle one runs."""
+        from hermes_cli.mem_trim import note_agent_closed, trim_memory
+        note_agent_closed()
         trim_memory(force=True, reason="agent close", collect=False)
 
     def _finalize_owned_session_row(self) -> None:

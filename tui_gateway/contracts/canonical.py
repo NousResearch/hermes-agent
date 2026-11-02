@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef, Usage
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
@@ -170,6 +170,8 @@ class SessionInventoryFields(Result):
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
+    # The resident agent's status-bar usage (``gateway/session_usage.py::snapshot_usage``); absent agentless.
+    usage: Usage | None = None
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):

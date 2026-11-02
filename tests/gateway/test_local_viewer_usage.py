@@ -254,3 +254,13 @@ async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete
     assert isinstance(usage, dict), complete
     assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0
     assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
+
+
+def test_resume_snapshot_carries_the_resident_agents_own_readouts():
+    """A viewer switching back to a session paints that session's cache-hit / t/s from the resume
+    snapshot; agentless there is no reading, so none is sent (zeros would erase the last one seen)."""
+    from gateway.session_usage import snapshot_usage
+    authority = SimpleNamespace(sessions={'s': SimpleNamespace(compression_count=0)})
+    usage = snapshot_usage(authority, SimpleNamespace(session_id='s'), _agent())
+    assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0 and usage['calls'] == 2
+    assert snapshot_usage(authority, SimpleNamespace(session_id='s'), None) is None

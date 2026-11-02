@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the skin save failure report is one branch at the existing CLI settings chokepoint; the facade split is a separate refactor
 """Slash-command handlers for the interactive CLI (``HermesCLI`` inherits ``CLICommandsMixin``).
 
 cli.py-internal symbols (``_cprint``/``_ACCENT``/``save_config_value``…) are imported LAZILY inside
@@ -1803,7 +1804,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")
         set_active_skin(new_skin)
         _ACCENT.reset()  # re-resolve ANSI color for the new skin (_DIM is a fixed escape)
-        saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
+        if _save("display.skin", new_skin):
+            saved = _t("skin.saved_suffix")
+        else:
+            saved = " " + _t("shared.scope_save_failed")
         _pr(f"  {_t('skin.set_to', name=new_skin, saved=saved)}", f"  {_t('skin.banner_note')}")
         if self._apply_tui_skin_style():
             print(f"  {_t('skin.colors_updated')}")

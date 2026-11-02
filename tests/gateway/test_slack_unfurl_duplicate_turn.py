@@ -279,6 +279,51 @@ class TestClaimReleasedOnFailure:
         asyncio.run(scenario())
         assert len(delivered) == 1
 
+    def test_claim_released_when_a_message_changed_edit_fails(self):
+        """The release guard must key off the ts the impl actually claimed.
+
+        For ``message_changed`` the impl rebinds ``event`` to the inner
+        message before claiming, so the claimed key is the ORIGINAL ts while
+        the outer event carries the edit's own ts. Keying the guard off the
+        outer ts made the release a no-op on exactly the edit path the
+        docstring promises to protect: the failed edit kept the original ts
+        claimed and every later edit was suppressed as a duplicate.
+        """
+        delivered = []
+        adapter = _make_adapter(delivered)
+        calls = {"n": 0}
+
+        async def _flaky_user_name_resolve(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("slack api died mid-enrichment")
+            return "richard"
+
+        adapter._resolve_user_name = _flaky_user_name_resolve
+
+        first_edit = _unfurl_event()
+        first_edit["message"]["text"] = "<@U0BCLP7DB7B> summon me"
+
+        # A later edit: new outer event ts so the dedup cache lets it through,
+        # same inner message ts (Slack reuses it for edits of one message).
+        second_edit = _unfurl_event()
+        second_edit["ts"] = "1787365413.000000"
+        second_edit["event_ts"] = "1787365413.000000"
+        second_edit["message"]["text"] = "<@U0BCLP7DB7B> summon me, really"
+        second_edit["message"]["client_msg_id"] = "cmid-2"
+
+        async def scenario():
+            with pytest.raises(RuntimeError):
+                await adapter._handle_slack_message(first_edit, _body())
+            # The claim the failed edit took is on the INNER ts.
+            assert ORIGINAL_TS not in adapter._processed_message_ts, (
+                "claim taken by the failed edit was never released"
+            )
+            await adapter._handle_slack_message(second_edit, _body())
+
+        asyncio.run(scenario())
+        assert len(delivered) == 1, "turn swallowed forever; delivered=0"
+
     def test_failure_does_not_release_a_preexisting_claim(self):
         """Sequential suppression survives a later failing duplicate."""
         delivered = []

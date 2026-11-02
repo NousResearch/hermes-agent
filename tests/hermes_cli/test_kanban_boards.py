@@ -149,29 +149,30 @@ class TestPathResolution:
         to — env pins and the worker/delegation fence included — without ever
         changing that resolution (#142435: the silent part is the bug, not the
         redirect)."""
+        from hermes_cli import kanban_db_slug
         kb.create_board("atm10-server")
         # Unfenced, no pin: explicit board resolves to its own dir.
-        assert kb.resolved_board_slug(board="atm10-server") == "atm10-server"
-        assert kb.resolved_board_slug() == "default"
+        assert kanban_db_slug.resolved_board_slug(board="atm10-server") == "atm10-server"
+        assert kanban_db_slug.resolved_board_slug() == "default"
         # Dispatcher-shaped pin: no explicit board -> the pinned default board.
         monkeypatch.setenv("HERMES_KANBAN_DB", str(fresh_home / "kanban.db"))
-        assert kb.resolved_board_slug() == "default"
+        assert kanban_db_slug.resolved_board_slug() == "default"
         # Fenced worker: explicit board redirected to the pinned board — the
         # slug reports where the call actually lands.
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
-        assert kb.resolved_board_slug(board="atm10-server") == "default"
+        assert kanban_db_slug.resolved_board_slug(board="atm10-server") == "default"
         # Pin on a named board: fenced explicit intent reports the pinned slug.
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
             str(fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"))
-        assert kb.resolved_board_slug(board="default") == "atm10-server"
+        assert kanban_db_slug.resolved_board_slug(board="default") == "atm10-server"
         # A pin outside the boards layout has no slug: the path itself.
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
-        assert kb.resolved_board_slug(board="atm10-server") == str(forced)
+        assert kanban_db_slug.resolved_board_slug(board="atm10-server") == str(forced)
         # Unfenced again: explicit board wins even with a pin set.
         monkeypatch.delenv("HERMES_KANBAN_TASK")
-        assert kb.resolved_board_slug(board="atm10-server") == "atm10-server"
+        assert kanban_db_slug.resolved_board_slug(board="atm10-server") == "atm10-server"
 
 
 # ---------------------------------------------------------------------------

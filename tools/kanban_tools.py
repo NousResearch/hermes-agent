@@ -353,7 +353,9 @@ def _resolved_board_fields(kb, board_arg: Any) -> dict[str, Any]:
     reported plain ``ok:true`` while the card landed elsewhere. Resolution is
     unchanged: the create result carries ``board`` (the resolved slug), plus a
     ``board_note`` when explicit board intent was redirected by the fence."""
-    resolved = kb.resolved_board_slug(board=board_arg)
+    from hermes_cli import kanban_db_slug
+
+    resolved = kanban_db_slug.resolved_board_slug(board=board_arg)
     fields: dict[str, Any] = {"board": resolved}
     explicit = kb._explicit_board_slug(board_arg)
     if explicit and explicit != resolved:

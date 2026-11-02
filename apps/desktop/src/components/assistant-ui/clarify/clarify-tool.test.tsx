@@ -201,7 +201,14 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
-      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'request-1', question: 'Which deployment target?' }],
+      questions: [
+        {
+          choices: ['staging', 'production'],
+          multiSelect: false,
+          qid: 'request-1',
+          question: 'Which deployment target?'
+        }
+      ],
       requestId: 'request-1',
       sessionId: 'session-1'
     })
@@ -226,7 +233,14 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
-      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'request-1', question: 'Which deployment target?' }],
+      questions: [
+        {
+          choices: ['staging', 'production'],
+          multiSelect: false,
+          qid: 'request-1',
+          question: 'Which deployment target?'
+        }
+      ],
       requestId: 'request-1',
       sessionId: 'session-1'
     })
@@ -262,16 +276,25 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
     setClarifyRequest({
-      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'request-1', question: 'Which deployment target?' }],
+      questions: [
+        {
+          choices: ['staging', 'production'],
+          multiSelect: false,
+          qid: 'request-1',
+          question: 'Which deployment target?'
+        }
+      ],
       requestId: 'request-1',
       sessionId: 'session-1'
     })
+
     const args = {
       questions: [
         { question: 'Which deployment target?', choices: ['staging', 'production'] },
         { question: 'Which region?', choices: ['us', 'eu'] }
       ]
     }
+
     const props = { ...liveClarifyProps(), args, argsText: JSON.stringify(args) }
 
     renderClarify(<ClarifyTool {...props} />)
@@ -341,7 +364,9 @@ describe('ClarifyTool stale rows vs the session current question', () => {
       ]
     }
 
-    renderClarify(<ClarifyTool {...liveClarifyProps()} args={args} argsText={JSON.stringify(args)} toolCallId="clarify-batch" />)
+    renderClarify(
+      <ClarifyTool {...liveClarifyProps()} args={args} argsText={JSON.stringify(args)} toolCallId="clarify-batch" />
+    )
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
     expect(screen.getByText('Which region?')).toBeTruthy()
@@ -352,7 +377,9 @@ describe('ClarifyTool stale rows vs the session current question', () => {
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn() } as never)
     setClarifyRequest({
-      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'q0', question: 'Which deployment target?' }],
+      questions: [
+        { choices: ['staging', 'production'], multiSelect: false, qid: 'q0', question: 'Which deployment target?' }
+      ],
       requestId: 'request-1',
       sessionId: 'session-1'
     })
@@ -362,7 +389,10 @@ describe('ClarifyTool stale rows vs the session current question', () => {
 
     act(() => {
       $settledClarifyResults.set({
-        'request-1': { outcome: 'submitted', responses: [{ question: 'Which deployment target?', status: 'answered', user_response: 'staging' }] }
+        'request-1': {
+          outcome: 'submitted',
+          responses: [{ question: 'Which deployment target?', status: 'answered', user_response: 'staging' }]
+        }
       })
       setClarifyRequest({
         questions: [{ choices: ['us', 'eu'], multiSelect: false, qid: 'q0', question: 'Which region?' }],

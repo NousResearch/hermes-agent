@@ -40,16 +40,22 @@ const parse = <T>(raw: null | string, fallback: T): T => {
 
 /** Every tracked/observed pending submission of one session, keyed by id. */
 export function readPendingSubmissions(session: string): Record<string, PendingSubmission> {
-  const entries: Record<string, PendingSubmission> = { ...parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session] }
+  const entries: Record<string, PendingSubmission> = {
+    ...parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]
+  }
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index)
 
-    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    if (!key?.startsWith(ENTRY_PREFIX)) {
+      continue
+    }
     const [owner, id] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
     const entry = parse<null | PendingSubmission>(window.localStorage.getItem(key), null)
 
-    if (owner === session && typeof id === 'string' && entry) { entries[id] = entry }
+    if (owner === session && typeof id === 'string' && entry) {
+      entries[id] = entry
+    }
   }
 
   return entries
@@ -59,19 +65,31 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
  *  last observed): the ones whose owner may have moved on while no window was watching. */
 export function journaledPendingSessions(): string[] {
   const sessions = new Set<string>()
-  const unsettled = (entry: null | PendingSubmission | undefined) => Boolean(entry?.status && entry.status !== 'retired')
+  const unsettled = (entry: null | PendingSubmission | undefined) =>
+    Boolean(entry?.status && entry.status !== 'retired')
 
-  for (const [session, entries] of Object.entries(parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>))) {
-    if (Object.values(entries ?? {}).some(unsettled)) { sessions.add(session) }
+  for (const [session, entries] of Object.entries(
+    parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)
+  )) {
+    if (Object.values(entries ?? {}).some(unsettled)) {
+      sessions.add(session)
+    }
   }
 
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index)
 
-    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    if (!key?.startsWith(ENTRY_PREFIX)) {
+      continue
+    }
     const [owner] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
 
-    if (typeof owner === 'string' && unsettled(parse<null | PendingSubmission>(window.localStorage.getItem(key), null))) { sessions.add(owner) }
+    if (
+      typeof owner === 'string' &&
+      unsettled(parse<null | PendingSubmission>(window.localStorage.getItem(key), null))
+    ) {
+      sessions.add(owner)
+    }
   }
 
   return [...sessions]
@@ -79,28 +97,45 @@ export function journaledPendingSessions(): string[] {
 
 /** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
 function readPendingSubmission(session: string, id: string): PendingSubmission | undefined {
-  return parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
-    parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[id]
+  return (
+    parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
+    parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[
+      id
+    ]
+  )
 }
 
-function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
+function writeEntries(
+  session: string,
+  before: Record<string, PendingSubmission>,
+  after: Record<string, PendingSubmission>
+): void {
   for (const id of Object.keys(before)) {
-    if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
+    if (!(id in after)) {
+      window.localStorage.removeItem(entryKey(session, id))
+    }
   }
 
   for (const [id, entry] of Object.entries(after)) {
-    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) {
+      window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry))
+    }
   }
 
   // Upgrade: once this session's entries live in v2 keys, drop its slice of the legacy blob.
   const legacy = parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, unknown>)
 
   if (session in legacy) {
-    for (const [id, entry] of Object.entries(after)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+    for (const [id, entry] of Object.entries(after)) {
+      window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry))
+    }
     delete legacy[session]
 
-    if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
-    else { window.localStorage.removeItem(LEGACY_KEY) }
+    if (Object.keys(legacy).length) {
+      window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy))
+    } else {
+      window.localStorage.removeItem(LEGACY_KEY)
+    }
   }
 }
 
@@ -290,12 +325,20 @@ function inOwnerOrder(entries: QueuedPromptEntry[], order: Map<string, number>):
   return next
 }
 
-function updateKnownReceipts(known: Record<string, PendingSubmission>, value: RawReceipts, fence?: PendingSnapshotFence): void {
+function updateKnownReceipts(
+  known: Record<string, PendingSubmission>,
+  value: RawReceipts,
+  fence?: PendingSnapshotFence
+): void {
   // Only observed server records may be retired by their later absence. The retirement is kept
   // (text dropped) so a stale snapshot that still lists the admission cannot resurrect its card.
   for (const [id, entry] of Object.entries(known)) {
-    if (entry.status && entry.status !== 'retired' && !value.some(raw => raw?.admission_id === id) &&
-        !predates(fence, entry.seen)) {
+    if (
+      entry.status &&
+      entry.status !== 'retired' &&
+      !value.some(raw => raw?.admission_id === id) &&
+      !predates(fence, entry.seen)
+    ) {
       known[id] = { id, text: '', status: 'retired' }
     }
   }
@@ -334,15 +377,26 @@ export function reconcilePendingSubmissions(storedId: string, value: unknown, fe
   // shown there. Receipts journaled under the tip before the lineage was known move along.
   const key = journalKey(storedId)
   adoptJournal(storedId, key)
-  noteListedSubmissions(key, value.flatMap(raw => (typeof raw?.input_id === 'string' ? [raw.input_id] : [])))
+  noteListedSubmissions(
+    key,
+    value.flatMap(raw => (typeof raw?.input_id === 'string' ? [raw.input_id] : []))
+  )
 
   const before = readPendingSubmissions(key)
   const known = { ...before }
   const { receipts, admissionByInput } = collectReceipts(value, known)
 
-  const stillPending = new Set(Object.values(known).filter(entry =>
-    entry.status && entry.status !== 'retired' && predates(fence, entry.seen) &&
-    !value.some(raw => raw?.admission_id === entry.id)).map(entry => entry.id))
+  const stillPending = new Set(
+    Object.values(known)
+      .filter(
+        entry =>
+          entry.status &&
+          entry.status !== 'retired' &&
+          predates(fence, entry.seen) &&
+          !value.some(raw => raw?.admission_id === entry.id)
+      )
+      .map(entry => entry.id)
+  )
 
   const current = getQueuedPrompts(key)
   const next = projectQueue(current, receipts, admissionByInput, stillPending)

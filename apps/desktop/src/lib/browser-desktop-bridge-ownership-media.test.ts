@@ -35,7 +35,11 @@ afterEach(() => {
 it.each([
   { name: 'foreground tile (control)', owner: 'foreground', path: '/srv/shared/shot.png' },
   { name: 'background tile, same path with other bytes', owner: 'tile-owner', path: '/srv/shared/shot.png' },
-  { name: 'background tile, path only its backend admits', owner: 'tile-owner', path: '/srv/tile-owner/outputs/plot.png' }
+  {
+    name: 'background tile, path only its backend admits',
+    owner: 'tile-owner',
+    path: '/srv/tile-owner/outputs/plot.png'
+  }
 ])('reads local-connection media on the owning browser profile: $name', async ({ owner, path }) => {
   seedWebappSession('served-token')
 
@@ -54,9 +58,9 @@ it.each([
   setApiRequestProfile('foreground')
   $connection.set({ connectionId: LOCAL_CONNECTION_ID, mode: 'remote', profile: 'foreground' } as never)
 
-  await expect(resolveMediaDisplaySrc(`file://${path}`, { connectionId: LOCAL_CONNECTION_ID, profile: owner })).resolves.toBe(
-    BACKENDS[owner][path]
-  )
+  await expect(
+    resolveMediaDisplaySrc(`file://${path}`, { connectionId: LOCAL_CONNECTION_ID, profile: owner })
+  ).resolves.toBe(BACKENDS[owner][path])
   const [requestUrl] = fetchMock.mock.calls.at(-1) as [URL, RequestInit]
   expect(requestUrl.pathname).toBe('/api/fs/read-data-url')
   expect(requestUrl.searchParams.get('profile')).toBe(owner)

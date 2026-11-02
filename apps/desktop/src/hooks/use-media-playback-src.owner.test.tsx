@@ -29,7 +29,12 @@ it.each([
   {
     expected: 'tile-owner',
     name: 'background tile',
-    scope: { ...MAIN_COMPOSER_SCOPE, connectionId: LOCAL_CONNECTION_ID, profile: 'tile-owner', target: 'tile:t' as const }
+    scope: {
+      ...MAIN_COMPOSER_SCOPE,
+      connectionId: LOCAL_CONNECTION_ID,
+      profile: 'tile-owner',
+      target: 'tile:t' as const
+    }
   }
 ])('a transcript video streams on its scope owner: $name', async ({ expected, scope }) => {
   seedWebappSession('served-token')

@@ -8,7 +8,15 @@ import { persistStore } from '@/lib/persist-store'
 import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
-import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistStringArray,
+  persistStringRecord,
+  storedBoolean,
+  storedStringArray,
+  storedStringRecord
+} from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { registryConnectionKind } from '@/store/connection-registry-state'
 import {

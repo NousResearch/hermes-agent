@@ -14,8 +14,6 @@ import logging
 import os
 from typing import Optional
 
-from cron.env_settings import cron_env_setting
-
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
@@ -89,26 +87,26 @@ def cron_default_provider(cfg: dict) -> str:
     return str(cron.get("model_provider") or "").strip() if isinstance(cron, dict) else ""
 
 
-def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
+def _preflight_check_provider_key(job: dict, cfg: dict, jc=None) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
     requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
     legitimately rescue a missing primary key. A pinned job has none (``_job_fallback_chain``), so
-    its missing key blocks even when the global chain is configured."""
+    its missing key blocks even when the global chain is configured.
+
+    *jc* is the run's resolved job config (``_load_cron_job_config``). Passing it makes this probe
+    the SAME route the run resolves — the inherited host model block included — through the one
+    ``_cron_route_request`` computation; without it (``None``) the old cfg-only judgment applies.
+    """
     try:
         if _sched._job_fallback_chain(job, cfg):
             return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
 
-    requested = job.get("provider") or cron_default_provider(cfg) or None
-    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
-
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        kwargs = {"requested": requested, "target_model": model}
-        if job.get("base_url"):
-            kwargs["explicit_base_url"] = job.get("base_url")
+        kwargs = _sched._cron_route_request(job, jc, cfg)
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
         if is_rate_limited_auth_error(exc):
@@ -398,16 +396,20 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
         "the job's toolsets.")
 
 
-def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
+def _preflight_job_config(job: dict, cfg: dict, jc=None) -> Optional[str]:
     """Pre-dispatch validation: return a reason (missing key, unconfigured delivery, unready skill)
     so the caller refuses BEFORE building agent machinery or burning an LLM call. Every check fails
     open — preflight blocks only on an affirmative misconfiguration verdict.
+
+    *jc* is the run's resolved job config, threaded so the provider probe judges the route the run
+    will actually resolve (an unpinned job in a profile with no model of its own inherits the host
+    default; probing without it false-blocks a fully configured home).
 
     Same fail-before-spend spirit as the fail-loud-on-hidden-tools direction in #27948; alert dedup
     follows the alert-once pattern from the dead-pin auto-pause (#73506).
     """
     for name, check in (
-        ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
+        ("provider_key", lambda: _preflight_check_provider_key(job, cfg, jc)),
         ("skills", lambda: _preflight_check_skills(job)),
         ("delivery", lambda: _preflight_check_delivery(job))):
         try:

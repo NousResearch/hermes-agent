@@ -5,6 +5,8 @@ import os
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("telegram")
 from telegram import Message
 
 from gateway.config import Platform, load_gateway_config

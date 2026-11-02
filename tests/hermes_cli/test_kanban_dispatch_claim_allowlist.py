@@ -9,6 +9,7 @@ gateway wake-up loop hot.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,33 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="local card", assignee="default")
         assert kbd.has_spawnable_ready(conn) is True
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [t for t, _a, _w in res.spawned] == [tid]
+    assert res.skipped_nonspawnable == []
+
+
+def test_profiles_import_failure_with_allowlist_claims_nothing(kanban_home, monkeypatch):
+    """The gate could not be built (``hermes_cli.profiles`` unimportable) while
+    an allowlist is configured: fail closed, claim nothing — a broken import
+    state must not widen this home's claim scope to every assignee."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  dispatch_profiles:\n    - sage\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", None)
+        assert kbd.has_spawnable_ready(conn) is False
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+def test_profiles_import_failure_without_allowlist_keeps_gate_disabled(kanban_home, monkeypatch):
+    """No allowlist configured = gate disabled even when the profiles module
+    cannot be imported (upstream behaviour unchanged)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="local card", assignee="default")
+        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", None)
         res = kbd.dispatch_once(conn, dry_run=True)
     assert [t for t, _a, _w in res.spawned] == [tid]
     assert res.skipped_nonspawnable == []

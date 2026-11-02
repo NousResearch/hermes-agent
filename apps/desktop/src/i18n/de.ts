@@ -19,6 +19,7 @@ import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
 import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
+import { dePluginsTab } from './de_plugins_tab'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
@@ -2467,6 +2468,7 @@ export const deOverrides = {
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...dePluginsTab,
       agentTitle: 'Agent-Plugins',
       agentBlurb:
         'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',
@@ -2484,12 +2486,6 @@ export const deOverrides = {
         `Die Desktop-Hälfte ist in dieser App geladen, aber die Agent-Hälfte ist in ${profile} nicht installiert. Installieren Sie sie dort.`,
       installAgentHereNoOrigin:
         'Die Agent-Hälfte ist in diesem Profil nicht installiert, und dieses Paket wurde von Hand hineinkopiert (kein Katalogeintrag und kein Git-Remote), daher kann es nicht von hier aus installiert werden. Kopieren Sie seinen Ordner ins Profil oder installieren Sie es neu aus Git.',
-      desktopHalfPending: 'wird kopiert…',
-      desktopHalfPendingTip:
-        'Dieses Paket enthält eine Desktop-Hälfte, die noch nicht in die App kopiert wurde. Verwenden Sie „Erneut scannen“ oder starten Sie die App neu.',
-      desktopHalfRemote: 'nicht verfügbar (Remote-Backend)',
-      desktopHalfRemoteTip:
-        'Die Desktop-Hälfte dieses Pakets liegt auf der Festplatte des Remote-Backends, die diese App nicht lesen kann. Um sie hier zu nutzen, führen Sie „Aus Git installieren“ mit der Repository-URL des Pakets und aktiviertem Desktop-Ziel aus – dadurch wird die Desktop-Hälfte auf diesen Rechner geklont.',
       emptyAll: 'Noch keine Plugins.',
       empty: 'Für dieses Profil sind keine Agent-Plugins installiert.',
       emptyHint: 'Durchsuchen Sie unten den Katalog und installieren Sie ein geprüftes Plugin mit einem Klick.',
@@ -2502,17 +2498,6 @@ export const deOverrides = {
       legacyBackend:
         'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisieren Sie Hermes, um es hier zu verwalten.',
       portableBadge: 'tragbar',
-      serverStates: {
-        connected: 'verbunden',
-        app_not_running: 'App läuft nicht',
-        hermes_not_connected: 'MCP-Verbindung fehlt',
-        endpoint_unavailable: 'Endpunkt nicht verfügbar',
-        no_interactive_session: 'keine interaktive Session',
-        version_too_old: 'Version zu alt',
-        missing_app: 'App fehlt',
-        unsupported_gpu: 'GPU nicht unterstützt',
-        unknown: 'Status unbekannt'
-      },
       alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
       catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
       pinnedProvenance: sha =>

@@ -20,6 +20,7 @@ import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
 import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
+import { esPluginsTab } from './es_plugins_tab'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -2456,6 +2457,7 @@ export const esOverrides = {
     skillArchivedMessage: 'Puedes restaurarlo con hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      ...esPluginsTab,
       agentTitle: 'Plugins del agente',
       agentBlurb:
         'Amplían el agente del perfil seleccionado: herramientas, hooks, proveedores. Se aplican tras reiniciar el gateway.',
@@ -2473,12 +2475,6 @@ export const esOverrides = {
         `La mitad de escritorio está cargada en esta app, pero la mitad del agente no está instalada en ${profile}. Instálala allí.`,
       installAgentHereNoOrigin:
         'La mitad del agente no está instalada en este perfil y este paquete se copió a mano (sin entrada de catálogo ni remoto de git), así que no se puede instalar desde aquí. Copia su carpeta en el perfil o reinstálalo desde Git.',
-      desktopHalfPending: 'copiando…',
-      desktopHalfPendingTip:
-        'Este paquete incluye una mitad de escritorio que todavía no se ha copiado en la app. Usa Volver a escanear o reinicia la app.',
-      desktopHalfRemote: 'no disponible (backend remoto)',
-      desktopHalfRemoteTip:
-        'La mitad de escritorio de este paquete está en el disco del backend remoto, que esta app no puede leer. Para usarla aquí, ejecuta Instalar desde Git con la URL del repositorio del paquete y el destino Escritorio marcado; eso clona la mitad de escritorio en este equipo.',
       emptyAll: 'Todavía no hay plugins.',
       empty: 'No hay plugins del agente instalados para este perfil.',
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
@@ -2491,17 +2487,6 @@ export const esOverrides = {
       legacyBackend:
         'Este backend es anterior a los interruptores de plugins por clave: actualiza Hermes para gestionarlo aquí.',
       portableBadge: 'portátil',
-      serverStates: {
-        connected: 'conectado',
-        app_not_running: 'la app no se está ejecutando',
-        hermes_not_connected: 'falta la conexión MCP',
-        endpoint_unavailable: 'endpoint no disponible',
-        no_interactive_session: 'sin sesión interactiva',
-        version_too_old: 'versión demasiado antigua',
-        missing_app: 'falta la app',
-        unsupported_gpu: 'GPU no compatible',
-        unknown: 'estado desconocido'
-      },
       alreadyInstalled: (name: string) => `${name} ya está instalado en este perfil.`,
       catalogProvenance: (sha: string) =>
         `Instalado desde el catálogo de Hermes${sha ? ` en el commit fijado ${sha}` : ''}.`,

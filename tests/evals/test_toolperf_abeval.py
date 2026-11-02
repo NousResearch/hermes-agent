@@ -685,7 +685,7 @@ def test_batch_and_chat_preserve_selected_home_with_real_cli_bootstrap(
             ) as child:
                 stdout, stderr = child.communicate(timeout=30)
                 assert child.returncode == 0, stderr
-                assert f"SELECTED_HOME={home}" in stdout
+                assert f"SELECTED_HOME={home}" in stdout.splitlines()
             checked.append("gateway" if "gateway" in command else "chat")
         return real_popen(command, **kwargs)
 

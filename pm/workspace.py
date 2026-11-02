@@ -145,9 +145,10 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    members = [_workspace_member(plugin_source, root, identity=identity, core_source=source)
+               .relative_to(root).as_posix()
+               for identity, plugin_source in member_sources(plugin_dirs).items()
+               if _is_member_candidate(plugin_source)]
 
     if members:
         import tomllib
@@ -292,7 +293,56 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
+def _core_project_name(core_source: Path) -> str | None:
+    """The generated workspace root's project name — the name core enters each
+    member's dependency universe under."""
+    import tomllib
+    try:
+        name = tomllib.loads((core_source / "pyproject.toml").read_text(
+            encoding="utf-8-sig"))["project"]["name"]
+    except (OSError, KeyError, ValueError):
+        return None
+    return name if isinstance(name, str) else None
+
+
+def _bind_root_named_dependency(document: dict, root_name: str | None) -> bool:
+    """Give member dependencies naming the root project a ``{ workspace = true }`` source.
+
+    uv parses every dependency table of a member at lock time, PEP 735
+    [dependency-groups] included, though PM never installs a member's groups:
+    honcho pins ``hermes-agent @ git+…`` in its own test group (for the plugin's
+    ``uv run --group test pytest``), and a generated workspace's root IS the
+    hermes-agent project. A name matching a workspace member is refused outright
+    without an explicit tool.uv.sources entry — uv itself prescribes that entry in
+    its error. Groups and extras travel in no wheel or sdist metadata, so the
+    rebinding changes nothing installable; a uv source beats an inline specifier,
+    direct URLs included.
+    """
+    if not root_name:
+        return False
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    wanted = canonicalize_name(root_name)
+    tables = [document.get("project", {}).get("dependencies", []),
+              *document.get("project", {}).get("optional-dependencies", {}).values(),
+              *document.get("dependency-groups", {}).values()]
+    for table in tables:
+        for spec in (table if isinstance(table, list) else ()):
+            if not isinstance(spec, str):
+                continue  # a group's { include = … } table
+            try:
+                collides = canonicalize_name(Requirement(spec).name) == wanted
+            except InvalidRequirement:
+                continue
+            if collides:
+                sources = document.setdefault("tool", {}).setdefault("uv", {}).setdefault("sources", {})
+                sources.setdefault(wanted, {"workspace": True})
+                return True
+    return False
+
+
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, core_source: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -339,6 +389,25 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         if project is not None and "version" not in project and "version" not in project.get("dynamic", ()):
             project["version"] = "0.0.0"
             changed = True
+        if _bind_root_named_dependency(document, _core_project_name(core_source)):
+            changed = True
+        groups = document.get("dependency-groups")
+        if isinstance(groups, dict):
+            # Non-default PEP 735 groups travel in no package metadata and uv never
+            # installs them here (PM syncs each project's default groups, never --group),
+            # yet uv LOCKS every group of every member: honcho's test lane pins
+            # pytest-asyncio==1.3.0 while core's dev pins 1.4.0 — an unsatisfiable solve
+            # for an install no user can see. The plugin runs its own pytest from its own
+            # checkout, so drop the unrunnable groups from the snapshot.
+            defaults = document.get("tool", {}).get("uv", {}).get("default-groups", ["dev"])
+            defaults = set(defaults) if isinstance(defaults, list) else {"dev"}
+            kept = {name: value for name, value in groups.items() if name in defaults}
+            if kept != groups:
+                if kept:
+                    document["dependency-groups"] = kept
+                else:
+                    document.pop("dependency-groups")
+                changed = True
         if virtual or changed:
             import tomli_w
 

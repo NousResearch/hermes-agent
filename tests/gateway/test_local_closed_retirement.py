@@ -268,8 +268,18 @@ async def test_retired_conversation_a_rename_brings_back_retires_again(tmp_path,
             session_id=ref.session_id, request_id='rename1', operation='rename', payload={'title': 'Renamed'},
             expected_revision=handle.revision, expected_generation=handle.execution_generation))
         assert db.get_session(ref.session_id)['title'] == 'Renamed'
-        await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
-                               what="the renamed conversation to retire again")
+
+        async def poll_listing():  # Desktop/TUI poll session.active_list the whole time
+            from gateway.session_live_listing import live_entries
+            while True:
+                await live_entries(authority, _viewer())
+                await asyncio.sleep(0)
+        poller = asyncio.create_task(poll_listing())
+        try:
+            await async_wait_until(lambda: ref.session_id not in authority.sessions, timeout=10,
+                                   what="the renamed conversation to retire again despite listing polls")
+        finally:
+            poller.cancel()
         await authority.attach(_viewer(), ref)  # and it still resumes
         assert ref.session_id in authority.sessions
     finally:

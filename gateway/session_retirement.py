@@ -8,6 +8,7 @@ restart): attach and admission restore it from its receipt, an API request rebin
 committed for it is restored by ``_schedule``/``_publish_pending`` before the FIFO runs it.
 """
 import asyncio
+import contextvars
 
 from gateway.config import Platform
 
@@ -15,6 +16,9 @@ _RETIRABLE = frozenset({Platform.LOCAL, Platform.API_SERVER})
 # How long a retired conversation an RPC brought back stays after its last authorize: longer than any
 # handler's unpinned await between authorize and its ``authority.sessions`` read.
 RESTORED_IDLE_S = 30.0
+# A session listing authorizes every session in memory on each poll (Desktop/TUI every 1.5 s):
+# that is not use, so it must never push an armed re-retire timer back.
+LISTING_READ = contextvars.ContextVar("retirement_listing_read", default=False)
 
 
 def _pinned(authority, session_id, live):
@@ -111,6 +115,8 @@ def touch_restored(authority, session_id):
     except RuntimeError:
         return  # an off-loop authorize: the next on-loop one arms it
     if live.retire_timer is not None:
+        if LISTING_READ.get():
+            return
         live.retire_timer.cancel()
     live.retire_timer = loop.call_later(RESTORED_IDLE_S, _retire_restored, authority, session_id, live)
 

@@ -81,3 +81,40 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def _tool_line_names(**kwargs):
+    """The "Available Tools" body as one string, for colour assertions."""
+    tools = [{"function": {"name": "deferred"}}, {"function": {"name": "off"}},
+             {"function": {"name": "ready"}}]
+    return "\n".join(banner._banner_tool_lines(tools, [], lambda name: "demo", **kwargs))
+
+
+def test_lazy_and_disabled_tools_use_the_skin_state_colours():
+    body = _tool_line_names(lazy_tools={"deferred"}, disabled_tools={"off"},
+                            accent="#AAAAAA", dim="#BBBBBB", text="#CCCCCC",
+                            warn="#DDDDDD", error="#EEEEEE")
+    assert "[#DDDDDD]deferred[/]" in body   # lazy -> skin warning
+    assert "[#EEEEEE]off[/]" in body        # disabled -> skin error
+    assert "[#CCCCCC]ready[/]" in body      # callable -> banner_text
+
+
+def test_tool_state_colours_default_to_ansi_names():
+    body = _tool_line_names(lazy_tools={"deferred"}, disabled_tools={"off"},
+                            accent="a", dim="d", text="t")
+    assert "[yellow]deferred[/]" in body
+    assert "[red]off[/]" in body
+
+
+def test_mcp_status_lines_use_the_skin_state_colours():
+    connecting = {"name": "demo", "transport": "http", "connected": False,
+                  "status": "connecting", "tools": 2}
+    line = banner._mcp_server_line(connecting, dim="d", text="t",
+                                   warn="#DDDDDD", error="#EEEEEE")
+    assert "[#DDDDDD]\u2014 connecting[/]" in line
+
+    failed = {"name": "demo", "transport": "http", "connected": False,
+              "status": "error", "error": "boom", "tools": 0}
+    line = banner._mcp_server_line(failed, dim="d", text="t",
+                                   warn="#DDDDDD", error="#EEEEEE")
+    assert "[#EEEEEE]\u2014 could not connect:[/]" in line

@@ -345,6 +345,24 @@ def _ok_landed(kb, conn, tid: str, default_status: str, **extra: Any) -> str:
                status=landed.status if landed else default_status, **extra)
 
 
+def _resolved_board_fields(kb, board_arg: Any) -> dict[str, Any]:
+    """Echo the board the call actually landed on (#142435 / #144132): the
+    worker/delegation fence intentionally redirects an explicit ``board=`` in
+    dispatched/delegated contexts to the pinned board (5ec6baa isolation), and
+    before this the redirect was silent — a fenced ``kanban_create(board=X)``
+    reported plain ``ok:true`` while the card landed elsewhere. Resolution is
+    unchanged: every result carries ``board`` (the resolved slug), plus a
+    ``board_note`` when explicit board intent was redirected by the fence."""
+    resolved = kb.resolved_board_slug(board=board_arg)
+    fields: dict[str, Any] = {"board": resolved}
+    explicit = kb._explicit_board_slug(board_arg)
+    if explicit and explicit != resolved:
+        fields["board_note"] = (
+            f"explicit board '{explicit}' overridden by worker/delegation pin "
+            f"— card landed on {resolved}")
+    return fields
+
+
 def _redact(value: Any) -> str:
     return redact_sensitive_text(str(value), force=True)
 
@@ -1151,7 +1169,8 @@ def _handle_create(args: dict, **kw) -> str:
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
         return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+                   subscribed=_maybe_auto_subscribe(conn, new_tid),
+                   **_resolved_board_fields(kb, args.get("board")))
 
 
 def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:

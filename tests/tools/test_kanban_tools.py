@@ -742,6 +742,112 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_echoes_resolved_board_by_default(worker_env):
+    """Every ``kanban_create`` result carries the board the card landed on, so
+    a multi-board operator can see which board owns the new card (#144132)."""
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_create({
+        "title": "board echo", "assignee": "peer", "parents": [worker_env],
+    }))
+    assert out["ok"] is True
+    assert out["board"] == "default"
+    assert "board_note" not in out
+
+
+def test_create_in_fenced_worker_redirects_board_with_note(monkeypatch, tmp_path):
+    """#142435 / #144132: inside a dispatcher-fenced worker (``HERMES_KANBAN_TASK``
+    set, ``HERMES_KANBAN_DB`` pinned) an explicit ``board=`` is intentionally
+    redirected to the pinned board — the 5ec6baa "workers physically cannot see
+    other boards" isolation. The write still lands on the pinned board, but no
+    longer silently: the result echoes the resolved board and a ``board_note``
+    says the explicit board was overridden."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    # Dispatcher-shaped pins: every board path pinned at the default board.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT",
+                       str(home / "kanban" / "workspaces"))
+    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT",
+                       str(home / "kanban" / "attachments"))
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.create_board("other")  # before the fence marker: explicit board wins unfenced
+    conn = kbc.connect()  # pinned -> default board
+    try:
+        self_tid = kb.create_task(conn, title="fenced worker", assignee="test-worker")
+        kb.claim_task(conn, self_tid)
+        run_id = kb._current_run_id(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)  # dispatcher fence on
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_create(
+        {"title": "meant for other", "assignee": "test-worker", "board": "other"}))
+    assert out["ok"] is True
+    assert out["board"] == "default"
+    assert "other" in out["board_note"]
+    assert "default" in out["board_note"]
+    # The card physically landed on the pinned default board, not on ``other``.
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, out["task_id"]) is not None
+    finally:
+        conn.close()
+    import sqlite3
+    other_db = home / "kanban" / "boards" / "other" / "kanban.db"
+    ro = sqlite3.connect(f"file:{other_db}?mode=ro", uri=True)
+    try:
+        assert ro.execute("select count(*) from tasks where id = ?",
+                          (out["task_id"],)).fetchone()[0] == 0
+    finally:
+        ro.close()
+
+
+def test_create_unfenced_explicit_board_lands_there_without_note(monkeypatch, tmp_path):
+    """Unfenced callers keep explicit cross-board authority (387c78c8): the card
+    lands on the requested board even when the session pointer sits on a
+    different board — and no note, because nothing was overridden."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    (home / "kanban" / "current").write_text("alpha")  # pointer on another board
+
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_create(
+        {"title": "cross-board card", "assignee": "peer", "board": "beta"}))
+    assert out["ok"] is True
+    assert out["board"] == "beta"
+    assert "board_note" not in out
+    import sqlite3
+    beta_db = home / "kanban" / "boards" / "beta" / "kanban.db"
+    ro = sqlite3.connect(f"file:{beta_db}?mode=ro", uri=True)
+    try:
+        assert ro.execute("select count(*) from tasks where id = ?",
+                          (out["task_id"],)).fetchone()[0] == 1
+    finally:
+        ro.close()
+
+
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
 @pytest.mark.parametrize("target_scoped", [False, True])
 def test_create_explicit_scratch_ignores_ambient_board_project(

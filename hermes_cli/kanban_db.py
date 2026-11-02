@@ -566,6 +566,32 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def resolved_board_slug(board: Optional[str] = None) -> str:
+    """Slug of the board a call with this ``board`` argument lands on — the same
+    resolution :func:`kanban_db_path` applies, env pins and the worker/delegation
+    fence (:func:`_explicit_board_intent_pinned`) included. ``<root>/kanban.db``
+    maps to ``default``; a named board maps back by layout
+    (``<boards-root>/<slug>/kanban.db``); a pinned path outside that layout has
+    no slug, so the path itself is returned (it still identifies the board the
+    call resolves to). Purely reporting: this never changes resolution — callers
+    use it to echo *where a write landed* so a fenced explicit ``board=`` is
+    observable instead of silent (#142435 / #144132)."""
+    path = kanban_db_path(board=board)
+    try:
+        resolved = path.expanduser().resolve()
+        if resolved == kanban_home().joinpath("kanban.db").resolve():
+            return DEFAULT_BOARD
+        try:
+            rel = resolved.parent.relative_to(boards_root().resolve())
+        except ValueError:
+            rel = None
+        if rel is not None and len(rel.parts) == 1:
+            return rel.parts[0]
+    except OSError:
+        pass
+    return str(path)
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

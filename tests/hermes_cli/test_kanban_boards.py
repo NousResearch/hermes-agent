@@ -144,6 +144,35 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
         assert p != forced
 
+    def test_resolved_board_slug_mirrors_resolution(self, fresh_home, tmp_path, monkeypatch):
+        """``resolved_board_slug`` reports the board ``kanban_db_path`` resolves
+        to — env pins and the worker/delegation fence included — without ever
+        changing that resolution (#142435: the silent part is the bug, not the
+        redirect)."""
+        kb.create_board("atm10-server")
+        # Unfenced, no pin: explicit board resolves to its own dir.
+        assert kb.resolved_board_slug(board="atm10-server") == "atm10-server"
+        assert kb.resolved_board_slug() == "default"
+        # Dispatcher-shaped pin: no explicit board -> the pinned default board.
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(fresh_home / "kanban.db"))
+        assert kb.resolved_board_slug() == "default"
+        # Fenced worker: explicit board redirected to the pinned board — the
+        # slug reports where the call actually lands.
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
+        assert kb.resolved_board_slug(board="atm10-server") == "default"
+        # Pin on a named board: fenced explicit intent reports the pinned slug.
+        monkeypatch.setenv(
+            "HERMES_KANBAN_DB",
+            str(fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"))
+        assert kb.resolved_board_slug(board="default") == "atm10-server"
+        # A pin outside the boards layout has no slug: the path itself.
+        forced = tmp_path / "custom.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+        assert kb.resolved_board_slug(board="atm10-server") == str(forced)
+        # Unfenced again: explicit board wins even with a pin set.
+        monkeypatch.delenv("HERMES_KANBAN_TASK")
+        assert kb.resolved_board_slug(board="atm10-server") == "atm10-server"
+
 
 # ---------------------------------------------------------------------------
 # Current-board resolution

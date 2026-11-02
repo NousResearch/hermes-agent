@@ -19,6 +19,7 @@ def test_agent_close_trim_returns_pages_without_a_full_collection(monkeypatch):
     monkeypatch.setattr(mem_trim, "_malloc_trim", trim)
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
+    monkeypatch.setattr(mem_trim, "_last_alloc_trim_monotonic", 0.0)
     monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 60.0, 1, 0.0))
 
     AIAgent._trim_process_memory()

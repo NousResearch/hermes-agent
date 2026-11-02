@@ -71,7 +71,7 @@ describe('GatewayMenuPanel reconnect action', () => {
 
   afterEach(() => cleanup())
 
-  it('shows reconnect only while disconnected and disables it in flight', async () => {
+  it('shows reconnect while disconnected and disables it in flight', async () => {
     let finish: (() => void) | undefined
     mocks.reconnectGateway.mockImplementation(
       () =>
@@ -92,10 +92,12 @@ describe('GatewayMenuPanel reconnect action', () => {
     await act(async () => finish?.())
   })
 
-  it('hides reconnect while the socket is open', async () => {
+  it('allows recovery when an open socket stops delivering', async () => {
     renderPanel('open')
     await act(async () => undefined)
 
-    expect(screen.queryByRole('button', { name: 'Reconnect gateway' })).toBeNull()
+    const reconnect = screen.getByRole('button', { name: 'Reconnect gateway' })
+    await act(async () => fireEvent.click(reconnect))
+    expect(mocks.reconnectGateway).toHaveBeenCalledOnce()
   })
 })

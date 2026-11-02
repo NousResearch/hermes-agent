@@ -36,9 +36,8 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
 TIP_SCHEMA = {
     "name": "show_tip",
     "description": (
-        "Point at one thing in the desktop UI with a small arrow bubble (no "
-        "dimming, no tour chrome) — for when a sentence is clearer with a "
-        "finger on its subject. Get selectors from tour(action='targets'), "
+        "Point at one desktop UI element with a small arrow bubble (no dimming or tour). "
+        "For when a sentence is clearer with a finger on its subject. Get selectors from tour(action='targets'), "
         "prefer stable:true, never guess. One tip at a time (new replaces "
         "last); say the same thing in chat too — the bubble is a pointer, "
         "not the message. Sparingly: a bubble every turn stops being read."

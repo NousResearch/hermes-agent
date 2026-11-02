@@ -4,8 +4,10 @@ Per-tool resolution: pinned > config overrides > registry > default."""
 from dataclasses import dataclass, field
 from typing import Dict
 
+from agent.model_metadata import CHARS_PER_TOKEN
+
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
-PINNED_THRESHOLDS: Dict[str, float] = {"read_file": float("inf")}
+PINNED_THRESHOLDS: dict[str, float] = {"read_file": float("inf")}
 
 # Single source of truth for the defaults; tool_result_storage.py imports these.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
@@ -49,7 +51,7 @@ class BudgetConfig:
     turn_budget: int = DEFAULT_TURN_BUDGET_CHARS
     preview_size: int = DEFAULT_PREVIEW_SIZE_CHARS
     mcp_result_size: int = DEFAULT_MCP_RESULT_SIZE_CHARS
-    tool_overrides: Dict[str, int] = field(default_factory=dict)
+    tool_overrides: dict[str, int] = field(default_factory=dict)
 
     def resolve_threshold(self, tool_name: str) -> int | float:
         """Priority: pinned -> tool_overrides -> mcp_ prefix -> registry per-tool -> default.
@@ -76,9 +78,8 @@ class BudgetConfig:
 # Default config -- matches the historical hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()
 
-# Same rough 4-chars-per-token the estimator uses (agent/model_metadata.py);
-# a smaller divisor would UNDER-protect small models.
-_CHARS_PER_TOKEN: int = 4
+# Same rough chars-per-token the estimator uses; a smaller divisor would UNDER-protect small models.
+_CHARS_PER_TOKEN: int = CHARS_PER_TOKEN
 # Window fraction ONE result / the WHOLE turn's tool output may occupy — well
 # under 1.0 since system prompt, schemas, history and the reply all compete.
 _PER_RESULT_WINDOW_FRACTION: float = 0.15

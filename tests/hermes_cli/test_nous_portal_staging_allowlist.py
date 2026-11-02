@@ -33,29 +33,7 @@ import logging
 
 from hermes_cli.auth import (
     DEFAULT_NOUS_PORTAL_URL,
-    _NOUS_PORTAL_ALLOWED_HOSTS,
-    _nous_portal_env_override,
 )
-
-
-class TestPortalEnvOverrideHelper:
-    def test_none_when_unset(self, monkeypatch):
-        monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
-        monkeypatch.delenv("NOUS_PORTAL_BASE_URL", raising=False)
-        assert _nous_portal_env_override() is None
-
-
-    def test_env_override_not_gated_by_allowlist(self, monkeypatch):
-        """The whole point: an env-set staging host is NOT in
-        _NOUS_PORTAL_ALLOWED_HOSTS, and the helper must return it anyway —
-        gating happens only for network-provenance values."""
-        monkeypatch.setenv(
-            "HERMES_PORTAL_BASE_URL", "https://portal.staging-nousresearch.com"
-        )
-        assert "portal.staging-nousresearch.com" not in _NOUS_PORTAL_ALLOWED_HOSTS
-        assert (
-            _nous_portal_env_override() == "https://portal.staging-nousresearch.com"
-        )
 
 
 class TestResolveAccessTokenEnvOverrideWins:
@@ -85,13 +63,13 @@ class TestResolveAccessTokenEnvOverrideWins:
         return auth_file
 
     def _run_and_capture(self, monkeypatch, auth):
-        import hermes_cli.auth_nous as auth_nous
+        from hermes_cli import auth_nous
         seen_portal_urls = []
 
         # The resolve memo is module-level state; clear it so each test's
         # resolution actually exercises the refresh path instead of serving
         # a token cached by a previous test.
-        monkeypatch.setattr(auth, "_RESOLVE_TOKEN_CACHE", None)
+        monkeypatch.setattr(auth, "_RESOLVE_TOKEN_CACHE", {})
 
         def _fake_refresh(*, client, portal_base_url, client_id, refresh_token):
             seen_portal_urls.append(portal_base_url)
@@ -122,7 +100,7 @@ class TestResolveAccessTokenEnvOverrideWins:
         a prior HERMES_AUTH_JSON_BOOTSTRAP seed), and the env var is set to
         the same staging host. Both must resolve to staging, and the
         allowlist-rejection warning must never fire."""
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
 
         staging_portal = "https://portal.staging-nousresearch.com"
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -143,7 +121,7 @@ class TestResolveAccessTokenEnvOverrideWins:
     ):
         """Baseline: no override, no staging state — prod is used and the
         allowlist never even logs a warning (nothing was rejected)."""
-        import hermes_cli.auth as auth
+        from hermes_cli import auth
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)

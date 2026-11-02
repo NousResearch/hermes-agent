@@ -981,6 +981,7 @@ DEFAULT_CONFIG = {
             # column width. Half-block fallback clamps to a legibility floor.
             "scale": 0.33,
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
+            "margin_right": 1,  # TUI right margin in columns (0-10).
         },
     },
     "webapp": {"enabled": False, "host": "127.0.0.1", "port": 9120, "public_url": ""},  # gateway/webapp_listener.py

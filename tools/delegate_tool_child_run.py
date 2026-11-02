@@ -23,6 +23,7 @@ from tools.delegate_tool_registry import (
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
 )
+from tools.delegate_tool_usage import fold_child_tokens
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -1100,8 +1101,8 @@ class _ChildRun:
 
     def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
         """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →
-        release credential lease → restore the parent's process-global tool names → detach from the parent's
-        interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
+        release credential lease → restore the parent's process-global tool names → fold the child's tokens into
+        the parent's subagent totals → detach from the parent's interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
         no turn is active."""
         child = self.child
         heartbeat.stop()
@@ -1121,6 +1122,8 @@ class _ChildRun:
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
+        # Here and not in the batch join: an interrupted parallel batch never joins its workers.
+        fold_child_tokens(self.parent_agent, child)
         _detach_child(self.parent_agent, child)
 
         # Close tool resources (terminal sandboxes, browser daemons, background

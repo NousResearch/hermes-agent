@@ -35,7 +35,7 @@ from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter import modes as _modes
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.prompt_usage import counters_of, prompt_usage
+from acp_adapter.prompt_usage import report_usage, turn_base
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
@@ -866,7 +866,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             # ACP `session_id` is the stable handle; agent.session_id is the internal head that
             # compression may rotate — snapshot it to detect rotation after the turn.
             pre_turn_hermes_id = getattr(state.agent, "session_id", None)
-            turn_counters = counters_of(state.agent)
+            turn_counters = turn_base(state.agent)
             # Fresh context copy: concurrent sessions on the shared executor must not share ContextVars.
             ctx = contextvars.copy_context()
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
@@ -993,8 +993,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.current_prompt_text = ""
             await self._drain_queued_prompts(state, session_id, conn)
 
-        # This turn's tokens: the result carries the session-cumulative counters (prompt_usage.py).
-        usage = prompt_usage(turn_counters, counters_of(result))
+        # This turn's tokens, subagents and drained prompts included (prompt_usage.py).
+        usage = report_usage(state.agent, turn_counters, result)
         await self._send_usage_update(state)
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
 

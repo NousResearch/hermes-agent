@@ -18,6 +18,7 @@ from acp_adapter.gateway_server import GatewayACPAgent
 from acp_adapter.prompt_usage import counters_of, prompt_usage, turn_delta
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager, SessionState
+from tools.delegate_tool_usage import fold_child_tokens
 
 
 def _turn_result(agent, *, input_tokens, output_tokens, cache_read, cache_write, reasoning=0):
@@ -70,6 +71,64 @@ async def test_in_process_prompt_usage_is_the_turns_own_tokens(tmp_path):
         "totalTokens": 41_205}
     # Summing what each prompt reported gives the session's real totals.
     assert first.usage.total_tokens + second.usage.total_tokens == agent.session_total_tokens
+
+
+async def _in_process_server(tmp_path):
+    manager = SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
+    server = HermesACPAgent(session_manager=manager)
+    sid = (await server.new_session(cwd=str(tmp_path))).session_id
+    state = manager.get_session(sid)
+    state.agent.model, state.agent.provider = "test-model", "openrouter"
+    _fresh_counters(state.agent)
+    server._conn = MagicMock(spec=acp.Client)
+    server._conn.session_update = AsyncMock()
+    return server, sid, state
+
+
+def _child(input_tokens, output_tokens):
+    return SimpleNamespace(session_input_tokens=input_tokens, session_output_tokens=output_tokens,
+                           session_cache_read_tokens=0, session_cache_write_tokens=0, session_reasoning_tokens=0)
+
+
+@pytest.mark.asyncio
+async def test_subagent_tokens_count_once_even_when_the_child_ends_after_the_turn(tmp_path):
+    """Regression for #147862. An interrupted parallel batch does not join its workers, so a child
+    can be torn down after the prompt that spawned it has answered."""
+    server, sid, state = await _in_process_server(tmp_path)
+    agent = state.agent
+    turns = iter([
+        lambda: (fold_child_tokens(agent, _child(1_000, 100)), _turn_result(
+            agent, input_tokens=10, output_tokens=20, cache_read=0, cache_write=0))[1],
+        lambda: _turn_result(agent, input_tokens=1, output_tokens=2, cache_read=0, cache_write=0),
+    ])
+    agent.run_conversation = lambda **kwargs: next(turns)()
+
+    first = await server.prompt(prompt=[TextContentBlock(type="text", text="one")], session_id=sid)
+    fold_child_tokens(agent, _child(500, 50))  # a straggler from the first prompt's batch
+    second = await server.prompt(prompt=[TextContentBlock(type="text", text="two")], session_id=sid)
+
+    assert (first.usage.input_tokens, first.usage.output_tokens) == (1_010, 120)
+    assert (second.usage.input_tokens, second.usage.output_tokens) == (501, 52)
+    # Every token the parent and its children spent is reported exactly once.
+    assert first.usage.total_tokens + second.usage.total_tokens == agent.session_total_tokens + 1_650
+
+
+@pytest.mark.asyncio
+async def test_a_drained_prompt_counts_in_the_prompt_that_drained_it(tmp_path):
+    """A prompt queued mid-turn runs inside ``_finish_turn``; its own response reaches no client."""
+    server, sid, state = await _in_process_server(tmp_path)
+    agent = state.agent
+
+    def first_turn():
+        state.queued_prompts.append("two")
+        return _turn_result(agent, input_tokens=10, output_tokens=20, cache_read=0, cache_write=0)
+
+    turns = iter([first_turn, lambda: _turn_result(agent, input_tokens=3, output_tokens=4, cache_read=0, cache_write=0)])
+    agent.run_conversation = lambda **kwargs: next(turns)()
+
+    response = await server.prompt(prompt=[TextContentBlock(type="text", text="one")], session_id=sid)
+
+    assert (response.usage.input_tokens, response.usage.output_tokens) == (13, 24)
 
 
 class _Wire:

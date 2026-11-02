@@ -1,7 +1,9 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
+import katex from 'katex'
 import { atom, onMount } from 'nanostores'
+import type { MathResolver } from 'pele'
 import { useEffect, useState } from 'react'
 
 import { Zoomable } from '@/components/ui/zoomable'
@@ -104,6 +106,38 @@ function withPalette(svg: string, vars: string): string {
   return vars ? svg.replace(/^<svg\b[^>]*?\sstyle="/, root => `${root}${vars};`) : svg
 }
 
+// Pele leaves typesetting $$TeX$$ labels to the host. KaTeX's MathML output
+// needs no stylesheet or webfonts, so it draws inside the isolated <img> SVG
+// and in the PNG copy alike (Chromium renders MathML natively), as mermaid's
+// did. Pele sizes each label from the measurement below. It is taken in a
+// shadow root, which the app stylesheet can't reach (it enlarges KaTeX's
+// `.katex` wrapper and restyles bare elements), so the size matches what the
+// stylesheet-free SVG draws. TeX KaTeX can't parse
+// returns null, and Pele shows the source.
+const typesetMath: MathResolver = (tex, size) => {
+  let html: string
+
+  try {
+    html = katex
+      .renderToString(tex, { output: 'mathml', strict: 'ignore', throwOnError: true })
+      .replace(/^<span class="katex">([\s\S]*)<\/span>$/, '$1')
+  } catch {
+    return null
+  }
+
+  const host = document.createElement('div')
+  host.style.cssText = 'position:absolute;visibility:hidden'
+  const probe = document.createElement('span')
+  probe.style.cssText = `display:inline-block;white-space:nowrap;line-height:normal;font-size:${size}px`
+  probe.innerHTML = html
+  host.attachShadow({ mode: 'open' }).append(probe)
+  document.body.append(host)
+  const { height, width } = probe.getBoundingClientRect()
+  host.remove()
+
+  return { height: Math.ceil(height), html, width: Math.ceil(width) }
+}
+
 const renderCache = createMermaidRenderCache({
   maxEntries: 32,
   render: async (code, themeKey) => {
@@ -116,7 +150,8 @@ const renderCache = createMermaidRenderCache({
       fontFamily: theme.font,
       fontFamilyMono: theme.fontMono,
       images: false,
-      links: false
+      links: false,
+      math: typesetMath
     })
 
     return withPalette(svg, theme.vars)

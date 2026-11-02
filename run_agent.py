@@ -1312,6 +1312,10 @@ class AIAgent(
         """
         tool_calls = assistant_message.tool_calls
         args = (assistant_message, messages, effective_task_id, api_call_count)
+        # Let pre_tool_call hooks see the message these calls were emitted with.
+        from agent.shell_hooks import set_assistant_text
+        _content = getattr(assistant_message, "content", None)
+        set_assistant_text(_content if isinstance(_content, str) else "")
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
             with scoped_connection_surface(agent_connection_surface(self)):

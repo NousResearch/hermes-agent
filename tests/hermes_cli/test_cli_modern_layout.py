@@ -38,7 +38,8 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert narrow == wide and not boxed, wide
     rows = "\n".join(wide).split("\n")
     thought = [line for line in rows if line.startswith("∴")]
-    assert len(thought) == 1 and "Planning the change" in thought[0], rows
+    # The summary never excerpts the reasoning (printed in full right above it): bare "∴ Thought for Ns".
+    assert len(thought) == 1 and "·" not in thought[0], rows
     # Reasoning streams in full like classic, under a fixed-width dim bar (never re-wraps on resize)
     # and closed by the ∴ summary; the answer opens under its own bar.
     start = rows.index("**Planning the change**")
@@ -50,8 +51,8 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
 
 @pytest.mark.parametrize("reasoning", [
     "scripted reasoning about gamma zeta-reason",
-    # Longer than the 72-char title cap: a shortened title would still repeat it.
-    "scripted reasoning about gamma zeta-reason that keeps going well past the title length cap here",
+    # A longer multi-sentence block: still never excerpted into the summary.
+    "scripted reasoning about gamma zeta-reason that keeps going well past any short title length here",
 ])
 def test_one_line_reasoning_is_shown_once(monkeypatch, reasoning):
     """Reasoning streams above its ∴ summary, so a one-sentence block must not reappear as the title."""

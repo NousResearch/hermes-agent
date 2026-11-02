@@ -183,11 +183,11 @@ def docker_tag(claim_tag: str) -> str:
     return claim_tag
 
 
-def require_success(needs: dict, required: list[str]) -> None:
+def require_success(needs: dict, required: list[str], allowed: tuple[str, ...] = ("success",)) -> None:
     if not required or len(set(required)) != len(required):
         raise ValueError("Invalid required-job list")
     failures = [f"{name}={needs.get(name, {}).get('result', 'missing')}"
-                for name in required if needs.get(name, {}).get("result") != "success"]
+                for name in required if needs.get(name, {}).get("result") not in allowed]
     if failures:
         raise ValueError("Release blocked: " + ", ".join(failures))
 
@@ -395,7 +395,10 @@ def _transition_row(target: str, left: dict, right: dict) -> dict:
     else:
         if left["teamId"] != right["teamId"]:
             raise ValueError("Update must preserve signing team")
-        newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
+        # Consecutive canaries share X.Y.Z (X.Y.Z+canary.<stamp>): their order is the claim stamp.
+        key = (lambda row: stamped_epoch(row["tag"])) if is_canary_claim(right["tag"]) else \
+            (lambda row: tuple(map(int, row["version"].split("."))))
+        newer = key(right) > key(left)
     if not newer:
         raise ValueError("New package version must increase")
     return {"target": target.replace("/", "-"), "transition": {
@@ -964,14 +967,16 @@ def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
             "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
 
 
-def _published_baseline(env: dict, base: str) -> dict | None:
-    """The previous stable package manifest, or None when no stable release shipped one.
+def _published_baseline(env: dict, base: str, policy: str) -> dict | None:
+    """The previous package manifest of this claim's policy, or None when none shipped one.
 
-    A release that skipped bundles never writes the pointer, so its absence
-    only means there is no OLD package to upgrade from.
+    A stable release upgrades from the last published stable release, a canary from the last
+    published canary (a prerelease): each policy's publication writes its own pointer
+    (channel_releases). A release that skipped bundles never writes it, so its absence only
+    means there is no OLD package to upgrade from.
     """
     try:
-        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
+        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/{policy}/release-candidates.json",
                                  expected_origin=base)
     except urllib.error.HTTPError as error:
         if error.code != 404:
@@ -980,8 +985,10 @@ def _published_baseline(env: dict, base: str) -> dict | None:
             raise ValueError("The supplied baseline-manifest does not exist") from error
         return None
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
-    if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"]:
-        raise ValueError("Upgrade baseline must be a published stable release")
+    canary = policy == "canary"
+    if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"] != canary \
+            or is_canary_claim(previous["tag"]) != canary:
+        raise ValueError(f"Upgrade baseline must be a published {policy} release")
     return previous
 
 
@@ -1005,7 +1012,7 @@ def transitions(env: dict) -> None:
     _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
-    previous = _published_baseline(env, base)
+    previous = _published_baseline(env, base, claim["policy"])
     receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
     if previous is None or not baseline_covers(previous, receipt, base):

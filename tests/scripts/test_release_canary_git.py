@@ -84,13 +84,13 @@ def test_canary_cut_keeps_the_stable_core_and_dispatches_exactly_once(canary_rep
     assert create[3] == tag
     assert {"--draft", "--prerelease", "--verify-tag"} <= set(create)
     dispatch = next(call for call in calls if call[1:3] == ["workflow", "run"])
-    # A canary runs the Stable Release pipeline itself: the same job graph, every lane on.
+    # A canary runs the Stable Release pipeline itself: the same job graph, the same default lanes.
     assert dispatch == [
         "gh", "workflow", "run", "stable-release.yml", "--ref", "main",
         "-f", f"tag={tag}", "--repo", "fixture/release",
     ]
     assert git("--git-dir", str(remote), "rev-parse", tag + "^{commit}") == git("rev-parse", "HEAD")
-    # The tag message is the claim admission reads: every lane a canary can run, green required.
+    # The tag message is the claim admission reads: the canary's default lanes, green required.
     from scripts.releases import lanes as lane_set, stable
 
     message = git("--git-dir", str(remote), "tag", "-l", tag, "--format=%(contents)")
@@ -135,21 +135,17 @@ def test_incomplete_canary_redispatches_the_existing_receipt(canary_repo, monkey
 
 
 def test_the_claim_records_the_chosen_lanes_and_green_policy(canary_repo):
-    git, remote, calls = canary_repo
+    git, remote, _calls = canary_repo
     git("commit", "--allow-empty", "-qm", "stable")
     git("tag", "v1.2.3")
     git("commit", "--allow-empty", "-qm", "feat: next")
     from scripts.releases import lanes as lane_set, stable
 
-    # A canary can never run the signed-package upgrade arms; asking for them cuts nothing.
-    with pytest.raises(SystemExit, match="cannot run upgrade"):
-        release.cmd_canary(canary_args(with_lanes=["upgrade"]))
-    assert not git("tag", "--list", "canary.*") and calls == []
     tag = "canary.20260818T103000Z-v1.2.3"
-    release.cmd_canary(canary_args(without_lanes=["macos-intel,termux"], require_green=False))
+    release.cmd_canary(canary_args(with_lanes=["macos-intel"], without_lanes=["upgrade"], require_green=False))
     message = git("--git-dir", str(remote), "tag", "-l", tag, "--format=%(contents)")
     claim = stable.canary_claim(message, tag=tag, commit=git("rev-parse", "HEAD"))
-    assert claim["lanes"] == lane_set.CANARY - {"macos-intel", "termux"}
+    assert claim["lanes"] == lane_set.CANARY - {"upgrade"} | {"macos-intel"}
     assert claim["requireGreen"] is False
 
 

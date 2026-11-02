@@ -25,13 +25,17 @@ _active_subagents: dict[str, dict[str, Any]] = {}
 _RECENT_SUBAGENTS_CAP = 200
 _recent_subagents: dict[str, dict[str, Any]] = {}
 
+def task_subagent_id(task_id: str) -> str:
+    """The subagent a child's terminal task_id belongs to: a reasoning-escalation retry runs under
+    ``<subagent_id>-attempt-N`` (its own terminal session), every other child under its subagent_id."""
+    return task_id.split("-attempt-", 1)[0]
+
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[dict[str, Any]]:
     """``{subagent_id, goal, delegation_id}`` for a process task_id that belongs to a live or recently-finished child
     (children run their terminal sessions under ``task_id == subagent_id``), else None."""
     if not task_id or not isinstance(task_id, str):
         return None
-    # A reasoning-escalation retry runs under ``<subagent_id>-attempt-N`` (its own terminal session).
-    subagent_id = task_id.split("-attempt-", 1)[0]
+    subagent_id = task_subagent_id(task_id)
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id) or _recent_subagents.get(subagent_id)
     if record is None:

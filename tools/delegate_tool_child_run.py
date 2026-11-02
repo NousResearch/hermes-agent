@@ -1070,6 +1070,9 @@ class _ChildRun:
         )
         if next_child is self.child:
             chain.reused_child = next_child
+        elif getattr(self.child, "_handed_off_processes", None):
+            # The parent already owns these; the final attempt's result names them (and the per-subagent cap holds).
+            next_child._handed_off_processes = list(self.child._handed_off_processes)
         chain.working_dir = working_dir
         chain.pending = (next_child, retry_goal)
         return True

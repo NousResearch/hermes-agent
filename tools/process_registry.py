@@ -2687,10 +2687,10 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
     tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
     no-op, so a PID mentioned in prose can't masquerade as a transfer."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, task_subagent_id
     from tools.terminal_tool import _resolve_container_task_id
     with _active_subagents_lock:
-        record = _active_subagents.get(str(task_id or ""))
+        record = _active_subagents.get(task_subagent_id(str(task_id or "")))
     child = record.get("agent") if record else None
     parent_ref = getattr(child, "_delegate_parent_ref", None)
     parent = parent_ref() if callable(parent_ref) else None

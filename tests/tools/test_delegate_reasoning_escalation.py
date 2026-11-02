@@ -817,6 +817,33 @@ def test_a_retry_is_one_spawn_and_carries_the_tasks_goal_not_the_handoff():
     assert events and all(goal == "task number 0" for _, goal in events)
 
 
+def test_background_process_handoffs_work_in_every_attempt_and_all_reach_the_result(monkeypatch):
+    """A retry runs under ``<subagent_id>-attempt-N``; ``process_manage(action="handoff")`` must still find it as a
+    live subagent, and a process handed off by an earlier attempt stays on the task's final result."""
+    from tools import process_registry as registry_mod
+    transfers = []
+
+    def transfer(session_id, *, from_owner, **_):
+        transfers.append(from_owner)
+        return SimpleNamespace(id=session_id, command=f"watch {session_id}")
+
+    monkeypatch.setattr(registry_mod.process_registry, "transfer_ownership", transfer)
+    outcomes = []
+
+    def attempt(script, proc):
+        def run(child, task_id, _record):
+            outcomes.append(registry_mod._handoff_process(proc, {"data": f"{proc} is the test watcher"}, task_id))
+            return script
+        return run
+
+    result, log, _, _ = _delegate({"low": attempt(M(), "proc-low"), "medium": attempt(D(), "proc-medium")},
+                                  [{**ESC, "reasoning_effort": "low", "escalate_ceiling": "medium"}])
+    assert [o.get("status") for o in outcomes] == ["handed_off", "handed_off"], outcomes
+    assert transfers == [log[0].task_ids[0], log[1].task_ids[0]]
+    (entry,) = result["results"]
+    assert [p["session_id"] for p in entry["handed_off_processes"]] == ["proc-low", "proc-medium"]
+
+
 def test_a_detached_units_retry_is_never_attached_to_the_parent():
     from tools.delegate_tool_child_run import _detach_child
     attached_at_build = []

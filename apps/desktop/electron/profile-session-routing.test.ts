@@ -916,6 +916,60 @@ test('registry sources: ssh backends use the shared cross-profile aggregate', as
   assert.ok(rows.every(row => (row as any).is_default_profile === false))
 })
 
+test('registry sources: an older ssh runtime without the aggregate reads each pooled profile backend', async () => {
+  const calls: Array<{ descriptor: unknown; path: string }> = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-spark',
+        kind: 'ssh',
+        backends: [
+          { descriptor: 'spark-default', profileLabel: 'default' },
+          { descriptor: 'spark-research', profileLabel: 'research' }
+        ]
+      }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0', profile: 'all' }),
+    async (descriptor, path) => {
+      calls.push({ descriptor, path })
+
+      if (path.startsWith('/api/profiles/sessions')) {
+        throw Object.assign(new Error('404: Not Found'), { statusCode: 404 })
+      }
+
+      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(
+    calls.filter(({ path }) => path.startsWith('/api/sessions?')).map(({ descriptor, path }) => [descriptor, path.includes('profile=')]),
+    [
+      ['spark-default', false],
+      ['spark-research', false]
+    ]
+  )
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile]),
+    [
+      ['s-spark-default', 'default'],
+      ['s-spark-research', 'research']
+    ]
+  )
+})
+
+test('pinned registry aggregation counts ssh profiles served through the default backend', () => {
+  const source = {
+    connectionId: 'gateway-ssh',
+    kind: 'ssh',
+    backends: [{ descriptor: 'default-desc', profileLabel: 'default' }]
+  }
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [source]), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'delta', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), false)
+})
+
 test('registry sources: forced-local backends are read per profile', async () => {
   const calls: string[] = []
 

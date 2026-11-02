@@ -569,7 +569,7 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
-import { managedSshConfig, resolveSharedSshProfileBackend } from './ssh-shared-profile-backend'
+import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
@@ -15933,10 +15933,10 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. A pooled SSH backend serves the
-// shared remote HERMES_HOME, so one descriptor can read every profile; remote/cloud
-// sources use the same shared-host path. Profile-specific overrides are handled by
-// the configured remote-profile route before this registry aggregation.
+// straight from the backend pool, never dialing. SSH sources list every pooled
+// (connection, profile) backend: the default one reads every profile through the
+// remote aggregate, the rest serve older runtimes' per-profile lists; remote/cloud
+// sources are one shared host.
 // The primary local connection is excluded for the legacy unpinned path — the
 // primary aggregate carries local rows there. A registry-pinned aggregate opts
 // in so forced-local backends remain visible when the legacy primary is remote.
@@ -15961,7 +15961,7 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
 
     const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
 
-    const perProfile = includeLocal && connection.kind === 'local'
+    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
 
     for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
       try {
@@ -15983,7 +15983,8 @@ async function pooledRegistrySessionSources(includeLocal = false): Promise<Regis
 
     if (backends.length) {
       const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
+      const sharedProfiles = connection.kind === 'ssh' ? sharedSshProfiles(connection.id, backends) : undefined
+      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind, sharedProfiles })
     }
   }
 

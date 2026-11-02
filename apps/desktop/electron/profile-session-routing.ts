@@ -297,13 +297,16 @@ export interface RegistrySessionSource {
    *  a shared host serving every profile via ?profile=. */
   kind: string
   backends: Array<{ descriptor: unknown; profileLabel: null | string }>
+  /** SSH: named profiles served through the connection's default backend
+   *  (no pooled backend of their own), as last read from its roster. */
+  sharedProfiles?: string[]
   /** The connection's gateway install_id, when known. Sources sharing one are the same backend
    *  and count their session totals once; a source without one is never summed with another. */
   backendId?: string
 }
 
 type PinnedRegistrySessionSource = Pick<RegistrySessionSource, 'connectionId'> &
-  Partial<Pick<RegistrySessionSource, 'backends' | 'kind'>>
+  Partial<Pick<RegistrySessionSource, 'backends' | 'kind' | 'sharedProfiles'>>
 
 /**
  * A pinned registry request may use the aggregate route only when that
@@ -344,7 +347,10 @@ export function hasPinnedRegistrySessionSource(
     return true
   }
 
-  return source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile)
+  return (
+    source.backends.some(({ profileLabel }) => (profileLabel || 'default') === selectedProfile) ||
+    Boolean(source.sharedProfiles?.includes(selectedProfile))
+  )
 }
 
 /** include the local registry source when the primary aggregate is remote */
@@ -538,23 +544,27 @@ export async function fetchRegistrySessionRows(
     }
   }
 
+  // Each backend's own list, labelled with the profile it runs as.
+  const readEachBackend = (source: RegistrySessionSource) =>
+    Promise.all(
+      source.backends.map(async ({ descriptor, profileLabel }) => {
+        const params = new URLSearchParams(searchParams)
+        params.delete('profile')
+        const read = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
+
+        if (read) {
+          recordTotals(read.first, source.connectionId, profileLabel || 'default')
+          tag(read.rows, source.connectionId, profileLabel || 'default')
+        }
+      })
+    )
+
   await Promise.all(
     sources.map(async source => {
       if (source.kind === 'local') {
         // Forced-local backends each own a separate state.db, so read every
         // profile backend independently.
-        await Promise.all(
-          source.backends.map(async ({ descriptor, profileLabel }) => {
-            const params = new URLSearchParams(searchParams)
-            params.delete('profile')
-            const read = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
-
-            if (read) {
-              recordTotals(read.first, source.connectionId, profileLabel || 'default')
-              tag(read.rows, source.connectionId, profileLabel || 'default')
-            }
-          })
-        )
+        await readEachBackend(source)
 
         return
       }
@@ -572,13 +582,29 @@ export async function fetchRegistrySessionRows(
       params.set('profile', 'all')
       const getShared = (path: string) => getJson(shared.descriptor, path)
       const aggregate = await fetchSessionRowsInPages('/api/profiles/sessions', params, getShared)
+
+      if (aggregate) {
+        recordTotals(aggregate.first, source.connectionId, null)
+        tag(aggregate.rows, source.connectionId, null)
+
+        return
+      }
+
+      // Older SSH runtime without the aggregator: its named profiles run as
+      // their own pooled backends, so each one reads its own list.
+      if (source.kind === 'ssh') {
+        await readEachBackend(source)
+
+        return
+      }
+
       // Older remote without the aggregator: its own default-profile list.
       const flat = new URLSearchParams(searchParams)
       flat.delete('profile')
-      const read = aggregate ?? (await fetchSessionRowsInPages('/api/sessions', flat, getShared))
+      const read = await fetchSessionRowsInPages('/api/sessions', flat, getShared)
 
       if (read) {
-        recordTotals(read.first, source.connectionId, aggregate ? null : 'default')
+        recordTotals(read.first, source.connectionId, 'default')
         tag(read.rows, source.connectionId, null)
       }
     })

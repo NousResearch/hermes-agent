@@ -1,4 +1,5 @@
 """Transactional legacy binding; never a second transcript writer."""
+import functools
 import json
 import time
 
@@ -15,11 +16,32 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
-# Labels a routeless row can carry that never name a chat app: automation and recovery rows, and a
-# third-party WebUI that runs its own agent on this state.db (adopting its rows would legitimise a
-# second writer, so they stay read-only: gateway/session_history_mount.py).
+# Labels a routeless row can carry that never name a chat app: automation and recovery rows, a
+# retired platform, and a third-party WebUI that runs its own agent on this state.db (adopting its rows
+# would legitimise a second writer, so they stay read-only: gateway/session_history_mount.py).
 NOT_CLIENT_LABELS = frozenset({'cron', 'subagent', 'kanban', 'bot_room', 'a2a', 'webhook', 'api_server',
-                               'import', 'recovered', 'webui', 'local', 'unknown'})
+                               'import', 'recovered', 'curator', 'batch', 'homeassistant', 'webui',
+                               'local', 'unknown'})
+
+
+@functools.lru_cache(maxsize=1)
+def _messaging_labels():
+    """Every platform Hermes ships: the enum and the bundled platform plugins. A runtime-registered
+    catalog plugin (hermes-mobile's ``mobile``) is not in it: its rows are routed, which excludes them."""
+    from gateway.config import Platform
+    bundled, aliases = Platform._scan_bundled_plugin_platforms()
+    return frozenset({platform.value for platform in Platform} | set(bundled) | set(aliases))
+
+
+def not_client_labels():
+    """Labels :func:`client_label` refuses, for queries that pre-filter rows."""
+    return LEGACY_LOCAL_SOURCES | NOT_CLIENT_LABELS | _messaging_labels()
+
+
+def client_label(source):
+    """Whether *source* is a client app's own label (``mobile``, ``ios``): not a local surface, a
+    shipped messaging platform, or an automation / foreign-writer label."""
+    return isinstance(source, str) and bool(source.strip()) and source not in not_client_labels()
 
 
 def client_history_row(row):
@@ -29,12 +51,7 @@ def client_history_row(row):
     in through the dashboard login left routeless rows labelled ``mobile``, ``ios`` and the like. They
     are the owner's Desktop-style chats: adopted as ``gui``. A routed row is never one, which keeps a
     plugin platform sharing the label (hermes-mobile registers ``mobile``) on its messaging route."""
-    source = row.get('source')
-    if (not isinstance(source, str) or not source.strip() or source in LEGACY_LOCAL_SOURCES
-            or source in NOT_CLIENT_LABELS or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))):
-        return False
-    from gateway.config import Platform
-    return source not in {platform.value for platform in Platform}
+    return client_label(row.get('source')) and not any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
 
 
 def legacy_history_row(row):

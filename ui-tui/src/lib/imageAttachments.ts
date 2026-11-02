@@ -13,8 +13,14 @@ import { t } from '../i18n/runtime.js'
 
 import { pythonHelperPath } from './pythonHelpers.js'
 
-export interface ImageAttachment { path: string; mime: string }
-export interface StagedImage extends ImageAttachment { name: string; remainder?: string }
+export interface ImageAttachment {
+  path: string
+  mime: string
+}
+export interface StagedImage extends ImageAttachment {
+  name: string
+  remainder?: string
+}
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -43,29 +49,43 @@ async function resolveImagePath(raw: string, base: string): Promise<{ path: stri
   const value = raw.trim()
   const quoted = /^(["'])(.*?)\1(?:\s+([\s\S]*))?$/.exec(value)
 
-  const candidates = quoted ? [[quoted[2]!, quoted[3] ?? '']] : [
-    [value, ''],
-    ...[...value.matchAll(/\s+/g)].reverse().map(match => [value.slice(0, match.index), value.slice(match.index).trim()])
-  ]
+  const candidates = quoted
+    ? [[quoted[2]!, quoted[3] ?? '']]
+    : [
+        [value, ''],
+        ...[...value.matchAll(/\s+/g)]
+          .reverse()
+          .map(match => [value.slice(0, match.index), value.slice(match.index).trim()])
+      ]
 
   for (const [candidate, remainder] of candidates) {
     let path = candidate!.replace(/\\([ ()'"[\]])/g, '$1')
 
-    if (path.startsWith('file://')) { path = fileURLToPath(path) }
+    if (path.startsWith('file://')) {
+      path = fileURLToPath(path)
+    }
 
-    if (path.startsWith('~/')) { path = join(homedir(), path.slice(2)) }
+    if (path.startsWith('~/')) {
+      path = join(homedir(), path.slice(2))
+    }
     path = resolve(base, path)
 
     try {
       const info = await stat(path)
 
-      if (!info.isFile()) { continue }
+      if (!info.isFile()) {
+        continue
+      }
 
-      if (info.size > MAX_IMAGE_BYTES) { throw new Error(t('canonical.images.tooLarge')) }
+      if (info.size > MAX_IMAGE_BYTES) {
+        throw new Error(t('canonical.images.tooLarge'))
+      }
 
       return { path, remainder: remainder! }
     } catch (error) {
-      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) { throw error }
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        throw error
+      }
     }
   }
 
@@ -75,30 +95,45 @@ async function resolveImagePath(raw: string, base: string): Promise<{ path: stri
 async function extractClipboardImage(path: string): Promise<boolean> {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../..')
 
-  const python = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim() ||
+  const python =
+    process.env.HERMES_PYTHON?.trim() ||
+    process.env.PYTHON?.trim() ||
     (process.platform === 'win32' ? 'python' : 'python3')
 
-  const { stdout } = await promisify(execFile)(python, [pythonHelperPath('clipboard_image.py', root), path],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 15_000, windowsHide: true })
+  const { stdout } = await promisify(execFile)(python, [pythonHelperPath('clipboard_image.py', root), path], {
+    cwd: root,
+    env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root },
+    timeout: 15_000,
+    windowsHide: true
+  })
 
   return stdout.trim() === 'true'
 }
 
 export async function stageClipboardImage(
-  gw: GatewayClient, destination: SubmissionDestination,
+  gw: GatewayClient,
+  destination: SubmissionDestination,
   extract: (path: string) => Promise<boolean> = extractClipboardImage
 ): Promise<StagedImage | null> {
   const directory = await mkdtemp(join(tmpdir(), 'hermes-clipboard-'))
   const path = join(directory, 'clipboard.png')
 
   try {
-    if (!await extract(path)) { return null }
+    if (!(await extract(path))) {
+      return null
+    }
 
     return await stageImagePath(path, gw, destination)
-  } finally { await rm(directory, { recursive: true, force: true }) }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 }
 
-export async function stageImagePath(raw: string, gw: GatewayClient, destination: SubmissionDestination): Promise<StagedImage> {
+export async function stageImagePath(
+  raw: string,
+  gw: GatewayClient,
+  destination: SubmissionDestination
+): Promise<StagedImage> {
   // Explicit URL attachments may target another machine, even a loopback SSH
   // tunnel. Only discovery-owned local connections share our profile filesystem.
   const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
@@ -107,16 +142,22 @@ export async function stageImagePath(raw: string, gw: GatewayClient, destination
   const source = await resolveImagePath(raw, base)
   const bytes = await readFile(source.path)
 
-  if (bytes.length > MAX_IMAGE_BYTES) { throw new Error(t('canonical.images.tooLarge')) }
+  if (bytes.length > MAX_IMAGE_BYTES) {
+    throw new Error(t('canonical.images.tooLarge'))
+  }
   const { mime, ext } = imageFormat(bytes)
   const name = basename(source.path)
 
   if (remote) {
     const result = await gw.request<{ path?: string }>('image.attach_bytes', {
-      session_id: destination.sid, filename: `${randomUUID()}${ext}`, content_base64: bytes.toString('base64')
+      session_id: destination.sid,
+      filename: `${randomUUID()}${ext}`,
+      content_base64: bytes.toString('base64')
     })
 
-    if (!result?.path) { throw new Error(t('canonical.images.noOwnerPath')) }
+    if (!result?.path) {
+      throw new Error(t('canonical.images.noOwnerPath'))
+    }
 
     return { path: result.path, mime, name, remainder: source.remainder }
   }
@@ -126,7 +167,12 @@ export async function stageImagePath(raw: string, gw: GatewayClient, destination
   const path = join(directory, `${randomUUID()}${ext}`)
   const file = await open(path, 'wx', 0o600)
 
-  try { await file.writeFile(bytes); await file.sync() } finally { await file.close() }
+  try {
+    await file.writeFile(bytes)
+    await file.sync()
+  } finally {
+    await file.close()
+  }
 
   return { path, mime, name, remainder: source.remainder }
 }

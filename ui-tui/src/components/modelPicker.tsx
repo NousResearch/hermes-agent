@@ -807,6 +807,7 @@ export function ModelPicker({
 
   // ── Model selection stage ────────────────────────────────────────────
   const filtering = !!filter.trim()
+
   const { footnote, levelled, nameWidth, sectioned, visibleModels } = planListLayout(
     provider,
     models,
@@ -814,6 +815,7 @@ export function ModelPicker({
     width,
     M
   )
+
   const { items, offset } = windowItems(models, modelIdx, visibleModels)
   const noModelMatches = filtering && models.length === 0
   let sectionLines = 0

@@ -22,7 +22,7 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.22.6"
 known_issues:
   - "Desktop only: it needs host.openWorkspace and the folder-scoped file API (ctx.files)."
   - "No live file watching; the vault rescans when the window regains focus and after saves."

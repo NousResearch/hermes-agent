@@ -564,6 +564,10 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault action=unlock."})
+    if meta.kind == "login" and not secret["password"]:
+        # Not a page problem: retrying or moving pages cannot help until the item has a password.
+        return json.dumps({"success": False, "error_type": "empty_secret",
+                           "error": f"The saved login {meta.label!r} has no password in {backend.display_name}."})
     if not fills:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}

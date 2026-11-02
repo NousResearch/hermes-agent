@@ -28,6 +28,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 # ---------------------------------------------------------------------------
 # Now we can safely import
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.waiting import async_wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +371,9 @@ class TestMediaGroups:
             msg = _make_message(document=doc, media_group_id="album-1")
             await adapter._handle_media_message(_make_update(msg), MagicMock())
             assert adapter.handle_message.await_count == 0
-        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+        await async_wait_until(lambda: adapter.handle_message.await_count == 1,
+                               timeout=adapter.MEDIA_GROUP_WAIT_SECONDS + 2.0,
+                               what="merged document album flush")
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         assert len(event.media_urls) == 3

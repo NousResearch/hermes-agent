@@ -235,6 +235,22 @@ def _endpoint_owner(saved, config):
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
 
+def adopts_client_history(authority, actor, row):
+    """Whether this resume adopts *row*, a phone app's self-labelled chat
+    (``hermes_state_local_migration.client_history_row``), as a writable conversation: only for the
+    native owner adoption requires, only when it validates for that owner, and never over a session
+    this authority already serves. Anything else keeps the read-only history mount it had."""
+    from hermes_state_local_migration import client_history_row, validate_legacy_row
+    if (not client_history_row(row) or row['id'] in authority.sessions
+            or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
+        return False
+    try:
+        validate_legacy_row(authority.db, row, subject=actor.subject)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')

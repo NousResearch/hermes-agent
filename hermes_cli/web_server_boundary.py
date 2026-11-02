@@ -218,6 +218,24 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
         parsed = None
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if parsed is None or not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return None
+
+    # A loopback dashboard is commonly published through a reverse proxy that
+    # deliberately sends the upstream Host as the bound loopback authority while
+    # preserving the browser-facing host in X-Forwarded-Host. Accept only the
+    # exact, narrow tuple: the upstream Host must still be a valid bound host,
+    # the proxy must declare X-Forwarded-Host, and Origin's netloc must equal it.
+    # Never trust a forwarded host by itself or accept suffix/wildcard matches.
+    forwarded_host = ws.headers.get("x-forwarded-host", "").strip()
+    host_header = ws.headers.get("host", "")
+    if (
+        host_header
+        and _is_accepted_host(host_header, bound_host)
+        and forwarded_host
+        and parsed.netloc.lower() == forwarded_host.lower()
+    ):
+        return None
+    return f"origin_mismatch origin={origin} bound={bound_host}"

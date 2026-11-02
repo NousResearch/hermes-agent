@@ -110,6 +110,26 @@ describe('collectThemeBridge', () => {
 
     expect(collectThemeBridge().colorScheme).toBe('light')
   })
+
+  // Charts drawn in a widget take the app's own series hues, resolved from the
+  // live theme, so a dark/light flip recolors them instead of stranding a
+  // hex picked for the other mode.
+  it('hands the app chart hues into the frame under friendly names', () => {
+    const root = document.documentElement
+    root.style.setProperty('--ui-green', '#55a583')
+    root.style.setProperty('--ui-red', '#e75e78')
+
+    try {
+      const { vars } = collectThemeBridge()
+
+      expect(vars['--green']).toBe('#55a583')
+      expect(vars['--red']).toBe('#e75e78')
+      expect(themePrelude(vars, '', 'dark')).toContain('--green:#55a583')
+    } finally {
+      root.style.removeProperty('--ui-green')
+      root.style.removeProperty('--ui-red')
+    }
+  })
 })
 
 describe('frameSizeFromMessage', () => {

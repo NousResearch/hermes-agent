@@ -181,13 +181,26 @@ export function intentAckMessage(token: string, id: number, ack: IntentAck) {
 
 /** Semantic tokens handed into the frame, resolved to concrete values from
  *  the LIVE theme. Friendly names, not internal ones — this is the contract
- *  reference HTML / skills write against (`var(--foreground)` etc.). */
+ *  reference HTML / skills write against (`var(--foreground)` etc.).
+ *
+ *  The hues are the app's own series palette (the diff and status colors use
+ *  them), with separate light and dark values: a chart drawn with
+ *  `var(--green)` / `var(--red)` reads like the app's own diffs and stays
+ *  legible when the user flips the theme, where hard-coded hex picked for one
+ *  mode washes out in the other. */
 const THEME_BRIDGE_TOKENS: Record<string, string> = {
   '--foreground': '--ui-text-primary',
   '--muted-foreground': '--ui-text-tertiary',
   '--accent': '--ui-accent',
   '--border': '--ui-stroke-tertiary',
-  '--card': '--ui-bg-editor'
+  '--card': '--ui-bg-editor',
+  '--red': '--ui-red',
+  '--orange': '--ui-orange',
+  '--yellow': '--ui-yellow',
+  '--green': '--ui-green',
+  '--cyan': '--ui-cyan',
+  '--blue': '--ui-blue',
+  '--purple': '--ui-purple'
 }
 
 /** The app's resolved light/dark appearance, read from the SAME attribute

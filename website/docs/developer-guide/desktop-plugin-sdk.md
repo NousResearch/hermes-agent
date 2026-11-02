@@ -1157,9 +1157,12 @@ interactive; no reach into the app, its storage, or the bridge). The frame
 sizes itself to the content (height live, width adopted from the content's
 intrinsic span, flush left in the message flow), and a theme prelude hands
 the document the app's resolved tokens (`--foreground`, `--muted-foreground`,
-`--accent`, `--border`, `--card`), the app font, and a transparent
-background — so widget-shaped HTML reads as native while a full page keeps
-its own design. Non-HTML targets and remote gateways fall back to the
+`--accent`, `--border`, `--card`), the app's chart hues (`--red`, `--orange`,
+`--yellow`, `--green`, `--cyan`, `--blue`, `--purple` — the same palette the
+diff and status colors use, with separate light and dark values), the app
+font, and a transparent background — so widget-shaped HTML, charts included,
+reads as native and follows theme switches, while a full page keeps its own
+design. Non-HTML targets and remote gateways fall back to the
 classic preview card. Tell the agent about your directive in a skill (that's
 how it learns to emit it).
 

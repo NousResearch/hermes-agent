@@ -140,4 +140,32 @@ describe('launch restore onto the last-used gateway', () => {
     expect($connection.get()?.connectionId).toBe('homelab')
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
   })
+
+  it('a target reported down after activation began is cancelled, not published', async () => {
+    const report = deferred<DesktopAgentRoster>()
+    const dial = deferred<void>()
+    stubBridge(() => report.promise)
+    ensureGatewayAgent.mockImplementationOnce(async (connectionId, profile, options) => {
+      if (options?.beforeActivate && !options.beforeActivate()) {
+        return
+      }
+
+      await dial.promise
+      const { signal } = options as { signal?: AbortSignal }
+
+      if (!signal?.aborted) {
+        $connection.set({ connectionId: connectionId ?? undefined, mode: 'remote', profile, registryScoped: true })
+      }
+    })
+
+    const boot = initializeConnectionsRegistry()
+    await vi.waitFor(() => expect(ensureGatewayAgent).toHaveBeenCalled())
+    report.resolve(roster({ reachable: false, error: 'roster enumeration timed out' }))
+    await vi.waitFor(() => expect($pendingConnectionId.get()).toBeNull())
+    dial.resolve()
+    await boot
+
+    expect($connection.get()?.connectionId).toBe('local')
+    expect(setLastUsed).not.toHaveBeenCalled()
+  })
 })

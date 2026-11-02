@@ -1260,6 +1260,10 @@ def _classify_400(c: _Ctx) -> Verdict:
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
     if _is_server_injected_param_rejection(msg, c.provider_slug):
         return _V_SERVER_ERROR
+    # ChatGPT Codex sometimes answers a valid request with a bare ``{"detail": "Bad Request"}``
+    # that an identical resend accepts: transient, retry instead of failing the turn.
+    if _is_codex_bare_bad_request(c):
+        return _V_SERVER_ERROR
     if any(p in msg for p in _MALFORMED_TOOL_ARGS_PATTERNS):
         return _V_MALFORMED_TOOL_ARGS
     if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
@@ -1378,6 +1382,19 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
         if error_msg and param in error_msg and any(w in error_msg for w in _PARAM_REJECTION_WORDS):
             return not any(sender in provider_slug for sender in senders)
     return False
+
+
+_CODEX_BARE_BAD_REQUEST_DETAIL = "bad request"
+
+
+def _is_codex_bare_bad_request(c: _Ctx) -> bool:
+    """Exact ``{"detail": "Bad Request"}`` 400 envelope from ``openai-codex``, nothing else."""
+    if c.provider_slug != "openai-codex" or c.status_code not in (None, 400):
+        return False
+    body = c.body if isinstance(c.body, dict) else {}
+    if body:
+        return set(body) == {"detail"} and str(body["detail"]).strip().lower() == _CODEX_BARE_BAD_REQUEST_DETAIL
+    return "{'detail': 'bad request'}" in c.msg
 
 
 _CODEX_MASKED_REPLAY_MESSAGE = "request blocked."

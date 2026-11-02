@@ -1961,7 +1961,7 @@ agent:
 
 In Desktop, open a model's options in the model menu: the **Daybreak** switch appears next to **Fast**, only on models your signed-in account's Codex catalog lists for Daybreak. Accounts without Daybreak never see it. The switch is profile-wide, like Codex's own toggle, and applies from the next turn.
 
-Every request checks the catalog again, so `access_programs.cyber: daybreak_blue` is sent only when the switch is on **and** that request's account and model are listed. Switching to an unlisted model, rotating to an account without access, or an unreadable catalog sends standard requests. It is not sent on API-key routes or the opt-in `codex_app_server` runtime, and only chat turns use it (cron jobs and subagents use standard safeguards). The setting grants no access: approval comes from OpenAI.
+Every request checks the catalog again, so `access_programs.cyber: daybreak_blue` is sent only when the switch is on **and** that request's account and model are listed. Switching to an unlisted model, rotating to an account without access, or an unreadable catalog sends standard requests. It is not sent on API-key routes or the opt-in `codex_app_server` runtime, and only your own chat turns use it (Desktop, the TUI and the CLI). Messaging-platform chats, cron jobs and subagents use standard safeguards: OpenAI allows Daybreak no third-party or downstream access, and a bot's chats can be other people. The setting grants no access: approval comes from OpenAI.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`

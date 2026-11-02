@@ -281,10 +281,14 @@ class GatewayConfigLoadersMixin:
         return _parse_service_tier_config(cls._cfg_str("agent", "service_tier"))
 
     @staticmethod
-    def _load_daybreak() -> bool:
-        """``agent.daybreak`` (off unless explicitly true). Read per turn so the Desktop switch reaches
-        the next turn of a running chat without rebuilding its cached agent."""
+    def _load_daybreak(source) -> bool:
+        """``agent.daybreak`` (off unless explicitly true) for a turn from ``source``. Read per turn so the
+        Desktop switch reaches the next turn of a running chat without rebuilding its cached agent. Only the
+        owner's local surfaces carry it: Daybreak is the approved account's own access (OpenAI: no third-party
+        or downstream use), and a messaging platform's chats can be other people."""
         from gateway.run import _load_gateway_config
+        if getattr(source, "platform", None) != Platform.LOCAL:
+            return False
         return cfg_get(_load_gateway_config(), "agent", "daybreak") is True
 
     @staticmethod

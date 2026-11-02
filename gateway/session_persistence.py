@@ -390,7 +390,7 @@ class SessionPersistenceMixin:
         except sqlite3.Error:
             return None
         platform = row and _messaging_platform(entry.platform.value if entry.platform else row['source'])
-        source = _row_source(row, platform, None) if platform else None
+        source = _row_source(row, platform, self._named_profile_for_key(entry.session_key)) if platform else None
         if source is None or source.platform != platform:
             return None
         return source if self._generate_session_key(source) == entry.session_key else None

@@ -398,7 +398,7 @@ export const ruOverrides = {
       advancedOutput: 'Ограничения вывода',
       advancedDelegation: 'Субагенты',
       advancedDesktop: 'Приложение и запуск',
-      gatewayConnection: 'Это окно',
+      gatewayConnection: 'Основной шлюз',
       gatewayDevices: 'Сохранённые подключения',
       gatewayManagedUpdates: 'Удалённые обновления',
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',

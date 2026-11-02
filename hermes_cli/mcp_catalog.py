@@ -117,6 +117,7 @@ class CatalogEntry:
     install: Optional[InstallSpec] = None
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
+    events: bool = False  # install with ``events: true`` (the server offers MCP Events)
     manifest_path: Path = field(default_factory=Path)
 
 
@@ -338,10 +339,14 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     suggest = _parse_suggest(path, data.get("suggest"))
     connector_slug = _parse_connector_slug(path, data.get("connector_slug"))
     install = _parse_install(path, data.get("install"))
+    events = data.get("events", False)
+    if not isinstance(events, bool):
+        raise CatalogError(f"{path}: 'events' must be true or false")
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
-        post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        post_install=str(data.get("post_install") or ""), suggest=suggest, events=events,
+        manifest_path=path,
     )
 
 
@@ -556,6 +561,8 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
             from hermes_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
+    if entry.events:
+        cfg["events"] = True
     return cfg
 
 

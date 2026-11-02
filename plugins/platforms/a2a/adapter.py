@@ -27,6 +27,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.config import Platform
 from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
+from hermes_constants import hermes_home_key
 
 from . import protocol, security
 
@@ -216,7 +217,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         if subpath in ("/.well-known/agent.json", "/.well-known/agent-card.json"):
             return self._json(200, adapter._build_card(public_url, agent=agent))
         if subpath == "/metrics":
-            return self._json(200, protocol.metrics.snapshot())
+            return self._json(200, adapter._metrics.snapshot())
         if subpath not in ("/", "/health"):
             return self._json(404, {"error": "not found"})
         payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
@@ -261,7 +262,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         for failed, http, code, msg in checks:
             if failed():
                 if code == protocol.ERR_RATE_LIMITED:
-                    protocol.metrics.rate_limit_triggers += 1
+                    adapter._metrics.rate_limit_triggers += 1
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         if handler_name == "_rpc_message_send":
@@ -304,6 +305,8 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).
         self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
+        # Owning profile's counters, captured here: the HTTP server threads carry no profile scope.
+        self._metrics = protocol.metrics_for(hermes_home_key())
         # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
         # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
         self._pending: dict[str, tuple[str, Future]] = {}
@@ -384,7 +387,7 @@ class A2AAdapter(BasePlatformAdapter):
         failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
-            protocol.metrics.tasks_failed += 1
+            self._metrics.tasks_failed += 1
         return failed
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
@@ -555,7 +558,7 @@ class A2AAdapter(BasePlatformAdapter):
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
         """Complete a task immediately (rejected / not ready) and build its terminal Task."""
         self.tasks.complete(rec["task_id"], state, stored_reply)
-        protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
+        self._metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
     def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
@@ -586,7 +589,7 @@ class A2AAdapter(BasePlatformAdapter):
         if not retry and (turn > max_turns or not text):
             self._forget_forwarded_input(input_id)
         if turn > max_turns:
-            protocol.metrics.anti_loop_triggers += 1
+            self._metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
             return self._end_task(rec, protocol.STATE_REJECTED, f"Anti-loop protection: context {context_id} exceeded "
                                   f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.")
@@ -596,7 +599,7 @@ class A2AAdapter(BasePlatformAdapter):
         security.audit("inbound", peer, task_id, text)
         if not retry:
             protocol.persist_message(context_id, "user", text, task_id, input_id=input_id or "")
-            protocol.metrics.inbound_total += 1
+            self._metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
@@ -652,7 +655,7 @@ class A2AAdapter(BasePlatformAdapter):
         """Persist + audit + count a finished task, mark it terminal, and fire its push callback."""
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
-        m = protocol.metrics
+        m = self._metrics  # never protocol.metrics: HTTP server threads carry no profile scope
         if state in (protocol.STATE_COMPLETED, protocol.STATE_INPUT_REQUIRED):
             m.outbound_total, m.tasks_completed = m.outbound_total + 1, m.tasks_completed + 1
             if started is not None:
@@ -734,7 +737,7 @@ class A2AAdapter(BasePlatformAdapter):
 
     def _rpc_message_stream(self, handler, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None) -> None:
         """message/stream as an SSE response of JSON-RPC-wrapped StreamResponse events (§9.4)."""
-        protocol.metrics.streams_started += 1
+        self._metrics.streams_started += 1
         self._sse_headers(handler)
         pending = None
         try:
@@ -840,7 +843,7 @@ class A2AAdapter(BasePlatformAdapter):
     def _send_push_notification(self, task_id: str, context_id: str, reply: str, state: str) -> None:
         """POST a v1.0 StreamResponse payload to the task's registered callback (SSRF-checked URL)."""
         def fail(msg: str, *args) -> None:
-            protocol.metrics.push_failed += 1
+            self._metrics.push_failed += 1
             logger.warning("A2A: push notification for task %s " + msg, task_id, *args)
 
         callback_url = self.tasks.pop_push_url(task_id)
@@ -860,7 +863,7 @@ class A2AAdapter(BasePlatformAdapter):
             return fail("failed: %s", e)
         if not 200 <= status < 300:
             return fail("got HTTP %d", status)
-        protocol.metrics.push_sent += 1
+        self._metrics.push_sent += 1
         logger.debug("A2A: push notification sent for task %s", task_id)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None):

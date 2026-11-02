@@ -416,19 +416,29 @@ def _needs_bridge(method):
     return _guarded
 
 
+_BRIDGE_DIRS: dict[str, Path] = {}  # resolved bridge dir per profile home (hermes_home_key)
+
+
+def _default_bridge_dir() -> Path:
+    """Per home, not per process: on a read-only install the resolved dir is a mirror under the
+    profile's own home, and one module serves every profile in the gateway process."""
+    from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+    from hermes_constants import hermes_home_key
+    key = hermes_home_key()
+    if key not in _BRIDGE_DIRS:
+        _BRIDGE_DIRS[key] = resolve_whatsapp_bridge_dir()
+    return _BRIDGE_DIRS[key]
+
+
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Transport over a local Node.js (Baileys) HTTP bridge; behavior lives in ``WhatsAppBehaviorMixin``. config.extra: bridge_script /
     bridge_port (3000) / session_path, dm_policy / group_policy (open|allowlist|disabled|pairing), allow_from / group_allow_from, send_read_receipts."""
 
-    _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
     serial_receive_loop = True  # the bridge poll loop awaits each media message before the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
-        if WhatsAppAdapter._DEFAULT_BRIDGE_DIR is None:
-            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-            WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
         from hermes_constants import get_hermes_home
         self._profile_home = get_hermes_home()
@@ -443,7 +453,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except ValueError as exc:
             logger.warning("[whatsapp] %s; using port 3000", exc)
             self._bridge_port = 3000
-        self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
+        self._bridge_script: str = extra["bridge_script"] if "bridge_script" in extra else str(_default_bridge_dir() / "bridge.js")
         self._session_path = _session_dir(extra)
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()

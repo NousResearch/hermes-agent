@@ -23,10 +23,17 @@ _PROBE = textwrap.dedent("""
     from gateway.config import load_gateway_config
     from gateway.platform_registry import platform_registry
     config = load_gateway_config()
+    # A bundled adapter executes under its canonical name or the loader's synthetic one; count both.
+    adapters = set()
+    for m in sys.modules:
+        if m.endswith(".adapter"):
+            if m.startswith("plugins.platforms."):
+                adapters.add(m.split(".")[2])
+            elif m.startswith("hermes_plugins.platforms__"):
+                adapters.add(m.split("__", 1)[1].split(".")[0])
     print(json.dumps({
         "enabled": sorted(p.value for p, c in config.platforms.items() if c.enabled),
-        "adapters": sorted(m.split("__", 1)[1].split(".")[0] for m in sys.modules
-                           if m.startswith("hermes_plugins.platforms__") and m.endswith(".adapter")),
+        "adapters": sorted(adapters),
         "registered": sorted(platform_registry.registered_names()),
     }))
 """)

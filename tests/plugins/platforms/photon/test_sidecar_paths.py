@@ -139,3 +139,26 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.undo()
         importlib.reload(photon_adapter)
         importlib.reload(photon_cli)
+
+
+def test_resolved_sidecar_dir_is_per_profile_home(tmp_path, monkeypatch) -> None:
+    """One module serves every profile in the process: a mirror resolved under profile A's home
+    must not become profile B's sidecar dir."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", None)
+    monkeypatch.setattr(sidecar_paths, "_RESOLVED_SIDECAR_DIRS", {}, raising=False)
+    source = tmp_path / "src"
+    _seed_source(source)
+    monkeypatch.setattr(sidecar_paths, "SOURCE_SIDECAR_DIR", source)
+    _freeze_writability(monkeypatch, writable=False)
+    resolved = {}
+    for name in ("a", "b"):
+        token = set_hermes_home_override(str(tmp_path / name))
+        try:
+            resolved[name] = sidecar_paths._sidecar_dir()
+        finally:
+            reset_hermes_home_override(token)
+    assert resolved["a"] == tmp_path / "a" / "photon" / "sidecar"
+    assert resolved["b"] == tmp_path / "b" / "photon" / "sidecar"

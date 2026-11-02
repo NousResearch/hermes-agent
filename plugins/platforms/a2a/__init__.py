@@ -87,13 +87,17 @@ def interactive_setup() -> None:
 def register(ctx) -> None:
     """Plugin entry point. Client tools register even when the inbound platform is disabled
     so the agent can call peers without exposing itself."""
+    # The loader executes this package as ``hermes_plugins.platforms__a2a`` and pre-imports
+    # ``<that>.tools`` itself (deferred client tools), so tools stays relative: the same module, run once.
+    # The adapter is absolute because gateway/session_a2a.py imports ``plugins.platforms.a2a.adapter``;
+    # a relative import would execute it (and protocol, security) a second time.
     try:
         from .tools import register_tools
         register_tools(ctx)
     except Exception:
         logger.warning("A2A: failed to register client tools", exc_info=True)
     try:
-        from .adapter import A2AAdapter
+        from plugins.platforms.a2a.adapter import A2AAdapter
         ctx.register_platform(
             name="a2a", label="A2A", adapter_factory=lambda cfg: A2AAdapter(cfg),
             check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,

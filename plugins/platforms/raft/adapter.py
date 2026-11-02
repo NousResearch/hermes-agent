@@ -41,6 +41,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pendin
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,9 @@ _MAX_SCALAR_LENGTH = 120
 _ACTIVITY_ALLOWED_FIELDS = set(
     "schema eventId sessionId hookEventName status occurredAt toolName toolInput toolOutput "
     "toolInputTruncated toolOutputTruncated truncated errorClass durationMs".split())
+# One module serves every profile in the process (canonical import), so the set spans profiles:
+# each adapter records its owning profile scope at connect and _emit delivers only within it.
+# The session/turn id sets below only gate "is this a Raft session"; ids are process-unique.
 _ACTIVE_ADAPTERS: weakref.WeakSet[RaftAdapter] = weakref.WeakSet()
 _ACTIVE_ADAPTERS_LOCK = threading.Lock()
 _RAFT_CONTEXT_LOCK = threading.Lock()
@@ -230,10 +234,15 @@ def _is_raft_context(**kwargs: Any) -> bool:
 
 
 def _emit(hook_event_name: str, kwargs: dict[str, Any], **fields: Any) -> None:
-    """Build an activity event for the hook's session and fan it out to every live adapter."""
-    event = _make_activity_event(hook_event_name=hook_event_name, session_id=kwargs.get("session_id"), **fields)
+    """Build an activity event for the hook's session and fan it out to the live adapters of the
+    hook's own profile (hooks run under the invoking profile's scope; another profile's tool names,
+    args and output must never reach this one's Raft bridge)."""
+    scope = hermes_home_key()
     with _ACTIVE_ADAPTERS_LOCK:
-        adapters = list(_ACTIVE_ADAPTERS)
+        adapters = [adapter for adapter in _ACTIVE_ADAPTERS if adapter._scope_key == scope]
+    if not adapters:
+        return
+    event = _make_activity_event(hook_event_name=hook_event_name, session_id=kwargs.get("session_id"), **fields)
     for adapter in adapters:
         adapter.report_activity(event)
 
@@ -309,6 +318,7 @@ class RaftAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("raft"))
+        self._scope_key: str = hermes_home_key()  # owning profile; re-read at connect (see _emit)
         extra = config.extra or {}
         self._host: str = str(extra.get("host", DEFAULT_HOST))
         self._port: int = int(extra.get("port", DEFAULT_PORT))
@@ -350,6 +360,7 @@ class RaftAdapter(BasePlatformAdapter):
         if bound_port == 0 and site._server and site._server.sockets:
             bound_port = site._server.sockets[0].getsockname()[1]
         self._mark_connected()
+        self._scope_key = hermes_home_key()
         with _ACTIVE_ADAPTERS_LOCK:
             _ACTIVE_ADAPTERS.add(self)
         logger.info("[raft] Raft channel listening on %s:%d%s", self._host, bound_port, self._path)

@@ -34,6 +34,7 @@ from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -455,11 +456,12 @@ class EmailAdapter(BasePlatformAdapter):
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
-    # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
-    _seen_uids_snapshot: dict[str, set] = {}
-    # Accounts already warned about a missing authserv_id pin. Per address, not per first connect: an account whose
-    # first connect fails is brought up by the reconnect watcher (is_reconnect=True) and must still warn once.
-    _missing_pin_warned: set = set()
+    # mail that arrived during the outage. Keyed by (profile home, address): one module serves every multiplexed
+    # profile, and two profiles polling one mailbox keep separate baselines; same-process only.
+    _seen_uids_snapshot: dict[tuple[str, str], set] = {}
+    # Accounts already warned about a missing authserv_id pin. Per (profile home, address), not per first connect: an
+    # account whose first connect fails is brought up by the reconnect watcher (is_reconnect=True) and must still warn.
+    _missing_pin_warned: set[tuple[str, str]] = set()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -469,6 +471,7 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))
         self._address = setting("EMAIL_ADDRESS", "address").strip()
+        self._account_key = (hermes_home_key(), self._address)  # class-level snapshot/warn-once key
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -562,7 +565,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
             with self._inbox() as imap:
-                snapshot = self._seen_uids_snapshot.get(self._address)
+                snapshot = self._seen_uids_snapshot.get(self._account_key)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
                     # arrived during the outage stays eligible for the next poll.
@@ -574,7 +577,7 @@ class EmailAdapter(BasePlatformAdapter):
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
                 self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            self._seen_uids_snapshot[self._account_key] = set(self._seen_uids)
             return True
         except Exception as e:
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
@@ -612,8 +615,8 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
-        if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
-            EmailAdapter._missing_pin_warned.add(self._address)
+        if self._require_authenticated_sender and not self._authserv_id and self._account_key not in EmailAdapter._missing_pin_warned:
+            EmailAdapter._missing_pin_warned.add(self._account_key)
             logger.warning("[Email] %s: %s.%s", self._address, _MISSING_AUTHSERV_REASON, _MISSING_AUTHSERV_HINT)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -726,7 +729,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
-        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+        self._seen_uids_snapshot[self._account_key] = set(self._seen_uids)
         return results
 
     def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[dict[str, Any]]:

@@ -14,7 +14,9 @@ from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
 
-from . import protocol, security
+# Absolute (not ``from . import``): this module runs under the loader's synthetic package name, and the
+# adapter imports these by their canonical name; one name each, one execution each.
+from plugins.platforms.a2a import protocol, security
 
 logger = logging.getLogger(__name__)
 

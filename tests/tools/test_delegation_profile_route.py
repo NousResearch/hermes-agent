@@ -37,6 +37,14 @@ def two_profiles(tmp_path, monkeypatch):
     return launch, coder
 
 
+def _set_delegation(home, delegation):
+    """Write a ``delegation`` section into the profile's config.yaml (other sections stay)."""
+    path = home / "config.yaml"
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    cfg["delegation"] = delegation
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+
 def _snapshot():
     from agent.secret_scope import get_secret
     from hermes_cli.config import load_config_readonly
@@ -400,3 +408,94 @@ def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_contai
             assert terminal_tool._resolve_container_task_id("parent-task") == "profile:coder"
     finally:
         clear_session_vars(tokens)
+
+
+def test_profile_route_carries_the_target_profiles_limits_not_the_launch_profiles(two_profiles):
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    launch, coder = two_profiles
+    _set_delegation(launch, {"max_iterations": 100, "child_timeout_seconds": 600})
+    _set_delegation(coder, {"max_iterations": 7, "child_timeout_seconds": 90})
+    route = _route_to_task_route({"profile": "coder"}, _parent(), {})
+    assert (route.max_iterations, route.child_timeout_seconds) == (7, 90.0)
+
+
+@pytest.mark.parametrize("delegation, expected", [
+    (None, (250, 0.0)),                                                      # no delegation section
+    ({}, (250, 0.0)),                                                        # empty section
+    ({"child_timeout_seconds": 0}, (250, 0.0)),                              # 0 = no idle timeout
+    ({"child_timeout_seconds": -5}, (250, 0.0)),                             # negative = no idle timeout
+    ({"max_iterations": "40", "child_timeout_seconds": "abc"}, (250, 0.0)),  # bad values -> defaults
+    ({"max_iterations": True, "child_timeout_seconds": float("inf")}, (250, 0.0)),
+    ({"max_iterations": 0, "child_timeout_seconds": True}, (250, 0.0)),
+    ({"child_timeout_seconds": "90"}, (250, 0.0)),                           # a string is refused, like "40"
+])
+def test_profile_route_without_valid_limits_gets_the_built_in_defaults(two_profiles, delegation, expected):
+    from tools.delegate_tool_routes import _route_to_task_route
+
+    launch, coder = two_profiles
+    _set_delegation(launch, {"max_iterations": 100, "child_timeout_seconds": 600})
+    if delegation is not None:
+        _set_delegation(coder, delegation)
+    route = _route_to_task_route({"profile": "coder"}, _parent(), {})
+    assert (route.max_iterations, route.child_timeout_seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("target_section", "profile_iterations", "pinned_timeout", "effective_timeout"),
+    [
+        ({"max_iterations": 7, "child_timeout_seconds": 90}, 7, 90.0, 90.0),
+        ({"max_iterations": 400, "child_timeout_seconds": 900}, 400, 900.0, 900.0),
+        ({}, 250, 0.0, None),
+    ],
+    ids=["target-below-launch", "target-above-launch", "target-has-no-limits"],
+)
+def test_profile_child_gets_target_limits_and_its_default_sibling_keeps_the_launch_limits(
+    two_profiles, target_section, profile_iterations, pinned_timeout, effective_timeout
+):
+    from agent.delegation_provider import DelegationProvider
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_child_run import _effective_child_timeout
+
+    launch, coder = two_profiles
+    _set_delegation(launch, {"max_iterations": 100, "child_timeout_seconds": 600})
+    _set_delegation(coder, target_section)
+
+    class _Backend(DelegationProvider):
+        @property
+        def name(self):
+            return "profile-limits"
+
+        def route_task(self, task, config):
+            return {"profile": "coder"} if task["index"] == 0 else dict(config)
+
+    parent = _parent()
+    parent.request_overrides, parent.reasoning_config = {}, {"enabled": True, "effort": "medium"}
+    batches = []
+    with (
+        patch("tools.delegate_tool_routes._active_provider", return_value=_Backend()),
+        patch("run_agent.AIAgent", side_effect=lambda **kw: MagicMock()) as agent,
+        patch("tools.delegate_tool._run_batch",
+              side_effect=lambda batch, background: batches.append(batch) or json.dumps({"status": "built"})),
+    ):
+        result = json.loads(delegate_task(tasks=[{"goal": "work as the coder profile"},
+                                                 {"goal": "work on the default route"}], parent_agent=parent))
+    assert result == {"status": "built"}
+    (profile_kw, default_kw) = [call.kwargs for call in agent.call_args_list]
+    assert (profile_kw["max_iterations"], default_kw["max_iterations"]) == (profile_iterations, 100)
+    profile_child, default_child = [child for _, _, child in batches[0].children]
+    assert profile_child._delegate_child_timeout == pinned_timeout
+    assert _effective_child_timeout(profile_child) == effective_timeout
+    assert "_delegate_child_timeout" not in vars(default_child)
+
+
+def test_a_profile_child_that_delegates_reads_the_target_profiles_delegation_section(two_profiles):
+    from tools.delegate_tool_config import _load_config
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    launch, coder = two_profiles
+    _set_delegation(launch, {"max_iterations": 100})
+    _set_delegation(coder, {"max_iterations": 7})
+    with delegated_profile_scope(coder):
+        assert _load_config()["max_iterations"] == 7
+    assert _load_config()["max_iterations"] == 100

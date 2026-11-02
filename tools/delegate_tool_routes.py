@@ -190,9 +190,37 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
             f"cannot run as the profile at {home}. Delegate without a profile.")
 
 
+def _profile_limits(cfg: Mapping[str, Any], home: Path) -> tuple[int, float]:
+    """The target profile's own ``delegation.max_iterations`` and ``delegation.child_timeout_seconds``. A profile
+    child runs on the profile's budget, never the launching profile's. Not set or not valid -> the built-in default
+    (250 turns, no idle timeout); 0 or less = no idle timeout. The timeout is returned as a pin (0.0 = no cap), so
+    the launching profile's global never applies to this child."""
+    from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+    section = cfg.get("delegation")
+    section = section if isinstance(section, Mapping) else {}
+    turns = section.get("max_iterations")
+    if not valid_route_max_iterations(turns):
+        if turns is not None:
+            logger.warning("Profile at %s: delegation.max_iterations=%r is not a whole number of 1 or more; "
+                           "using %d", home, turns, DEFAULT_MAX_ITERATIONS)
+        turns = DEFAULT_MAX_ITERATIONS
+    raw = section.get("child_timeout_seconds")
+    if raw is None:
+        seconds = 0.0
+    elif valid_route_child_timeout(raw):
+        seconds = float(raw)
+    elif isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw < 0:
+        seconds = 0.0  # negative = no idle timeout, as delegation.child_timeout_seconds
+    else:
+        logger.warning("Profile at %s: delegation.child_timeout_seconds=%r is not a number of 0 or more; "
+                       "using no idle timeout", home, raw)
+        seconds = 0.0
+    return turns, seconds
+
+
 def _profile_route(home: Path) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
-    child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
+    child never borrows the launching profile's key, pool, fallback chain, reasoning level, turn limit or idle timeout."""
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
@@ -207,6 +235,7 @@ def _profile_route(home: Path) -> TaskRoute:
             raise DelegationRouteError(f"Profile at {home} has no usable model provider: {exc}") from exc
         model = request["target_model"] or rt.get("model") or None
         fallback = cfg.get("fallback_providers")
+        turns, idle = _profile_limits(cfg, home)
     # A named custom provider resolves to provider "custom": keep its name as the identity (as delegation.provider
     # does) so two named providers sharing one URL never lease each other's pool.
     requested = str(rt.get("requested_provider") or "").strip()
@@ -221,7 +250,8 @@ def _profile_route(home: Path) -> TaskRoute:
         command=rt.get("command"), args=list(rt.get("args") or []),
     )
     return TaskRoute(creds, {"fallback_providers": fallback if isinstance(fallback, list) else []},
-                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home)
+                     ResolvedReasoning(resolve_reasoning_config(cfg, model or "")), home,
+                     max_iterations=turns, child_timeout_seconds=idle)
 
 
 def _with_inherited_fallback(route: dict[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:

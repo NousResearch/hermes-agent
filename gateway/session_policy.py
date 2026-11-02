@@ -906,13 +906,16 @@ def rebind_launch_key(authority, session, api_key):
     keys[_key_slot(ref)] = api_key
 
 
-def _secret_refs(authority, session_ids):
-    """The launch-key slots and config-secret references the live LOCAL policies of *session_ids* name."""
+def _secret_refs(authority, retired):
+    """The launch-key slots and config-secret references the LOCAL policies outside *retired* name: the
+    live sessions', and those of closed conversations ``session_retirement`` let go, which keep their
+    frozen policy on the local adapter and resume on it (a branch on its parent's slots)."""
     from gateway.config import Platform
-    sources = [getattr(authority.sessions.get(sid), 'source', None) for sid in session_ids]
-    chats = [source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL]
+    sources = [live.source for sid, live in authority.sessions.items() if sid not in retired]
+    chats = {source.chat_id for source in sources if source is not None and source.platform == Platform.LOCAL}
+    chats.update(sid for sid in getattr(authority, 'retired_local', ()) if sid not in retired)
     if not chats:
-        return set()  # only a restored (live) LOCAL session has a policy in the adapter map
+        return set()  # only a restored or retired LOCAL session has a policy in the adapter map
     from gateway.session_local_recovery import local_adapter_map
     policies = getattr(local_adapter_map(authority).get(Platform.LOCAL), 'policies', None) or {}
     refs = set()
@@ -927,8 +930,8 @@ def release_launch_secrets(authority, session_ids):
 
     They live only in this authority's memory for the session's lifetime; a deleted session can
     never run again, so keeping them would hold its credentials until the process exits. A branch's
-    policy names its parent's slots, so a slot named after a retired session stays while a live
-    policy references it, and then until restart, which revokes every launch secret anyway. Only
+    policy names its parent's slots, so a slot named after a retired session stays while a policy the
+    local adapter holds references it, and then until restart, which revokes every launch secret anyway. Only
     slots named after *session_ids* are released, so the set never exceeds release by name: no later
     sweep, and a binding not yet published always sits under its own live session's name. Call
     before the retired sessions leave ``authority.sessions``."""
@@ -937,7 +940,7 @@ def release_launch_secrets(authority, session_ids):
     retired = {str(sid) for sid in session_ids}
     if not retired:
         return
-    kept = _secret_refs(authority, set(authority.sessions) - retired)
+    kept = _secret_refs(authority, retired)
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.

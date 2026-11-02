@@ -9,6 +9,8 @@ path and the voice-mode paths.
 
 import json
 
+import pytest
+
 from tools.tts_text_normalize import (
     flatten_newlines_for_payload,
     prepare_spoken_text,
@@ -71,6 +73,69 @@ class TestEmojiStrip:
         assert "🚀" not in spoken
         assert "✅" not in spoken
         assert "All tests pass" in spoken
+
+
+class TestMoneyScale:
+    """A scale after an amount is spoken as a word before the currency: $380B -> "380 billion dollars"."""
+
+    @pytest.mark.parametrize(("raw", "spoken"), [
+        ("max net $163 (was $380B paper)", "max net 163 dollars (was 380 billion dollars paper)"),
+        ("cap is $1.5M", "cap is 1.5 million dollars"),
+        ("about $50k", "about 50 thousand dollars"),
+        ("budget $1,500K total", "budget 1,500 thousand dollars total"),
+        ("valued at $3b", "valued at 3 billion dollars"),
+        ("revenue of $2.3T", "revenue of 2.3 trillion dollars"),
+        ("a $2bn fund", "a 2 billion dollars fund"),
+        ("raised $5mm", "raised 5 million dollars"),
+        ("$5M-$10M range", "5 million dollars-10 million dollars range"),
+        ("raised $2.5 million last year", "raised 2.5 million dollars last year"),
+        ("a $3 billion deal", "a 3 billion dollars deal"),
+        ("a $2.5-million grant", "a 2.5 million dollars grant"),
+        ("only $4 Thousand", "only 4 thousand dollars"),
+    ])
+    def test_dollar_amounts(self, raw, spoken):
+        assert prepare_spoken_text(raw) == spoken
+
+    @pytest.mark.parametrize(("raw", "spoken"), [
+        ("US$2M deal", "2 million US dollars deal"),
+        ("A$50k fee", "50 thousand Australian dollars fee"),
+        ("NZ$3.5m budget", "3.5 million New Zealand dollars budget"),
+        ("€2M grant", "2 million euros grant"),
+        ("£3k fine", "3 thousand pounds fine"),
+        ("€1.5 billion", "1.5 billion euros"),
+    ])
+    def test_other_currencies_keep_their_name(self, raw, spoken):
+        assert prepare_spoken_text(raw) == spoken
+
+    @pytest.mark.parametrize(("raw", "spoken"), [
+        ("$10k/month", "10 thousand dollars per month"),
+        ("$5M/year", "5 million dollars per year"),
+    ])
+    def test_rate_after_a_scale_reads_per(self, raw, spoken):
+        assert prepare_spoken_text(raw) == spoken
+
+    @pytest.mark.parametrize(("raw", "spoken"), [
+        ("anchor $612.80 sane", "anchor 612.80 dollars sane"),
+        ("$1,234.56 total", "1,234.56 dollars total"),
+        ("$5/month", "5 dollars per month"),
+        ("A$50, then", "50 Australian dollars, then"),
+        ("costs $5 and the room is 3m wide", "costs 5 dollars and the room is 3 metres wide"),
+        ("$20 k-pop", "20 dollars k-pop"),
+        ("$5 t-shirt", "5 dollars t-shirt"),
+    ])
+    def test_plain_amounts_and_units_are_unchanged(self, raw, spoken):
+        assert prepare_spoken_text(raw) == spoken
+
+    @pytest.mark.parametrize("raw", ["was $380B", "US$2M deal", "$10k/month", "raised $2.5 million"])
+    def test_second_pass_changes_nothing(self, raw):
+        # Auto-TTS cleans the text in the gateway and again inside text_to_speech_tool.
+        once = prepare_spoken_text(raw)
+        assert prepare_spoken_text(once) == once
+
+    def test_a_scale_word_on_the_next_line_is_not_part_of_the_amount(self):
+        spoken = prepare_spoken_text("raised $5\nmillion people watched")
+        assert "5 dollars" in spoken
+        assert "million dollars" not in spoken
 
 
 class TestNewlineFlattening:

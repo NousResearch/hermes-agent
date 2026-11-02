@@ -46,6 +46,14 @@ _CURRENCY_WORDS = (
     (r"NZ\$", "New Zealand dollars", re.IGNORECASE), (r"A\$", "Australian dollars", re.IGNORECASE),
     (r"US\$", "US dollars", re.IGNORECASE), ("€", "euros", 0), ("£", "pounds", 0), (r"\$", "dollars", 0),
 )
+# An amount after a currency symbol; its integer part must END in a digit (see the money rule below).
+_MONEY_AMOUNT_RE = r"\s*([\d,]*\d(?:\.\d+)?)"
+# Scale after an amount: "$380B", "$1.5m", "$2bn", "$2.5 million", "$2.5-million". Letters must touch the
+# number ("$5 t-shirt" stays), words follow a space or hyphen. A "/unit" rate after the scale reads "per".
+_MONEY_SCALE_RE = r"(?i:[ \t-](thousand|million|billion|trillion)\b|(bn|mn|mm|[kmbt])\b)(\s*/\s*(?=[A-Za-z]))?"
+_MONEY_SCALE_WORDS = {
+    "k": "thousand", "m": "million", "mm": "million", "mn": "million", "b": "billion", "bn": "billion",
+    "t": "trillion"}
 
 # Broad emoji / pictograph cleanup: most voice providers read emojis as awkward labels.
 _EMOJI_RE = re.compile(
@@ -94,6 +102,13 @@ def _normalize_temperature_ranges(text: str) -> str:
     return text
 
 
+def _spoken_money_scale(match: re.Match[str], currency: str) -> str:
+    """``$1.5M`` -> ``1.5 million dollars``; a ``/unit`` rate after it reads ``per`` (``$10k/month``)."""
+    amount, spelled, short, rate = match.groups()
+    scale = spelled.lower() if spelled else _MONEY_SCALE_WORDS[short.lower()]
+    return f"{amount} {scale} {currency}{' per ' if rate else ''}"
+
+
 def normalize_symbols_for_tts(text: str) -> str:
     """Expand common symbols/shorthand into words a TTS engine reads well."""
     if not text:
@@ -110,6 +125,12 @@ def normalize_symbols_for_tts(text: str) -> str:
     for unit, word in _DEGREE_UNITS:
         text = re.sub(r"°\s*" + unit + r"\b", "degrees " + word, text, flags=re.IGNORECASE)
     text = re.sub(r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°", r"\1 degrees", text).replace("°", " degrees")
+    # Money scale ("$380B", "$1.5m", "1.5 billion euros") is spoken BEFORE the unit rules, whose case-insensitive
+    # "m" would steal the suffix ("1.5 dollars metres"), and before the plain money rule below, which would leave
+    # it glued on ("380 dollarsB"). Same currency order as that rule, so "US$2M" is not read as "$2M".
+    for symbol, word, flags in _CURRENCY_WORDS:
+        text = re.sub(
+            symbol + _MONEY_AMOUNT_RE + _MONEY_SCALE_RE, lambda m, w=word: _spoken_money_scale(m, w), text, flags=flags)
     # Common weather/travel units.
     for pattern, word in _UNIT_WORDS:
         text = re.sub(r"(?<=\d)\s*" + pattern + r"\b", " " + word, text, flags=re.IGNORECASE)
@@ -120,7 +141,7 @@ def normalize_symbols_for_tts(text: str) -> str:
     # comma ("A$50, ...") is not swallowed into the spoken amount. Prefixed
     # currencies run first so "$" doesn't eat "NZ$".
     for symbol, word, flags in _CURRENCY_WORDS:
-        text = re.sub(symbol + r"\s*([\d,]*\d(?:\.\d+)?)", r"\1 " + word, text, flags=flags)
+        text = re.sub(symbol + _MONEY_AMOUNT_RE, r"\1 " + word, text, flags=flags)
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs

@@ -670,9 +670,10 @@ def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | No
     # Same order as `hermes update`: an interrupted update or a hand-run
     # `git pull` leaves this tree's lockfile ahead of the installed tools.
     ensure_tools_for_sync()
-    # The old venv's extras are carried, not asked for: none of them undoes a `--without`.
-    automatic = {"automatic": extras} if extras and extras != ["all"] else {}
-    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **automatic)
+    # The old venv's extras are carried, not asked for: none of them undoes a `--without`, and
+    # one beyond [all] that no longer builds is left out.
+    carried = {"carried": extras[1:]} if extras and len(extras) > 1 else {}
+    pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True, **carried)
     collect_superseded_generations(root)
     if borrowed_from is not None:
         return  # The checkout's markers describe the owner's environment, not this one.

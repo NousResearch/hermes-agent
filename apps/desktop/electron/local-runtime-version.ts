@@ -33,11 +33,7 @@ export function parseLocalRuntimeVersion(output: string): string {
   return match?.[1]?.replace(/^v/, '') ?? ''
 }
 
-function runVersionProbe(
-  command: string,
-  args: string[],
-  options: Parameters<VersionProbeRunner>[2]
-): Promise<string> {
+function runVersionProbe(command: string, args: string[], options: Parameters<VersionProbeRunner>[2]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(command, args, { ...options, encoding: 'utf8' }, (error, stdout) => {
       if (error) {
@@ -81,13 +77,15 @@ export async function resolveLocalRuntimeVersion(
 
   if (useCache) {
     inFlight = { key, promise }
-    void promise.then(version => {
-      cached = { key, version, expiresAt: Date.now() + (options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS) }
-    }).finally(() => {
-      if (inFlight?.promise === promise) {
-        inFlight = null
-      }
-    })
+    void promise
+      .then(version => {
+        cached = { key, version, expiresAt: Date.now() + (options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS) }
+      })
+      .finally(() => {
+        if (inFlight?.promise === promise) {
+          inFlight = null
+        }
+      })
   }
 
   return promise
@@ -102,9 +100,10 @@ async function probeLocalRuntimeVersion(
   let launcher: string | null
 
   try {
-    launcher = options.launcher === undefined
-      ? await resolveInstallationLauncherAsync(root, isWindows, hermesHome)
-      : options.launcher
+    launcher =
+      options.launcher === undefined
+        ? await resolveInstallationLauncherAsync(root, isWindows, hermesHome)
+        : options.launcher
   } catch {
     return ''
   }

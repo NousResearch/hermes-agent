@@ -17,7 +17,8 @@ export interface ComposerDraftRetry {
 const RETRY_PREFIX = 'hermes:composer-draft-retry:v1:'
 
 /** The identity half of a draft's attachments (what `matchingDraftRetry` compares). */
-export const retryAttachmentIds = (attachments: readonly ComposerAttachment[]) => attachments.map(a => a.occurrenceId ?? a.id)
+export const retryAttachmentIds = (attachments: readonly ComposerAttachment[]) =>
+  attachments.map(a => a.occurrenceId ?? a.id)
 
 export function draftRetry(id: string, text: string, attachments: ComposerAttachment[]): ComposerDraftRetry {
   return { id, text, attachmentIds: retryAttachmentIds(attachments) }

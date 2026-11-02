@@ -532,9 +532,10 @@ const previewRead: Handler = ({ request, sessionId }) => {
   // A browser host has no pop-out and no readable surface to forward to, so
   // asking would only wait out the pop-out timeout before the same answer.
   void (async () => {
-    const result = hasLivePreviewSurface(owner) || !hostHas('webviewPreview')
-      ? await readActivePreview(opts, owner)
-      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+    const result =
+      hasLivePreviewSurface(owner) || !hostHas('webviewPreview')
+        ? await readActivePreview(opts, owner)
+        : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
 
     answerValue(request, result)
   })()

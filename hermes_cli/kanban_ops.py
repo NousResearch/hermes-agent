@@ -111,6 +111,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "gate_auto_resolved": getattr(res, "gate_auto_resolved", []),
+            "gate_closed_unmerged": getattr(res, "gate_closed_unmerged", []),
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -128,6 +130,16 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         if items:
             print(f"  {', '.join(items)}")
     print(f"Promoted:     {res.promoted}")
+    if getattr(res, "gate_auto_resolved", []):
+        print(
+            "Gate auto-resolved (referenced PR(s) merged): "
+            + ", ".join(res.gate_auto_resolved)
+        )
+    if getattr(res, "gate_closed_unmerged", []):
+        print(
+            "WARNING - gate PR closed WITHOUT merging; card left blocked for "
+            "a human: " + ", ".join(res.gate_closed_unmerged)
+        )
     print(f"Spawned:      {len(res.spawned)}")
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:

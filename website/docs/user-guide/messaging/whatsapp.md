@@ -189,7 +189,10 @@ principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or pa
 addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
 `lid-mapping` file yet is not dropped; with no sender allowlist,
 `allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
-needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. To let specific participants use the bot in groups
+without also granting them DM access, list them in `WHATSAPP_GROUP_ALLOWED_SENDERS` /
+`whatsapp.group_allowed_senders` (comma-separated phone numbers, matched through LIDs the same way). Like any
+sender allowlist, setting it limits group senders to the listed numbers plus `WHATSAPP_ALLOWED_USERS`. By default the bot answers every admitted group
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
 bot, or `/commands` (groups in `free_response_chats` are exempt).
 

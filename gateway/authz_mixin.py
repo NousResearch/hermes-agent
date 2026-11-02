@@ -32,7 +32,12 @@ logger = logging.getLogger(__name__)
 # whether an allowlist suppresses pairing come from each platform's ``PlatformEntry``
 # (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
 # ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
-_GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
+# Group-scoped SENDER allowlists (no DM access). WhatsApp's ``WHATSAPP_GROUP_ALLOWED_USERS`` already
+# carries group JIDs (``group_allow_from``), so its sender list has its own name.
+_GROUP_USER_ENV = {
+    Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+    Platform.WHATSAPP: "WHATSAPP_GROUP_ALLOWED_SENDERS",
+}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
@@ -779,7 +784,7 @@ class GatewayAuthorizationMixin:
             ):
                 return True
 
-        # TELEGRAM_GROUP_ALLOWED_USERS is group-scoped (no DM access); TELEGRAM_ALLOWED_USERS is platform-wide.
+        # _GROUP_USER_ENV lists are group-scoped (no DM access); <PLATFORM>_ALLOWED_USERS is platform-wide.
         allowed_ids = (
             _coerce_allow_set(platform_allowlist)
             | _coerce_allow_set(group_user_allowlist)

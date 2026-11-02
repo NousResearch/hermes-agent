@@ -162,6 +162,7 @@ describe('useVoiceRecorder live-session failure', () => {
     const transcribe = vi.fn(async () => {
       throw new Error('Transcription timed out')
     })
+
     const hook = renderRecorder(transcribe)
 
     await dictateThroughLiveSession(hook)

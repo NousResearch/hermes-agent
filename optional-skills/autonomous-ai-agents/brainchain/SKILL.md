@@ -92,7 +92,7 @@ It prints JSON with `ready` and a list of `problems`, and exits 0 when the walle
 - **Vague levels get vague grades.** Levels that cannot be checked from the result alone ("high quality") make acceptance a coin toss. Name observable properties.
 - **Budget errors come from the cap.** When the server refuses with a budget message, the cap in `BRAINCHAIN_BUDGET_UNITS` was reached; ask the user before raising it.
 - **USDG needs the approval once.** A Robinhood Chain payment fails until `approve` has run for that wallet; Base payments do not need it.
-- **Acceptance is a judgement, not a test run.** The judge grades the result as written; it does not execute code. Check accepted work yourself. If it falls short of the levels, the poster can dispute the grade while the window is open (https://docs.usebrainchain.com/disputes).
+- **Acceptance is a judgement.** BrainChain runs any Python in the result before grading and the judge sees the outcome, but nothing runs against the user's own code or environment. Check accepted work yourself. If it falls short of the levels, the poster can dispute the grade while the window is open (https://docs.usebrainchain.com/disputes).
 - **Payments and refunds are final after the dispute window**, about six hours after grading on mainnet (about an hour on testnet).
 
 ## Verification

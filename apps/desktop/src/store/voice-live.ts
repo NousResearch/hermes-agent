@@ -74,7 +74,10 @@ export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiv
  * profile served only by a remote gateway.
  */
 export async function setVoiceChatMode(mode: 'chained' | 'gpt-live'): Promise<null | VoiceLiveStatus> {
-  await requestGatewayForActiveRoute(activeGatewayProfileKey(), 'config.set', { key: 'voice.voice_chat_mode', value: mode })
+  // The profile rides in the params too: on a backend shared by several
+  // profiles an unscoped write edits its launch profile.
+  const profile = activeGatewayProfileKey()
+  await requestGatewayForActiveRoute(profile, 'config.set', { key: 'voice.voice_chat_mode', profile, value: mode })
 
   writeEpoch += 1
 

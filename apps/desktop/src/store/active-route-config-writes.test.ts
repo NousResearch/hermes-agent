@@ -95,8 +95,8 @@ describe('config writes on a remote-only profile', () => {
     await vi.waitFor(() =>
       expect(box?.requests).toEqual(
         expect.arrayContaining([
-          ['config.set', { key: 'voice.voice_chat_mode', value: 'gpt-live' }],
-          ['config.set', { key: 'display.in_app_tips', value: 'false' }]
+          ['config.set', { key: 'voice.voice_chat_mode', profile: 'gamma', value: 'gpt-live' }],
+          ['config.set', { key: 'display.in_app_tips', profile: 'gamma', value: 'false' }]
         ])
       )
     )
@@ -131,7 +131,7 @@ describe('config writes on a remote-only profile', () => {
       await vi.waitFor(() =>
         expect(box?.requests).toContainEqual([
           'config.set',
-          { key: 'display.in_app_tips', value: String($toggle.get()) }
+          { key: 'display.in_app_tips', profile: 'gamma', value: String($toggle.get()) }
         ])
       )
       expect(getConnectionFor).not.toHaveBeenCalledWith(expect.objectContaining({ profile: 'default' }))

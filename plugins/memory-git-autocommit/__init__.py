@@ -1,23 +1,28 @@
 """Auto-commit plugin for Hermes skill memory (procedural + shared).
 
-Model (per user decision, post-rollback):
+Model (per user decision, post-rollback; skills hub split into its own repo
+2026-11-02):
 - Each profile writes NEW agent-created skills to its OWN local skills dir
   (default create_dir: ~/.hermes/skills, or <profile>/skills under
   HERMES_HOME for supply/ads/webmaster). skill_manage edits land there.
-- ~/.hermes/memory/skills is a curated "proven" shelf. All profiles read it
-  (skills.external_dirs) but nothing writes there automatically — promotion
-  is a deliberate, manual action (git mv / skill_manage targeting that dir
-  explicitly), not an automatic side effect of skill_manage.
-- ~/.hermes/memory/context (Obsidian vault) is still common declarative
-  memory; write_file/patch there should still auto-commit.
+- ~/src/dappvibe/mercurio-skills-hub is a curated "proven" shelf, its own
+  standalone git repo (github.com/dappvibe/mercurio-skills-hub), separate
+  from ~/.hermes/memory. All profiles read it (skills.external_dirs) but
+  nothing writes there automatically — promotion is a deliberate, manual
+  action (git mv / skill_manage targeting that dir explicitly), not an
+  automatic side effect of skill_manage.
+- ~/.hermes/memory (its own repo, github.com/dappvibe/mercurio-mstyle-memory)
+  holds context/ (Obsidian vault) and souls/ (profile SOUL.md files) — still
+  common declarative memory; write_file/patch there should still auto-commit.
 
-So this hook commits to TWO possible repos depending on what actually
-changed, never guessing:
+So this hook commits to up to THREE possible repos depending on what
+actually changed, never guessing:
   1. The active profile's local skills dir (HERMES_HOME/skills) — for
      skill_manage calls.
-  2. ~/.hermes/memory — for write_file/patch calls whose path falls under it
-     (covers ~/.hermes/memory/context and any deliberate ~/.hermes/memory/skills
-     promotion done via write_file/patch rather than skill_manage).
+  2. ~/src/dappvibe/mercurio-skills-hub — for skill_manage calls (deliberate
+     hub edits) and for write_file/patch calls whose path falls under it.
+  3. ~/.hermes/memory — for write_file/patch calls whose path falls under it
+     (covers ~/.hermes/memory/context and ~/.hermes/memory/souls).
 
 Commit messages describe WHAT changed (skill name + action, or file name),
 built only from the tool call's own arguments — never a model call, never
@@ -51,6 +56,13 @@ def _hermes_home() -> Path:
     if home:
         return Path(home).expanduser()
     return Path.home() / ".hermes"
+
+
+# Historical note: skills/ used to live under SHARED_MEMORY_DIR (one repo for
+# both the Obsidian vault and the skills hub). Split 2026-11-02 into two
+# separate git repos — the hub now lives outside ~/.hermes/memory entirely,
+# so it needs its own watched path distinct from the memory repo's.
+SKILLS_HUB_DIR = Path.home() / "src" / "dappvibe" / "mercurio-skills-hub"
 
 
 def _local_skills_dir() -> Path:
@@ -187,16 +199,18 @@ def on_post_tool_call(tool_name=None, args=None, result=None, status=None, **kwa
     if tool_name == "skill_manage":
         # skill_manage writes new skills to the active profile's local
         # create_dir (default: HERMES_HOME/skills); existing skills are
-        # edited wherever they live, including under the shared dir if the
+        # edited wherever they live, including under the shared hub if the
         # agent was explicitly pointed there. Check both candidate repos.
         targets.append(_local_skills_dir())
-        targets.append(SHARED_MEMORY_DIR)
+        targets.append(SKILLS_HUB_DIR)
     else:
         # write_file / patch: only act if the path is actually under one of
-        # our two tracked repos.
+        # our three tracked repos (memory vault, skills hub, local skills).
         path = args.get("path")
         if _path_under(path, SHARED_MEMORY_DIR):
             targets.append(SHARED_MEMORY_DIR)
+        if _path_under(path, SKILLS_HUB_DIR):
+            targets.append(SKILLS_HUB_DIR)
         if _path_under(path, _local_skills_dir()):
             targets.append(_local_skills_dir())
 

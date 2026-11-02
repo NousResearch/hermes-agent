@@ -131,6 +131,7 @@ class HostRuntime:
     def __init__(self, reader, writer):
         self.refs: dict[int, Any] = {}
         self.owners: dict[int, str] = {}
+        self.memory_provider_names: dict[int, Any] = {}
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
         self.unload_callbacks: dict[str, list[Callable[[], Any]]] = {}
@@ -183,7 +184,13 @@ class HostRuntime:
                 # Class-level defaults too: an engine that sets ``context_length`` only later in
                 # ``update_model()`` must not read as the base-class default forever in Hermes.
                 live.append(name)
-        return {"__object__": self._remember(plugin_key, obj), "methods": methods, "live": live,
+        ref = self._remember(plugin_key, obj)
+        from agent.memory_provider import MemoryProvider
+        if isinstance(obj, MemoryProvider):
+            # Both wire validation and the parent proxy must use the same loaded identity.
+            name = obj.name
+            self.memory_provider_names[ref] = str.__str__(name) if isinstance(name, str) else None
+        return {"__object__": ref, "methods": methods, "live": live,
                 "type": type(obj).__name__}
 
     def resolve_from_parent(self, ref: dict) -> Any:
@@ -367,7 +374,8 @@ class HostRuntime:
             from agent.memory_provider import MemoryProvider
 
             memory_prefetch = isinstance(obj, MemoryProvider)
-        provider_name = obj.name if memory_prefetch else None
+        names = getattr(self, "memory_provider_names", {})
+        provider_name = (names[ref] if ref in names else obj.name) if memory_prefetch else None
         if isinstance(provider_name, str):
             provider_name = str.__str__(provider_name)
         else:
@@ -383,6 +391,9 @@ class HostRuntime:
         name = str(params["name"])
         if obj is None:
             raise LookupError(f"plugin host object {params['ref']} was released")
+        if name == "name" and int(params["ref"]) in self.memory_provider_names:
+            return self._encode_result(self.owners.get(int(params["ref"]), ""),
+                                       self.memory_provider_names[int(params["ref"])])
         if name.startswith("_") or not hasattr(obj, name):
             return {"__missing__": name}
         return self._encode_result(self.owners.get(int(params["ref"]), ""), getattr(obj, name))
@@ -393,6 +404,7 @@ class HostRuntime:
             for ref in params.get("refs") or ():
                 self.refs.pop(int(ref), None)
                 self.owners.pop(int(ref), None)
+                self.memory_provider_names.pop(int(ref), None)
 
     def op_config_schema(self, params: dict[str, Any]) -> Any:
         """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
@@ -423,6 +435,7 @@ class HostRuntime:
             for ref in [r for r, owner in self.owners.items() if owner == plugin_key]:
                 self.refs.pop(ref, None)
                 self.owners.pop(ref, None)
+                self.memory_provider_names.pop(ref, None)
         module_name = self.modules.pop(plugin_key, "")
         if module_name:
             for name in [m for m in sys.modules if m == module_name or m.startswith(module_name + ".")]:

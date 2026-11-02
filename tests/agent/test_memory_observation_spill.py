@@ -53,11 +53,23 @@ def _disable_hook(monkeypatch) -> None:
     )
 
 
+def test_valid_observations_saturate_the_real_wire_budget():
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    large = MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 3900 for i in range(4)})
+    raw = MemoryPrefetchResult(observations=(large,) * 64)
+    hosted = decode(encode(raw))
+    assert hosted._wire_truncated is True
+    assert 0 < len(hosted.observations) < len(raw.observations)
+    assert all(item.payload == large.payload for item in hosted.observations)
+
+
 def test_external_spill_preserves_wire_truncation_for_later_providers(
     monkeypatch, tmp_path, caplog
 ):
     from hermes_cli.config import atomic_config_write
     from hermes_cli.plugin_host_wire import decode, encode
+    from hermes_cli import plugin_host_wire_memory
 
     _disable_hook(monkeypatch)
     home = tmp_path / ".hermes"
@@ -65,12 +77,14 @@ def test_external_spill_preserves_wire_truncation_for_later_providers(
     home.mkdir(parents=True)
     atomic_config_write(home / "config.yaml", {"memory": {"prefetch_spill_enabled": True}})
     context = "oversized hosted recall\n" + "x" * 10_100
+    large = MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 3900 for i in range(4)})
+    # This record is valid under the real envelope limit, independent of the
+    # smaller wire budget used below to isolate truncation from batch limits.
+    assert decode(encode(large)).payload == large.payload
+    monkeypatch.setattr(plugin_host_wire_memory, "_observation_wire_budget", lambda: 1000)
     raw = MemoryPrefetchResult(
         context=context,
-        observations=(_observation({"ok": True}),) + tuple(
-            MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 4050 for i in range(4)})
-            for _ in range(100)
-        ),
+        observations=(_observation({"ok": True}), large),
     )
     hosted = decode(encode(raw))
     assert hosted._wire_truncated is True

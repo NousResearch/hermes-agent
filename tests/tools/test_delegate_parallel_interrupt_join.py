@@ -16,6 +16,15 @@ from types import SimpleNamespace
 from tools.delegate_tool_dispatch import _Batch, _run_children_parallel
 
 
+class _TrackedChild:
+    def __init__(self):
+        self._delegate_role = "leaf"
+        self.close_count = 0
+
+    def close(self):
+        self.close_count += 1
+
+
 def _batch(children, parent):
     tasks = [{"goal": f"task {i}"} for i in range(len(children))]
     return _Batch(
@@ -87,3 +96,46 @@ def test_normal_completion_still_joins_cleanly():
     _run_children_parallel(batch, results, honor_parent_interrupt=True)
     assert [e["task_index"] for e in results] == [0, 1, 2]
     assert all(e["status"] == "completed" for e in results)
+
+
+def test_interrupt_closes_and_detaches_child_cancelled_before_start():
+    wedged_release = threading.Event()
+    wedged_started = threading.Event()
+    children = [_TrackedChild(), _TrackedChild()]
+    parent = SimpleNamespace(
+        _interrupt_requested=False, _delegate_spinner=None, quiet_mode=True,
+        _active_children=list(children), _active_children_lock=threading.Lock(),
+    )
+    ran = []
+
+    def run_child(i, task, child):
+        ran.append(i)
+        if i == 0:
+            wedged_started.set()
+            wedged_release.wait()
+        return {"task_index": i, "status": "completed"}
+
+    batch = _batch(children, parent)
+    batch.max_children = 1
+    batch.run_child = run_child
+    results = []
+    returned = threading.Event()
+
+    def drive():
+        _run_children_parallel(batch, results, honor_parent_interrupt=True)
+        returned.set()
+
+    worker = threading.Thread(target=drive, daemon=True)
+    worker.start()
+    try:
+        assert wedged_started.wait(5), "wedged child never started"
+        parent._interrupt_requested = True
+        assert returned.wait(3), "interrupt path joined the wedged worker"
+        assert ran == [0], "cancelled queued child must never run"
+        assert children[1] not in parent._active_children
+        assert children[1].close_count == 1
+        assert children[0] in parent._active_children
+        assert children[0].close_count == 0
+    finally:
+        wedged_release.set()
+        worker.join(timeout=5)

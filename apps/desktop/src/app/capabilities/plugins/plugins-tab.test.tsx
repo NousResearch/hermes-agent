@@ -439,6 +439,10 @@ describe('PluginsTab', () => {
       { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
     )
     $agentPlugins.set([{ description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }])
+    requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+      params?.action === 'toggle'
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        : { plugins: [] }) as never)
 
     renderPlugins({ profile: null })
 
@@ -448,7 +452,12 @@ describe('PluginsTab', () => {
     card.click()
 
     await waitFor(() => expect(card.getAttribute('aria-checked')).toBe('true'))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+    )
     expect($pluginDecisions.get()['meter-ui']).toBe(true)
+    requestGateway.mockImplementation(async () => ({ plugins: [] }))
     $pluginDecisions.set({})
   })
 

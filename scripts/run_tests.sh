@@ -138,12 +138,15 @@ fi
 # and tempfile needs TEMP/TMP. Dropping them breaks collection on native
 # Windows (issues #67385, #70813). PATHEXT is also required: without .EXE,
 # PowerShell opens a native child as a document without waiting for its exit.
+# Git for Windows' bash may expose these names uppercased (COMSPEC, PROGRAMFILES),
+# so both spellings are listed; without ComSpec PowerShell's cmd.exe launches fail.
+# windows-deps.ps1 (PM's ARM64 build tools) also resolves vcpkg under SYSTEMDRIVE.
 # These are location variables, not
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
 WIN_ENV=()
-for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP \
-    ComSpec PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
+for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT SYSTEMDRIVE TEMP TMP \
+    ComSpec COMSPEC PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
   if [ -n "${!_win_var:-}" ]; then
     WIN_ENV+=("$_win_var=${!_win_var}")
   fi
@@ -165,8 +168,11 @@ for _tool_var in INCLUDE LIB LIBPATH VSINSTALLDIR VCINSTALLDIR VCToolsInstallDir
 done
 # setuptools locates the compiler through vswhere under "%ProgramFiles(x86)%\Microsoft Visual
 # Studio\Installer"; without that variable a primed INCLUDE/LIB still reads as "Visual C++ 14.0
-# or greater is required". The parenthesised name cannot be read with ${!var}.
-_pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
+# or greater is required". The parenthesised name cannot be read with ${!var}, and Git for
+# Windows' bash may expose it uppercased (PROGRAMFILES(X86)), so match the name case-insensitively
+# like Windows does. Without it windows-deps.ps1 cannot find vswhere and tries to install Visual
+# Studio instead.
+_pf86="$(awk 'BEGIN { for (name in ENVIRON) if (tolower(name) == "programfiles(x86)") { print ENVIRON[name]; exit } }')"
 [ -z "$_pf86" ] || WIN_ENV+=("ProgramFiles(x86)=$_pf86")
 
 # ── Test-runner knobs (computed before we drop env) ────────────────────────

@@ -29,7 +29,13 @@ def generate(tmp_path_factory):
     (foreign / "sitecustomize.py").write_text("raise SystemExit('foreign interpreter path leaked')\n", encoding="utf-8")
     shutil.copytree(ROOT / "assets", source / "assets")
     from scripts.build.icon_environment import prepare_icon_environment
-    python = prepare_icon_environment(ROOT, root / "runtime", root / "cache")
+    with pytest.MonkeyPatch.context() as patch:
+        # As the desktop builder does (desktop_toolchain.bootstrap_environment):
+        # Rust sdists (cryptography on win32-arm64) otherwise compile into
+        # target/ inside uv's nested sdist entry under this deep temp cache,
+        # past MSVC link.exe's MAX_PATH (LNK1104).
+        patch.setenv("CARGO_TARGET_DIR", str(root / "cargo"))
+        python = prepare_icon_environment(ROOT, root / "runtime", root / "cache")
     node = shutil.which("node")
     assert node, "icon acceptance requires prepared Node"
     outputs = {}

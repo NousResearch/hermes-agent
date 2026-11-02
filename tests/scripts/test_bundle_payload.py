@@ -22,6 +22,46 @@ def test_release_version_comes_from_the_release_identity_not_the_checkout(tmp_pa
     assert release_version(tmp_path, "v1.2.4") == "1.2.4"
 
 
+def test_snapshot_carries_revision_bytes_regardless_of_builder_eol_config(tmp_path):
+    # Git for Windows ships core.autocrlf=true system-wide; set it on the
+    # fixture repo so every platform exercises the same builder config.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "config", "core.autocrlf", "true"], cwd=repo, check=True)
+    (repo / ".gitattributes").write_bytes(b"*.ps1 text eol=crlf\n")
+    (repo / "plain.json").write_bytes(b'{\n"a": 1\n}\n')
+    (repo / "script.ps1").write_bytes(b"one\ntwo\n")
+    subprocess.run([*git, "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run([*git, "commit", "-qm", "fixture"], cwd=repo, check=True)
+    out = tmp_path / "out"
+    snapshot(repo, "HEAD", out)
+    assert (out / "plain.json").read_bytes() == b'{\n"a": 1\n}\n'
+    # Committed eol attributes still apply: only builder config is ignored.
+    assert (out / "script.ps1").read_bytes() == b"one\r\ntwo\r\n"
+
+
+def test_snapshot_replaces_a_previous_payload_holding_read_only_files(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "mod.py").write_text("value = 1\n", encoding="utf-8")
+    git = ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"]
+    subprocess.run([*git, "add", "."], cwd=repo, check=True)
+    subprocess.run([*git, "commit", "-qm", "fixture"], cwd=repo, check=True)
+    out = tmp_path / "out"
+    snapshot(repo, "HEAD", out)
+    # Baked bytecode is chmodded read-only; Windows refuses to unlink it.
+    stale = out / "__pycache__" / "mod.cpython.pyc"
+    stale.parent.mkdir()
+    stale.write_bytes(b"baked")
+    stale.chmod(0o444)
+    snapshot(repo, "HEAD", out)
+    assert not stale.parent.exists()
+    assert (out / "mod.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_wrapper_rejects_unresolved_template_fields(tmp_path, monkeypatch):
     from scripts.build import launchers
 

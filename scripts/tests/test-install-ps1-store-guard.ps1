@@ -78,7 +78,12 @@ function Invoke-ResolvedPaths {
         $raw = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue)
         $stdout = ($raw | Where-Object { $_ -notlike '`[hermes`]*' }) -join "`n"
         $stderr = ($raw | Where-Object { $_ -like '`[hermes`]*' -or $_ -match 'HermesHome|install directory|tool store' }) -join "`n"
-        return @{ ExitCode = $exitCode; Stdout = $stdout; All = ($raw -join "`n") }
+        # The host renders the thrown message wrapped at its console width (pwsh 7
+        # behind a "     | " gutter, 5.1 even mid-word), so where a phrase breaks
+        # depends on how long the temp paths in it are. Match messages against the
+        # text with the gutters and all whitespace removed.
+        $unwrapped = (($raw | ForEach-Object { $_ -replace '^\s*\|', '' }) -join '') -replace '\s', ''
+        return @{ ExitCode = $exitCode; Stdout = $stdout; All = ($raw -join "`n"); Unwrapped = $unwrapped }
     } finally {
         if ($null -eq $savedRuntimeDir) {
             Remove-Item Env:HERMES_RUNTIME_DIR -ErrorAction SilentlyContinue
@@ -104,7 +109,7 @@ try {
     # 1. Same path for both: refused, before any download.
     $r = Invoke-ResolvedPaths @('-HermesHome', $home1, '-InstallDir', $home1)
     Assert-True ($r.ExitCode -ne 0) 'same HermesHome and InstallDir is refused (non-zero exit)'
-    Assert-True ($r.All -match 'tool store would land inside the checkout') 'refusal names the tool-store cause'
+    Assert-True ($r.Unwrapped -match ('tool store would land inside the checkout' -replace '\s', '')) 'refusal names the tool-store cause'
 
     # 2. HermesHome nested inside InstallDir: refused for the same reason.
     $r = Invoke-ResolvedPaths @('-HermesHome', $insideHome, '-InstallDir', $insideDir)

@@ -97,16 +97,35 @@ def test_launcher_skips_user_cache_redirect_when_marker_present(tmp_path):
         sys.pycache_prefix = original
 
 
-def test_launcher_keeps_user_cache_redirect_without_marker(tmp_path):
+@pytest.mark.platforms("windows")
+def test_launcher_keeps_user_cache_redirect_without_marker_win32(tmp_path):
     ns = _load_wrapper()
     payload = _make_payload(tmp_path)
     here = payload / "bin"
     here.mkdir()
+    # The user cache root on win32 is %LOCALAPPDATA%\hermes\pycache. Host-native
+    # per tests/AGENTS.md: no sys.platform patching, the windows lane owns this arm.
+    environ = {"LOCALAPPDATA": str(tmp_path / "userhome")}
+    original = sys.pycache_prefix
+    try:
+        ns["configure"](str(here), environ=environ)
+        assert environ["PYTHONPYCACHEPREFIX"] == str(tmp_path / "userhome" / Path("hermes", "pycache"))
+    finally:
+        sys.pycache_prefix = original
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_keeps_user_cache_redirect_without_marker_posix(tmp_path):
+    ns = _load_wrapper()
+    payload = _make_payload(tmp_path)
+    here = payload / "bin"
+    here.mkdir()
+    # Elsewhere the user cache root is $HOME/.cache/hermes-pycache; the posix
+    # lane owns this arm.
     environ = {"HOME": str(tmp_path / "userhome")}
     original = sys.pycache_prefix
     try:
         ns["configure"](str(here), environ=environ)
-        assert environ["PYTHONPYCACHEPREFIX"] == str(
-            tmp_path / "userhome" / ".cache" / "hermes-pycache")
+        assert environ["PYTHONPYCACHEPREFIX"] == str(tmp_path / "userhome" / Path(".cache", "hermes-pycache"))
     finally:
         sys.pycache_prefix = original

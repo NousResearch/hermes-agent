@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -398,9 +399,10 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     marker = tmp_path / "create-called"
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    docker = bindir / "docker"
-    docker.write_text(
-        "#!/usr/bin/env python3\n"
+    # The fake runs under this interpreter: a ``python3`` shebang finds no interpreter (or the
+    # Store stub) on Windows. Paths reach bash in POSIX form; it eats backslashes.
+    fake = bindir / "docker.py"
+    fake.write_text(
         "import json, os, pathlib, sys\n"
         "if 'create' in sys.argv:\n"
         "    pathlib.Path(os.environ['CREATE_MARKER']).write_text('called')\n"
@@ -408,11 +410,14 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
         "print(json.dumps({'manifests': [{'digest': 'sha256:' + 'c' * 64}]}))\n",
         encoding="utf-8",
     )
+    docker = bindir / "docker"
+    docker.write_text(f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "{fake.as_posix()}" "$@"\n',
+                      encoding="utf-8")
     docker.chmod(0o755)
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c",
-         step["run"].replace("/tmp/digests", str(digest_dir))], cwd=tmp_path,
-        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+         step["run"].replace("/tmp/digests", digest_dir.as_posix())], cwd=tmp_path,
+        env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},
         capture_output=True, text=True, encoding="utf-8",

@@ -1,19 +1,17 @@
 name: hermes-lang-cs
 repo: https://github.com/ostravajih/hermes-lang-cs
-sha: 17002bfd36788fb7dd6b7a28a8e7c0feb0064534
+sha: 989cd3a551e87f962e76811fa7b418f9d8af8fe7
 title: Czech (Čeština) Language Pack
 description: >-
   Czech (Čeština) language pack for Hermes Agent covering all three UI surfaces — core
-  CLI/gateway/platforms (3,510/3,510 keys), the Ink TUI (1,386/1,386) and the Desktop app (5,360 of
-  5,485). Core and TUI keys match the English source of `main` at ef75bc70 (2026-10-29) exactly: no
+  CLI/gateway/platforms (3,515/3,515 keys), the Ink TUI (1,390/1,390) and the Desktop app (5,404 of
+  5,523). Core and TUI keys match the English source of `main` at 40b566502a (2026-11-02) exactly: no
   key upstream has since removed and no placeholder divergence, checked by flattening both sides.
-  The remaining 125 Desktop keys are the ones whose English value is a function with branching
-  (plural counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`),
-  which the pack format cannot express as one template — they are omitted so they fall back to
-  English instead of rendering a wrong Czech form. Two core strings (`display.verb_connector.search`
-  and `.default`) drop an invisible zero-width space the upstream English catalog carries for
-  spacing; the install scanner rates it HIGH while the visible text is identical. Ships the same
-  text as upstream PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
+  The remaining 119 Desktop keys are 117 whose English value is a function with branching (plural
+  counts such as `cron.count`, conditional labels such as `assistant.thread.errorSwitchToModel`)
+  plus two array values, which the pack format cannot express as one template — they are omitted so
+  they fall back to English instead of rendering a wrong Czech form. Ships the same text as upstream
+  PR #105503, so if that PR lands the bundled locale and this pack agree. Manifest-only
   plugin: flat dotted YAML catalogs under locales/, no network, no dependencies. Disclosure — an
   `__init__.py` whose `register()` is a no-op is included so the Desktop "Install from Git" flow
   accepts the pack (#138118); registering the pack never changes display.language, the user opts in

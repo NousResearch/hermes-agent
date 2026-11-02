@@ -123,12 +123,10 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
     assert _row(home, delegation_id)["delivery_state"] == "delivered"
 
 
-def test_pending_row_owned_by_a_live_process_is_reoffered_after_its_queue_copy_is_lost(tmp_path, monkeypatch):
+def test_row_owned_by_a_live_process_is_never_swept(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     q = queue.Queue()
-    lost_copy = queue.Queue()
-    monkeypatch.setattr(process_registry, "completion_queue", lost_copy)
     with _Home(home):
         handle = ad.dispatch_async_delegation(
             goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key="live",
@@ -138,11 +136,66 @@ def test_pending_row_owned_by_a_live_process_is_reoffered_after_its_queue_copy_i
             time.sleep(0.01)
         row = _row(home, handle["delegation_id"])
         assert row["owner_pid"] == os.getpid() and row["delivery_state"] == "pending"
-        # A foreign poller can dequeue then abandon the only in-memory event. The durable pending
-        # row must therefore be re-offered even while this owner stays alive.
-        assert [evt["delegation_id"] for evt in _drain(lost_copy)] == [handle["delegation_id"]]
-        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1
-    assert [evt["delegation_id"] for evt in _drain(q)] == [handle["delegation_id"]]
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + 3600) == 0
+    assert q.empty()
+
+
+def test_live_owner_row_whose_queue_copy_was_lost_is_re_offered_after_a_lease(tmp_path, monkeypatch):
+    """The owner is alive but its one in-memory copy never reaches a drained queue (#140718, #144563):
+    the ledger re-offers it once nobody touched the row for a claim lease, and never while a copy is
+    queued or the row belongs to another live process, whose queue this one cannot see."""
+    home = tmp_path / "home"
+    home.mkdir()
+    q = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", queue.Queue())  # nobody drains this one
+    with _Home(home):
+        handle = ad.dispatch_async_delegation(
+            goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key="live",
+            runner=lambda: {"status": "completed", "summary": "done"})
+        deadline = time.monotonic() + 10
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        delegation_id = handle["delegation_id"]
+        row = _row(home, delegation_id)
+        assert row["owner_pid"] == os.getpid() and row["delivery_state"] == "pending"
+        monkeypatch.setattr(process_registry, "completion_queue", q)  # the copy is gone
+        lease = row["updated_at"] + ad._CLAIM_LEASE_S + 1
+        # A consumer may still hold the copy off-queue: leave it for a whole lease.
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 0
+        assert ad.sweep_orphaned_completions(q, now=lease) == 1
+        assert ad.sweep_orphaned_completions(q, now=lease + 60) == 0  # the re-offered copy is queued
+        (evt,) = _drain(q)
+        assert evt["delegation_id"] == delegation_id and evt["summary"] == "done"
+        claim = ad.claim_event_delivery(evt, "first")
+        assert claim and ad.claim_event_delivery(evt, "second") is None
+        assert ad.complete_completion_delivery(delegation_id, claim)
+        # Another live process's row: its copy lives in that process's queue.
+        other = ad.dispatch_async_delegation(
+            goal="theirs", context=None, toolsets=None, role="leaf", model="m", session_key="live",
+            runner=lambda: {"status": "completed", "summary": "done"})
+        deadline = time.monotonic() + 10
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        _drain(q)
+        _set(home, other["delegation_id"], owner_pid=os.getppid(), owner_started_at=None)
+        assert ad.sweep_orphaned_completions(q, now=time.time() + 3600) == 0
+    assert q.empty()
+    assert _row(home, delegation_id)["delivery_state"] == "delivered"
+
+
+def test_offered_copy_lost_without_hand_back_is_re_offered_after_a_lease(tmp_path):
+    """A replayed copy discarded without ``return_completion_offer`` no longer pins the row until the
+    next restart: once it is off every queue for a lease, the sweep offers the row again."""
+    home = tmp_path / "home"
+    delegation_id = _orphan(home)
+    row = _row(home, delegation_id)
+    q = queue.Queue()
+    with _Home(home):
+        assert ad.restore_undelivered_completions(q) == 1
+        _drain(q)  # discarded without handing the offer back
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 0
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._CLAIM_LEASE_S + 1) == 1
+    assert [e["delegation_id"] for e in _drain(q)] == [delegation_id]
 
 
 def test_sweep_is_bound_to_the_profile_home_it_runs_under(tmp_path):

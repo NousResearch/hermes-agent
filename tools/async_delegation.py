@@ -400,35 +400,73 @@ def _replay_pending(conn, rows, target_queue, now: float, *, startup: bool = Fal
     return restored
 
 
-def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
-    """Offer this home's stale pending completions after THIS process started (#97202).
+def _queued_completion_ids(*queues) -> Optional[set]:
+    """Delegation ids with a final-result copy sitting in any of ``queues``, read under each queue's own
+    mutex (the lock ``put``/``get`` take), or None when a queue cannot be inspected. Interim per-task
+    notices share their batch's id but are not the result, so they never count as its copy."""
+    ids: set = set()
+    for q in {id(q): q for q in queues if q is not None}.values():
+        mutex, items = getattr(q, "mutex", None), getattr(q, "queue", None)
+        if mutex is None or items is None:
+            return None
+        with mutex:
+            snapshot = list(items)
+        ids.update(str(evt.get("delegation_id") or "") for evt in snapshot
+                   if isinstance(evt, dict) and evt.get("type") == "async_delegation"
+                   and not is_interim_delegation_event(evt))
+    return ids
 
-    Startup replay (``restore_undelivered_completions``) covers rows left by an earlier process; this
-    also recovers an in-memory offer lost while its owner remains alive. Abandoned in-flight rows are
-    first classified by ``recover_abandoned_delegations``. A terminal row qualifies when it is pending
-    with an event, idle past ``_ORPHAN_STALE_S``, and not under a live delivery claim. A row is offered
-    once per live in-memory copy: a consumer that discards the copy with the row still pending hands it
-    back for the next sweep. The consumer's ``claim_completion_delivery`` stays the atomic cross-process
-    gate, so two processes offering one row never both deliver it. Rows past the delivery budget or the
-    replay age converge to ``dropped``. Reads the current profile's ledger: callers bind the owning
-    profile first."""
-    if not _db_path().exists():
+
+def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
+    """Re-offer this home's pending completions that no live in-memory copy will deliver (#97202, #140718).
+
+    Startup replay (``restore_undelivered_completions``) covers owners that died before the process
+    started; this covers the rest while it runs. Abandoned in-flight rows are first classified by
+    ``recover_abandoned_delegations``. A terminal row qualifies when it is pending with an event, idle
+    past ``_ORPHAN_STALE_S`` and not under a live delivery claim, and then:
+
+    - its owner is dead and this process has not offered it yet; or
+    - its owner is THIS process, or this process already offered it, the row has been idle for a whole
+      ``_CLAIM_LEASE_S`` and no copy of it sits in ``target_queue`` or the producers'
+      ``completion_queue``: the one in-memory copy was lost (a consumer discarded it, or it went onto
+      a queue no delivery loop drains), and without this the row would stay pending with zero
+      attempts until a restart (#144563).
+
+    A live copy is never fought: it is either queued (seen here), under a claim lease (filtered above),
+    or held off-queue by a consumer for less than a lease (a claim, defer or release refreshes
+    ``updated_at``). A row owned by ANOTHER
+    live process is left to that process, whose queue this one cannot see. The consumer's
+    ``claim_completion_delivery`` stays the atomic cross-process gate, so a duplicate copy can never
+    deliver twice. Rows past the delivery budget or the replay age converge to ``dropped``. Reads the
+    current profile's ledger: callers bind the owning profile first."""
+    alive = _owner_liveness()
+    if alive is None or not _db_path().exists():
         return 0  # never create a ledger just to sweep it
     recover_abandoned_delegations()
     now = time.time() if now is None else now
     home = hermes_home_key(get_hermes_home())
+    from tools.process_registry import process_registry
+    queued = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at, delivery_attempts
+        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
+                      owner_pid, owner_started_at, delivery_attempts, updated_at
                FROM async_delegations
                WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
                  AND event_json IS NOT NULL AND updated_at < ?
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
                ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
-        orphans = []
-        for delegation_id, payload, completed_at, dispatched_at, attempts in rows:
-            if delegation_id in offered:
+        orphans, lost = [], []
+        for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts, updated_at in rows:
+            owner_alive = alive(pid, started)
+            copy_lost = owner_alive or delegation_id in offered
+            # Only a copy this process made (or would have made) can be proven lost: it is on neither
+            # queue, and nobody claimed, deferred or released the row for a whole claim lease, the
+            # same span after which a silent claim counts as abandoned. A consumer holding the copy
+            # off-queue for less than that keeps it.
+            if copy_lost and (queued is None or delegation_id in queued or updated_at >= now - _CLAIM_LEASE_S
+                              or not (delegation_id in offered or int(pid) == os.getpid())):
                 continue
             if (attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
                 # Its last claimant died holding the final attempt; converge like release_completion_delivery.
@@ -440,6 +478,13 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
                                delegation_id, _MAX_DELIVERY_ATTEMPTS)
                 continue
             orphans.append((delegation_id, payload, completed_at, dispatched_at))
+            if copy_lost:
+                lost.append(delegation_id)
+        if lost:
+            logger.warning("Re-offering %d pending async completion(s) whose in-memory copy was lost while "
+                           "this process ran: %s", len(lost), ", ".join(lost))
+            with _orphan_lock:
+                _offered.difference_update({(home, delegation_id) for delegation_id in lost})
         return _replay_pending(conn, orphans, target_queue, now)
 
 

@@ -39,7 +39,7 @@ Do not use it for anything that must stay private, for interactive back-and-fort
 3. Funds, on one rail:
    - **USDG on Robinhood Chain** (the default): 1 USDG per task, plus a little ETH on Robinhood Chain for a one-time approval. Run the approval once from the `terminal` tool; the key is read from the environment:
      ```bash
-     npx -y brainchain-mcp@0.3.0 approve
+     npx -y brainchain-mcp@0.4.0 approve
      ```
    - **USDC on Base**: 1 USDC per task; payments are signatures, so no ETH and no approval. Set `BRAINCHAIN_PAY_ON: base` in the server's `env` below.
 4. The `brainchain` MCP server in `~/.hermes/config.yaml`, then restart the session:
@@ -47,13 +47,14 @@ Do not use it for anything that must stay private, for interactive back-and-fort
    mcp_servers:
      brainchain:
        command: npx
-       args: ["-y", "brainchain-mcp@0.3.0"]
+       args: ["-y", "brainchain-mcp@0.4.0"]
        env:
          BRAINCHAIN_PAYER_KEY: "${BRAINCHAIN_PAYER_KEY}"
          BRAINCHAIN_BUDGET_UNITS: "5000000"
+         BRAINCHAIN_DAILY_UNITS: "5000000"
        timeout: 120
    ```
-   `BRAINCHAIN_BUDGET_UNITS` caps the total the server pays while it runs (5000000 is 5 USDG or USDC); `BRAINCHAIN_MAX_PRICE_UNITS` caps a single task (default 1000000). Add `BRAINCHAIN_NETWORK: testnet` to practise with test tokens.
+   `BRAINCHAIN_BUDGET_UNITS` caps the total the server pays while it runs (5000000 is 5 USDG or USDC); `BRAINCHAIN_MAX_PRICE_UNITS` caps a single task (default 1000000). `BRAINCHAIN_DAILY_UNITS` caps what the wallet pays per UTC day and is kept on disk, so it still holds when the gateway or a cron job restarts the server. Add `BRAINCHAIN_NETWORK: testnet` to practise with test tokens.
 
 ## How to Run
 
@@ -90,7 +91,7 @@ It prints JSON with `ready` and a list of `problems`, and exits 0 when the walle
 - **Never post the same task twice after an error.** A reply marked `possiblyCharged` means the payment was signed but not confirmed: read the order with the get tool instead. The server also returns the first order for an identical post within a few minutes.
 - **Everything posted is public.** Briefs are recorded on BrainChain and accepted results are served at public links.
 - **Vague levels get vague grades.** Levels that cannot be checked from the result alone ("high quality") make acceptance a coin toss. Name observable properties.
-- **Budget errors come from the cap.** When the server refuses with a budget message, the cap in `BRAINCHAIN_BUDGET_UNITS` was reached; ask the user before raising it.
+- **Budget errors come from the caps.** When the server refuses with a budget or daily limit message, `BRAINCHAIN_BUDGET_UNITS` or `BRAINCHAIN_DAILY_UNITS` was reached; ask the user before raising either.
 - **USDG needs the approval once.** A Robinhood Chain payment fails until `approve` has run for that wallet; Base payments do not need it.
 - **Acceptance is a judgement.** BrainChain runs any Python in the result before grading and the judge sees the outcome, but nothing runs against the user's own code or environment. Check accepted work yourself. If it falls short of the levels, the poster can dispute the grade while the window is open (https://docs.usebrainchain.com/disputes).
 - **Payments and refunds are final after the dispute window**, about six hours after grading on mainnet (about an hour on testnet).

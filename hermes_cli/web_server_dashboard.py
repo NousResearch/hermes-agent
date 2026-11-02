@@ -11,7 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 import hermes_yaml as yaml
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocketException
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette import status
@@ -936,16 +936,24 @@ class PluginApiWebSocketGate:
     A Desktop's native grant is the exception: it names the profile the socket acts for, so it is
     redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile. A
     secondary profile's socket to a plugin its own host serves is answered here too (PLG-3).
+
+    First it runs the core sockets' Host/Origin/peer gate (``_ws_request_is_allowed``, 4403), which
+    HTTP middleware never applies to an upgrade. Here it covers every plugin socket, whatever form
+    declares it: a router dependency reaches ``@router.websocket`` routes only.
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
+        from hermes_cli.web_server_chat import _ws_request_is_allowed
         from hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
         name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
         if not name:
             await self.app(scope, receive, send)
+            return
+        if not _ws_request_is_allowed(WebSocket(scope, receive, send)):
+            await send({"type": "websocket.close", "code": 4403})
             return
         with _native_ws_scope(scope) as admitted, plugin_request_scope(scope):
             if admitted and not await _plugin_api_request_refused(name):
@@ -1004,17 +1012,6 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
             raise HTTPException(status_code=404, detail="Plugin not found")
         yield
-
-
-async def _plugin_ws_request_gate(conn: HTTPConnection) -> None:
-    """Host/Origin/peer gate for plugin WebSocket routes: the same ``_ws_request_is_allowed`` check
-    (and so the same ``_is_trusted_local_origin`` rule) the core sockets run before accept. HTTP
-    middleware (Host check, CORS) never sees an upgrade, so without this a plugin socket such as
-    kanban's ``/events`` accepted a stolen session token from any origin. Applied at mount time so no
-    plugin can skip or drift from it; plain HTTP requests pass through untouched."""
-    from hermes_cli.web_server_chat import _ws_request_is_allowed
-    if conn.scope["type"] == "websocket" and not _ws_request_is_allowed(conn):
-        raise WebSocketException(code=4403)
 
 
 def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
@@ -1246,7 +1243,7 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         app.include_router(
             router,
             prefix=f"/api/plugins/{plugin['name']}",
-            dependencies=[Depends(_plugin_ws_request_gate), Depends(_plugin_route_secret_scope)],
+            dependencies=[Depends(_plugin_route_secret_scope)],
         )
         _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         return True

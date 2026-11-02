@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+from concurrent.futures import CancelledError
 import contextlib
 import json
 import logging
@@ -134,7 +135,7 @@ def _job(kind: str, target: str, model_id: str | None = None) -> dict[str, Any]:
     job = {
         "job_id": uuid.uuid4().hex[:12], "kind": kind, "target": target,
         "model_id": model_id,       # catalog id for downloads; None otherwise
-        "status": "running",        # running | paused | done | error
+        "status": "running",        # running | paused | cancelled | done | error
         "phase": "starting",        # human-readable step name
         "detail": "", "total_bytes": None, "done_bytes": 0, "started_at": time.time(), "error": None,
     }
@@ -188,6 +189,10 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
     running = _RUNNING.get(job["job_id"], {})
+    cancel = running.get("cancel")
+    out["cancel_requested"] = bool(cancel is not None and cancel.is_set() and out["status"] == "running")
+    out["can_cancel"] = bool(cancel is not None and out["status"] == "running"
+                             and out["phase"] not in ("finalizing", "done") and not out["cancel_requested"])
     pause = running.get("pause")
     out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
     out["can_pause"] = bool(pause is not None and out["status"] == "running"
@@ -204,7 +209,11 @@ def _job_view(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _check_job_pause(job: dict[str, Any]) -> None:
-    pause = _RUNNING.get(job["job_id"], {}).get("pause")
+    running = _RUNNING.get(job["job_id"], {})
+    cancel = running.get("cancel")
+    if cancel is not None and cancel.is_set():
+        raise CancelledError("Download cancelled")
+    pause = running.get("pause")
     if pause is not None and pause.is_set():
         raise DownloadPaused("download paused")
 
@@ -236,6 +245,9 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
             if download_label is not None:
                 _finish(job, f"{download_label} ready")
                 _refresh_runtime("post-download runtime refresh skipped")
+        except CancelledError:
+            status = "cancelled"
+            job.update(phase="cancelled", detail="Download cancelled")
         except DownloadPaused:
             status = "paused"
         except Exception as exc:
@@ -770,6 +782,19 @@ def local_models_download(body: ModelDownloadBody):
     return {"job_id": job["job_id"], "model_id": variant.model_id}
 
 
+@router.post("/api/local-models/download/cancel")
+async def local_models_download_cancel(body: JobIdBody):
+    with _JOBS_LOCK:
+        job = _JOBS.get(body.job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="unknown download job")
+        view = _job_view(job)
+        if not view["can_cancel"]:
+            return {"ok": True, "cancel_requested": view["cancel_requested"]}
+        _RUNNING[body.job_id]["cancel"].set()
+    return {"ok": True, "cancel_requested": True}
+
+
 @router.post("/api/local-models/download/pause")
 async def local_models_download_pause(body: JobIdBody):
     """Pause the download phase of a model, component or quickstart job."""
@@ -982,7 +1007,7 @@ async def local_models_jobs():
     with _JOBS_LOCK:
         jobs = sorted(_JOBS.values(), key=lambda job: -job["started_at"])
         active = [job for job in jobs if job["status"] in ("running", "paused")]
-        recent = [job for job in jobs if job["status"] in ("done", "error")][:20]
+        recent = [job for job in jobs if job["status"] in ("done", "error", "cancelled")][:20]
         return {"jobs": [_job_view(job) for job in [*active, *recent]]}
 
 

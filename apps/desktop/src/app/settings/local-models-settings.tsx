@@ -16,12 +16,13 @@ import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { isActiveStatus } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'
+import { LocalModelsEngine } from './local-models-engine'
 import { LocalModelsHardwareSection } from './local-models-hardware-section'
 import { LocalModelsModelsSection } from './local-models-models-section'
 import { LocalModelsOwnerProvider, useScopedLocalModelsOwner } from './local-models-owner'
 import { LocalModelsQuickstart } from './local-models-quickstart'
 import { LocalModelsRuntimeSection } from './local-models-runtime-section'
-import { SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsSkeleton } from './primitives'
 import { ActiveProfileNote } from './profile-scope'
 
 export function LocalModelsSettings(): ReactElement {
@@ -29,7 +30,9 @@ export function LocalModelsSettings(): ReactElement {
 
   return (
     <LocalModelsOwnerProvider key={JSON.stringify(localModelsKey(owner))} value={owner}>
-      <ScopedLocalModelsSettings />
+      <LocalModelsEngine>
+        <ScopedLocalModelsSettings />
+      </LocalModelsEngine>
     </LocalModelsOwnerProvider>
   )
 }
@@ -118,12 +121,12 @@ function ScopedLocalModelsSettings(): ReactElement {
   }
 
   return (
-    <SettingsContent>
+    <>
       <ActiveProfileNote className="mb-5" />
       <LocalModelsRuntimeSection jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsHardwareSection hardware={hardware} />
       <LocalModelsModelsSection catalog={catalog} jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsBrowseSection />
-    </SettingsContent>
+    </>
   )
 }

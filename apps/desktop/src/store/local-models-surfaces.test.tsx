@@ -104,7 +104,10 @@ const model: LocalCatalogModel = {
 }
 
 const api = vi.fn(async (request: HermesApiRequest): Promise<unknown> => {
-  if (request.path.endsWith('/status')) {
+  if (request.path === '/api/local-models/omlx/status') {
+    return { supported: false, selected: false }
+  }
+  if (request.path === '/api/local-models/status') {
     return structuredClone(status)
   }
 
@@ -215,13 +218,13 @@ it('uses one status polling clock across staggered Settings, picker and menu mou
   )
   await tick(2_000)
 
-  expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status'))).toHaveLength(2)
+  expect(api.mock.calls.filter(([request]): boolean => request.path === '/api/local-models/status')).toHaveLength(2)
   settings.unmount()
   await tick(2_000)
-  expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status'))).toHaveLength(3)
+  expect(api.mock.calls.filter(([request]): boolean => request.path === '/api/local-models/status')).toHaveLength(3)
   cleanup()
   await tick(4_000)
-  expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status'))).toHaveLength(3)
+  expect(api.mock.calls.filter(([request]): boolean => request.path === '/api/local-models/status')).toHaveLength(3)
 })
 
 it('keeps paused work alive after Settings unmount and isolates late results by owner', async (): Promise<void> => {
@@ -294,7 +297,7 @@ it.each(['connection', 'profile'] as const)(
     expect(
       api.mock.calls.some(
         ([request]): boolean =>
-          request.path.endsWith('/status') &&
+          request.path === '/api/local-models/status' &&
           request.connectionId === expected.connectionId &&
           request.profile === expected.profile
       )
@@ -433,6 +436,8 @@ it.each(['model-download', 'quickstart', 'runtime-install'] as const)(
     watchLocalRuntimeJobs({ connectionId: 'A', profile: 'work' })
     await tick()
     expect(notify).toHaveBeenCalledTimes(1)
-    expect(api.mock.calls.filter(([request]): boolean => request.path.endsWith('/status')).length).toBeGreaterThan(1)
+    expect(
+      api.mock.calls.filter(([request]): boolean => request.path === '/api/local-models/status').length
+    ).toBeGreaterThan(1)
   }
 )

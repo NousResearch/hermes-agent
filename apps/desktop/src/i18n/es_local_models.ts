@@ -3,6 +3,21 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const esLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  engineChoice: 'Motor de inferencia',
+  engineChoiceDetail: 'Elige un motor y después un modelo como predeterminado para los chats nuevos.',
+  engineSwitchFailed: 'No se pudo cambiar el motor',
+  engineStatusFailed: 'No se pudieron cargar los motores. Actualiza el entorno Hermes conectado y vuelve a intentarlo.',
+  omlxUnsupported: 'oMLX requiere un Mac con Apple Silicon.',
+  omlxInstalled: 'Entorno oMLX instalado',
+  omlxInstall: 'Instalar oMLX',
+  omlxDetail: 'Hermes instala y administra oMLX localmente. Usa modelos MLX, no archivos GGUF de llama.cpp.',
+  omlxActionFailed: 'Error en la acción de oMLX',
+  omlxNoModels: 'Descarga un modelo MLX para empezar.',
+  omlxRepoLabel: 'Repositorio de modelos de Hugging Face',
+  omlxRepoHint:
+    'Introduce un repositorio en formato MLX. Los archivos se descargan en la carpeta administrada de oMLX; los GGUF existentes no se modifican.',
+  omlxDownload: 'Descargar modelo',
+
   connectionChanged: 'Cambió la conexión de los modelos locales',
   title: 'Modelos locales',
   runtimeTitle: 'Entorno local',
@@ -37,6 +52,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   noRecommendationAction: 'Explorar modelos',
   downloaded: 'Descargado',
   downloadAction: size => `Descargar · ${size}`,
+  downloadCached: size => `${size} ya descargados`,
+  downloadReceived: size => `${size} recibidos`,
   downloadProgress: (done, total) => `Descargando ${done} de ${total}`,
   downloadDoneToast: model => `${model} está listo.`,
   installDoneToast: 'Entorno local instalado y listo.',

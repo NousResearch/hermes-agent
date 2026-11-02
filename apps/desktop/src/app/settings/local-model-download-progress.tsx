@@ -1,7 +1,7 @@
 import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { cancelLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2, Pause, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -61,6 +61,8 @@ export interface DownloadStatusCopy {
   downloadPausedLabel: string
   downloadStatusRunning: string
   downloadProgress: (done: string, total: string) => string
+  downloadCached: (size: string) => string
+  downloadReceived: (size: string) => string
   downloadSpeed: (rate: string) => string
   downloadEta: (time: string) => string
   downloadEtaSeconds: (count: number) => string
@@ -119,6 +121,14 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
 
   if (size) {
     parts.push(size)
+  }
+
+  if (job.cached_bytes) {
+    parts.push(copy.downloadCached(gbLabel(job.cached_bytes)))
+  }
+
+  if (job.received_bytes) {
+    parts.push(copy.downloadReceived(gbLabel(job.received_bytes)))
   }
 
   // Speed and ETA only while bytes move: a parked transfer keeps its frozen
@@ -184,7 +194,7 @@ export function LocalModelDownloadActions({
   const copy = t.settings.localModels
   const [busy, setBusy] = useState<boolean>(false)
 
-  const send = async (kind: 'pause' | 'resume'): Promise<void> => {
+  const send = async (kind: 'cancel' | 'pause' | 'resume'): Promise<void> => {
     setBusy(true)
 
     try {
@@ -194,6 +204,8 @@ export function LocalModelDownloadActions({
       // surfaces as an error.
       if (kind === 'pause') {
         await pauseLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
+      } else if (kind === 'cancel') {
+        await cancelLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
       } else {
         await resumeLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
       }
@@ -203,12 +215,31 @@ export function LocalModelDownloadActions({
       if (!owner || isCurrentLocalModelsOwner(owner)) {
         notifyError(
           err,
-          kind === 'pause' ? copy.downloadPauseFailed(job.target) : copy.downloadResumeFailed(job.target)
+          kind === 'cancel'
+            ? `${t.common.cancel} · ${job.target}`
+            : kind === 'pause'
+              ? copy.downloadPauseFailed(job.target)
+              : copy.downloadResumeFailed(job.target)
         )
       }
     } finally {
       setBusy(false)
     }
+  }
+
+  if (job.status === 'running' && (job.can_cancel === true || job.cancel_requested)) {
+    return (
+      <Button
+        aria-busy={busy || job.cancel_requested}
+        disabled={busy || job.cancel_requested}
+        onClick={() => void send('cancel')}
+        size="sm"
+        variant="outline"
+      >
+        {(busy || job.cancel_requested) && <Loader2 className="animate-spin" />}
+        {t.common.cancel}
+      </Button>
+    )
   }
 
   if (job.status === 'paused') {

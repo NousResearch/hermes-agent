@@ -3,6 +3,21 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const jaLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  engineChoice: '推論エンジン',
+  engineChoiceDetail: 'エンジンを選び、下のモデルを新しいチャットのデフォルトに設定してください。',
+  engineSwitchFailed: '推論エンジンを切り替えられませんでした',
+  engineStatusFailed: 'エンジンの選択肢を読み込めませんでした。接続先のHermesランタイムを更新し、再試行してください。',
+  omlxUnsupported: 'oMLXにはApple Silicon搭載のMacが必要です。',
+  omlxInstalled: 'oMLXランタイムをインストール済み',
+  omlxInstall: 'oMLXをインストール',
+  omlxDetail: 'HermesがoMLXをローカルでインストール・管理します。llama.cppのGGUFではなくMLXモデルを使用します。',
+  omlxActionFailed: 'oMLXの操作に失敗しました',
+  omlxNoModels: 'MLXモデルをダウンロードしてください。',
+  omlxRepoLabel: 'Hugging Faceモデルリポジトリ',
+  omlxRepoHint:
+    'MLX形式のリポジトリを入力してください。モデルは管理対象のoMLXフォルダに保存され、既存のGGUFファイルは変更されません。',
+  omlxDownload: 'モデルをダウンロード',
+
   connectionChanged: 'ローカルモデルの接続が変更されました',
   title: 'ローカルモデル',
   runtimeTitle: 'ローカルランタイム',
@@ -38,6 +53,8 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   quickstartConfigure: '自分で選ぶ',
   downloaded: 'ダウンロード済み',
   downloadAction: size => `ダウンロード · ${size}`,
+  downloadCached: size => `${size} はダウンロード済み`,
+  downloadReceived: size => `${size} を受信`,
   downloadProgress: (done, total) => `${done} / ${total}`,
   downloadStatusRunning: 'ダウンロード中',
   downloadSpeed: rate => `${rate}`,

@@ -378,6 +378,10 @@ export function useLocalRuntimeJobs<T>(
 }
 
 function notifySettled(owner: LocalModelsOwner, job: LocalRuntimeJob): void {
+  if (job.status === 'cancelled') {
+    return
+  }
+
   if (job.status === 'done') {
     notify({
       durationMs: 6_000,

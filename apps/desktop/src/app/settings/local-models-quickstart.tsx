@@ -7,7 +7,6 @@ import type { LocalCatalogModel, LocalRuntimeJob } from '@/types/hermes'
 
 import { downloadStatusText, LocalModelDownloadActions, ProgressBar } from './local-model-download-progress'
 import { type LocalModelsActionScope, runQuickstart, useLocalModelsActionScope } from './local-models-actions'
-import { SettingsContent } from './primitives'
 
 export interface LocalModelsQuickstartProps {
   job: LocalRuntimeJob | null
@@ -36,7 +35,7 @@ export function LocalModelsQuickstart({
   const stages = [copy.quickstartStageEngine, copy.quickstartStageModel, copy.quickstartStageFinish]
 
   return (
-    <SettingsContent>
+    <>
       <div className="flex min-h-[60dvh] items-center justify-center">
         <div className="w-full max-w-md text-center">
           <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-primary/10">
@@ -126,6 +125,6 @@ export function LocalModelsQuickstart({
           )}
         </div>
       </div>
-    </SettingsContent>
+    </>
   )
 }

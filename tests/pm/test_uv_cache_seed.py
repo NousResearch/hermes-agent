@@ -222,12 +222,17 @@ def test_payload2_marker_reseeds_a_volume_marked_by_the_old_seed(payload_cache_w
     """The suffix bump is what heals volumes seeded by the buggy copy: their marker reads
     ``+payload``, so the fixed seed must run again instead of trusting it."""
     machine = payload_cache_with_wheel_link
+    packages.uv_cache_dir()
+    marker = machine / ".seeded"
+    current = marker.read_text(encoding="utf-8")
+    # The same lock seeded by the buggy copy: the old suffix, and a directory where the link goes.
+    marker.write_text(current.partition("+")[0] + "+payload", encoding="utf-8")
     poisoned = _seeded_link(machine)
-    poisoned.mkdir(parents=True)
+    poisoned.unlink()
+    poisoned.mkdir()
     (poisoned / "module.py").write_text("stale copy\n", encoding="utf-8")
-    (machine / ".seeded").write_text("stale+payload", encoding="utf-8")
 
     packages.uv_cache_dir()
 
     assert poisoned.is_symlink()
-    assert (machine / ".seeded").read_text(encoding="utf-8").endswith("+payload2")
+    assert marker.read_text(encoding="utf-8") == current

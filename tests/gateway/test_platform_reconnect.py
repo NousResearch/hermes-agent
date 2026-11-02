@@ -455,6 +455,33 @@ class TestReconnectKeepsInboundDedup:
         assert new._dedup.is_duplicate("m1") is True
         assert new._dedup.is_duplicate("m2") is False
 
+    @pytest.mark.asyncio
+    async def test_reconnect_builds_adapter_off_the_event_loop_thread(self):
+        """Adapter construction runs synchronous config work (plugin adapters call
+        load_gateway_config(), which rescans bundled plugin dirs); on the loop thread a
+        slow/cold disk stalls every ws/API client and the liveness watchdog kills the
+        gateway (exit 75). The watcher must construct adapters in the executor instead."""
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        old = StubAdapter()
+        runner.adapters[Platform.TELEGRAM] = old
+        old._set_fatal_error("network_error", "socket closed", retryable=True)
+        await runner._handle_adapter_fatal_error(old)
+
+        loop_thread = threading.current_thread()
+        created_on: list[threading.Thread] = []
+
+        def _record_create(platform, config):
+            created_on.append(threading.current_thread())
+            return StubAdapter()
+
+        with patch.object(runner, "_create_adapter", side_effect=_record_create):
+            await runner._reconnect_failed_platform(Platform.TELEGRAM, time.monotonic() + 1)
+
+        assert created_on, "adapter was never constructed"
+        assert created_on[0] is not loop_thread
+
     @staticmethod
     def _telegram_cls():
         from plugins.platforms.telegram.adapter import TelegramAdapter

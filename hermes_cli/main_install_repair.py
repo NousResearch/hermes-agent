@@ -285,13 +285,14 @@ def _install_configured_features_missing_deps(project_root: Path) -> None:
     selected would come up without its adapter after the gateway restart.
     """
     import pm
-    from pm.extras import extra_supported
+    from pm.extras import declined_extras, extra_supported
     from pm.features import declared_extras
 
     missing = _configured_features_missing_deps()
     if not missing:
         return
-    declared = set(declared_extras(project_root))
+    # `hermes pm install --without NAME` outranks a platform still left in config.
+    declared = set(declared_extras(project_root)) - declined_extras(project_root)
     extras = sorted({extra for *_, name in missing
                      if (extra := name.replace("_", "-")) in declared and extra_supported(extra)})
     if extras:

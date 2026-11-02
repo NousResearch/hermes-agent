@@ -698,6 +698,15 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
+def _carried(package, recorded: list[str]) -> list[str]:
+    """The recorded extras a sync carries forward: still declared and not dropped by the user
+    (`hermes pm install --without NAME`). An explicit request still enables a declined extra."""
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    return [extra for extra in _still_declared(package, recorded) if _extra_key(extra) not in refused]
+
+
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
@@ -715,7 +724,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact["extras"])) | set(extras or []))
     stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
     return _runtime_state_matches(fact, stamp, project_root=root)
 
@@ -807,7 +816,7 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact.get("extras", shipped or []))) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 
@@ -835,6 +844,19 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
     except BaseException:
         recover_publication(paths.repo_root())
         raise
+
+
+def _refuse_declined(package, extras: Optional[list[str]], *, explicit: bool) -> None:
+    """A lazy install (first use of a feature) never re-adds an extra the user dropped."""
+    if not extras or explicit:
+        return
+    from pm.extras import declined_extras, install_hint
+
+    refused = declined_extras(package.project_root())
+    dropped = [extra for extra in extras if _extra_key(extra) in refused]
+    if dropped:
+        raise InstallError("venv", f"extras {dropped} were removed with `hermes pm install --without`",
+                           "run `" + "`, `".join(install_hint(extra) for extra in dropped) + "` to enable them again")
 
 
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
@@ -875,6 +897,7 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
+        _refuse_declined(package, extras, explicit=explicit)
         from hermes_cli.runtime_state import recover_publication
         from pm.publication import StagedPlugin
         with _venv_install_lock(patient=explicit or repair):
@@ -900,6 +923,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                 receipt.record_feature_list(enabled)
                 _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
                                   current=current, repair=repair, explicit=explicit)
+        if extras and explicit and not repair:
+            from pm.extras import record_declined_extras
+
+            # An explicit request is the opt-back-in: later syncs carry it again.
+            record_declined_extras(remove=extras, project_root=package.project_root())
         outcome = "ok"
     except BaseException as exc:
         receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")

@@ -285,14 +285,29 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
     if without and (extras or cross_target or args.names):
         return "--without shapes the default closure; it does not take names, --extra, or --target"
     if without:
-        from pm.defaults import canonical_default_name, default_package_names
+        from pm.defaults import default_package_names
+        from pm.extras import droppable_extras
 
-        allowed = default_package_names()
-        unknown = [name for name in without if canonical_default_name(name) not in allowed]
+        unknown = _split_without(without)[2]
         if unknown:
-            return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
+            return (f"--without accepts optional default packages ({', '.join(default_package_names())}) "
+                    f"or extras outside [all] ({', '.join(droppable_extras(repo_root()))}); "
                     f"not {', '.join(unknown)}")
     return None
+
+
+def _split_without(names) -> tuple[list[str], list[str], list[str]]:
+    """Sort ``--without`` names into (default packages, droppable extras, unknown)."""
+    from pm.defaults import canonical_default_name, default_package_names
+    from pm.extras import droppable_extras
+
+    packages, extras = set(default_package_names()), set(droppable_extras(repo_root()))
+    split: tuple[list[str], list[str], list[str]] = ([], [], [])
+    for name in names:
+        package = canonical_default_name(name)
+        bucket = 0 if package in packages else 1 if name in extras else 2
+        split[bucket].append(package if bucket == 0 else name)
+    return split
 
 
 def _install_defaults(names: list[str], *, verify: bool) -> None:
@@ -362,10 +377,14 @@ def cmd_install(args) -> int:
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
         from pm.defaults import record_declined
+        from pm.extras import record_declined_extras
 
         # Persisted before anything installs: later bare installs and
-        # `hermes update` read the same record, so the opt-out sticks.
-        record_declined(add=without)
+        # `hermes update` read the same record, so the opt-out sticks. A
+        # dropped extra leaves the recorded selection at this install's sync.
+        declined_packages, declined_extras, _ = _split_without(without)
+        record_declined(add=declined_packages)
+        record_declined_extras(add=declined_extras)
     defaults: list[str] = []
     if not (args.names or extras):
         from pm.defaults import default_packages
@@ -953,8 +972,9 @@ def main(argv=None) -> int:
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--without", action="append", default=[], metavar="NAME",
-                   help="leave an optional default package (chromium, cua-driver) out of this and every later "
-                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
+                   help="leave an optional default package (chromium, cua-driver) or a recorded extra outside "
+                        "[all] (matrix, ...) out of this and every later default install and update; "
+                        "`hermes pm install NAME` / `--extra NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",

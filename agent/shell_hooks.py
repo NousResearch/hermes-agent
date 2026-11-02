@@ -667,7 +667,17 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    # A turn veto before any inference request, in either dialect (as for pre_tool_call); else context.
+    for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
+        if data.get(verb) == "block":
+            return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    return _parse_context(data)
+
+
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "pre_llm_call": _parse_pre_llm_call,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

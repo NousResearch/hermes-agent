@@ -366,3 +366,18 @@ def self_repo_block(
         return None
     logger.warning("Blocked self-repo git mutation (command: %s)", _safe_command_preview(command))
     return _blocked_json(msg, "blocked")
+
+
+def locked_skill_block(*, command: str, cwd: str, workdir: Optional[str], session_key: str) -> Optional[str]:
+    """Refuse commands that write into a skill the user locked, change the lock record, or run
+    ``hermes curator unlock`` (see tools/skill_lock). Local backend only: a remote or container
+    backend cannot reach this profile's skills dir. Returns the JSON error string when blocked."""
+    from tools.skill_lock import command_refusal
+    from tools.terminal_tool import _resolve_command_cwd
+
+    guard_cwd = _resolve_command_cwd(workdir=workdir, default_cwd=cwd, session_key=session_key)
+    reason = command_refusal(command, guard_cwd)
+    if reason is None:
+        return None
+    logger.warning("Blocked write to a locked skill (command: %s)", _safe_command_preview(command))
+    return _blocked_json(f"Blocked: {reason}", "blocked")

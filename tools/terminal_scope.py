@@ -216,20 +216,32 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
         scope["TERMINAL_CWD"] = resolved
 
 
+def prepare_profile_terminal_scope(
+    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """The scope ``install_profile_terminal_scope`` installs: the profile's policy, or the refusal scope
+    when it cannot be resolved. Never raises. Reads the profile files (the managed-scope overlay under the
+    current context's home override); the result can be built in a worker and installed on the loop with
+    ``install_and_reset_profile_terminal_scope(prepared=...)``."""
+    try:
+        return build_profile_terminal_scope(hermes_home, env_overlay=env_overlay)
+    except TerminalPolicyUnavailable as exc:
+        logger.warning("terminal policy unavailable: %s", exc)
+        return TerminalPolicyRefusal(str(exc))
+
+
 def install_profile_terminal_scope(
     hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
-    try:
-        return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
-    except TerminalPolicyUnavailable as exc:
-        logger.warning("terminal policy unavailable: %s", exc)
-        return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))
+    return set_terminal_scope(prepare_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
 
 
 @contextmanager
-def install_and_reset_profile_terminal_scope(hermes_home: Any) -> Iterator[None]:
-    """Install the profile's terminal policy for a bounded turn/fire. Never raises."""
-    token = install_profile_terminal_scope(hermes_home)
+def install_and_reset_profile_terminal_scope(
+    hermes_home: Any, *, prepared: Optional[dict[str, str]] = None) -> Iterator[None]:
+    """Install the profile's terminal policy for a bounded turn/fire. Never raises. *prepared* is a
+    ``prepare_profile_terminal_scope`` result built earlier (off the loop); without it the policy is
+    built here."""
+    token = set_terminal_scope(prepared) if prepared is not None else install_profile_terminal_scope(hermes_home)
     try:
         yield
     finally:

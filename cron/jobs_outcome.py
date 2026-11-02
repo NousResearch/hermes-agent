@@ -16,14 +16,15 @@ def record_run_outcome(
     delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
-    job["last_error"] = None if success else error
+    cancelled = status == "cancelled"  # an operator stop is not a failure
+    job["last_error"] = None if success or cancelled else error
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
         job.pop("preflight_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
-    else:
+    elif not cancelled:
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1

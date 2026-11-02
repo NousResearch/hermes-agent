@@ -82,7 +82,7 @@ def test_a_closed_day_reports_active_time_surfaces_and_primary_model_once(direct
     ])
     assert _stored_values(tmp_path, "hermes.engagement.day.count") == [(
         {"active_minutes_bucket": "5m_to_30m", "active_profile_count_bucket": "1", "primary_model": PUBLIC,
-         "primary_provider": "openrouter", "surfaces_used_count": "2"}, 1)]
+         "primary_provider": "openrouter", "surfaces_used_count": "2", "gateway_peak_busy_chats_bucket": "0"}, 1)]
     periods = {c["period_start"] for c in other_process.counter_snapshot() if c["metric_name"].startswith("hermes.engagement")}
     assert periods == {"2026-09-27"}
 
@@ -299,13 +299,13 @@ def test_active_profiles_are_counted_once_per_host_day_on_the_root_profiles_row(
         engagement.record(_profile_store(home), resource, surface="cli", route=None)
 
     zero = {"active_minutes_bucket": "lt_5m", "active_profile_count_bucket": "0", "primary_model": "none",
-            "primary_provider": "none", "surfaces_used_count": "1"}
+            "primary_provider": "none", "surfaces_used_count": "1", "gateway_peak_busy_chats_bucket": "0"}
     assert _day_rows(a) == [("2026-09-27", zero)]
     assert _day_rows(b) == []  # B has not seen a later day yet; its row will carry 0 too
     if root_collects:
         assert _day_rows(root) == [("2026-09-27", {
             "active_minutes_bucket": "0", "active_profile_count_bucket": "2", "primary_model": "none",
-            "primary_provider": "none", "surfaces_used_count": "0"})]
+            "primary_provider": "none", "surfaces_used_count": "0", "gateway_peak_busy_chats_bucket": "0"})]
     else:
         assert not (root / "telemetry").exists()
 

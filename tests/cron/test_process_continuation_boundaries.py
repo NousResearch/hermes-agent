@@ -536,3 +536,29 @@ def test_auxiliary_receipt_failure_does_not_lose_durable_completion(monkeypatch)
     registry._move_to_finished(session)
     assert session._completion_event.is_set()
     assert any(j["_process_continuation"]["process_id"] == session.id for j in cont.pending_jobs())
+
+
+@pytest.mark.parametrize("prior_failure", [False, True])
+def test_operator_stop_does_not_count_continuation_as_failure(monkeypatch, quiet_scheduler, prior_failure):
+    from cron.cancellation import request_cancel
+
+    job, _, _ = ready_job()
+    if prior_failure:
+        assert jobs.mark_job_run(job["id"], False, error="prior failure")
+    before = copy.deepcopy(jobs.get_job(job["id"]))
+
+    def stopped(job, *, execution_id, **kwargs):
+        request_cancel(execution_id, reason="operator stopped continuation")
+        raise RuntimeError("stopped")
+
+    monkeypatch.setattr(scheduler, "run_job", stopped)
+    assert scheduler.tick(verbose=False) == 1
+    attempt = next(row for row in executions.list_executions(job_id=job["id"])
+                   if row["source"] == "continuation")
+    assert (attempt["status"], attempt["error"]) == ("cancelled", "operator stopped continuation")
+    after = jobs.get_job(job["id"])
+    assert after["last_status"] == "cancelled" and after["last_error"] is None
+    for key in ("failure_streak", "last_failure", "next_run_at", "repeat"):
+        assert after.get(key) == before.get(key)
+    assert cont.pending_jobs() == []
+    assert scheduler.tick(verbose=False) == 0

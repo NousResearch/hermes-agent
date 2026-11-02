@@ -21,6 +21,7 @@ from gateway.session_contract import (
 from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
+from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,
@@ -490,9 +491,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
 
-    async def admit_automation(self, adapter, event, identity, replaces=None):
+    async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity, replaces)
+        return await admit_automation(self, adapter, event, identity, replaces, fold)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -839,6 +840,8 @@ class SessionAuthority:
         # A paused drain (preclaim refusal on this head) ended its task; the successors
         # need a fresh drain that revalidates them on their own merits.
         self._schedule(ref)
+        # Last: telemetry must never stand between a cancelled row and its waiter/successor drain.
+        busy_row_settled(admission_id, outcome)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
         """Operator acknowledgement that an ``unknown`` turn will not finish; the paused FIFO behind

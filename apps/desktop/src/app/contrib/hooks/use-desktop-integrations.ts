@@ -14,6 +14,7 @@ import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
+import { onKeptRouteOpened } from '@/store/gateway-kept-routes'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -561,4 +562,7 @@ export function useDesktopIntegrations({
 
     return onSessionsChanged(() => void refreshSessions())
   }, [refreshSessions])
+
+  // A gateway that connects after the list was drawn adds its rows to it.
+  useEffect(() => onKeptRouteOpened(() => void refreshSessions()), [refreshSessions])
 }

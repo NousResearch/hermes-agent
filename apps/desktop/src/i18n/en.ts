@@ -9,6 +9,7 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enCronControl } from './en_cron_control'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
@@ -455,7 +456,8 @@ export const en: Translations = {
       microphoneConstraintsUnsupported: 'Microphone constraints are not supported by this device.',
       microphoneFailed: 'Microphone failed',
       microphoneInUse: 'Microphone is already in use by another app.',
-      microphoneNeedsHttps: 'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
+      microphoneNeedsHttps:
+        'The microphone needs a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to use it.',
       microphonePermissionDenied: 'Microphone permission was denied.',
       microphoneStartFailed: 'Could not start microphone recording.',
       microphoneUnsupported: 'This runtime does not support microphone recording.',
@@ -1278,7 +1280,7 @@ export const en: Translations = {
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
-        'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
+        'Every gateway stays connected. Profiles, chats, messaging, and cron jobs stay with their gateway, and Sessions can show all of them at once.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
       launchModeDesc: 'When off, Sessions opens on the Primary gateway.',
       searchPlaceholder: 'Search gateways…',
@@ -1666,12 +1668,11 @@ export const en: Translations = {
       },
       keepGoingOnCredits: {
         title: 'Keep going on credits',
-        description:
-          'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
+        description: 'Use your credits when included usage runs out. Off: Hermes waits for the reset.',
         approveInBrowser: 'Approve Remote Spending in your browser to change this. It applies as soon as you approve.',
         openAgain: 'Open again',
         cancel: 'Cancel',
-        approvedRetry: 'Remote Spending is approved, but the change didn\'t save.',
+        approvedRetry: "Remote Spending is approved, but the change didn't save.",
         tryAgain: 'Try again'
       },
       autoReload: {
@@ -1765,7 +1766,7 @@ export const en: Translations = {
             captionResetsIn: duration => `Resets in ${duration}`,
             captionIncluded: 'Included usage',
             valueUsed: percent => `${percent} used`
-          },
+          }
         },
         planCard: {
           freeTier: 'Free',
@@ -2097,6 +2098,10 @@ export const en: Translations = {
     edit: 'Edit',
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
+    lock: 'Lock',
+    locked: 'Locked',
+    lockHint: "The agent can't change this skill while it's locked. You can still edit it yourself.",
+    unlockedHint: 'Lock to stop the agent from changing this skill. You can still edit it yourself.',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
@@ -2781,7 +2786,8 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
-    exportNeedsHost: name => `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
+    exportNeedsHost: name =>
+      `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
     notServedHere: 'Not served here',
@@ -2795,14 +2801,10 @@ export const en: Translations = {
       gateway: gateway => `Profiles on ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · unreachable`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      switchTo: (name, gateway) => `Open ${name} on ${gateway}`,
       deleteOn: gateway => ` on ${gateway}`,
       localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
-      switchDeviceTitle: 'Switch to This device?',
-      switchDeviceDesc:
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-      switchDeviceConfirm: 'Switch',
-      installDeviceTitle: 'Switch to This device?',
+      installDeviceTitle: 'Install Hermes on This device?',
       installDeviceDesc:
         'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
       installDeviceConfirm: 'Install locally',
@@ -2933,6 +2935,7 @@ export const en: Translations = {
   },
 
   cron: {
+    control: enCronControl,
     close: 'Close cron',
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
@@ -3248,7 +3251,6 @@ export const en: Translations = {
       backgroundRunning: 'Background task running',
       draftSession: 'Draft — nothing sent yet',
       handoffOrigin: platform => `Handed off from ${platform}`,
-      continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
       ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
@@ -4438,18 +4440,28 @@ export const en: Translations = {
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider} rejected your API key`,
-          body: provider => `The key saved for ${provider} is invalid or was revoked. Update it, then retry.`
+          body: () => 'The saved key is invalid or was revoked. Update it, then send your message again.'
         },
         oauth: {
-          title: provider => `Your ${provider} sign-in expired`
+          title: provider => `Sign in to ${provider} again`
         }
       },
-      errorDetails: 'Details',
+      errorDetails: 'View error details',
+      errorHideDetails: 'Hide error details',
+      errorDetailsCopy: 'Copy details',
+      errorCopyRaw: 'Copy error',
+      errorContinue: 'Continue',
+      errorOpenProviderSettings: provider => `Open ${provider} settings`,
+      errorOpenSetupGuide: 'Open setup guide',
+      errorSetupGuideLink: 'Setup guide',
+      errorOpenModelSettings: 'Open model settings',
+      errorStartNewChatLink: 'Start a new chat',
+      errorChooseModelLink: 'Choose another model',
+      errorRetryAtResetShort: time => `Retry at ${time}`,
+      errorRateLimitResetBody: (provider, time) => `You've hit ${provider}'s rate limit. It resets at ${time}.`,
       errorGenericProvider: 'The AI service',
       errorToastTitle: "Hermes couldn't finish the reply",
       errorRetry: 'Retry',
-      errorLimitResets: time => `Limit resets at ${time}`,
-      errorRetryAtReset: time => `Retry when the limit resets (${time})`,
       errorRetryScheduled: (time, wait) => `Retrying at ${time} — in ${wait}`,
       errorRetryScheduledCancel: 'Cancel',
       errorStartNewSession: 'Start new session',
@@ -4468,12 +4480,10 @@ export const en: Translations = {
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
       errorSignInFreeTier: 'Sign in with a Nous account',
-      errorOauthExpired: provider =>
-        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
+      errorOauthExpired: provider => `Your ${provider} sign-in expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
-      errorCopyDiagnostics: 'Copy error details',
       errorSendDiagnostics: 'Send diagnostics',
       filesChanged: count => (count === 1 ? '1 file changed' : `${count} files changed`),
       reviewChanges: 'Review',

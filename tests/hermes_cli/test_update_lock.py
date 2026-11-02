@@ -63,6 +63,16 @@ def other_pid():
     proc.wait()
 
 
+@pytest.fixture(autouse=True)
+def _no_runtime_host_above_the_runner(monkeypatch):
+    """Judge hand-offs as if no Hermes gateway/serve/dashboard ran this test process.
+
+    A hand-off is refused when such a host sits above us (cli §7 V9), and that walk reads the real
+    process ancestry: run from a terminal that a ``hermes gateway run`` agent opened, every hand-off
+    test was refused. A test that wants a host above it patches ``_is_runtime_host`` to answer True."""
+    monkeypatch.setattr(update_lock, "_is_runtime_host", lambda cmdline: False)
+
+
 def _claim(marker, pid, started_at=None):
     """A v1 (legacy, pid-only) claim."""
     marker.write_text(f"{pid}\n{int(time.time() if started_at is None else started_at)}\n", encoding="utf-8")
@@ -644,6 +654,17 @@ class TestHandoffFromOrchestratingUpdater:
         assert marker.exists(), "the parent still needs its marker after our stage ends"
         assert int(marker.read_text(encoding="utf-8-sig").splitlines()[0]) == other_pid
 
+    def test_handoff_below_a_runtime_host_is_refused(self, marker, monkeypatch, other_pid):
+        """V9: an update a gateway's agent starts is its own update, never run under another
+        update's claim, even when the hand-off variable names that claim's owner."""
+        _claim(marker, other_pid)
+        monkeypatch.setenv(HANDOFF_PID_ENV, str(other_pid))
+        monkeypatch.setattr(update_lock, "_is_runtime_host", lambda cmdline: True)
+
+        lock = UpdateLock(path=marker)
+        assert lock.acquire() is False
+        assert lock.holder is not None and lock.holder.pid == other_pid
+
     def test_handoff_pid_that_is_not_the_live_holder_grants_nothing(
         self, marker, monkeypatch, other_pid
     ):
@@ -1003,3 +1024,24 @@ def test_whole_second_creation_time_in_our_own_second_is_us(marker):
     assert update_lock.judge_marker(marker.read_bytes())[0] == "ours"
     # A whole second from an EARLIER second is a killed update's pid reused: still not us.
     assert update_lock.incarnation_live(os.getpid(), float(math.floor(own)) - 1) is False
+
+
+@pytest.mark.platforms("windows")
+def test_repeated_windows_process_probes_build_no_new_ctypes_objects(monkeypatch):
+    """Fence polls read a marker pid's creation time through GetProcessTimes whenever psutil
+    cannot, and the psutil-free takeover child walks Toolhelp32 for its parent. Once warm, neither
+    builds a DLL wrapper or a pointer type again (before Python 3.14 a pointer type to a fresh
+    struct stays in ctypes' cache forever)."""
+    import ctypes
+
+    created = update_lock._windows_create_filetime(os.getpid())
+    parent = update_lock._windows_parent_pid(os.getpid())
+    assert created and parent
+    built = []
+    real_pointer, real_dll = ctypes.POINTER, ctypes.WinDLL
+    monkeypatch.setattr(ctypes, "POINTER", lambda cls: built.append(cls) or real_pointer(cls))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: built.append(a) or real_dll(*a, **k))
+    for _ in range(20):
+        assert update_lock._windows_create_filetime(os.getpid()) == created
+        assert update_lock._windows_parent_pid(os.getpid()) == parent
+    assert built == []

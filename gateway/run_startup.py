@@ -27,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
@@ -659,6 +660,7 @@ class GatewayStartupMixin:
             _resume_state = self._session_state(entry.session_key)
             _resume_state.turn.agent = _AGENT_PENDING_SENTINEL
             _resume_state.turn.started_ts = time.time()
+            note_running_chat_owner(self, entry.session_key, source)  # this loop runs in the launch scope
             self._persist_active_agents()
             # Empty-text internal event: the _is_resume_pending branch prepends the reason-aware note.
             event = MessageEvent(text="", message_type=MessageType.TEXT, source=source, internal=True)
@@ -796,8 +798,9 @@ class GatewayStartupMixin:
             started = started_at.timestamp()  # aware UTC marker; a pre-upgrade naive one reads as local
             if started < cutoff:
                 continue
+            decision = await self.async_session_store.get_session_metadata(key, "room_silence_decision", {})
             text = self._crash_left_reply(await self.async_session_store.load_transcript(session_id),
-                                          started, origin)
+                                          started, origin, silence_decision=decision, active_token=token)
             if text is None or (text and not ledger_on):
                 continue  # no final reply to deliver: the turn resumes
             if text:
@@ -810,7 +813,9 @@ class GatewayStartupMixin:
                 ledgered += 1
         return ledgered
 
-    def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
+    def _crash_left_reply(
+        self, history: list, started: float, origin, *, silence_decision=None, active_token=None,
+    ) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
         silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
@@ -841,8 +846,13 @@ class GatewayStartupMixin:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
         if is_intentional_silence_response(last["content"]):
+            decision = silence_decision or {}
+            proven_silent = (active_token is not None and decision.get("token") == active_token
+                             and decision.get("timestamp") == last.get("timestamp")
+                             and decision.get("silent") is True)
             silent_ok = silence_allowed(
-                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
+                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"),
+                allow_silence=proven_silent, agent_result={})
             return "" if silent_ok else _unexpected_silence_reply()
         reply = strip_trailing_silence_marker(last["content"])
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, reply)).strip() or None

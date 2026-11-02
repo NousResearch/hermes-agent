@@ -35,7 +35,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON, PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from hermes_cli.plugins_dispatch import held_stream_transforms
 from agent.turn_retry_state import TurnRetryState
@@ -1600,6 +1600,25 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     return None
 
 
+def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
+    """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
+    return finalize_turn(agent, **{
+        name: getattr(s, name)
+        for name in inspect.signature(finalize_turn).parameters if name != "agent"
+    })
+
+
+def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optional[dict[str, Any]]:
+    """The turn's result when it never enters the generic loop, else None. A ``pre_llm_call``
+    veto finalizes with no inference request (the block message closes the transcript pair);
+    the opt-in codex app-server runtime runs the whole turn in its subprocess
+    (agent/transports/codex_app_server_session.py)."""
+    if block_message:
+        s.final_response, s._turn_exit_reason = block_message, PRE_LLM_BLOCK_EXIT_REASON
+        return _finalize_from_state(agent, s)
+    return _codex_app_server_turn(agent, s) if agent.api_mode == "codex_app_server" else None
+
+
 def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     """The codex app-server's result for this turn, or None when its failure activated a fallback and the
     generic loop retries the same user turn."""
@@ -1717,10 +1736,8 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
-    # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
-    # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
-        return codex_result
+    if (early_result := _turn_without_loop(agent, s, _ctx.plugin_block_message)) is not None:
+        return early_result
 
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
@@ -1774,11 +1791,7 @@ def _run_conversation_turn(
             if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
                 break
 
-    # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
-    result = finalize_turn(agent, **{
-        name: getattr(s, name)
-        for name in inspect.signature(finalize_turn).parameters if name != "agent"
-    })
+    result = _finalize_from_state(agent, s)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).

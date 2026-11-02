@@ -35,7 +35,7 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_retry import retryable_user_text
+from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
@@ -5691,8 +5691,8 @@ def history_before_user_originated_turn(
     handoff, live_view = split_user_originated_turn(messages[index])
     if live_view is None:
         raise ValueError("selected row is not a user-originated turn")
-    prefix = [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else [])
-    return prefix, live_view
+    live_view["content"] = typed_prompt_content(live_view.get("content"), messages[index])  # never the placeholder
+    return [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else []), live_view
 
 
 def _handoff_carries_live_user_content(message: Any) -> bool:

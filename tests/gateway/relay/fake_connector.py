@@ -116,6 +116,7 @@ class FakeConnector:
         self.ws_auth: list[str] = []  # "ok" / "rejected" per WS upgrade
         self.outbound: list[dict] = []
         self.unacked_ops: set[str] = set()  # applied but never acked: the gateway sees a lost ack
+        self.dropping_ops: set[str] = set()  # applied, then the socket drops before the ack
         self.url = ""
         self._server: Any = None
 
@@ -165,6 +166,9 @@ class FakeConnector:
             action = frame.get("action", {})
             self.outbound.append(action)
             if action.get("op") in self.unacked_ops:
+                return
+            if action.get("op") in self.dropping_ops:
+                await ws.close()
                 return
             result = {"success": True, "message_id": f"ts-{len(self.outbound)}"}
             await ws.send(json.dumps({"type": "outbound_result", "requestId": frame["requestId"],

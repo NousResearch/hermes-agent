@@ -22,13 +22,22 @@ from gateway.config import Platform
 from tests.cron.test_cron_relay_media_upload_failure import CHAT, _gateway_config, live_relay
 
 
-@pytest.fixture
+@pytest.fixture(params=["ack_timeout", "socket_drop"])
 def ack_lost_relay(request):
-    """The connected relay, with every ``send_media`` applied but never acked."""
+    """The connected relay, with every ``send_media`` applied but its ack lost:
+    either it never comes back (timeout) or the socket drops right after the
+    connector received the frame (reader exit settles the pending request)."""
     connector, adapter, loop = request.getfixturevalue("live_relay")
-    connector.unacked_ops = {"send_media"}
+    if request.param == "ack_timeout":
+        connector.unacked_ops = {"send_media"}
+    else:
+        connector.dropping_ops = {"send_media"}
     adapter._transport._outbound_timeout_s = 0.5
     return connector, adapter, loop
+
+
+def _no_fallback_notice(connector) -> bool:
+    return not any("q3-report" in str(a.get("content", "")) for a in connector.ops("send"))
 
 
 def test_send_message_tool_reports_an_unconfirmed_attachment(ack_lost_relay, tmp_path):
@@ -45,6 +54,7 @@ def test_send_message_tool_reports_an_unconfirmed_attachment(ack_lost_relay, tmp
     assert len(connector.ops("send_media")) == 1        # it went out once
     assert result["success"] is True                     # not a failure the model would retry
     assert "do not resend" in result["delivery_unconfirmed"]
+    assert _no_fallback_notice(connector)
 
 
 def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_path):
@@ -69,3 +79,4 @@ def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_pat
     assert error is None                                  # possibly delivered: not a failed run
     assert record["last_delivery_unverified"], record     # ...but not a confirmed one either
     assert any(CHAT in target for target in record["last_delivery_unverified"])
+    assert _no_fallback_notice(connector)

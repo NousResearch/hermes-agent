@@ -75,7 +75,7 @@ def run_stage(tmp_path, server, tag, arch, *, feed=False, missing=None, channel_
     # An explicit interpreter avoids platform-specific executable script/shebang handling.
     launcher = f"python() {{ {shlex.quote(Path(sys.executable).as_posix())} {shlex.quote(driver.as_posix())} \"$@\"; }}\n"
     jobs = load()["jobs"]
-    script = stage_step(jobs[native_builds(jobs)[(f"darwin-{arch}", "release")]])["run"]
+    script = stage_step(jobs[native_builds(jobs)[f"darwin-{arch}"]])["run"]
     env = _child_env(
         TARGET=f"darwin-{arch}", RELEASE_PHASE="candidate", RELEASE_COMMIT=COMMIT,
         HERMES_DESKTOP_VARIANT="bundled", HERMES_PAYLOAD_TAG=tag,

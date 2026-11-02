@@ -73,11 +73,10 @@ const targetOf = job => job.strategy.matrix.target.map(row => row.label)
 const desktopLegs = cacheUsers(desktop)
 
 const SHA = 'a'.repeat(40)
-const dispatches = {
-  tag: { build_commit: '', channel: '', 'release-phase': '', upload_release: true },
-  commit: { build_commit: SHA, channel: '', 'release-phase': '', upload_release: false },
-  channel: { build_commit: SHA, channel: 'preview', 'release-phase': '', upload_release: false },
-}
+// Stable Release is the only caller: every desktop build is a claim's candidate.
+const candidates = ['rc.1-v0.28.0', 'canary.20260818T101010Z-v0.28.0',
+  'commit.20260818T101010Z-v0.28.0', 'channel.20260818T101010Z-v0.28.0']
+  .map(tag => ({ tag, 'release-phase': 'candidate' }))
 const admitted = labels => ({
   validate: { result: 'success', outputs: Object.fromEntries(labels.map(label => [label, 'true'])) },
 })
@@ -88,10 +87,10 @@ const payloadEvents = {
   branch: { event_name: 'push', ref: 'refs/heads/feature', sha: SHA },
 }
 
-it('finds a release and a commit leg for every native target, and the payload producer', () => {
+it('finds one claim leg for every native target, and the payload producer', () => {
   const legs = desktopLegs.map(([, job]) => `${targetOf(job)}:${job['cache-mode']}`).sort()
   const targets = ['darwin-arm64', 'darwin-x64', 'win32-arm64', 'win32-x64']
-  expect(legs).toEqual(targets.flatMap(target => [`${target}:read`, `${target}:write`]).sort())
+  expect(legs).toEqual(targets.map(target => `${target}:write`))
   expect(cacheUsers(payload)).toHaveLength(1)
 })
 
@@ -102,12 +101,9 @@ it.each([
   const cacheMode = job['cache-mode']
   if (cacheMode) {
     expect(job.needs).toEqual(['validate'])
-    // Only the release branch writes the shared cache; commit and channel
-    // builds of unreviewed inputs run the read-only leg.
+    // Every claim kind builds on the one leg for its target.
     const needs = admitted(targetOf(job))
-    expect(evaluate(job.if, { inputs: dispatches.tag, needs })).toBe(cacheMode === 'write')
-    expect(evaluate(job.if, { inputs: dispatches.commit, needs })).toBe(cacheMode === 'read')
-    expect(evaluate(job.if, { inputs: dispatches.channel, needs })).toBe(cacheMode === 'read')
+    for (const inputs of candidates) expect(evaluate(job.if, { inputs, needs })).toBe(true)
   }
   const cacheSteps = job.steps.filter(step => step.uses === BUILD_CACHE)
   expect(cacheSteps.map(step => step.with.phase)).toEqual(['restore', 'save'])
@@ -142,15 +138,16 @@ it.each([
   const saves = (context, outcome = 'success') => evaluate(upload.if, {
     ...context, steps: { prepare: { outcome } }, status: { failure: outcome !== 'success' },
   })
-  const trusted = cacheMode
-    ? { inputs: dispatches.tag }
-    : { inputs: { ref: '' }, github: payloadEvents.trusted }
+  const [stable, canary, commit, channel] = candidates.map(inputs => ({ inputs }))
+  const trusted = cacheMode ? stable : { inputs: { ref: '' }, github: payloadEvents.trusted }
+  if (cacheMode) expect(saves(canary)).toBe(true)
   expect(saves(trusted)).toBe(true)
   expect(saves(trusted, 'failure')).toBe(false)
   expect(evaluate(upload.if, { ...trusted, steps: { prepare: { outcome: 'success' } },
     status: { cancelled: true, success: false } })).toBe(false)
+  // Commit and channel claims build unreviewed commits: they read the shared cache, never write it.
   const untrusted = cacheMode
-    ? [{ inputs: dispatches.commit }, { inputs: dispatches.channel }]
+    ? [commit, channel]
     : [
         { inputs: { ref: '' }, github: payloadEvents.pullRequest },
         { inputs: { ref: '' }, github: payloadEvents.branch },
@@ -158,24 +155,5 @@ it.each([
       ]
   for (const context of untrusted) {
     expect(saves(context)).toBe(false)
-  }
-})
-
-it('each selection gate joins exactly one target\'s two trust branches after admission', () => {
-  const legs = Object.fromEntries(desktopLegs.map(([id, job]) => [id, job]))
-  const gates = Object.values(desktop.jobs).filter(job => job.env?.SELECTED_BUILD_SUCCEEDED)
-  expect(gates).toHaveLength(4)
-  for (const gate of gates) {
-    const [admission, ...branches] = gate.needs
-    expect(admission).toBe('validate')
-    expect(branches.map(id => legs[id]?.['cache-mode']).sort()).toEqual(['read', 'write'])
-    const [label] = new Set(branches.flatMap(id => targetOf(legs[id])))
-    expect(new Set(branches.flatMap(id => targetOf(legs[id]))).size).toBe(1)
-    // The gate runs always() to judge a skipped branch, so it must still
-    // refuse a failed admission itself.
-    const needs = admitted([label])
-    expect(evaluate(gate.if, { inputs: dispatches.tag, needs })).toBe(true)
-    expect(evaluate(gate.if, { inputs: dispatches.tag,
-      needs: { validate: { ...needs.validate, result: 'failure' } } })).toBe(false)
   }
 })

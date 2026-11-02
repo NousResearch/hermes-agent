@@ -70,12 +70,8 @@ def run(argv, *args, **kwargs):
         argv = ['git', *rewrites, *argv[1:]]
     return actual(argv, *args, **kwargs)
 subprocess.run = run
-if sys.argv[2] == 'admit':
-    sys.argv = ['commit_build.py', 'admit']
-    runpy.run_module('scripts.releases.commit_build', run_name='__main__')
-else:
-    sys.argv = ['release.py', *sys.argv[2:]]
-    runpy.run_path(str(root / 'scripts/release.py'), run_name='__main__')
+sys.argv = ['release.py', *sys.argv[2:]]
+runpy.run_path(str(root / 'scripts/release.py'), run_name='__main__')
 ''', encoding='utf-8')
     calls = tmp_path / 'gh.jsonl'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('GITHUB_', 'GH_'))}
@@ -232,31 +228,3 @@ def test_commit_build_requires_pushed_refs_and_github_origin(tmp_path, fixture_r
         git(repo, 'remote', 'set-url', 'origin', url)
         result, calls = invoke('--build-commit', tip)
         assert result.returncode != 0 and 'GitHub remote' in result.stderr and not calls
-
-
-def test_workflow_admission_checks_trust_before_publishing_outputs(tmp_path, fixture_repo):
-    repo, _, invoke = fixture_repo
-    tip = git(repo, 'rev-parse', 'HEAD')
-    output = tmp_path / 'output'
-    env = {'BUILD_COMMIT': tip, 'DEFAULT_BRANCH': 'main',
-           'GITHUB_REPOSITORY': 'fixture-owner/fixture-repo', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-           'GITHUB_REF': 'refs/heads/main',
-           'GITHUB_WORKFLOW_REF': 'fixture-owner/fixture-repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main',
-           'GITHUB_ACTOR': 'maintainer', 'GITHUB_TRIGGERING_ACTOR': 'maintainer',
-           'GITHUB_OUTPUT': str(output), 'UPLOAD_RELEASE': 'false',
-           'BUNDLE_ENV_JSON': '{"HERMES_PREVIEW_FULL_CONNECTORS":"1","HERMES_HOME":null}'}
-    result, calls = invoke('admit', extra=env)
-    assert result.returncode == 0, result.stderr
-    assert dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()) == {
-        'sha': tip, 'channel': 'commit', 'payload-version': '1.2.3'}
-    assert calls and all(call[1] == 'api' for call in calls)
-    original = output.read_bytes()
-    for key, value in [('BUILD_COMMIT', tip[:8]), ('TAG', 'v1.2.3'), ('UPLOAD_RELEASE', 'true'),
-                       ('RELEASE_PHASE', 'candidate'), ('TERMUX_UPGRADE_FROM_TAG', 'v1.0.0'),
-                       ('GITHUB_EVENT_NAME', 'workflow_call'), ('GITHUB_REF', 'refs/heads/other'),
-                       ('GITHUB_WORKFLOW_REF', 'fixture-owner/fixture-repo/.github/workflows/other.yml@refs/heads/main'),
-                       ('PROBE_PERMISSION', 'read'), ('BUNDLE_ENV_JSON', '[]'),
-                       ('BUNDLE_ENV_JSON', '{"X":1}')]:
-        result, _ = invoke('admit', extra={**env, key: value})
-        assert result.returncode != 0
-        assert output.read_bytes() == original

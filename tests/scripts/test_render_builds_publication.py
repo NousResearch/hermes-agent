@@ -38,8 +38,9 @@ def release_body(monkeypatch):
 
 
 @pytest.mark.parametrize('tag', ['v1.2.3', 'canary.20260818T101010Z-v1.2.3'])
-def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server, release_body, tag):
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+def test_tag_publication_rerun_stale_and_dry_run(monkeypatch, request, release_body, tag):
+    server = request.getfixturevalue("r2_server")
+    base = f'http://127.0.0.1:{server.server_port}/hermes-releases'
     from hermes_cli.update_channel import release_version
 
     version = release_version(tag)
@@ -51,8 +52,8 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
               f'HermesBundled-{version}-win-x64.msix.blockmap', 'latest.yml',
               'HermesBundled-9.9.9-win-x64.msix']
     for name in visible + hidden:
-        r2_server.store[prefix + name] = (name.encode(), '"e"')
-    r2_server.store['releases/tag/v9.9.9/HermesBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
+        server.store[prefix + name] = (name.encode(), '"e"')
+    server.store['releases/tag/v9.9.9/HermesBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
     monkeypatch.setenv('RELEASE_NEEDS', '{"build-win32":{"result":"success"}}')
     args = ['render-builds-table.py', '--tag', tag, '--repo', 'o/r', '--r2-base-url', base + '/']
 
@@ -60,13 +61,9 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
         monkeypatch.setattr(sys, 'argv', [*args, *extra])
         assert rbt.main() == 0
 
-    for run in ('1', '2'):
-        render('--pending-run-url', f'https://github.example/runs/{run}')
-    assert 'runs/1' not in release_body['body'] and release_body['body'].count('runs/2') == 1
-    assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
     render()
     body = release_body['body']
-    assert 'runs/2' not in body and body.count('## Downloads') == 1
+    assert body.count('## Downloads') == 1
     assert body.count(rbt.MARKER) == body.count(rbt.END_MARKER) == 1
     expected = {rbt.r2.public_url_for(base, prefix + name) for name in visible}
     assert set(re.findall(r'\]\((http[^)]+)\)', body)) == expected
@@ -81,19 +78,19 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
         with urlopen(url, timeout=5) as response:
             assert response.read() == unquote(url.rsplit('/', 1)[1]).encode()
     channel_key = 'releases/canary/index.html' if tag.startswith('canary.') else 'releases/stable/index.html'
-    assert r2_server.store[channel_key][0].decode() == page
+    assert server.store[channel_key][0].decode() == page
     render()
     assert release_body['body'] == body
 
     # Use the real page writer's marker format, independent of asset selection.
     newer = rbt.render_page('v9.9.9', {}, base).encode()
-    r2_server.store[channel_key] = (newer, '"e"')
+    server.store[channel_key] = (newer, '"e"')
     render()
-    assert r2_server.store[channel_key][0] == newer
-    assert r2_server.store[prefix + 'index.html'][0].decode() == page
-    before, edits = dict(r2_server.store), list(release_body['edits'])
+    assert server.store[channel_key][0] == newer
+    assert server.store[prefix + 'index.html'][0].decode() == page
+    before, edits = dict(server.store), list(release_body['edits'])
     render('--dry-run')
-    assert r2_server.store == before and release_body['edits'] == edits
+    assert server.store == before and release_body['edits'] == edits
     release_body['body'] = 'no marker here'
     render()
     assert release_body['body'] == 'no marker here' and release_body['edits'] == edits
@@ -102,12 +99,12 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     # table but leaves the shared downloads page alone; the same page is replaced without the flag.
     release_body['body'] = rbt.MARKER
     older = rbt.render_page('canary.20200101T000000Z-v1.2.3' if tag.startswith('canary.') else 'v0.0.1', {}, base).encode()
-    r2_server.store[channel_key] = (older, '"e"')
+    server.store[channel_key] = (older, '"e"')
     render('--no-channel-page')
-    assert r2_server.store[channel_key][0] == older
+    assert server.store[channel_key][0] == older
     release_body['body'] = rbt.MARKER
     render()
-    assert r2_server.store[channel_key][0].decode() == page
+    assert server.store[channel_key][0].decode() == page
 
 
 @pytest.mark.parametrize('asset_present', [False, True])

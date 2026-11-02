@@ -365,7 +365,7 @@ def test_a_store_only_build_is_handed_no_signing_variables():
     """after-pack and electron-builder sign whenever AZURE_SIGN_* are set; the Azure login is skipped
     with the signed lane, so the build step must see them empty."""
     jobs = workflow("desktop-bundled-release.yml")["jobs"]
-    step = next(step for step in jobs["build-win32-x64-release"]["steps"] if step.get("name") == "Build and package")
+    step = next(step for step in jobs["build-win32-x64"]["steps"] if step.get("name") == "Build and package")
     azure = {key: value for key, value in step["env"].items() if key.startswith("AZURE_") and key != "AZURE_TOKEN_CREDENTIALS"}
     assert set(azure) == {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_SIGN_PUBLISHER",
                           "AZURE_CLIENT_ID", "AZURE_TENANT_ID"}
@@ -652,15 +652,14 @@ def test_the_builds_table_render_cannot_block_the_release_and_has_its_r2_inputs(
 
 
 @pytest.mark.parametrize("arch", ["arm64", "x64"])
-def test_macos_smoke_runs_without_a_receipt_outside_the_candidate_phase(arch):
-    """Only a candidate stages a receipt; a canary's skipped stage-receipt must not skip the smoke,
-    or its publish gate (which needs every job to succeed) fails on every canary."""
+def test_macos_smoke_runs_only_on_its_staged_receipt(arch):
+    """Every desktop run that builds is a candidate, and a candidate smokes only the receipt it staged."""
     smoke = workflow("desktop-bundled-release.yml")["jobs"][f"smoke-darwin-{arch}"]["if"]
     base = {"validate": {"result": "success", "outputs": {"sha": "a" * 40, f"darwin-{arch}": "true"}},
             f"build-darwin-{arch}": {"result": "success"}}
-    inputs = {"release-phase": "", "upload_release": True, "skip-tests": False}
+    inputs = {"release-phase": "candidate", "skip-tests": False}
     skipped = {**base, f"stage-receipt-darwin-{arch}": {"result": "skipped"}}
     staged = {**base, f"stage-receipt-darwin-{arch}": {"result": "success"}}
-    assert gate(smoke, inputs, skipped)
-    assert not gate(smoke, {**inputs, "release-phase": "candidate"}, skipped)
-    assert gate(smoke, {**inputs, "release-phase": "candidate"}, staged)
+    assert not gate(smoke, inputs, skipped)
+    assert gate(smoke, inputs, staged)
+    assert not gate(smoke, {**inputs, "release-phase": "publish"}, staged)

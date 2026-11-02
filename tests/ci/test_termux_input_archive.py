@@ -62,7 +62,7 @@ def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
     for dispatch, inputs in DOWNLOADABLE_DISPATCHES.items():
         assert gate(archive["if"], inputs, {}, job_if=False), dispatch
     for skipped in ({"release-phase": "publish"}, {"release-phase": "promote"}):
-        assert not gate(archive["if"], {**DOWNLOADABLE_DISPATCHES["tag"], **skipped}, {}, job_if=False), skipped
+        assert not gate(archive["if"], {**DOWNLOADABLE_DISPATCHES["canary"], **skipped}, {}, job_if=False), skipped
     assert R2_ENV <= archive["env"].keys()
     assert validate["environment"] == "release-signing"
     assert is_checkout(validate["steps"][0])

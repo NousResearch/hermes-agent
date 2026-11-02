@@ -67,8 +67,8 @@ def stage_from_workflow(tmp_path, server, tag, public_base):
         "runpy.run_module(module, run_name='__main__')\n", encoding="utf-8")
     steps = [step for job in _workflow()["jobs"].values() for step in job.get("steps", [])]
     script, = [step["run"] for step in steps if "record --platform termux" in step.get("run", "")]
-    # Replay the entire record/handoff tail, including the candidate exit that protects APT heads.
-    script = script[script.index("args=(--include 'deb/*.deb'"):]
+    # Cleanup keeps only the candidate path: record metadata before staging its handoff.
+    script = script[script.index("python -m scripts.bundles.release_artifacts record --platform termux"):]
     launcher = f'python() {{ {shlex.quote(Path(sys.executable).as_posix())} {shlex.quote(driver.as_posix())} "$@"; }}\n'
     env = _child_env(RELEASE_PHASE="candidate", RELEASE_COMMIT=COMMIT, HERMES_PAYLOAD_TAG=tag,
                      HERMES_ARCHIVE_TAG=tag, HERMES_BUILD_COMMIT="", R2_DISPOSABLE_RUN="",

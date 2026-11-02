@@ -344,18 +344,19 @@ The signature-result cache is separate. Native wheel partitions depend on
 observed compiler/SDK/OpenSSL identity; incomplete identity deliberately forgoes
 warm reuse. This is not a fully pinned host SDK.
 
-Cache keys are lookup hints, not authorization. Native builders have separate
-release and commit execution jobs with literal `cache-mode: write` and
-`cache-mode: read`, respectively. GitHub enforces these permissions on scoped
-cache tokens, so commit builds cannot save caches even from their own scripts.
-Both branches share their matrix, environment, and steps through YAML anchors.
-The original `build-win32` and `build-darwin` IDs aggregate the branches: after
-successful validation and input archiving, exactly the selected branch must
-succeed and the other must be skipped. A failed, cancelled, or unexpectedly
-skipped selected build fails the aggregate; it cannot permit publication.
-Existing publication dependencies keep using those IDs. A skipped save or a
-different key prefix alone cannot prevent a script from poisoning a writer
-namespace.
+Cache keys are lookup hints, not authorization. Each native desktop target has
+one build job (`cache-mode: write`), which every claim kind runs. Stable/canary
+claims may save prepared dependency inputs, Windows bundle-assembly caches,
+and Windows/macOS payload signatures. The input tag's `commit.` and `channel.`
+prefixes disable all of those native save steps without disabling restoration
+or preparation. This policy does not disable separate setup-pm or Termux caches.
+
+These step guards are workflow policy, not token-enforced isolation: preview
+code still runs in credentialed signing jobs, and write/dispatch access is the
+trust boundary. Preparation re-admits restored inputs, and signature caches
+retain their content/signature verification. A skipped save or a different key
+prefix alone cannot prevent code with a writable token from writing to the
+cache namespace.
 Default-branch canary dispatch retains default-branch cache scope; changing a
 checkout SHA does not change the workflow ref's cache scope. See GitHub's
 [cache access contract](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#controlling-cache-access-with-cache-mode).

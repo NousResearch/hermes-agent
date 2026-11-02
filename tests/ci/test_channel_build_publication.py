@@ -11,7 +11,7 @@ import pytest
 from hermes_cli.release_channels import ChannelError, canonical_json
 from scripts.releases import channel_claims
 from tests.ci.desktop_release_roles import (
-    DOWNLOADABLE_DISPATCHES, admitted, commit_summary, gate, native_builds, needs_of, stage_step,
+    DOWNLOADABLE_DISPATCHES, admitted, gate, native_builds, stage_step,
 )
 from tests.ci.test_desktop_release_tag_admission import _workflow
 
@@ -183,8 +183,8 @@ def test_stable_release_admits_allocates_and_publishes_channel_claims():
 def test_desktop_candidates_build_channel_claims_and_no_direct_channel_dispatch_remains():
     workflow = _workflow()
     triggers = workflow.get("on", workflow.get(True))  # YAML 1.1 reads a bare `on` key as true
-    dispatch = triggers["workflow_dispatch"]["inputs"]
-    assert not {"channel", "branding", "disposable_channel", "disposable_receivers", "disposable_run"} & dispatch.keys()
+    # Stable Release is the only caller; no dispatch can name a channel or a disposable run.
+    assert "workflow_dispatch" not in triggers
     assert {"channel_build", "channel_request_sha256"} <= triggers["workflow_call"]["inputs"].keys()
     text = (REPO / ".github/workflows/desktop-bundled-release.yml").read_text(encoding="utf-8")
     assert "handoff stage --channel-request" not in text and "R2_DISPOSABLE_RUN" not in text
@@ -194,23 +194,10 @@ def test_desktop_candidates_build_channel_claims_and_no_direct_channel_dispatch_
     for name in native_builds(jobs).values():
         # A channel claim's candidate stages under its claim archive, like every candidate.
         step = stage_step(jobs[name])
-        for dispatch, needs in (("channel", channel), ("tag", admitted(["validate"])),
-                                ("candidate", admitted(["validate"])), ("commit", admitted(["validate"]))):
+        for dispatch, needs in (("channel", channel), ("stable", admitted(["validate"])),
+                                ("canary", admitted(["validate"])), ("commit", admitted(["validate"]))):
             assert gate(step.get("if", "true"), DOWNLOADABLE_DISPATCHES[dispatch], needs, job_if=False), (name, dispatch)
         assert "--channel-request" in "".join(s.get("run", "") for s in jobs[name]["steps"])
-
-
-def test_commit_only_status_page_is_not_published_for_a_channel_claim():
-    jobs = _workflow()["jobs"]
-    summary = jobs[commit_summary(jobs)]
-
-    def runs(inputs, *, channel=False):
-        needs = admitted(needs_of(summary), channel=channel)
-        needs["validate"]["outputs"]["all-jobs"] = "true"
-        return gate(summary["if"], inputs, needs)
-
-    assert runs(DOWNLOADABLE_DISPATCHES["commit"])
-    assert not runs(DOWNLOADABLE_DISPATCHES["channel"], channel=True)
 
 
 def test_pinned_xml_retains_legacy_automatic_policy(tmp_path):

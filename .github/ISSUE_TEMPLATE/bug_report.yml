@@ -122,7 +122,7 @@ body:
     id: hermes-version
     attributes:
       label: Hermes Version
-      description: Output of `hermes version`
+      description: Output of `hermes --version`
       placeholder: "2.1.0"
 
   - type: textarea

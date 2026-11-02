@@ -1,0 +1,164 @@
+import { map } from 'nanostores'
+
+import { requestGatewayForAgent } from '@/store/gateway'
+import type { AgentProfileRoute } from '@/store/profile'
+import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
+
+// A project another gateway owns is drawn from that gateway's session rows; its
+// look (color / icon) lives in THAT gateway profile's projects.db, the same
+// record its own window themes. Reads and writes go to the owner, so theming
+// "app · Studio" never mints a project on this window's gateway.
+
+export interface GatewayProjectLook {
+  color: null | string
+  icon: null | string
+  /** The owner's project record for the folder, once it has one. */
+  id: null | string
+}
+
+/** route key → folder → look, for the folders each owner has a project record for. */
+export const $gatewayProjectLooks = map<Record<string, Record<string, GatewayProjectLook>>>({})
+
+export const gatewayRouteKey = (route: AgentProfileRoute): string => JSON.stringify([route.connectionId, route.profile])
+
+export const folderKey = (path: string): string => path.replace(/[\\/]+$/, '') || path
+
+const basename = (path: string): string => folderKey(path).split(/[\\/]/).pop() || path
+
+/** Each folder's live project: a primary path wins over a folder another project merely includes. */
+function looksByFolder(projects: ProjectInfo[]): Record<string, GatewayProjectLook> {
+  const looks: Record<string, GatewayProjectLook> = {}
+  const live = projects.filter(project => !project.archived)
+  const paths = (project: ProjectInfo) => [project.primary_path, ...(project.folders ?? []).map(folder => folder.path)]
+
+  for (const project of [...live].sort((a, b) => Number(!a.primary_path) - Number(!b.primary_path))) {
+    for (const path of paths(project)) {
+      const key = path && folderKey(path)
+
+      if (key && !looks[key]) {
+        looks[key] = { color: project.color ?? null, icon: project.icon ?? null, id: project.id }
+      }
+    }
+  }
+
+  return looks
+}
+
+async function readOwnerLooks(route: AgentProfileRoute): Promise<Record<string, GatewayProjectLook>> {
+  const payload = await requestGatewayForAgent<ProjectsPayload>(route.connectionId, route.profile, 'projects.list', {
+    profile: route.profile
+  })
+
+  const looks = looksByFolder(payload.projects ?? [])
+
+  $gatewayProjectLooks.setKey(gatewayRouteKey(route), looks)
+
+  return looks
+}
+
+const requested = new Set<string>()
+
+/** Read each owner's looks once. A failed read stays unread until the next write to that owner. */
+export function loadGatewayProjectLooks(routes: AgentProfileRoute[]): void {
+  for (const route of routes) {
+    const key = gatewayRouteKey(route)
+
+    if (!requested.has(key)) {
+      requested.add(key)
+      void readOwnerLooks(route).catch(() => undefined)
+    }
+  }
+}
+
+export function gatewayProjectLook(route: AgentProfileRoute, path: string): GatewayProjectLook | undefined {
+  return $gatewayProjectLooks.get()[gatewayRouteKey(route)]?.[folderKey(path)]
+}
+
+function setLook(route: AgentProfileRoute, path: string, look: GatewayProjectLook | undefined): void {
+  const key = gatewayRouteKey(route)
+  const next = { ...$gatewayProjectLooks.get()[key] }
+
+  if (look) {
+    next[folderKey(path)] = look
+  } else {
+    delete next[folderKey(path)]
+  }
+
+  $gatewayProjectLooks.setKey(key, next)
+}
+
+// One write per owner folder at a time: the first color on a folder creates the
+// owner's record, and a second pick racing it must patch that record, not
+// create a second one.
+const writes = new Map<string, Promise<unknown>>()
+
+/**
+ * Theme a folder on the gateway that owns it: patch the owner's project for that
+ * folder, or create one there (named for the folder, not this window's
+ * gateway-suffixed label) carrying the look. Optimistic, rolled back on failure.
+ */
+export function setGatewayProjectAppearance(
+  route: AgentProfileRoute,
+  path: string,
+  patch: { color?: null | string; icon?: null | string }
+): Promise<void> {
+  const key = JSON.stringify([gatewayRouteKey(route), folderKey(path)])
+  const run = (writes.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => writeLook(route, path, patch))
+
+  writes.set(key, run)
+
+  return run
+}
+
+async function writeLook(
+  route: AgentProfileRoute,
+  path: string,
+  patch: { color?: null | string; icon?: null | string }
+): Promise<void> {
+  const before = gatewayProjectLook(route, path)
+
+  const patched = (current: GatewayProjectLook | undefined): GatewayProjectLook => ({
+    color: patch.color !== undefined ? patch.color : (current?.color ?? null),
+    icon: patch.icon !== undefined ? patch.icon : (current?.icon ?? null),
+    id: current?.id ?? null
+  })
+
+  const request = (method: string, params: Record<string, unknown>) =>
+    requestGatewayForAgent<{ project: null | ProjectInfo }>(route.connectionId, route.profile, method, {
+      ...params,
+      profile: route.profile
+    })
+
+  setLook(route, path, patched(before))
+
+  try {
+    // The owner may hold a record for the folder this window never read (its own window themed it).
+    const current = (await readOwnerLooks(route))[folderKey(path)]
+    const look = patched(current)
+
+    setLook(route, path, look)
+
+    const { project } = current?.id
+      ? // Backend treats null as "leave unchanged"; "" clears.
+        await request('projects.update', {
+          id: current.id,
+          ...(patch.color !== undefined && { color: patch.color ?? '' }),
+          ...(patch.icon !== undefined && { icon: patch.icon ?? '' })
+        })
+      : await request('projects.create', {
+          name: basename(path),
+          folders: [path],
+          primary_path: path,
+          color: look.color || undefined,
+          icon: look.icon || undefined
+        })
+
+    if (project) {
+      setLook(route, path, { color: project.color ?? null, icon: project.icon ?? null, id: project.id })
+    }
+  } catch (err) {
+    setLook(route, path, before)
+
+    throw err
+  }
+}

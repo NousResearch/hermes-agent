@@ -125,7 +125,7 @@ def test_commit_build_cli_claims_only_the_resolved_remote_commit(fixture_repo):
     assert claim_message(upstream, tag)['commit'] == tip
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
-                           '--repo', 'fixture-owner/fixture-repo', '-f', f'tag={tag}']]
+                           '--repo', 'fixture-owner/fixture-repo', '--raw-field', f'tag={tag}']]
     assert f'https://hermes-assets.nousresearch.com/releases/tag/{tag}/index.html' in result.stdout
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
 
@@ -138,7 +138,7 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     tag = claims(upstream)[-1]
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
-                           '--repo', 'fixture-owner/fixture-repo', '-f', f'tag={tag}']]
+                           '--repo', 'fixture-owner/fixture-repo', '--raw-field', f'tag={tag}']]
     assert 'disposable' not in result.stdout.lower()
     # The upstream URL selects only the repository the claim and dispatch go to.
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/NousResearch/hermes-agent.git')
@@ -148,7 +148,7 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     tag = claims(upstream)[-1]
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert dispatches == [['gh', 'workflow', 'run', 'stable-release.yml', '--ref', 'main',
-                           '--repo', 'NousResearch/hermes-agent', '-f', f'tag={tag}']]
+                           '--repo', 'NousResearch/hermes-agent', '--raw-field', f'tag={tag}']]
 
 
 # (Fork-conditional removal) The disposable routing test retired with it: a
@@ -216,7 +216,10 @@ def test_commit_build_requires_pushed_refs_and_github_origin(tmp_path, fixture_r
         result, calls = invoke('--build-commit=' + revision, '--publish')
         assert result.returncode != 0 and not calls
         assert 'Traceback' not in result.stderr
+    # A dry run talks to no GitHub API; a dispatch that cannot reach gh fails without a traceback.
     result, calls = invoke('--build-commit', tip, extra={'PROBE_GH_MISSING': '1'})
+    assert result.returncode == 0 and not calls, result.stderr
+    result, calls = invoke('--build-commit', tip, '--publish', extra={'PROBE_GH_MISSING': '1'})
     assert result.returncode != 0 and 'Traceback' not in result.stderr
     (repo / 'local-only').write_text('not pushed', encoding='utf-8')
     git(repo, 'add', 'local-only')

@@ -106,8 +106,10 @@ def test_download_faults_never_export_an_accepted_artifact(tmp_path, r2_server, 
 def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path, r2_server):
     jobs = _workflow()['jobs']
     gates, smokes = native_builds(jobs), smoke_callers(jobs)
-    group_jobs = {target: [gates[target], smokes[target]] for target in NATIVE_TARGETS}
-    group_jobs['win32-bundle'] = [universal_assembler(jobs)]
+    # The MSIX smokes run in the win32-bundle call, beside assembly; each Mac build smokes its own.
+    group_jobs = {target: [gates[target]] + ([] if target.startswith('win32-') else [smokes[target]])
+                  for target in NATIVE_TARGETS}
+    group_jobs['win32-bundle'] = [universal_assembler(jobs), smokes['win32-arm64'], smokes['win32-x64']]
     group_jobs['termux'] = [termux_builder(jobs)]
     verdict = phase_result(jobs)
     members = {member for group in group_jobs.values() for member in group}

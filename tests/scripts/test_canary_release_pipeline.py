@@ -82,7 +82,7 @@ def test_a_canary_claim_runs_its_claimed_lanes_from_its_tag_stamp_on_main_only()
         stable.check_claim({**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace(
             "stable-release", "desktop-bundled-release")}, _git())
     with pytest.raises(ValueError, match="calendar"):
-        stable.canary_epoch("canary.20260231T000000Z-v1.2.3")
+        stable.stamped_epoch("canary.20260231T000000Z-v1.2.3")
 
 
 def test_the_claim_message_carries_the_canary_lanes_and_green_policy():
@@ -101,16 +101,6 @@ def test_the_claim_message_carries_the_canary_lanes_and_green_policy():
             stable.check_claim(env, _git(message=bad))
 
 
-def test_lanes_select_starts_each_policy_from_its_own_base():
-    assert lane_set.select(policy="canary") == lane_set.CANARY
-    assert lane_set.select() == lane_set.DEFAULT
-    assert lane_set.select(policy="canary", without=["termux"]) == lane_set.CANARY - {"termux"}
-    assert lane_set.select(policy="canary", only=["windows", "smoke"]) == {"windows", "smoke"}
-    assert lane_set.select(policy="canary", with_=["macos-intel"]) == lane_set.CANARY | {"macos-intel"}
-    with pytest.raises(ValueError, match="unknown release policy"):
-        lane_set.select(policy="nightly")
-
-
 def test_a_canary_without_the_full_desktop_set_builds_and_tests_but_publishes_nothing():
     # A canary only advances channels, so a claim without a package the channel serves still
     # builds, smokes and runs its suites, and leaves every canary head where it is.
@@ -125,7 +115,7 @@ def test_a_canary_without_the_full_desktop_set_builds_and_tests_but_publishes_no
 def _admitted(require_green=True):
     return {"claim_tag": CANARY, "tag": CANARY, "version": VERSION, "attempt": None, "commit": COMMIT,
             "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
-            "require_green": require_green, "claim_epoch": stable.canary_epoch(CANARY),
+            "require_green": require_green, "claim_epoch": stable.stamped_epoch(CANARY),
             "policy": "canary"}
 
 
@@ -142,7 +132,7 @@ def test_canary_admission_needs_its_prerelease_and_emits_the_canary_policy(tmp_p
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert emitted["policy"] == "canary"
     assert emitted["require-green"] == ("true" if require_green else "false")
-    assert emitted["docker-tag"] == CANARY
+    assert emitted["claim-tag"] == CANARY
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == lane_set.CANARY
     jobs = json.loads(emitted["jobs"])
     assert jobs == lane_set.jobs_to_run(lane_set.CANARY, "canary")
@@ -164,13 +154,13 @@ def test_privileged_phases_see_the_canary_channel(tmp_path, monkeypatch):
     stable.verify({"GITHUB_OUTPUT": str(output)})
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert emitted == {"tag": CANARY, "sha": COMMIT, "channel": "canary", "payload-version": VERSION,
-                       "release-epoch": str(stable.canary_epoch(CANARY))}
+                       "release-epoch": str(stable.stamped_epoch(CANARY))}
 
 
 def canary_candidates(tag=CANARY, *, digest="2" * 64):
     from scripts.termux.deb_version import deb_version_for_tag
 
-    quad = stable.canary_windows_version(tag)
+    quad = stable.stamped_windows_version(tag)
     packages = []
     for platform in ("windows", "macos"):
         for arch in ("x64", "arm64"):
@@ -186,7 +176,7 @@ def canary_candidates(tag=CANARY, *, digest="2" * 64):
     packages.append({"platform": "termux", "arch": "aarch64", "tag": tag, "commit": COMMIT,
                      "identity": "hermes-agent", "version": deb_version_for_tag(tag),
                      "artifact": {"sha256": digest, "url": f"{BASE}/releases/tag/{tag}/deb/hermes.deb"}})
-    return {"schema": 2, "tag": tag, "commit": COMMIT, "releaseEpoch": stable.canary_epoch(tag),
+    return {"schema": 2, "tag": tag, "commit": COMMIT, "releaseEpoch": stable.stamped_epoch(tag),
             "archive": tag, "packages": packages,
             "smoke_results": {job: {"result": "success"} for job in stable.SMOKE_JOBS}}
 
@@ -250,13 +240,10 @@ def test_canary_packages_upgrade_in_claim_stamp_order():
 
 
 def test_canary_candidates_carry_the_canary_package_versions():
-    from scripts.releases import channel_releases
-
     # yy.mmdd.hh.mmss, the quad scripts/msix-shared.mjs canaryPackageVersionAt stamps.
-    assert stable.canary_windows_version(CANARY) == "26.1021.6.4100"
-    assert channel_releases.canary_windows_version(CANARY) == "26.1021.6.4100"
+    assert stable.stamped_windows_version(CANARY) == "26.1021.6.4100"
     manifest = canary_candidates()
-    rows = stable.validate_candidates(manifest, CANARY, COMMIT, BASE, stable.canary_epoch(CANARY), archive=CANARY)
+    rows = stable.validate_candidates(manifest, CANARY, COMMIT, BASE, stable.stamped_epoch(CANARY), archive=CANARY)
     assert set(rows) == set(lane_set.TARGET_LANE)
     # The fixture builds every target: a claim that opted macOS Intel and Termux in.
     stable.require_targets_match_claim(manifest, lane_set.NAMES)
@@ -297,9 +284,8 @@ def test_the_canary_gate_expects_its_own_publication_job():
 def test_canary_images_get_their_own_tag_and_aliases_and_never_stable_ones():
     from scripts.releases import docker
 
-    tag = stable.docker_tag(CANARY)
     # The canary tag is already a valid Docker tag, so it names its image unchanged.
-    assert tag == CANARY and stable.docker_tag("rc.2-v1.2.3") == "rc.2-v1.2.3"
+    tag = CANARY
     assert docker.is_canary_image_tag(tag) and not docker.is_canary_image_tag("v1.2.3-canary.20261021T064100Z")
     assert docker.require_release_image_tag(tag) == tag
     assert docker.build_manifest(tag, COMMIT, {"amd64": "1" * 64, "arm64": "2" * 64})["tag"] == tag

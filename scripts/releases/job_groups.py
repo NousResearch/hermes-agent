@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import os
 
-JOB_GROUPS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64",
-              "win32-bundle", "linux-x64", "linux-arm64", "termux")
+JOB_GROUPS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "win32-bundle", "termux")
 ALL_JOBS = ",".join(JOB_GROUPS)
 
 # The workflow jobs each group runs, in the names desktop-bundled-release.yml
@@ -25,28 +24,23 @@ GROUP_JOBS = {
     "termux": ("termux-deb",),
 }
 # The native smoke each group runs after its build. A claim that skipped
-# tests runs none of them.
+# tests runs none of them. The win32-bundle call smokes both staged MSIX beside
+# assembly, so the per-arch Windows builds own no smoke and assembly does not
+# wait for one after each build.
 GROUP_SMOKES = {
     "darwin-arm64": ("smoke-darwin-arm64",),
     "darwin-x64": ("smoke-darwin-x64",),
-    "win32-arm64": ("smoke-win32-arm64",),
-    "win32-x64": ("smoke-win32-x64",),
+    "win32-bundle": ("smoke-win32-arm64", "smoke-win32-x64"),
 }
-# The per-arch groups whose smoke installs the signed MSIX.
-SIGNED_WINDOWS_GROUPS = frozenset({"win32-arm64", "win32-x64"})
-# Stable splits the Windows groups across calls. Its bundle call runs both MSIX smokes from the
-# staged handoffs so assembly does not wait for them after each build.
-BUNDLE_WINDOWS_SMOKES = ("smoke-win32-arm64", "smoke-win32-x64")
+# The groups whose smokes install the signed MSIX.
+SIGNED_WINDOWS_GROUPS = frozenset({"win32-arm64", "win32-x64", "win32-bundle"})
 
-
-def parse_jobs(raw: str | None) -> dict[str, bool]:
-    """Select job groups from a comma-separated list. ``None`` is the default.
+def parse_jobs(raw: str) -> dict[str, bool]:
+    """Select job groups from a comma-separated list.
 
     An unknown name, a duplicate, an empty entry and an explicitly empty list
     are refused; admission then fails before any build starts.
     """
-    if raw is None:
-        return {group: True for group in JOB_GROUPS}
     names = [name.strip() for name in raw.split(",")]
     if not any(names):
         raise ValueError(f"jobs must name at least one group: {ALL_JOBS}")
@@ -63,15 +57,13 @@ def parse_jobs(raw: str | None) -> dict[str, bool]:
 
 
 def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,
-               skip_signed: bool = False, windows_smokes_with_bundle: bool = False) -> list[str]:
+               skip_signed: bool = False) -> list[str]:
     """Jobs the stable phase result judges: an unselected group never fails it.
 
     B4 moved candidate-manifest into stable-release.yml, so the desktop
     workflow no longer owns it and the phase result never names it. A claim
     that skipped tests runs no smoke, so the smokes are not judged. A claim without the signed
     Windows packages smokes none of them (the Store bundle is not install-smoked).
-    With ``windows_smokes_with_bundle`` the MSIX smokes belong to the win32-bundle group, not
-    to the per-arch build groups.
     """
     required = ["validate"]
     if phase == "publish":
@@ -79,26 +71,18 @@ def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = Fals
         return required + ["stable-publish"]
     if phase != "candidate":
         raise ValueError(f"Unknown release phase: {phase}")
-    smokes: dict[str, tuple[str, ...]] = dict(GROUP_SMOKES)
-    if windows_smokes_with_bundle:
-        for group in SIGNED_WINDOWS_GROUPS:
-            del smokes[group]
-        smokes["win32-bundle"] = BUNDLE_WINDOWS_SMOKES
     for group, jobs in GROUP_JOBS.items():
         if selected.get(group):
             required.extend(jobs)
-            windows = group in SIGNED_WINDOWS_GROUPS or group == "win32-bundle"
-            if not skip_tests and not (skip_signed and windows):
-                required.extend(smokes.get(group, ()))
+            if not skip_tests and not (skip_signed and group in SIGNED_WINDOWS_GROUPS):
+                required.extend(GROUP_SMOKES.get(group, ()))
     return required
 
-
 def main() -> None:
-    """Emit one `<group>=true|false` line per group, and `all-jobs`, for `$GITHUB_OUTPUT`."""
-    selected = parse_jobs(os.environ.get("JOBS"))
+    """Emit one `<group>=true|false` line per group for `$GITHUB_OUTPUT`."""
+    selected = parse_jobs(os.environ["JOBS"])
     for group in JOB_GROUPS:
         print(f"{group}={'true' if selected[group] else 'false'}")
-    print(f"all-jobs={'true' if all(selected.values()) else 'false'}")
 
 
 if __name__ == "__main__":

@@ -120,7 +120,7 @@ def test_the_pass_that_observes_a_failure_reruns_it_unless_burned(attempt, rerun
         "id": 42, "status": "completed", "conclusion": "failure", "run_attempt": attempt,
         # Completed this instant: the pass observing the failure event.
         "updated_at": datetime.now(UTC).isoformat(),
-        "head_branch": "rc.1-v0.21.5", "head_sha": commit,
+        "display_title": "Stable release rc.1-v0.21.5",
     }
     discover_run = _discover_run(tags, workflow_runs=[failed])
     posted = []
@@ -293,7 +293,7 @@ def test_a_marker_ref_clears_the_attempt():
     failed = {
         "id": 42, "status": "completed", "conclusion": "failure",
         "run_attempt": 1, "updated_at": "2026-09-22T01:14:59Z",
-        "head_branch": "rc.1-v0.21.5", "head_sha": commit,
+        "display_title": "Stable release rc.1-v0.21.5",
     }
     records = discover("example/project",
                        _discover_run(tags, workflow_runs=[failed]))
@@ -338,8 +338,7 @@ def test_a_tenth_attempt_is_the_version_s_record_not_the_ninth():
         if n < 10:
             tags[f"abandoned-rc.{n}-v0.21.7"] = (f"{n:x}".rjust(40, "b"), commit, {})
     green = {"id": 77, "status": "completed", "conclusion": "success", "run_attempt": 1,
-             "updated_at": "2026-10-11T01:00:00Z", "head_branch": "rc.10-v0.21.7",
-             "head_sha": tags["rc.10-v0.21.7"][1]}
+             "updated_at": "2026-10-11T01:00:00Z", "display_title": "Stable release rc.10-v0.21.7"}
     draft = {"id": 11, "tag_name": "rc.10-v0.21.7", "draft": True, "prerelease": False}
     records = discover("example/project", _discover_run(tags, releases=[draft], workflow_runs=[green]))
     assert [r["attempt"] for r in records] == list(range(1, 11))
@@ -428,8 +427,8 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
             tags[tag] = (final_object, commit, final)
         else:
             workflow_runs.append({"id": 100 + index, "run_attempt": 1, "status": "completed",
-                                  "conclusion": "success", "head_branch": claim_tag,
-                                  "head_sha": commit})
+                                  "conclusion": "success",
+                                  "display_title": f"Stable release {claim_tag}"})
         releases.append({
             "id": index, "tag_name": claim_tag if drafts_on_claim_tag or not final_tags else tag,
             "draft": True, "prerelease": False, "published_at": None,

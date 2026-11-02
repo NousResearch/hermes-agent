@@ -51,11 +51,6 @@ on:
         description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
         required: true
         type: string
-      dmg-url:
-        description: 'Bootstrap dmg to install OLD with. Default: the latest published one — what a user downloads today.'
-        required: false
-        type: string
-        default: https://hermes-assets.nousresearch.com/Hermes-Setup.dmg
       bundle-manifest-url:
         description: 'URL of the JSON schema-1 bundle manifest for the packaged-app arm. Empty (default) means the bundled arm does not run — native packaged coverage only runs when the caller pins a real signed OLD/NEW pair.'
         required: false
@@ -70,11 +65,6 @@ on:
         required: false
         type: string
         default: arm64
-      timeout-minutes:
-        description: 'Job timeout. App-update legs do a full Electron build.'
-        required: false
-        type: number
-        default: 60
 
 permissions:
   contents: read
@@ -102,7 +92,6 @@ jobs:
       tag-has-desktop: ${{ inputs.tag-has-desktop }}
       leg-id: ${{ inputs.leg-id }}
       runner: macos-latest
-      timeout-minutes: ${{ inputs.timeout-minutes }}
 
   # ---- arm 2: the published dmg, then Playwright drives the app ------------
   gui-e2e:
@@ -113,7 +102,8 @@ jobs:
       inputs.install-method == 'desktop-installer@latest' && inputs.tag-has-desktop
       && contains(fromJSON('["open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
     runs-on: macos-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # App-update legs do a full Electron build.
+    timeout-minutes: 60
 
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
@@ -148,8 +138,7 @@ jobs:
           tests/install/macos-desktop-e2e.sh --phase stage \
             --update-method '${{ inputs.update-method }}' \
             --install-ref '${{ inputs.install-ref }}' \
-            --update-ref '${{ inputs.update-ref }}' \
-            --dmg-url '${{ inputs.dmg-url }}'
+            --update-ref '${{ inputs.update-ref }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
@@ -158,8 +147,7 @@ jobs:
           set -euo pipefail
           tests/install/macos-desktop-e2e.sh --phase install \
             --update-method '${{ inputs.update-method }}' \
-            --install-ref '${{ inputs.install-ref }}' \
-            --dmg-url '${{ inputs.dmg-url }}'
+            --install-ref '${{ inputs.install-ref }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
@@ -168,8 +156,7 @@ jobs:
           set -euo pipefail
           tests/install/macos-desktop-e2e.sh --phase update \
             --update-method '${{ inputs.update-method }}' \
-            --install-ref '${{ inputs.install-ref }}' \
-            --dmg-url '${{ inputs.dmg-url }}'
+            --install-ref '${{ inputs.install-ref }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
@@ -214,7 +201,8 @@ jobs:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
     runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # App-update legs do a full Electron build.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1

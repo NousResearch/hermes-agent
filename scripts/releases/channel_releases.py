@@ -126,13 +126,6 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
         raise ChannelError("Accepted packages do not declare retirement receiver support")
 
 
-def canary_windows_version(tag: str) -> str:
-    try:
-        return stable.canary_windows_version(tag)
-    except ValueError as error:
-        raise ChannelError("Invalid canary release identity") from error
-
-
 def admit_transaction(policy: str, env: dict, *, require_published: bool = False,
                       run=stable.output) -> tuple[str, str]:
     """A callable CLI is not permission to bypass the existing workflow gate."""
@@ -392,7 +385,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         if not lane_set.advances_desktop(canary_lanes):
             raise ChannelError("A canary that did not build every desktop package the channel serves "
                                "cannot advance a protected head")
-        release_epoch, accepted_lanes = stable.canary_epoch(tag), canary_lanes
+        release_epoch, accepted_lanes = stable.stamped_epoch(tag), canary_lanes
     accepted = accepted_stable(publisher, env, tag, commit, release_epoch, lanes=accepted_lanes)
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
@@ -407,7 +400,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     log(f"Native receipts verified: {len(native['packages'])} packages, {len(native['files'])} files")
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
-        expected_windows = canary_windows_version(tag)
+        expected_windows = stable.stamped_windows_version(tag)
         if (windows["version"] != expected_windows
                 or windows.get("executableVersion") != expected_windows):
             raise ChannelError("Canary Windows version differs from its release timestamp")

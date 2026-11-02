@@ -74,17 +74,6 @@ def claim_message(*, version: str, commit: str, lanes, require_green: bool,
     return json.dumps(claim, sort_keys=True, separators=(",", ":"))
 
 
-def dispatch_command(tag: str, repository: str, branch: str) -> list[str]:
-    """Run Stable Release on the commit or channel claim, from the default branch like every release."""
-    from hermes_cli.update_channel import is_preview_tag
-    from scripts.releases.stable import CONTROLLER_WORKFLOW
-
-    if not is_preview_tag(tag):
-        raise ValueError(f"Not a commit or channel build claim tag: {tag!r}")
-    return ["gh", "workflow", "run", CONTROLLER_WORKFLOW, "--ref", branch, "--repo", repository,
-            "-f", f"tag={tag}"]
-
-
 def _unused_claim_tag(release, version: str, kind: str = "commit") -> str:
     """<kind>.<now>-v<version>, moved forward a second at a time past any claim already tagged here
     (two builds started within one second). A claim another clone pushed meanwhile still fails the
@@ -126,6 +115,7 @@ def cmd_build_commit(args) -> None:
     """
     from scripts import release
     from scripts.releases import lanes as lane_set, r2
+    from scripts.releases.stable import CONTROLLER_BRANCH, dispatch_command
 
     channel = getattr(args, "channel", None)
     kind = "channel" if channel else "commit"
@@ -140,14 +130,11 @@ def cmd_build_commit(args) -> None:
             raise ValueError(f"{kind} builds require an explicit GitHub remote")
         commit = resolve_revision(args.build_commit, remote, release.REPO_ROOT)
         version = version_at(release.REPO_ROOT, commit)
-        branch = release._default_branch(repository)
-        if not branch:
-            raise ValueError("could not resolve the repository default branch")
         tag = _unused_claim_tag(release, version, kind)
         message = claim_message(version=version, commit=commit, lanes=lanes,
                                 require_green=args.require_green, bundle_env=bundle_env,
                                 channel=channel, branding=getattr(args, "branding", "preview"))
-        command = dispatch_command(tag, repository, branch)
+        command = dispatch_command(tag, repository)
         page = r2.public_url_for(r2.public_base_url(), r2.staging_key_for(tag, "index.html"))
         target = "the channel" if channel else "its builds page"
         print(f"{kind.capitalize()} build {tag} of {commit}" + (f" for channel {channel}" if channel else ""))
@@ -156,7 +143,7 @@ def cmd_build_commit(args) -> None:
               else f"Publishing to {target} waits only for the built, smoked candidate"
                    + (" and every upgrade arm that ran" if channel else "") + "; other suites report.")
         print(f"Builds will be available at: {page}")
-        print(f"Workflow command, running from {repository}@{branch}")
+        print(f"Workflow command, running from {repository}@{CONTROLLER_BRANCH}")
         print(f"    {shlex.join(command)}")
         if not args.publish:
             print("Dry run: no tag was created. Add --publish to claim and dispatch.")

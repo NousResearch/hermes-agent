@@ -41,72 +41,43 @@ on:
   workflow_dispatch:
     inputs:
       route:
-        description: 'Which legs to run: all = every OS; both/update/installer = the linux legs; windows-desktop / macos-desktop = that OS; bundled / windows-bundled / macos-bundled = the signed-bundle legs. Anything else selects legs by name (a leg or job name, or a fragment of one).'
+        description: 'Which legs to run: all = every OS; both/update/installer = the linux legs; windows-desktop / macos-desktop = that OS. Anything else selects legs by name (a leg or job name, or a fragment of one).'
         required: false
         type: string
         default: all
-      windows-bundle-manifest:
-        description: 'HTTPS manifest pinning signed Windows OLD/NEW msixbundles; NEW must match this ref.'
-        type: string
-        default: ''
-      macos-bundle-manifest:
-        description: 'HTTPS manifest pinning signed macOS OLD/NEW app ZIPs; NEW must match this ref.'
-        type: string
-        default: ''
       tag-count:
         description: 'How many release tags to sample (newest, oldest, and a spread between).'
         required: false
         type: string
         default: '3'
-      install-ref:
-        description: 'Optional exact release tag for a focused reproduction; overrides tag-count.'
-        required: false
-        type: string
-        default: ''
   workflow_call:
     # Reusable entry for the stable-release orchestrator. Same input names as
     # workflow_dispatch; on a release run the caller dispatches on the exact
     # candidate tag, so github.sha is the candidate commit throughout.
     #
-    # route: which combinations to run (same choices as dispatch). The
-    # bundled routes require the matching bundle manifests, exactly like a
-    # manual dispatch — a source (non-bundle) release run passes route=all
-    # with empty manifests and gets the source install/update matrix only.
+    # route: which combinations to run (same choices as dispatch). Signed
+    # packages are not tested here: Stable Release's upgrade arms call the
+    # run workflows directly with the pinned OLD/NEW transition manifest.
     inputs:
       commit:
         description: Commit to test and build. Empty keeps the triggering commit.
         type: string
         default: ''
       release:
-        description: 'Stable-release candidate run (informational; jobs behave as route=all with empty manifests).'
+        description: 'Stable-release candidate run: sample release tags with scripts/releases/pick_tags.py and require the source matrix gate.'
         required: false
         type: boolean
         default: false
       route:
-        description: 'Which legs to run: all = every OS; both/update/installer = the linux legs; windows-desktop / macos-desktop = that OS; bundled / windows-bundled / macos-bundled = the signed-bundle legs. Anything else selects legs by name (a leg or job name, or a fragment of one).'
+        description: 'Which legs to run: all = every OS; both/update/installer = the linux legs; windows-desktop / macos-desktop = that OS. Anything else selects legs by name (a leg or job name, or a fragment of one).'
         required: false
         type: string
         default: all
-      windows-bundle-manifest:
-        description: 'HTTPS manifest pinning signed Windows OLD/NEW msixbundles; NEW must match this ref.'
-        required: false
-        type: string
-        default: ''
-      macos-bundle-manifest:
-        description: 'HTTPS manifest pinning signed macOS OLD/NEW app ZIPs; NEW must match this ref.'
-        required: false
-        type: string
-        default: ''
       tag-count:
         description: 'How many release tags to sample (newest, oldest, and a spread between).'
         required: false
         type: string
         default: '3'
-      install-ref:
-        description: 'Optional exact release tag for a focused reproduction; overrides tag-count.'
-        required: false
-        type: string
-        default: ''
       exclude-ref:
         description: 'Exact release tag to EXCLUDE from the sampled OLD baselines (e.g. the candidate itself — testing an update from it would be a no-change test).'
         required: false
@@ -161,18 +132,12 @@ jobs:
           # tag, and sampling it as an OLD version would produce a no-change
           # update leg — the candidate must never update from itself.
           TAG_COUNT: ${{ inputs.tag-count || 2 }}
-          INSTALL_REF: ${{ inputs.install-ref }}
           EXCLUDE_REF: ${{ inputs.exclude-ref }}
           RELEASE_MODE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           [[ "$TAG_COUNT" =~ ^(10|[1-9])$ ]] || { echo "tag-count must be 1-10, got: $TAG_COUNT" >&2; exit 1; }
-          if [ -n "$INSTALL_REF" ]; then
-            [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
-            [ "$INSTALL_REF" != "$EXCLUDE_REF" ] || { echo "Candidate cannot be its own baseline" >&2; exit 1; }
-            git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
-            tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
-          elif [ "$RELEASE_MODE" = true ]; then
+          if [ "$RELEASE_MODE" = true ]; then
             tags="$(python3 -m scripts.releases.pick_tags --count "$TAG_COUNT" --exclude-ref "$EXCLUDE_REF")"
           else
             tags="$(scripts/sandbox/pick-release-tags.sh --count "$TAG_COUNT")"
@@ -228,63 +193,6 @@ jobs:
           node scripts/sandbox/generate-e2e-matrix.mjs \
             --tags '${{ needs.pick-releases.outputs.tags }}' \
             --format markdown >> "$GITHUB_STEP_SUMMARY"
-
-  bundle-inputs:
-    name: Validate pinned bundle transitions
-    # Bundled legs need dispatch-only manifests.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      windows: ${{ steps.inputs.outputs.windows }}
-      macos: ${{ steps.inputs.outputs.macos }}
-      windows-arch: ${{ steps.inputs.outputs.windows-arch }}
-      macos-arch: ${{ steps.inputs.outputs.macos-arch }}
-    steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
-        with:
-          ref: ${{ inputs.commit }}
-      - id: inputs
-        env:
-          BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
-          BUNDLE_MACOS_MANIFEST: ${{ inputs.macos-bundle-manifest }}
-          BUNDLE_ROUTE: ${{ inputs.route }}
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          node tests/install/e2e-assets/bundle-plan.mjs
-
-  windows-bundled:
-    name: ${{ matrix.name }}
-    if: inputs.windows-bundle-manifest != '' && contains(fromJSON('["all", "bundled", "windows-bundled"]'), inputs.route)
-    needs: bundle-inputs
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.bundle-inputs.outputs.windows) }}
-    uses: ./.github/workflows/install-e2e-windows-run.yml
-    with:
-      commit: ${{ inputs.commit }}
-      install-method: packaged-app
-      update-method: open-app-update
-      install-ref: ${{ matrix.install_ref }}
-      leg-id: ${{ matrix.leg_id }}
-      bundle-manifest-url: ${{ inputs.windows-bundle-manifest }}
-      bundle-arch: ${{ needs.bundle-inputs.outputs.windows-arch }}
-
-  macos-bundled:
-    name: ${{ matrix.name }}
-    if: inputs.macos-bundle-manifest != '' && contains(fromJSON('["all", "bundled", "macos-bundled"]'), inputs.route)
-    needs: bundle-inputs
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.bundle-inputs.outputs.macos) }}
-    uses: ./.github/workflows/install-e2e-macos-run.yml
-    with:
-      commit: ${{ inputs.commit }}
-      install-method: packaged-app
-      update-method: open-app-update
-      install-ref: ${{ matrix.install_ref }}
-      leg-id: ${{ matrix.leg_id }}
-      bundle-manifest-url: ${{ inputs.macos-bundle-manifest }}
-      bundle-arch: ${{ needs.bundle-inputs.outputs.macos-arch }}
 
   linux:
     name: ${{ matrix.name }}
@@ -421,7 +329,7 @@ jobs:
   report:
     name: Result chart
     if: always()
-    needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
+    needs: [leg-player, pick-releases, linux, windows, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

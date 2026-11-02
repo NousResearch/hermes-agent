@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases import lanes as lane_set
 from scripts.releases.draft_warning import strip_draft_warning
-from scripts.releases.versioning import tag_record
+from scripts.releases.versioning import parse_attempt_ref, tag_record
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
@@ -62,8 +62,6 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
     it is on a release line: ``main`` or a ``release/*`` branch. ``on_main`` is
     that predicate; the name predates release branches.
     """
-    from scripts.releases.versioning import parse_attempt_ref
-
     parsed = parse_attempt_ref(tag)
     if parsed is None:
         raise ValueError(f"{tag} is not a claim tag")
@@ -133,38 +131,25 @@ def require_release_identity(tag: str, commit: str) -> None:
         raise ValueError("Invalid release payload identity")
 
 
-def canary_epoch(tag: str) -> int:
-    """The canary's immutable build time: the UTC stamp its tag name carries."""
-    if not is_canary_claim(tag):
-        raise ValueError("Invalid canary release identity")
-    return stamped_epoch(tag)
-
-
 def stamped_epoch(tag: str) -> int:
     """A stamped claim's immutable build time: the UTC stamp its tag name carries."""
     from hermes_cli.update_channel import claim_stamp
 
     stamp = claim_stamp(tag)
     if stamp is None:
-        raise ValueError("Invalid canary release identity")
+        raise ValueError(f"Not a stamped claim: {tag!r}")
     try:
         instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
     except ValueError as error:
-        raise ValueError(f"Invalid canary calendar timestamp: {stamp}") from error
+        raise ValueError(f"Invalid claim calendar timestamp: {stamp}") from error
     if instant.strftime("%Y%m%dT%H%M%SZ") != stamp:
-        raise ValueError("Invalid canary calendar timestamp")
+        raise ValueError("Invalid claim calendar timestamp")
     return int(instant.timestamp())
 
 
-def canary_windows_version(tag: str) -> str:
-    """The canary package quad ``yy.mmdd.hh.mmss`` (scripts/msix-shared.mjs canaryPackageVersionAt)."""
-    if not is_canary_claim(tag):
-        raise ValueError("Invalid canary release identity")
-    return stamped_windows_version(tag)
-
-
 def stamped_windows_version(tag: str) -> str:
-    """The package quad ``yy.mmdd.hh.mmss`` of a stamped claim (update_channel.stamped_windows_version)."""
+    """The package quad ``yy.mmdd.hh.mmss`` of a stamped claim (update_channel.stamped_windows_version;
+    scripts/msix-shared.mjs canaryPackageVersionAt)."""
     from hermes_cli.update_channel import stamped_windows_version as quad
 
     stamped_epoch(tag)  # the same refusal for anything that is not a stamped claim
@@ -175,12 +160,6 @@ def release_windows_version(tag: str, epoch: object) -> str:
     """The Windows package version a release must carry: a canary's or commit build's comes from its
     tag stamp, a stable release's from its claim epoch."""
     return stamped_windows_version(tag) if is_stamped_claim(tag) else stable_windows_version(epoch)
-
-
-def docker_tag(claim_tag: str) -> str:
-    """The versioned image tag: the claim itself. A stable attempt ref and a canary tag are both
-    already valid Docker tags."""
-    return claim_tag
 
 
 def require_success(needs: dict, required: list[str], allowed: tuple[str, ...] = ("success",)) -> None:
@@ -705,15 +684,18 @@ CONTROLLER_REF = f"refs/heads/{CONTROLLER_BRANCH}"
 CONTROLLER_WORKFLOW = "stable-release.yml"
 
 
+def dispatch_command(tag: str, repository: str) -> list[str]:
+    """Run Stable Release on a claim. Every kind dispatches the default-branch controller with the
+    claim tag as its only input; admission derives the policy from the tag."""
+    if parse_attempt_ref(tag) is None and not is_stamped_claim(tag):
+        raise ValueError(f"Not a release claim tag: {tag!r}")
+    return ["gh", "workflow", "run", CONTROLLER_WORKFLOW, "--ref", CONTROLLER_BRANCH, "--repo", repository,
+            "--raw-field", f"tag={tag}"]
+
+
 def claim_run_title(claim_tag: str) -> str:
     """The run-name stable-release.yml sets. Every run is on the default branch, so this names the claim."""
     return f"Stable release {claim_tag}"
-
-
-def is_claim_run(*, title: str | None, head_branch: str | None, head_sha: str | None,
-                 claim_tag: str, commit: str) -> bool:
-    """A Stable Release run for this claim. Runs started before the controller moved sat on the tag."""
-    return title == claim_run_title(claim_tag) or (head_branch == claim_tag and head_sha == commit)
 
 
 def check_controller(env: dict) -> None:
@@ -924,7 +906,7 @@ def admit(env: dict) -> None:
         "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
         "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
         # Which publication jobs run (lanes.POLICY_JOBS); every build and test job is shared.
-        "policy": policy, "docker-tag": docker_tag(admitted["claim_tag"]),
+        "policy": policy,
         # `lanes` is every lane's flag; `jobs` is every lane-controlled job's run flag. Each
         # job's `if` reads `jobs`, so the lane table is the only place that says what runs.
         "lanes": lane_set.flags(admitted["lanes"]),
@@ -1016,13 +998,10 @@ def _published_baseline(env: dict, base: str, claim: dict) -> dict | None:
     if policy == "channel":
         return _channel_baseline(env, base, claim["channel"])
     try:
-        previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/{policy}/release-candidates.json",
-                                 expected_origin=base)
+        previous = read_manifest(f"{base}/releases/{policy}/release-candidates.json", expected_origin=base)
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-        if env.get("BASELINE_MANIFEST_URL"):
-            raise ValueError("The supplied baseline-manifest does not exist") from error
         return None
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
     canary = policy == "canary"

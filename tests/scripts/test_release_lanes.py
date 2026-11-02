@@ -28,6 +28,39 @@ def test_select_refuses_unknown_and_contradictory_lanes():
         lane_set.select(with_=["ci"], without=["ci"])
 
 
+# What each kind can never run, as the owner decided: commit builds don't support updating, and the
+# Store is stable's and canary's only.
+INTENDED_REFUSALS = {"stable": set(), "canary": set(), "commit": {"upgrade", "install-e2e", "windows-store"},
+                     "channel": {"windows-store"}}
+
+
+def test_each_policy_refuses_exactly_the_intended_lanes():
+    assert lane_set.POLICY_REFUSED == INTENDED_REFUSALS
+
+
+@pytest.mark.parametrize("policy", lane_set.POLICIES)
+def test_every_policy_starts_from_the_default_minus_what_it_refuses(policy):
+    refused = lane_set.POLICY_REFUSED[policy]
+    base = lane_set.select(policy=policy)
+    assert base == lane_set.POLICY_BASE[policy] == lane_set.DEFAULT - refused
+    # --with, --without and --only edit (or replace) the policy's base exactly as they do stable's.
+    assert lane_set.select(policy=policy, with_=["macos-intel", "termux"]) == base | {"macos-intel", "termux"}
+    assert lane_set.select(policy=policy, without=["smoke"]) == base - {"smoke"}
+    assert lane_set.select(policy=policy, only=["docker", "ci"]) == {"docker", "ci"}
+    # A refused lane is refused outright, however it is asked for.
+    for lane in refused:
+        for kwargs in ({"with_": [lane]}, {"only": ["docker", lane]}):
+            with pytest.raises(ValueError, match=f"^a {policy} claim cannot run {lane}$"):
+                lane_set.select(policy=policy, **kwargs)
+
+
+def test_an_unknown_policy_is_refused():
+    with pytest.raises(ValueError, match="unknown release policy 'nightly'"):
+        lane_set.select(policy="nightly")
+    with pytest.raises(ValueError, match="policy"):
+        lane_set.jobs_to_run(lane_set.DEFAULT, "preview")
+
+
 def test_options_flatten_repeats_and_commas():
     assert lane_set.parse_list(["windows, docker", "ci"]) == ["windows", "docker", "ci"]
     assert lane_set.parse_list(None) is None

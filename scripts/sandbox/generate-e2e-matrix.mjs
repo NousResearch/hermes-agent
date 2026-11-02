@@ -46,7 +46,7 @@ import { fileURLToPath } from 'node:url';
  *   registers Start Menu / Desktop shortcuts too, on linux/macos it
  *   builds into the checkout without registering an OS entry point;
  *   packaged-app installs a signed bundle. Its native in-app update pair
- *   is declared separately, not crossed with source-checkout update methods.
+ *   is Stable Release's upgrade arm, never a leg of this matrix.
  * @typedef {InstallMethod | 'hermes-update' | 'open-app-update' | 'hermes-desktop-app-update'} UpdateMethod
  *   Every install method doubles as an update method (re-run it over the
  *   existing install), plus the updater CLI and the two app-update
@@ -98,17 +98,6 @@ import { fileURLToPath } from 'node:url';
  */
 export function legId(name) {
   return name.replace(/[^A-Za-z0-9._-]+/g, '-');
-}
-
-/** One pinned package transition; source-release sampling does not apply.
- * @param {'windows' | 'macos'} os
- * @param {string} oldTag
- * @returns {{include: MatrixEntry[]}}
- */
-export function bundledMatrix(os, oldTag) {
-  const name = `${os}: packaged-app -> open-app-update (${oldTag} -> HEAD)`;
-  return { include: [{ name, leg_id: legId(name), install_method: 'packaged-app',
-    update_method: 'open-app-update', install_ref: oldTag, update_ref: 'HEAD', tag_has_desktop: true }] };
 }
 
 /**
@@ -275,10 +264,6 @@ const ROUTE_OSES = /** @type {Record<string, Os[]>} */ ({
   installer: ['linux'],
   'windows-desktop': ['windows'],
   'macos-desktop': ['macos'],
-  // Bundled legs come from bundle-plan.mjs, not this matrix.
-  bundled: [],
-  'windows-bundled': [],
-  'macos-bundled': [],
 });
 
 /**

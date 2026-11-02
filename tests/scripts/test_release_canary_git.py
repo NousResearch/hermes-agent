@@ -65,7 +65,6 @@ def canary_repo(tmp_path, monkeypatch, release_repo):
             if release.get_last_canary_tag() in published else None
         ),
     )
-    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     return git, remote, calls
 
 
@@ -87,7 +86,7 @@ def test_canary_cut_keeps_the_stable_core_and_dispatches_exactly_once(canary_rep
     # A canary runs the Stable Release pipeline itself: the same job graph, the same default lanes.
     assert dispatch == [
         "gh", "workflow", "run", "stable-release.yml", "--ref", "main",
-        "-f", f"tag={tag}", "--repo", "fixture/release",
+        "--repo", "fixture/release", "--raw-field", f"tag={tag}",
     ]
     assert git("--git-dir", str(remote), "rev-parse", tag + "^{commit}") == git("rev-parse", "HEAD")
     # The tag message is the claim admission reads: the canary's default lanes, green required.
@@ -185,32 +184,18 @@ def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, ca
     assert set(git("tag", "--list").splitlines()) == set(tags)
 
 
-def test_stable_dispatch_and_failure(monkeypatch, tmp_path):
-    calls = []
+def test_canary_dispatch_failure_prints_the_manual_command(monkeypatch, tmp_path, capsys):
+    tag = "canary.20260818T103000Z-v1.2.3"
     monkeypatch.setattr(release, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(release.shutil, "which", lambda _: "gh")
     monkeypatch.setattr(
         release.subprocess,
         "run",
-        lambda command, **kwargs: calls.append(command)
-        or subprocess.CompletedProcess(command, 0, "", ""),
-    )
-    monkeypatch.setattr(release, "_default_branch", lambda _repo: "main")
-    assert release.dispatch_desktop_build("v1.2.3", "owner/repo")
-    # Stable dispatches the default-branch workflow, like canary; the tag is an input.
-    assert calls == [[
-        "gh", "workflow", "run", "stable-release.yml", "--ref", "main",
-        "-f", "tag=v1.2.3", "--repo", "owner/repo",
-    ]]
-    with pytest.raises(ValueError):
-        release.dispatch_desktop_build("v1.2.3/other", "owner/repo")
-    monkeypatch.setattr(
-        release.subprocess,
-        "run",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "refused"),
     )
-    assert release.dispatch_desktop_build("v1.2.3", "owner/repo") is False
+    assert release.dispatch_release(tag, "owner/repo") is False
+    assert "refused" in capsys.readouterr().out
     monkeypatch.setattr(release.shutil, "which", lambda _: None)
-    assert release.dispatch_desktop_build(
-        "canary.20260818T103000Z-v1.2.3", "owner/repo"
-    ) is False
+    assert release.dispatch_release(tag, "owner/repo") is False
+    assert f"Start it manually: gh workflow run stable-release.yml --ref main --repo owner/repo " \
+           f"--raw-field tag={tag}" in capsys.readouterr().out

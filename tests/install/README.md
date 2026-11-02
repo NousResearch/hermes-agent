@@ -175,10 +175,9 @@ tags; manual dispatch defaults to three. `tag-count` accepts 1–10.
 
 `all` selects every source OS. `both`, `update`, and `installer` select Linux
 source legs, not Windows plus macOS. `windows-desktop` and `macos-desktop`
-select those source/GUI routes. `windows-bundled`, `macos-bundled`, and `bundled`
-require their package manifests; they do not expand the source-tag cross product.
-`install-ref` selects one exact source baseline. Stable release calls also
-exclude the candidate tag so it cannot serve as its own old version.
+select those source/GUI routes. Signed-package updates are not legs of this
+matrix: they are Stable Release's upgrade arms (see BUNDLED_UPDATES.md). Stable
+release calls exclude the candidate tag so it cannot serve as its own old version.
 
 Per-leg timeouts and GitHub's matrix limits remain workflow constraints, not
 proof that every declared combination ran. Native package acceptance is separate

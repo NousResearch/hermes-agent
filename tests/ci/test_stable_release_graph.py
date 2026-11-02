@@ -52,8 +52,7 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     # The acceptance join requires CI, so a slow gate cannot delay a build.
     for parallel in ("docker", "nix", "pm-bundle", "termux-checks", "windows-live", "install-e2e"):
         assert direct_needs(jobs, parallel) == ["admit"], parallel
-    candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
-                       "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
+    candidate_calls = lane_set.CANDIDATE_CALLS
     # The Windows bundle group is the only candidate that waits on a peer.
     for call in candidate_calls:
         assert set(direct_needs(jobs, call)) <= {
@@ -66,12 +65,11 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     # B3: stable calls one build group at a time; the bundle group waits for
     # both Windows arches, and the Linux groups are not called at all.
     assert "candidates" not in jobs
-    for name, group in zip(candidate_calls, ("darwin-arm64", "darwin-x64", "win32-arm64",
-                                            "win32-x64", "win32-bundle", "termux")):
+    for name in candidate_calls:
         call = jobs[name]
         assert call["uses"] == "./.github/workflows/desktop-bundled-release.yml"
         assert call["with"]["release-phase"] == "candidate"
-        assert call["with"]["jobs"] == group
+        assert call["with"]["jobs"] == name.removeprefix("candidates-")
         assert {"tag", "claim-tag", "claim-object"} <= set(call["with"])
     assert {"candidates-win32-arm64", "candidates-win32-x64"} <= set(jobs["candidates-win32-bundle"]["needs"])
     assert not any("linux" in name for name in jobs)
@@ -139,69 +137,33 @@ def test_every_lane_controlled_job_runs_exactly_when_the_lane_table_says(lanes, 
         needs = {need: result(need) for need in direct_needs(jobs, name)}
         assert gate(jobs[name].get("if", "true"), {}, needs) == wanted, (name, sorted(lanes))
     # A job that is not lane-controlled never skips with the lanes.
-    for name in set(jobs) - set(runs) - {"admit", "acceptance", "publication", "complete",
-                                         "candidate-manifest", "publish-bundles"}:
+    for name in set(jobs) - set(runs) - {"admit", "acceptance", "publication", "complete"}:
         assert "outputs.jobs" not in str(jobs[name].get("if", "")), name
 
 
-def test_a_canary_runs_the_stable_default_jobs_and_differs_only_in_publication():
-    """canary-release.yml runs this same workflow: nothing to keep in sync. A canary starts from the
-    stable default lanes (its upgrade arms pair the last published canary with this one) and runs
-    exactly the jobs a default stable release runs, except the other policy's publication job."""
+@pytest.mark.parametrize("policy", lane_set.POLICIES)
+def test_every_policy_runs_the_stable_default_jobs_but_its_refused_lanes_and_publication(policy):
+    """Every kind runs this same workflow: nothing to keep in sync. A claim's default jobs are a
+    default stable release's, minus every job that needs a lane its policy refuses (POLICY_REFUSED),
+    with its own publication jobs (POLICY_JOBS) in place of stable's. A lane added later runs in
+    every kind too."""
     jobs = workflow("stable-release.yml")["jobs"]
-    assert lane_set.POLICY_BASE["canary"] == lane_set.POLICY_BASE["stable"] == lane_set.DEFAULT
-    assert lane_set.POLICY_REFUSED["canary"] == lane_set.POLICY_REFUSED["stable"] == frozenset()
-    canary = lane_set.jobs_to_run(lane_set.CANARY, "canary")
-    assert set(canary) <= set(jobs)
-    stable_default = lane_set.jobs_to_run(lane_set.DEFAULT, "stable")
-    # The publication jobs that run under exactly one of the two policies.
-    either = {job for job, policies in lane_set.POLICY_JOBS.items() if ("stable" in policies) != ("canary" in policies)}
-    assert either == {"publish-bundles", "publish-canary", "upgrade-arms"}
-    assert {job for job in canary if canary[job] != stable_default[job]} == either
-    upgrade = {job for job, needs in lane_set.JOB_LANES.items() if "upgrade" in needs}
-    assert all(canary[job] == stable_default[job] for job in upgrade)
-    # A lane stable opts into, a canary opts into the same way.
-    assert lane_set.select(policy="canary", with_=["macos-intel"]) == lane_set.select(with_=["macos-intel"])
-    with pytest.raises(ValueError, match="policy"):
-        lane_set.jobs_to_run(lane_set.CANARY, "preview")
-    # The run is titled by policy; stable keeps the title the sequencer matches runs by.
-    from scripts.releases.stable import claim_run_title
-    title = workflow("stable-release.yml")["run-name"]
-    prefix, rest = title.split(" release ", 1)
-    assert rest == "${{ inputs.tag }}"
-    assert evaluate(prefix, {"tag": "rc.1-v1.2.3"}, {}) == "Stable"
-    assert evaluate(prefix, {"tag": "canary.20261021T064100Z-v1.2.3"}, {}) == "Canary"
-    assert claim_run_title("rc.1-v1.2.3") == "Stable release rc.1-v1.2.3"
-
-
-def test_a_commit_build_runs_the_default_jobs_but_upgrade_tests_and_publishes_nowhere():
-    """release.py --build-commit dispatches this same workflow on commit.<stamp>-vX.Y.Z. A commit
-    build runs the stable default lanes minus what it can never run (no upgrade test of any kind;
-    commit builds don't support updating), and its only publication job renders its builds page."""
-    jobs = workflow("stable-release.yml")["jobs"]
-    assert lane_set.COMMIT == lane_set.DEFAULT - lane_set.COMMIT_REFUSED
-    assert lane_set.COMMIT_REFUSED == {"upgrade", "install-e2e", "windows-store"}
-    commit = lane_set.jobs_to_run(lane_set.COMMIT, "commit")
-    assert set(commit) <= set(jobs)
+    runs = lane_set.jobs_to_run(lane_set.POLICY_BASE[policy], policy)
+    assert set(runs) <= set(jobs)
     stable = lane_set.jobs_to_run(lane_set.DEFAULT, "stable")
-    # Relational: every job that is neither a publication job nor needs a refused lane runs exactly
-    # as it does in a default stable release, so a lane added later runs in commit builds too.
-    refused = {job for job, needs in lane_set.JOB_LANES.items() if needs & lane_set.COMMIT_REFUSED}
-    for job in set(commit) - set(lane_set.POLICY_JOBS) - refused:
-        assert commit[job] == stable[job], job
-    assert not any(commit[job] for job in refused)
-    assert {job for job, runs in commit.items() if runs and job in lane_set.POLICY_JOBS} == {"publish-commit"}
-    assert {job for job in commit if commit[job] != stable[job]} == {
-        "publish-bundles", "publish-docker", "publish-commit", "install-e2e",
-        "transitions-darwin-arm64", "transitions-win32", "macos-packaged-arm64", "windows-packaged"}
-    # Every refused lane is refused outright, not just off by default.
-    for lane in lane_set.COMMIT_REFUSED:
-        with pytest.raises(ValueError, match="commit claim cannot run"):
-            lane_set.select(with_=[lane], policy="commit")
-    # Neither a stable release nor a canary runs it.
-    for policy, lanes in (("stable", lane_set.NAMES), ("canary", lane_set.CANARY)):
-        assert not lane_set.jobs_to_run(lanes, policy)["publish-commit"], policy
+    refused = {job for job, needs in lane_set.JOB_LANES.items() if needs & lane_set.POLICY_REFUSED[policy]}
+    for job in set(runs) - set(lane_set.POLICY_JOBS) - refused:
+        assert runs[job] == stable[job], job
+    assert not any(runs[job] for job in refused)
+    assert {job for job in lane_set.POLICY_JOBS if runs[job]} == \
+        {job for job, policies in lane_set.POLICY_JOBS.items() if policy in policies}
 
+
+def test_a_commit_build_publishes_only_its_builds_page():
+    """release.py --build-commit dispatches this same workflow on commit.<stamp>-vX.Y.Z. Its only
+    publication job renders its builds page."""
+    jobs = workflow("stable-release.yml")["jobs"]
+    commit = lane_set.jobs_to_run(lane_set.COMMIT, "commit")
     publish = jobs["publish-commit"]
     assert publish["needs"] == ["admit", "candidate-manifest", "acceptance"]
     manifest = {"result": "success"}
@@ -241,15 +203,6 @@ def test_a_commit_build_runs_the_default_jobs_but_upgrade_tests_and_publishes_no
     assert jobs["admit"]["outputs"]["bundle-env"] == "${{ steps.admit.outputs.bundle-env }}"
     for name in lane_set.CANDIDATE_CALLS:
         assert jobs[name]["with"]["bundle_env"] == "${{ needs.admit.outputs.bundle-env }}", name
-    # Titled Commit, and each commit build runs on its own (never queued behind a release).
-    title = workflow("stable-release.yml")["run-name"]
-    prefix = title.split(" release ", 1)[0]
-    assert evaluate(prefix, {"tag": "commit.20261026T180000Z-v1.2.3"}, {}) == "Commit"
-    group = workflow("stable-release.yml")["concurrency"]["group"]
-    assert evaluate(group, {"tag": "commit.20261026T180000Z-v1.2.3"}, {}) == \
-        "commit.20261026T180000Z-v1.2.3"
-    assert evaluate(group, {"tag": "canary.20261026T180000Z-v1.2.3"}, {}) == "canary-release-pipeline"
-    assert evaluate(group, {"tag": "rc.1-v1.2.3"}, {}) == "stable-release"
 
 
 @pytest.mark.parametrize(("job", "policy", "lanes"), [("publish-canary", "canary", lane_set.CANARY),
@@ -405,6 +358,9 @@ def test_each_policy_titles_its_run_and_takes_its_own_concurrency_group(policy):
     prefix, rest = release["run-name"].split(" release ", 1)
     assert rest == "${{ inputs.tag }}"
     assert evaluate(prefix, {"tag": claim}, {}) == policy.capitalize()
+    if policy == "stable":
+        from scripts.releases.stable import claim_run_title
+        assert claim_run_title(claim) == f"Stable release {claim}"
     group = evaluate(release["concurrency"]["group"], {"tag": claim}, {})
     assert group == {"stable": "stable-release", "canary": "canary-release-pipeline"}.get(policy, claim)
 
@@ -413,8 +369,7 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     jobs = workflow("stable-release.yml")["jobs"]
     # Tests the image and the candidates run for themselves follow their own lane.
     assert jobs["docker"]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}"
-    for name in ("candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
-                 "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
+    for name in lane_set.CANDIDATE_CALLS:
         assert jobs[name]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes).smoke }}", name
     # Which Windows packages the shared builds make follows the two Windows lanes, and the Store
     # submission follows the Store lane.
@@ -422,11 +377,12 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     for name in ("candidates-win32-arm64", "candidates-win32-x64", "candidates-win32-bundle"):
         assert jobs[name]["with"]["skip-signed"] == "${{ !fromJSON(needs.admit.outputs.lanes).windows }}", name
         assert jobs[name]["with"]["skip-store"] == store_off, name
-        # The MSIX smokes run in the bundle call, so the bundle never waits for them.
-        assert jobs[name]["with"]["windows-smokes-with-bundle"] == "true", name
     assert jobs["publish-bundles"]["with"]["skip-store"] == store_off
     desktop = workflow("desktop-bundled-release.yml")["jobs"]
     assert "inputs.skip-store" in desktop["stable-store"]["if"]
+    # The MSIX smokes run in the bundle call, so the bundle never waits for them.
+    for arch in ("x64", "arm64"):
+        assert "needs.validate.outputs.win32-bundle == 'true'" in desktop[f"smoke-win32-{arch}"]["if"]
     assert {"lanes", "jobs"} <= set(jobs["admit"]["outputs"])
     for name in ("acceptance", "upgrade-arms", "publication", "complete"):
         gate_step = next(step for step in jobs[name]["steps"]
@@ -468,7 +424,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == admitted["lanes"]
     assert json.loads(emitted["jobs"]) == lane_set.jobs_to_run(admitted["lanes"])
-    assert emitted["policy"] == "stable" and emitted["docker-tag"] == "rc.1-v1.2.3"
+    assert emitted["policy"] == "stable" and emitted["claim-tag"] == "rc.1-v1.2.3"
     assert "on: docker, windows" in summary.read_text(encoding="utf-8")
 
 
@@ -499,13 +455,10 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     release = workflow("stable-release.yml")
     jobs = release["jobs"]
     # The claim is the one record of the attempt's policy; a dispatch cannot override it.
-    inputs = set(release["on"]["workflow_dispatch"]["inputs"])
-    assert not {"autopublish", "lanes", "skip-bundles", "skip-tests"}.intersection(inputs)
+    assert set(release["on"]["workflow_dispatch"]["inputs"]) == {"tag"}
     assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id", "release-epoch"} <= \
         set(jobs["admit"]["outputs"])
-    for name in ("publish-bundles", *("candidates-darwin-arm64", "candidates-darwin-x64",
-                                      "candidates-win32-arm64", "candidates-win32-x64",
-                                      "candidates-win32-bundle", "candidates-termux")):
+    for name in ("publish-bundles", *lane_set.CANDIDATE_CALLS):
         call = jobs[name]["with"]
         assert call["tag"] == "${{ needs.admit.outputs.tag }}"
         assert call["claim-tag"] == "${{ needs.admit.outputs.claim-tag }}"
@@ -608,9 +561,9 @@ def test_versioned_docker_images_belong_to_one_attempt():
     # The final vX.Y.Z does not exist until publish; a second attempt pushing
     # under it collides with the first attempt's immutable manifest list.
     jobs = workflow("stable-release.yml")["jobs"]
-    # docker-tag is the claim tag for stable (stable.docker_tag); a canary's `+` becomes `-`.
+    # Every claim tag is already a valid Docker tag, so it names the versioned image unchanged.
     for name in ("docker", "publish-docker"):
-        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.docker-tag }}"
+        assert jobs[name]["with"]["tag"] == "${{ needs.admit.outputs.claim-tag }}"
 
 
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():
@@ -641,22 +594,8 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     reconcile = publication["jobs"]["reconcile"]
     assert reconcile["environment"] == "release-signing"
     assert publication["permissions"] == {"contents": "write", "actions": "write"}
-    # Reconcile after a dispatched run of this repository that did not succeed;
-    # a manual dispatch of the reconciler always runs.
-    def run_of(**overrides):
-        workflow_run = {"conclusion": "failure", "event": "workflow_dispatch",
-                        "head_repository": {"full_name": "o/r"}, **overrides}
-        return {"event_name": "workflow_run", "repository": "o/r", "event": {"workflow_run": workflow_run}}
-
-    assert gate(reconcile["if"], {}, {}, github=run_of())
-    assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})
-    for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}},
-                    # A red canary is a Stable Release run too; it must never be reconciled or rerun.
-                    {"display_title": "Canary release canary.20261021T064100Z-v1.2.3"},
-                    # So is a commit build: it has no stable draft or head either.
-                    {"display_title": "Commit release commit.20261026T180000Z-v1.2.3"}):
-        assert not gate(reconcile["if"], {}, {}, github=run_of(**refused)), refused
-    assert gate(reconcile["if"], {}, {}, github=run_of(display_title="Stable release rc.1-v1.2.3"))
+    # Which runs it reconciles (only a stable claim's failed, dispatched run of this repository, or
+    # a manual dispatch) is tests/ci/test_channel_reconciler.py.
     checkout = reconcile["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] == "false"

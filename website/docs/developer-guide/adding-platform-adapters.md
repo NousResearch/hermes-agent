@@ -176,6 +176,9 @@ def register(ctx):
         ),
         # Display
         emoji="💬",
+        # Toolsets sent to the model directly in this platform's sessions instead of
+        # behind tool search (other platforms' sessions keep deferring them)
+        direct_toolsets=("my_platform",),
     )
 
     # Optional: register platform-specific tools
@@ -222,6 +225,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
 | System prompt hints | `platform_hint` injected into LLM context |
+| Tool search | `direct_toolsets` keeps the platform's own toolsets out of tool search in its sessions |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
 | `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |

@@ -94,6 +94,29 @@ describe('MermaidRenderer', () => {
     expect(svg).toContain('\\frac{a')
   })
 
+  it('sizes math labels in unzoomed pixels under the browser UI scale', async () => {
+    // The browser-hosted app scales through CSS zoom on <html>: at 50% the
+    // probe measures half size, but the SVG still draws at full size.
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ height: 9, width: 12 } as DOMRect)
+
+    Object.defineProperty(HTMLElement.prototype, 'currentCSSZoom', { configurable: true, get: () => 0.5 })
+
+    try {
+      const { container } = render(<MermaidRenderer code={'flowchart LR\n  A["$$x^2$$"] --> B'} />)
+
+      await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+
+      const box = parseXml(decodeImage(container.querySelector('img'))).querySelector('foreignObject.pele-math')
+
+      expect([box?.getAttribute('width'), box?.getAttribute('height')]).toEqual(['24', '18'])
+    } finally {
+      rect.mockRestore()
+      delete (HTMLElement.prototype as { currentCSSZoom?: number }).currentCSSZoom
+    }
+  })
+
   it('resolves the theme once per repaint, not once per diagram', async () => {
     const { container } = render(
       <>

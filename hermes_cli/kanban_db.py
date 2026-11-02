@@ -3242,13 +3242,26 @@ def _request_changes_model_b(
 
     Assumes it is called from inside the ``request_changes`` write_txn, so the
     parent link is inserted inline (``link_tasks`` opens its own transaction
-    and must not nest).
+    and must not nest). That assumption is also what makes claim-then-write
+    safe: the write lock is held from the first statement to the last, so once
+    ownership is taken here no later statement can lose it.
     """
     canonical_reviewer = (
         _canonical_assignee(reviewer)
         if reviewer and str(reviewer).strip()
         else None
     )
+    # Take the handoff claim BEFORE writing anything. A refused handoff must
+    # leave no trace: `write_txn` COMMITs on a normal-exit `return False`, so
+    # writing the rework card, its link and the `linked` event first meant a
+    # refusal could still persist all three.
+    owned = conn.execute(
+        "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+        "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+        (task_id, int(current_run_id)),
+    )
+    if owned.rowcount != 1:
+        return False, "task changed during review handoff"
     # Newest-done = largest completed_at among done parents whose assignee is
     # NOT this review card's reviewer. Survives review cycles: each rework
     # becomes a newer done parent on the next pass.
@@ -3313,15 +3326,21 @@ def _request_changes_model_b(
         {"parent": rework_id, "child": task_id},
     )
 
-    # Close the reviewer's run and land the review card on parent gating.
+    # Close the reviewer's run and land the review card on parent gating. The
+    # ownership CAS ran before the first write, so this flip is the last write
+    # of the handoff and cannot find the card gone; a miss means the invariant
+    # broke, and raising is the correct failure — it rolls the whole handoff
+    # back instead of committing half of it.
     new_status = _landing_status_after_parents(conn, task_id)
     cur = conn.execute(
-        "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
-        "worker_pid = NULL WHERE id = ? AND status = 'running' AND current_run_id = ?",
+        "UPDATE tasks SET status = ? "
+        "WHERE id = ? AND status = 'running' AND current_run_id = ?",
         (new_status, task_id, int(current_run_id)),
     )
     if cur.rowcount != 1:
-        return False, "task changed during review handoff"
+        raise RuntimeError(
+            "request_changes: review card left its running state during a Model-B handoff"
+        )
     run_id = _end_run(
         conn, task_id,
         outcome="changes_requested",

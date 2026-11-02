@@ -239,3 +239,55 @@ def test_derive_idempotency_key_deterministic_and_truncated(
     assert key_ab == kb._derive_idempotency_key(["t_b", "t_a"])
     assert kb._derive_idempotency_key(["t_a"]) == kb._derive_idempotency_key(["t_a"])
     assert key_ab != kb._derive_idempotency_key(["t_a"])
+
+
+# ---------------------------------------------------------------------------
+# Claim-then-write: a refused handoff leaves no trace
+# ---------------------------------------------------------------------------
+
+
+def test_model_b_refused_handoff_writes_nothing(kanban_home: Path) -> None:
+    """A handoff that cannot take the claim must not create or announce anything.
+
+    Regression for the write-then-check order: the rework card, its link and
+    the `linked` event were written before the ownership guard, and
+    `write_txn` COMMITs on the normal-exit `return False`, so a refusal could
+    still persist all three. The private helper is called directly on purpose —
+    `request_changes` rejects a stale run id three statements earlier, so this
+    ordering hazard is only reachable through the Model-B helper itself.
+    """
+    with kbc.connect() as conn:
+        artifact = kb.create_task(conn, title="build the widget", assignee="worker")
+        _complete_done(conn, artifact, kb.claim_task(conn, artifact))
+
+        review_id = kb.create_task(
+            conn, title="review the widget", assignee="reviewer", parents=[artifact],
+        )
+        claimed = kb.claim_task(conn, review_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        events_before = len(_events(conn, review_id))
+
+        # Same call the Model-B path makes, holding a superseded run id.
+        with kb.write_txn(conn):
+            ok, why = kb._request_changes_model_b(
+                conn,
+                review_id,
+                reviewer="reviewer",
+                reason="the widget needs fixing",
+                current_run_id=int(claimed.current_run_id) + 1,
+            )
+        assert ok is False
+        assert why == "task changed during review handoff"
+
+        # Nothing was created, linked or announced.
+        assert _rework_cards(conn) == []
+        assert _parents(conn, review_id) == [artifact]
+        assert _events(conn, review_id, kind="linked") == []
+        assert _events(conn, review_id, kind="changes_requested") == []
+        assert len(_events(conn, review_id)) == events_before
+
+        # The refusal did not half-claim the card: it still belongs to its run.
+        still = kb.get_task(conn, review_id)
+        assert still.status == "running"
+        assert still.current_run_id == claimed.current_run_id

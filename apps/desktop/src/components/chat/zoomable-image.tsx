@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useEffect } from 'react'
+import { type ComponentProps, useEffect, useState } from 'react'
 
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useZoomPan } from '@/components/ui/use-zoom-pan'
@@ -27,6 +27,7 @@ export interface ImageActionCopy {
   zoomIn: string
   zoomOut: string
   resetZoom: string
+  warmView: string
 }
 
 export function ZoomableImage({
@@ -109,6 +110,7 @@ export function ImageLightbox({
   // useZoomPan — the same hook the diagram/artifact viewer uses, so there is a
   // single source of truth for this gesture math. `moved` lets us close the
   // lightbox on a clean click while leaving pans/pinches alone.
+  const [warmView, setWarmView] = useState(false)
   const { moved, panning, ref, reset, scale, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLImageElement>({
     enabled: open
   })
@@ -117,6 +119,8 @@ export function ImageLightbox({
   useEffect(() => {
     if (open) {
       reset()
+    } else {
+      setWarmView(false)
     }
   }, [open, reset])
 
@@ -140,6 +144,18 @@ export function ImageLightbox({
               onClick={event => event.stopPropagation()}
               onPointerDown={event => event.stopPropagation()}
             >
+              <button
+                aria-label={copy.warmView}
+                aria-pressed={warmView}
+                className={cn(
+                  'rounded-full px-3 py-2 text-xs font-medium transition-colors hover:bg-accent hover:text-foreground',
+                  warmView && 'bg-accent text-foreground'
+                )}
+                onClick={() => setWarmView(value => !value)}
+                type="button"
+              >
+                {copy.warmView}
+              </button>
               <button
                 aria-label={copy.zoomOut}
                 className="grid size-8 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
@@ -193,7 +209,7 @@ export function ImageLightbox({
             onClick={onImageClick}
             ref={ref}
             src={src}
-            style={{ ...style, cursor, touchAction: 'none' }}
+            style={{ ...style, cursor, touchAction: 'none', filter: warmView ? 'sepia(0.35) saturate(0.9)' : undefined }}
             {...stageProps}
           />
           <ImageActionButton

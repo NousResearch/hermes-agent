@@ -1,14 +1,21 @@
 import { useStore } from '@nanostores/react'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { useI18n } from '@/i18n'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
+import {
+  $gatewayProjectLooks,
+  folderKey,
+  gatewayRouteKey,
+  loadGatewayProjectLooks
+} from '@/store/gateway-project-looks'
+import type { AgentProfileRoute } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
 import { gatewayLabel } from '../gateway-group-model'
 
-import { withGatewayProjectRows } from './gateway-project-rows'
+import { projectOwnerRoute, withGatewayProjectRows } from './gateway-project-rows'
 import type { SessionOwnerKey, SidebarProjectTree } from './workspace-groups'
 
 export interface SessionOwners {
@@ -52,6 +59,8 @@ export function useGatewayProjectTree(
   const owners = useSessionOwners()
   const localLabel = t.settings.gateway.webappHostTitle
 
+  const looks = useStore($gatewayProjectLooks)
+
   const merged = useMemo(() => {
     if (!registry) {
       return tree
@@ -62,5 +71,33 @@ export function useGatewayProjectTree(
     )
   }, [tree, live, registry, owners, localLabel])
 
-  return { owners, ownerKey: owners.ownerKey, tree: merged }
+  // Each owner's project looks, read once per (gateway, profile) its projects here come from.
+  const ownerRoutes = useMemo(() => {
+    const routes = new Map<string, AgentProfileRoute>()
+
+    for (const node of merged) {
+      const route = projectOwnerRoute(node)
+
+      if (route) {
+        routes.set(gatewayRouteKey(route), route)
+      }
+    }
+
+    return [...routes.values()]
+  }, [merged])
+
+  useEffect(() => loadGatewayProjectLooks(ownerRoutes), [ownerRoutes])
+
+  const themed = useMemo(
+    () =>
+      merged.map(node => {
+        const route = projectOwnerRoute(node)
+        const look = route && node.path ? looks[gatewayRouteKey(route)]?.[folderKey(node.path)] : undefined
+
+        return look ? { ...node, color: look.color, icon: look.icon } : node
+      }),
+    [merged, looks]
+  )
+
+  return { owners, ownerKey: owners.ownerKey, tree: themed }
 }

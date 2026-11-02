@@ -25,6 +25,7 @@ import {
   ensureActiveGatewayOpen,
   isActivePrimary
 } from '@/store/gateway'
+import { setGatewayProjectAppearance } from '@/store/gateway-project-looks'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
@@ -1260,9 +1261,18 @@ export async function updateProject(
 // Returns true when an adoption happened, so an incremental picker can close
 // (the node's id changes on adopt, and a second stale write would double-create).
 export async function setProjectAppearance(
-  project: Pick<SidebarProjectTree, 'color' | 'icon' | 'id' | 'isAuto' | 'label' | 'path'>,
+  project: Pick<SidebarProjectTree, 'color' | 'connectionId' | 'icon' | 'id' | 'isAuto' | 'label' | 'path' | 'profile'>,
   patch: { color?: null | string; icon?: null | string }
 ): Promise<boolean> {
+  // Another gateway's project: its look is that gateway's record, never one on this window's.
+  if (project.connectionId && project.path) {
+    const route = { connectionId: project.connectionId, profile: project.profile || 'default' }
+
+    await setGatewayProjectAppearance(route, project.path, patch)
+
+    return false
+  }
+
   if (!project.isAuto) {
     await updateProject(project.id, patch)
 

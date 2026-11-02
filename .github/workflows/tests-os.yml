@@ -231,7 +231,7 @@ jobs:
         # Only green first-attempt durations are written by the runner. One entry
         # per platform and slice; each keeps the restored entries for the other
         # slices' files, so the newest entry is complete.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
+        if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'exp/ci-slices') && hashFiles('test_durations.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json

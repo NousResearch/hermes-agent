@@ -38,14 +38,15 @@ def test_channel_publication_assembles_receipts_and_promotes_preview_over_http(t
         # request validation, native assembly, package matching and head CAS are production code.
         monkeypatch.setattr(stable, 'check_claim', lambda env: {
             'policy': 'channel', 'claim_tag': tag, 'commit': request['commit'],
-            'channel': request['channel'], 'bundle_env': {}})
+            'channel': request['channel'], 'bundle_env': {}, 'require_green': False})
         monkeypatch.setattr(stable, 'read_admitted_candidate', lambda *args, **kwargs: accepted)
         monkeypatch.setattr(r2, 'credentials', lambda: (pub.store.creds, url, 'bucket'))
         monkeypatch.setattr(r2, 'public_base_url', lambda: pub.public_base)
         monkeypatch.setenv('CLOUDFLARE_R2_PUBLIC_URL', pub.public_base)
         env = {'GITHUB_REPOSITORY': pub.repository, 'CHANNEL_BUILD': request['buildId'],
                'CHANNEL_REQUEST_SHA256': hashlib.sha256(canonical_json(request)).hexdigest(),
-               'RELEASE_NEEDS': json.dumps({arm: {'result': 'success'} for arm in lane_set.UPGRADE_ARMS})}
+               'RELEASE_NEEDS': json.dumps({job: {'result': 'success'} for job in (
+                   'admit', 'candidate-manifest', 'upgrade-arms')})}
         # The next build's upgrade baseline is the channel head, read back over HTTP; the manifest
         # fetch alone reads the fixture's objects (read_manifest insists on HTTPS).
         monkeypatch.setattr(stable, 'read_manifest', lambda url, **_: json.loads(
@@ -82,3 +83,46 @@ def test_channel_publication_assembles_receipts_and_promotes_preview_over_http(t
         objects[candidates] = json.dumps({'packages': swapped, 'tag': tag}).encode()
         with pytest.raises(ValueError, match='differs from the accepted'):
             stable._published_baseline(env, pub.public_base, claim)
+
+
+def test_admission_allocates_the_claims_one_request_and_every_leg_binds_to_it(tmp_path, monkeypatch):
+    """stable.admit for a channel claim allocates its request over the real CAS (and owns no GitHub
+    release); a rerun finds the same request; require_admitted_request refuses anything else."""
+    with object_server() as (url, objects, _headers, _requests, _faults):
+        pub = publisher(url)
+        tag = 'channel.20261028T130000Z-v1.2.3'
+        admitted = {'policy': 'channel', 'claim_tag': tag, 'tag': tag, 'commit': 'a' * 40, 'claim_object': 'b' * 40,
+                    'version': '1.2.3+channel.20261028T130000Z', 'claim_epoch': stable.stamped_epoch(tag),
+                    'lanes': lane_set.CHANNEL, 'require_green': False, 'bundle_env': {'HERMES_PREVIEW_FULL_CONNECTORS': '1'},
+                    'channel': 'review', 'branding': 'preview'}
+        monkeypatch.setattr(stable, 'check_claim', lambda env: admitted)
+        monkeypatch.setattr(stable, 'output', lambda argv: pytest.fail(f'a channel claim owns no GitHub release: {argv}'))
+        monkeypatch.setattr(r2, 'credentials', lambda: (pub.store.creds, url, 'bucket'))
+        monkeypatch.setenv('CLOUDFLARE_R2_PUBLIC_URL', pub.public_base)
+        env = {'GITHUB_REPOSITORY': pub.repository, 'GITHUB_SHA': 'c' * 40,
+               'GITHUB_OUTPUT': str(tmp_path / 'output'), 'GITHUB_STEP_SUMMARY': str(tmp_path / 'summary')}
+
+        def admit():
+            (tmp_path / 'output').unlink(missing_ok=True)
+            stable.admit(env)
+            return dict(line.split('=', 1) for line in (tmp_path / 'output').read_text(encoding='utf-8').splitlines())
+
+        emitted = admit()
+        pointer = json.loads(objects[f'releases/tag/{tag}/channel-request.json'])
+        assert (emitted['channel-build'], emitted['channel-request-sha256']) == (pointer['buildId'], pointer['sha256'])
+        assert emitted['policy'] == 'channel' and emitted['release-id'] == ''
+        assert json.loads(emitted['jobs']) == lane_set.jobs_to_run(lane_set.CHANNEL, 'channel')
+        # A rerun of admission finds the same request rather than allocating another.
+        settled = dict(objects)
+        assert admit() == emitted and objects == settled
+
+        legs = {**env, 'CHANNEL_BUILD': emitted['channel-build'], 'CHANNEL_REQUEST_SHA256': emitted['channel-request-sha256']}
+        request = channel_claims.require_admitted_request(tag, admitted, legs)
+        assert (request['releaseTag'], request['channel'], request['commit']) == (tag, 'review', 'a' * 40)
+        assert request['bundleEnv'] == admitted['bundle_env']
+        for other in ({'CHANNEL_BUILD': 'f' * 32}, {'CHANNEL_REQUEST_SHA256': 'f' * 64}, {'CHANNEL_BUILD': ''}):
+            with pytest.raises(ValueError, match='differs from the one admitted'):
+                channel_claims.require_admitted_request(tag, admitted, {**legs, **other})
+        for other in ({'channel': 'elsewhere'}, {'commit': 'd' * 40}, {'bundle_env': {}}):
+            with pytest.raises(ValueError, match='does not match its claim'):
+                channel_claims.require_admitted_request(tag, {**admitted, **other}, legs)

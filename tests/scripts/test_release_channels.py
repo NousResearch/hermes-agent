@@ -711,8 +711,18 @@ def test_a_canary_advances_its_own_head_from_its_accepted_candidate_only(tmp_pat
         monkeypatch.setattr(channel_releases, "promote_stable_feeds",
                             lambda candidate, root, public_base: calls["promoted"].append(candidate))
         monkeypatch.setattr(channel_releases, "product_identity", lambda _tag: dict(identity))
-        env = {"GITHUB_REPOSITORY": pub.repository,
+        needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
+                 "acceptance": {"result": "failure"}, "upgrade-arms": {"result": "success"}}
+        env = {"GITHUB_REPOSITORY": pub.repository, "RELEASE_NEEDS": json.dumps(needs),
                "GITHUB_WORKFLOW_REF": f"{pub.repository}/.github/workflows/stable-release.yml@refs/heads/main"}
+
+        # Its claim, not a workflow flag, says whether a red suite holds it: one that requires green
+        # (acceptance is red here) publishes nothing.
+        current["claim"] = {**first["claim"], "requireGreen": True}
+        before = dict(objects)
+        with pytest.raises(ValueError, match="acceptance=failure"):
+            channel_releases.publish_release("canary-release", env, tmp_path / "held")
+        assert objects == before and not calls["edits"] and not calls["promoted"]
 
         # A narrowed claim (no macOS Apple Silicon) built and tested, but never advances the head.
         current["claim"] = {**first["claim"], "lanes": sorted(lane_set.CANARY - {"macos-arm64"})}

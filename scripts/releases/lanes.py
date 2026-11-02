@@ -106,15 +106,18 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "macos-packaged-arm64": ("macos-arm64", "upgrade"),
     "macos-packaged-x64": ("macos-intel", "upgrade"),
     "windows-packaged": ("windows", "upgrade"),
+    # One gate over every upgrade arm (each passed or was skipped by its lanes or a missing
+    # baseline), for the publication jobs that need it (POLICY_JOBS). It needs no lane: with
+    # `upgrade` off every arm skips and it passes.
+    "upgrade-arms": (),
 }.items()}
 
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
-# The signed-package upgrade arms. Whatever its green policy, a canary or channel build publishes
-# only if every arm that ran passed (stable-release.yml publish-canary/publish-channel, custody).
+# The signed-package upgrade arms the upgrade-arms gate judges.
 UPGRADE_ARMS = tuple(job for job, needs in JOB_LANES.items() if "upgrade" in needs)
 
 # The release policies stable-release.yml runs. Every build and test job is shared; only these
-# publication jobs belong to some policies, and each runs only under those. A stable release
+# publication jobs (and the upgrade-arms gate) belong to some policies, and each runs only under those. A stable release
 # publishes its bundles to the stable channels and the Store; a canary publishes the same accepted
 # candidate to the canary channels and never touches a stable head or the Store; a commit build
 # publishes nowhere (its builds page lives in its own claim archive) and pushes no Docker tag; a
@@ -126,11 +129,14 @@ POLICY_JOBS: dict[str, frozenset[str]] = {
     "publish-commit": frozenset({"commit"}),
     "publish-channel": frozenset({"channel"}),
     "publish-docker": frozenset({"stable", "canary"}),
+    # Whatever its green policy, a canary or channel build publishes only if every upgrade arm that
+    # ran passed (its publication job needs this gate; custody re-requires it). A stable release's
+    # acceptance already requires the arms, and a commit build runs none.
+    "upgrade-arms": frozenset({"canary", "channel"}),
 }
 # The lane set a claim of each policy starts from, and the lanes it can never run: a canary runs
-# whatever stable can (see CANARY); a commit build
-# runs no upgrade test and builds no Store package (see COMMIT); a channel build runs no signed
-# upgrade arm and builds no Store package (see CHANNEL).
+# whatever stable can (see CANARY); a commit build runs no upgrade test and builds no Store package
+# (see COMMIT); a channel build builds no Store package (see CHANNEL).
 POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT, "channel": CHANNEL}
 POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset(), "commit": COMMIT_REFUSED,
                   "channel": CHANNEL_REFUSED}

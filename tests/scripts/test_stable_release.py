@@ -82,21 +82,45 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     assert "publication=cancelled" in result.stderr
 
 
+@pytest.mark.parametrize("policy", ["canary", "channel"])
+def test_preview_publication_custody_follows_the_claims_green_policy(policy):
+    """publish-canary and publish-channel custody (stable.require_publication) reads the green policy
+    from the claim, never from a workflow flag."""
+    from scripts.releases.stable import require_publication
+
+    needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
+             "acceptance": {"result": "failure"}, "upgrade-arms": {"result": "success"}}
+    relaxed, green = {"policy": policy, "require_green": False}, {"policy": policy, "require_green": True}
+    # Without require-green a red suite never holds publication; with it, acceptance must pass.
+    require_publication(needs, relaxed)
+    with pytest.raises(ValueError, match="acceptance=failure"):
+        require_publication(needs, green)
+    require_publication({**needs, "acceptance": {"result": "success"}}, green)
+    # Admission, the accepted candidate and the upgrade-arms gate hold it whatever the claim says.
+    for job in ("admit", "candidate-manifest", "upgrade-arms"):
+        for result in ("failure", "skipped", "cancelled", "missing"):
+            red = {**needs, job: {"result": result}} if result != "missing" else \
+                {name: row for name, row in needs.items() if name != job}
+            with pytest.raises(ValueError, match=f"{job}={result}"):
+                require_publication(red, relaxed)
+
+
+@pytest.mark.parametrize("policy", lane_set.POLICIES)
 @pytest.mark.parametrize("lanes", [
     lane_set.select(without=lane_set.BUNDLES),
     lane_set.select(without=lane_set.NAMES[5:]),
     lane_set.select(only=["windows", "docker"]),
     lane_set.select(only=[]),
 ])
-def test_gate_requires_every_lane_removed_job_to_have_skipped(tmp_path, lanes):
+def test_gate_requires_every_lane_removed_job_to_have_skipped(tmp_path, lanes, policy):
     required = ["admit", *lane_set.JOB_LANES]
-    expected = gate_expectations(required, lanes)
+    expected = gate_expectations(required, lanes, policy)
     # Lanes never remove admission.
     assert expected["admit"] == "success"
     assert {name for name, result in expected.items() if result == "success"} - {"admit"} == \
-        {job for job, runs in lane_set.jobs_to_run(lanes).items() if runs}
+        {job for job, runs in lane_set.jobs_to_run(lanes, policy).items() if runs}
     needs = {name: {"result": result} for name, result in expected.items()}
-    env = {**os.environ, "RELEASE_NEEDS": json.dumps(needs), "PYTHONPATH": str(ROOT),
+    env = {**os.environ, "RELEASE_NEEDS": json.dumps(needs), "PYTHONPATH": str(ROOT), "POLICY": policy,
            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"), "LANES": json.dumps(lane_set.flags(lanes))}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
@@ -106,6 +130,10 @@ def test_gate_requires_every_lane_removed_job_to_have_skipped(tmp_path, lanes):
     ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert ran.returncode != 0 and f"{removed}=success (expected skipped)" in ran.stderr
     env["RELEASE_NEEDS"] = json.dumps(needs)
+    # The same results judged under a policy that expects other jobs block it too.
+    other = next(other for other in lane_set.POLICIES if gate_expectations(required, lanes, other) != expected)
+    assert subprocess.run(argv, cwd=tmp_path, env={**env, "POLICY": other}, capture_output=True,
+                          check=False).returncode != 0
     env["LANES"] = json.dumps(lane_set.flags(lane_set.NAMES))
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode != 0
     del env["LANES"]
@@ -542,8 +570,10 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    # A stable release never runs a canary's, commit build's or channel build's publication job.
-    others = {"publish-canary", "publish-commit", "publish-channel"}
+    # A stable release never runs another policy's job (a canary's, commit build's or channel build's
+    # publication, or the upgrade-arms gate they need).
+    others = {job for job, policies in lane_set.POLICY_JOBS.items() if "stable" not in policies}
+    assert {"publish-canary", "publish-commit", "publish-channel", "upgrade-arms"} == others
     off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
            "candidates-termux", "termux-checks", *others}
     required = ["admit", *lane_set.JOB_LANES]
@@ -1314,6 +1344,109 @@ def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks
     env["BASELINE_MANIFEST_URL"] = f"{https_origin.base}/baseline.json"
     with pytest.raises(ValueError, match="supplied baseline-manifest does not exist"):
         stable.main(["transitions"], env)
+
+
+def channel_candidates(tag, commit, targets=("macos/x64", "macos/arm64", "windows/x64", "windows/arm64")):
+    """A channel claim's candidate manifest: its claim is its payload tag and its archive, and its
+    versions come from the claim stamp."""
+    from scripts.releases.stable import payload_version, stamped_epoch, stamped_windows_version
+
+    windows = stamped_windows_version(tag)
+    packages = []
+    for target in targets:
+        platform, arch = target.split("/")
+        packages.append({
+            "platform": platform, "arch": arch, "tag": tag, "commit": commit, "identity": "channel.review",
+            "version": windows if platform == "windows" else payload_version(tag),
+            **({"executableVersion": windows, "publisher": "CN=Test", "applicationId": "App"}
+               if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
+            "artifact": {"sha256": hashlib.sha256(f"{tag} {target}".encode()).hexdigest(),
+                         "url": f"{BASE}/releases/tag/{tag}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
+        })
+    return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": stamped_epoch(tag), "archive": tag,
+            "packages": packages, "smoke_results": {name: {"result": "success"} for name in (
+                "smoke-darwin-arm64", "smoke-darwin-x64", "smoke-win32-arm64", "smoke-win32-x64")}}
+
+
+CHANNEL_HEAD = "channel.20261028T120000Z-v1.2.3"
+CHANNEL_NEXT = "channel.20261029T120000Z-v1.2.3"
+
+
+@pytest.mark.parametrize("commit", ["b" * 40, "a" * 40], ids=["new commit", "the head's own commit"])
+@pytest.mark.parametrize(("receipt", "platform", "arches"), [("darwin-arm64", "macos", ["arm64"]),
+                                                             ("win32-bundle", "windows", ["x64", "arm64"])])
+def test_a_channel_build_upgrades_its_channels_head_end_to_end(tmp_path, monkeypatch, commit, receipt,
+                                                               platform, arches):
+    """transitions() for a channel claim: OLD is the build its channel's head serves, NEW is this
+    claim's receipt, and the acceptance manifests land in this claim's archive. A rebuild of the
+    head's own commit is still a new build (a later claim with other bytes), so it upgrades too."""
+    from hermes_cli import release_channels
+    from scripts.releases import r2, stable
+
+    head = channel_candidates(CHANNEL_HEAD, "a" * 40)
+    targets = stable.RECEIPT_TARGETS[receipt]
+    objects = {f"releases/tag/{CHANNEL_HEAD}/release-candidates.json": head,
+               f"releases/tag/{CHANNEL_NEXT}/{receipt}-receipt.json":
+                   {k: v for k, v in channel_candidates(CHANNEL_NEXT, commit, targets).items() if k != "smoke_results"}}
+
+    def read_manifest(url, expected_hash=None, *, expected_origin=None, opener=None):
+        body = objects[url.removeprefix(BASE + "/")]
+        assert expected_hash in (None, hashlib.sha256(json.dumps(body).encode()).hexdigest())
+        return body
+
+    def put(*, tag, key, file, immutable):
+        objects[f"releases/tag/{tag}/{key}"] = json.loads(Path(file).read_text(encoding="utf-8"))
+
+    head_manifest = {"request": {"releaseTag": CHANNEL_HEAD}, "packages": []}
+    monkeypatch.setattr(release_channels.ChannelReader, "resolve",
+                        lambda self, name: type("Resolution", (), {"manifest": head_manifest})())
+    monkeypatch.setattr(stable, "read_manifest", read_manifest)
+    monkeypatch.setattr(r2, "put", put)
+    monkeypatch.setattr(stable, "stable_context", lambda env: (CHANNEL_NEXT, commit, {
+        "claim_tag": CHANNEL_NEXT, "policy": "channel", "channel": "review"}))
+    # The head serves exactly the packages its claim's candidate accepted (match_accepted_packages).
+    monkeypatch.setattr("scripts.releases.channel_releases.match_accepted_packages", lambda manifest, accepted: None)
+    (tmp_path / "runner").mkdir()
+    receipt_key = f"releases/tag/{CHANNEL_NEXT}/{receipt}-receipt.json"
+    env = {"RECEIPT": receipt, "RECEIPT_URL": f"{BASE}/{receipt_key}", "GITHUB_REPOSITORY": "example/project",
+           "RECEIPT_SHA256": hashlib.sha256(json.dumps(objects[receipt_key]).encode()).hexdigest(),
+           "CLOUDFLARE_R2_PUBLIC_URL": BASE, "RUNNER_TEMP": str(tmp_path / "runner"),
+           "GITHUB_OUTPUT": str(tmp_path / "output")}
+    stable.main(["transitions"], env)
+    emitted = dict(line.split("=", 1) for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+    assert emitted["baseline"] == "published"
+    rows = json.loads(emitted[platform])["include"]
+    assert [row["arch"] for row in rows] == arches and all(row["old"] == CHANNEL_HEAD for row in rows)
+    for row in rows:
+        assert row["manifest"].startswith(f"{BASE}/releases/tag/{CHANNEL_NEXT}/acceptance-")
+        transition = objects[row["manifest"].removeprefix(BASE + "/")]
+        assert (transition["old"]["tag"], transition["new"]["tag"]) == (CHANNEL_HEAD, CHANNEL_NEXT)
+
+
+def test_a_channel_head_upgrades_only_to_a_later_build():
+    from scripts.releases.stable import plan_transitions
+
+    head = channel_candidates(CHANNEL_HEAD, "a" * 40)
+    with pytest.raises(ValueError, match="change the build"):
+        plan_transitions(head, head, BASE)
+    with pytest.raises(ValueError, match="must increase"):
+        plan_transitions(head, channel_candidates("channel.20261027T120000Z-v1.2.3", "b" * 40), BASE)
+
+
+@pytest.mark.parametrize("head_tag", [None, "v1.2.3", "canary.20261028T120000Z-v1.2.3",
+                                      "commit.20261028T120000Z-v1.2.3"])
+def test_a_channel_whose_head_is_not_a_channel_claim_has_no_baseline(monkeypatch, head_tag):
+    """No head yet, or a head that is not a channel claim (an older receipt-tagged build), leaves no
+    OLD package: the upgrade arms skip rather than pair this build with another kind's."""
+    from hermes_cli import release_channels
+    from scripts.releases import stable
+
+    manifest = None if head_tag is None else {"request": {"releaseTag": head_tag}, "packages": []}
+    monkeypatch.setattr(release_channels.ChannelReader, "resolve",
+                        lambda self, name: type("Resolution", (), {"manifest": manifest})())
+    monkeypatch.setattr(stable, "read_manifest", lambda *a, **k: pytest.fail("no candidate manifest to read"))
+    claim = {"policy": "channel", "channel": "review", "claim_tag": CHANNEL_NEXT}
+    assert stable._published_baseline({"GITHUB_REPOSITORY": "example/project"}, BASE, claim) is None
 
 
 def test_gate_excuses_an_upgrade_arm_only_for_its_planners_no_baseline_output():

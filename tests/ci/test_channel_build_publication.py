@@ -9,7 +9,7 @@ import hermes_yaml
 import pytest
 
 from hermes_cli.release_channels import ChannelError, canonical_json
-from scripts.releases import channel_claims, lanes as lane_set
+from scripts.releases import channel_claims
 from tests.ci.desktop_release_roles import (
     DOWNLOADABLE_DISPATCHES, admitted, gate, native_builds, stage_step,
 )
@@ -69,8 +69,8 @@ def claim_publication(monkeypatch, tmp_path):
     publisher = Publisher(store)
     feed = tmp_path / "darwin" / "stable-mac.yml"
     seen = {"put": []}
-    monkeypatch.setattr(stable, "check_claim", lambda env: {"policy": env.get("POLICY", "channel"),
-                                                           "claim_tag": CLAIM, "commit": SHA, "channel": "preview"})
+    claim = {"claim_tag": CLAIM, "commit": SHA, "channel": "preview", "require_green": False}
+    monkeypatch.setattr(stable, "check_claim", lambda env: {**claim, "policy": env.get("POLICY", "channel")})
     monkeypatch.setattr(channel_claims, "require_admitted_request", lambda tag, claim, env: request)
 
     def make_publisher(env, actions):
@@ -101,9 +101,10 @@ def claim_publication(monkeypatch, tmp_path):
         store.put(key, Path(file).read_bytes())
 
     monkeypatch.setattr(r2, "put", put)
+    needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
+             "acceptance": {"result": "failure"}, "upgrade-arms": {"result": "success"}}
     return {"request": request, "store": store, "publisher": publisher, "seen": seen, "windows": windows,
-            "env": {"CANDIDATE_MANIFEST_SHA256": "c" * 64,
-                    "RELEASE_NEEDS": json.dumps({arm: {"result": "success"} for arm in lane_set.UPGRADE_ARMS})},
+            "claim": claim, "env": {"CANDIDATE_MANIFEST_SHA256": "c" * 64, "RELEASE_NEEDS": json.dumps(needs)},
             "root": tmp_path}
 
 
@@ -129,9 +130,14 @@ def test_publish_claim_refuses_other_bytes_other_versions_and_other_policies(cla
     run = claim_publication
     # Whatever its green policy, an upgrade arm that ran and failed holds the channel before any write.
     for result in ("failure", "cancelled"):
-        failed = json.dumps({**json.loads(run["env"]["RELEASE_NEEDS"]), "macos-packaged-arm64": {"result": result}})
-        with pytest.raises(ValueError, match=f"macos-packaged-arm64={result}"):
+        failed = json.dumps({**json.loads(run["env"]["RELEASE_NEEDS"]), "upgrade-arms": {"result": result}})
+        with pytest.raises(ValueError, match=f"upgrade-arms={result}"):
             channel_claims.publish_claim({**run["env"], "RELEASE_NEEDS": failed}, run["root"])
+    # A claim that requires green waits for every suite (here acceptance is red), like a canary's.
+    run["claim"]["require_green"] = True
+    with pytest.raises(ValueError, match="acceptance=failure"):
+        channel_claims.publish_claim(run["env"], run["root"])
+    run["claim"]["require_green"] = False
     assert run["seen"]["put"] == [] and run["store"].objects == {}
     prefix = "releases/channel-builds/" + "b" * 32 + "/"
     run["store"].put(prefix + "build.json", b"someone else's manifest")
@@ -143,6 +149,44 @@ def test_publish_claim_refuses_other_bytes_other_versions_and_other_policies(cla
     with pytest.raises(ChannelError, match="channel claims only"):
         channel_claims.publish_claim({**run["env"], "POLICY": "canary"}, run["root"])
     assert run["publisher"].promoted == []
+
+
+def test_channel_claims_create_allocate_and_promote_only_preview_channels(monkeypatch):
+    """Admission may create and allocate, publish-channel may only promote, and neither ever acts on
+    a protected (stable or canary) channel."""
+    from scripts.releases import r2
+
+    monkeypatch.setattr(r2, "credentials", lambda: ({}, "https://r2.example", "bucket"))
+    monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", "https://archive.example")
+    env = {"GITHUB_REPOSITORY": "example/hermes-agent"}
+    for publisher, allowed in ((channel_claims._publisher(env), {"create", "allocate"}),
+                               (channel_claims._publisher(env, frozenset({"promote"})), {"promote"})):
+        for action in ("create", "allocate", "promote", "bootstrap"):
+            if action in allowed:
+                publisher.authorize(action, {"policy": "preview"})
+            else:
+                with pytest.raises(ValueError, match=f"may not {action} on a preview channel"):
+                    publisher.authorize(action, {"policy": "preview"})
+            for policy in ("stable-release", "canary-release"):
+                with pytest.raises(ValueError, match=f"may not {action} on a {policy} channel"):
+                    publisher.authorize(action, {"policy": policy})
+
+
+@pytest.mark.parametrize("policy", ["stable", "canary", "commit"])
+def test_only_a_channel_claims_legs_build_a_channel_request(monkeypatch, tmp_path, policy):
+    from scripts.releases import stable
+
+    claim_tag = "rc.1-v1.2.3" if policy == "stable" else f"{policy}.20261028T120000Z-v1.2.3"
+    tag = "v1.2.3" if policy == "stable" else claim_tag
+    monkeypatch.setattr(stable, "check_claim", lambda env, run=None: {
+        "policy": policy, "tag": tag, "claim_tag": claim_tag, "commit": SHA, "claim_epoch": 1, "bundle_env": {}})
+    env = {"RELEASE_TAG": tag, "BUNDLE_ENV_JSON": "{}", "GITHUB_OUTPUT": str(tmp_path / "output")}
+    for request in ({"CHANNEL_BUILD": "b" * 32}, {"CHANNEL_REQUEST_SHA256": "c" * 64}):
+        with pytest.raises(ValueError, match="Only a channel claim builds a channel request"):
+            stable.verify({**env, **request})
+    assert not (tmp_path / "output").exists()
+    stable.verify(env)
+    assert f"channel={policy}" in (tmp_path / "output").read_text(encoding="utf-8")
 
 
 def test_admission_probes_cas_and_public_readback_on_the_real_channel():

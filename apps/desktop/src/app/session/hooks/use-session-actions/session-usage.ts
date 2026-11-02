@@ -1,4 +1,4 @@
-import { $sessions, sessionMatchesStoredId, setCurrentBranch, setCurrentUsage, setSessionStartedAt } from '@/store/session'
+import { setCurrentBranch, setCurrentUsage, setSessionStartedAt } from '@/store/session'
 import type { UsageStats } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -10,13 +10,11 @@ export function publishSessionUsage(usage: null | UsageStats | undefined) {
   setCurrentUsage(usage ?? { calls: 0, input: 0, output: 0, total: 0 })
 }
 
-// No reading yet (agentless since a gateway restart): the stored row's token totals, the same ones a
-// cold open paints, rather than zeros.
-function storedTotals(storedSessionId: null | string | undefined): null | UsageStats {
-  const row = storedSessionId
-    ? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
-    : undefined
+type StoredTotals = { input_tokens?: null | number; output_tokens?: null | number } | null | undefined
 
+// No reading yet (agentless since a gateway restart): the resolved stored row's token totals (Recents,
+// cron, messaging or project rows alike), the same ones a cold open paints, rather than zeros.
+function storedTotals(row: StoredTotals): null | UsageStats {
   if (!row) {
     return null
   }
@@ -29,8 +27,8 @@ function storedTotals(storedSessionId: null | string | undefined): null | UsageS
 
 /** Warm switch: the cached runtime is this conversation's own truth, so its branch, clock and last
  *  usage reading paint at once instead of after its next turn. */
-export function publishWarmSessionRuntime(state: ClientSessionState) {
+export function publishWarmSessionRuntime(state: ClientSessionState, stored?: StoredTotals) {
   setCurrentBranch(state.branch)
   setSessionStartedAt(state.runtimeStartedAt)
-  publishSessionUsage(state.usage ?? storedTotals(state.storedSessionId))
+  publishSessionUsage(state.usage ?? storedTotals(stored))
 }

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { $currentUsage, $sessions, setCurrentUsage } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import { $currentUsage, setCurrentUsage } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -32,16 +31,13 @@ describe('statusbar usage follows the session switched to', () => {
     publishWarmSessionRuntime({ branch: '', runtimeStartedAt: null, usage: null } as unknown as ClientSessionState)
     expect(readouts()).toEqual({})
 
-    // Agentless reopen (no reading since a gateway restart): its stored totals, never zeros.
-    $sessions.set([{ id: 'session-b', input_tokens: 700, output_tokens: 80 } as SessionInfo])
-    publishWarmSessionRuntime({
-      branch: '',
-      runtimeStartedAt: null,
-      storedSessionId: 'session-b',
-      usage: null
-    } as unknown as ClientSessionState)
+    // Agentless reopen (no reading since a gateway restart): the resolved row's totals, never zeros, and
+    // whichever list the row came from (a cron or messaging row is not in Recents).
+    publishWarmSessionRuntime({ branch: '', runtimeStartedAt: null, usage: null } as unknown as ClientSessionState, {
+      input_tokens: 700,
+      output_tokens: 80
+    })
     expect($currentUsage.get()).toEqual({ calls: 0, input: 700, output: 80, total: 780 })
-    $sessions.set([])
   })
 
   it('clears the previous readouts when the resume snapshot omits them', () => {

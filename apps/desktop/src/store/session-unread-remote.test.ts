@@ -14,7 +14,13 @@ vi.mock('@/hermes', () => ({
 
 import { $sessions } from '@/store/session'
 
-import { $unreadWriteGuard, clearUnreadOnOpen, markSessionUnread, watchUnreadWriteGuard } from './session-unread-remote'
+import {
+  $unreadWriteGuard,
+  clearUnreadOnOpen,
+  markSessionUnread,
+  persistUnreadOnBackgroundFinish,
+  watchUnreadWriteGuard
+} from './session-unread-remote'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -109,5 +115,37 @@ describe('watchUnreadWriteGuard', () => {
     $sessions.set([row('a', { unread: false })])
 
     expect($unreadWriteGuard.get().has('a')).toBe(true)
+  })
+})
+
+describe('persistUnreadOnBackgroundFinish', () => {
+  it('PATCHes unread=true so Focus can paint the same green dot', async () => {
+    $sessions.set([row('a', { profile: 'work', unread: false })])
+
+    await persistUnreadOnBackgroundFinish('a')
+
+    expect(patch).toHaveBeenCalledWith('a', true, 'work')
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
+  })
+
+  it('no-ops when the row is already persisted unread', async () => {
+    $sessions.set([row('a', { unread: true })])
+
+    await persistUnreadOnBackgroundFinish('a')
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('no-ops for a runtime-only session with no persisted row', async () => {
+    await persistUnreadOnBackgroundFinish('ghost')
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('swallows a failed PATCH so the local marker still paints', async () => {
+    $sessions.set([row('a', { unread: false })])
+    patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
+
+    await expect(persistUnreadOnBackgroundFinish('a')).resolves.toBeUndefined()
   })
 })

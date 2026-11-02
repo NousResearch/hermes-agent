@@ -238,3 +238,47 @@ def test_termux_chat_shortcut_leaves_subcommands_to_dispatch(monkeypatch, argv):
     monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
     monkeypatch.setattr(sys, "argv", ["hermes", *argv])
     assert main._try_termux_fast_cli_launch() is False
+
+
+@pytest.mark.parametrize("argv", [
+    ["gateway", "--oneshot"],
+    ["gateway", "status", "-z", "noop"],
+    ["update", "--oneshot=now"],
+    ["--not-a-real-flag"],
+    ["chat", "--not-a-real-flag"],
+])
+def test_termux_fast_cli_does_not_steal_other_commands(monkeypatch, argv):
+    """A chat-only flag on a subcommand, or a flag the light parser does not know,
+    must fall through. The old `-z`/`--oneshot` bypass parsed those with the chat
+    parser and SystemExit'd before `gateway`/`update` could run."""
+    from hermes_cli import main
+
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
+
+    def _refuse_chat(args):
+        raise AssertionError("chat launched")
+
+    monkeypatch.setattr(main, "cmd_chat", _refuse_chat)
+    assert main._try_termux_fast_cli_launch() is False
+
+
+def test_termux_fast_cli_still_dispatches_top_level_oneshot(monkeypatch):
+    from hermes_cli import main
+
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "-z", "hello"])
+    seen = []
+
+    def _run(args):
+        seen.append(args)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main, "_prepare_agent_startup", lambda args: None)
+    monkeypatch.setattr(main, "_run_oneshot_from_args", _run)
+    with pytest.raises(SystemExit) as caught:
+        main._try_termux_fast_cli_launch()
+    assert caught.value.code == 0
+    assert [item.oneshot for item in seen] == ["hello"]

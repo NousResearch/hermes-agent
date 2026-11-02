@@ -183,10 +183,11 @@ class TestFallbackMirrorEndToEnd:
 
 
         def fake_mirror(platform, chat_id, text, source_label="cli",
-                        thread_id=None, user_id=None, role="assistant"):
+                        thread_id=None, user_id=None, role="assistant", session_id=None):
             mirror_calls.append({
                 "platform": platform, "chat_id": chat_id,
                 "thread_id": thread_id, "user_id": user_id, "role": role,
+                "session_id": session_id,
             })
             return True
 

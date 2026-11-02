@@ -191,20 +191,33 @@ def _cron_mirror_message(job: dict, text: str) -> str:
     return f"[Cron delivery: {_cron_display_name(job)}]\n{text}"
 
 
+def _local_mirror_session_id(platform_name: str, chat_id) -> Optional[str]:
+    """The transcript a local-origin mirror must append to, addressed directly.
+
+    A ``local`` conversation's ``chat_id`` IS its session id (``gateway/session_local``), and the
+    origin scan only admits OPEN, keyed sessions — so a desktop chat that has been closed (the app
+    was quit, or the chat sat idle past an end) silently dropped every later cron mirror. The
+    desktop already resumes a closed local chat under the SAME id (``SessionDB.reopen_session``),
+    so the id stays the reply surface; append to it whether it is open or not. Returns ``None`` for
+    every other platform, where the origin scan is the correct resolver."""
+    return str(chat_id) if str(platform_name or "").lower() == "local" and chat_id else None
+
+
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
     user_id: Optional[str] = None, *, enabled: bool = False,
-) -> None:
+) -> bool:
     """Best-effort mirror of a cron delivery into the origin chat's session. No-op unless
     ``enabled`` (caller resolves it, scoped to the origin target). Rides the same
     ``mirror_to_session`` path as ``send_message``, passing ``user_id`` so user-isolated group
     chats resolve to the scheduling member. All failures swallowed — a successful delivery must
-    never be reported failed because the mirror broke."""
+    never be reported failed because the mirror broke. Returns whether the transcript actually got
+    the brief — the local lane uses that answer when the chat has no owning gateway to admit a note."""
     if not enabled:
-        return
+        return False
     text = (mirror_text or "").strip()
     if not text:
-        return
+        return False
     try:
         from gateway.mirror import mirror_to_session
         # USER role + labelled prefix, NOT assistant: an assistant-role mirror lands
@@ -216,7 +229,8 @@ def _maybe_mirror_cron_delivery(
         # SQLite mirror metadata would otherwise lose on replay.
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
-            source_label="cron", thread_id=thread_id, user_id=user_id, role="user")
+            source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+            session_id=_local_mirror_session_id(platform_name, chat_id))
         if ok:
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
@@ -226,11 +240,13 @@ def _maybe_mirror_cron_delivery(
                 "Job '%s': delivery mirror skipped for %s:%s "
                 "(no matching gateway session — cold start)",
                 job.get("id", "?"), platform_name, chat_id)
+        return bool(ok)
     except Exception as e:
         logger.debug(
             "Job '%s': delivery mirror failed for %s:%s: %s", job.get("id", "?"), platform_name,
             chat_id, e,
         )
+        return False
 
 
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
@@ -1906,7 +1922,20 @@ def _deliver_result(
             local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
                                                 cleaned_delivery_content, diagnostic=for_failure)
             if local_error:
-                delivery_errors.append(local_error)
+                # A local chat has no push transport: its transcript IS the delivery. Outside the
+                # owning gateway (a manual fire from the dashboard process, a CLI `cron run`) no
+                # admission can be made, and refusing the whole run there loses the brief the chat
+                # was supposed to show. Write it into the history instead — the same append the
+                # continuable-job mirror makes — and only keep the error if that lands nowhere.
+                origin = _resolve_origin(job) or {}
+                mirrored = _maybe_mirror_cron_delivery(
+                    job, "local", target["chat_id"], mirror_text,
+                    user_id=origin.get("user_id") if _target_matches_origin(
+                        origin, "local", target["chat_id"], target.get("thread_id")) else None,
+                    enabled=mirror_enabled and _target_mirror_eligible(
+                        job, target, global_mirror=mirror_enabled))
+                if not mirrored:
+                    delivery_errors.append(local_error)
             continue
 
         t = _prepare_target_delivery(

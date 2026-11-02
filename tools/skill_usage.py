@@ -366,15 +366,20 @@ def _report_row(name: str, raw: Any, **extra: Any) -> dict[str, Any]:
     return row
 
 
+def _load_usage_strict() -> dict[str, dict[str, Any]]:
+    """The map, raising on an UNREADABLE sidecar (a missing file is still {}); non-dict values dropped."""
+    path = _usage_file()
+    data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
 def load_usage() -> dict[str, dict[str, Any]]:
     """The whole .usage.json map (non-dict values dropped); {} on missing/corrupt."""
-    path = _usage_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+        return _load_usage_strict()
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug("Failed to read %s: %s", path, e)
+        logger.debug("Failed to read %s: %s", _usage_file(), e)
         return {}
-    return {str(k): v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
 def save_usage(data: dict[str, dict[str, Any]]) -> bool:
@@ -597,9 +602,12 @@ def is_locked(skill_name: str) -> bool:
     return bool(rec.get("locked")) if isinstance(rec, dict) else False
 
 
-def locked_skill_names() -> list[str]:
-    """Names carrying ``locked: true`` (best-effort listing; empty on a corrupt sidecar)."""
-    return sorted(name for name, rec in load_usage().items() if rec.get("locked"))
+def locked_skill_names(strict: bool = False) -> list[str]:
+    """Names carrying ``locked: true``. Best-effort by default (a corrupt sidecar reads as []), because
+    listings and curator rows must not break; *strict* re-raises instead, for the write guards, which
+    cannot read an unknown lock set as "nothing is locked" (#147986)."""
+    data = _load_usage_strict() if strict else load_usage()
+    return sorted(name for name, rec in data.items() if rec.get("locked"))
 
 
 def forget(skill_name: str) -> None:

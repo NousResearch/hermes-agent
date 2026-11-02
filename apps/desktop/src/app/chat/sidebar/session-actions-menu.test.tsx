@@ -80,6 +80,7 @@ vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
+  applyRenamedSessionTitle: vi.fn(),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
   projectRootCwd: vi.fn(() => ''),
@@ -93,10 +94,15 @@ vi.mock('@/store/session', () => ({
   $selectedStoredSessionId: atom<null | string>(null),
   $sessions: atom<unknown[]>([]),
   $unreadFinishedSessionIds: atom<string[]>([]),
+  applySessionTitle: vi.fn(),
   markSessionRead: vi.fn(),
   sessionMatchesStoredId: vi.fn(() => false),
   sessionPinId: vi.fn((s: { id: string }) => s.id),
   setSessions: vi.fn()
+}))
+vi.mock('@/store/session-sync', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/store/session-sync')>()),
+  broadcastSessionsChanged: vi.fn()
 }))
 vi.mock('@/store/session-color', () => ({
   $sessionColorOverrides: atom<Record<string, string>>({}),
@@ -199,6 +205,44 @@ describe('SessionActionsMenu', () => {
     await waitFor(() => {
       expect(renameSession).toHaveBeenCalledWith('s1', 'Prep Butler', 'personal')
     })
+  })
+
+  it('refreshes the session list and broadcasts after a successful rename', async () => {
+    const { renameSession } = await import('@/hermes')
+    vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
+    const { $sessionsListRefresh, broadcastSessionsChanged } = await import('@/store/session-sync')
+    const before = $sessionsListRefresh.get()
+
+    render(
+      <SessionActionsMenu sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const rename = await screen.findByRole('menuitem', { name: /rename/i })
+    fireEvent.click(rename)
+
+    const dialog = await screen.findByRole('dialog')
+    const input = within(dialog).getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'Prep Butler' } })
+
+    const save = within(dialog).getByRole('button', { name: /save/i })
+    fireEvent.click(save)
+
+    // The optimistic patches only cover the loaded slices — a row aged out of
+    // the recents page matched nothing and stayed stale until the next poll.
+    // The dialog must nudge the list controller and tell the other windows.
+    await waitFor(() => {
+      expect($sessionsListRefresh.get()).toBe(before + 1)
+    })
+    expect(broadcastSessionsChanged).toHaveBeenCalled()
   })
 
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {

@@ -603,17 +603,13 @@ def test_an_empty_head_answer_keeps_the_marker(tmp_path, monkeypatch, capsys):
     marker for the next launch instead of reading as "the update finished"."""
     root, pre, target = _broken_release(tmp_path, 5)
     marker = _rollback_marker(root, pre, target)
-    stub = tmp_path / "silent-git"
-    stub.write_text("", encoding="utf-8")
-    monkeypatch.setattr(er, "_git_executable", lambda recorded="": str(stub))
-    real_run = subprocess.run
+    from hermes_cli import update_custody
 
-    def silent(argv, *args, **kwargs):  # every git call "succeeds" with no output
-        if argv and argv[0] == str(stub):
-            return subprocess.CompletedProcess(argv, 0, "", "")
-        return real_run(argv, *args, **kwargs)
+    def silent(git_cmd, args, **kwargs):
+        assert args == ["rev-parse", "HEAD"]
+        return subprocess.CompletedProcess(git_cmd + args, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", silent)
+    monkeypatch.setattr(update_custody, "run_git", silent)
     assert er.restore_interrupted_pull(root) is False
     assert marker.exists(), "an empty `rev-parse HEAD` deleted the marker over a torn tree"
     assert "Could not read HEAD" in capsys.readouterr().err

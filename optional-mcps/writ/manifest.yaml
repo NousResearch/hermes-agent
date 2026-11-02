@@ -15,7 +15,7 @@ transport:
   type: stdio
   command: uvx
   args:
-    - writ-mcp==0.1.3
+    - writ-mcp==0.2.0
   env:
     WRIT_API_KEY: "${WRIT_API_KEY}"
     WRIT_SPONSOR_TOKEN: "${WRIT_SPONSOR_TOKEN}"

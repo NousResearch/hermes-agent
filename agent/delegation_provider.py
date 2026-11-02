@@ -29,10 +29,11 @@ Route vocabulary (:meth:`DelegationProvider.route_task` returns a dict with any 
 * ``label`` - short text shown with the child's progress and result (e.g. the option title).
 * ``max_iterations`` - a whole number of 1 or more: the turn limit for this child. It replaces
   ``delegation.max_iterations`` for this task only. Any other value refuses the task. A profile
-  route ignores it.
+  route ignores it: that child uses the profile's own ``delegation.max_iterations`` (default 250).
 * ``child_timeout_seconds`` - a number of 0 or more: the idle timeout for this child, with the same
   meaning as ``delegation.child_timeout_seconds`` (0 disables, floor 30 s). It replaces the global
-  value for this task only. Any other value refuses the task. A profile route ignores it.
+  value for this task only. Any other value refuses the task. A profile route ignores it: that
+  child uses the profile's own ``delegation.child_timeout_seconds`` (default: no idle timeout).
 
 A backend's own settings live under ``delegation.backends.<backend name>`` (:meth:`DelegationProvider.settings`),
 never beside the core ``delegation`` keys.

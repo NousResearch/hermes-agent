@@ -132,7 +132,9 @@ A route is a dict with any of:
 
 Unknown keys are dropped. On a profile route, `service_tier` and `reasoning_effort` are ignored too.
 A `max_iterations` or `child_timeout_seconds` that is not a valid value refuses the task with a tool
-error, like a bad `reasoning_effort`. A profile route ignores both.
+error, like a bad `reasoning_effort`. A profile route ignores both: its child uses the profile's own
+`delegation.max_iterations` and `delegation.child_timeout_seconds` (defaults: 250 turns, no idle
+timeout), never the launching profile's.
 
 A non-profile route without `fallback_providers` of its own gets `delegation.fallback_providers`; return
 `"fallback_providers": []` to disable fallback for a route. A profile route keeps its profile's chain.

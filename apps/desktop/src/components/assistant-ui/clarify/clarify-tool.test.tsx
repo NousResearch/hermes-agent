@@ -1123,9 +1123,9 @@ describe('ClarifyTool batch card', () => {
       />
     )
 
-    expect(screen.getByText('Color?')).toBeTruthy()
-    expect(screen.getByText('red')).toBeTruthy()
-    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('Color?').hasAttribute('data-bidi-prose')).toBe(true)
+    expect(screen.getByText('red').hasAttribute('data-bidi-prose')).toBe(true)
+    expect(screen.getByText('Name?').hasAttribute('data-bidi-prose')).toBe(true)
     expect(screen.getByText('Skipped')).toBeTruthy()
   })
 })

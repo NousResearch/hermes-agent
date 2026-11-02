@@ -361,6 +361,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
   that wants the answer inline instead of a mounted dialog calls `confirm()`
   from `src/store/confirm.ts`, which renders this same primitive through the
   single `ConfirmHost` at the shell — the way `notify()` backs notifications.
+- **Mixed-direction copy:** `DialogTitle`/`DialogDescription` and clarify question,
+  choice, and settled-answer text use `[data-bidi-prose]` (`src/styles.css`):
+  first-strong direction and start alignment belong to each text block, never
+  to its dialog, icon/shortcut row, or buttons. Clarify free-text answers use
+  `dir="auto"` on their textarea only. Code/config inputs and chrome are
+  untouched; this contract changes neither fonts nor layout direction.
 
 ## Chat typography
 

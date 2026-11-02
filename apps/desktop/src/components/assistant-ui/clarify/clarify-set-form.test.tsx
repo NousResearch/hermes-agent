@@ -59,6 +59,21 @@ const locks = (request: ReturnType<typeof vi.fn>) =>
   request.mock.calls.filter(call => call[0] === 'clarify.lock').map(call => [call[1].question_id, call[1].answer])
 
 describe('a multi-question clarify set is one form', () => {
+  it('keeps direction local to each Persian/English question, choice and draft', () => {
+    renderSet([
+      { choices: ['production', 'محیط staging'], multiSelect: false, qid: 'q0', question: 'کدام project؟' },
+      { choices: null, multiSelect: false, qid: 'q1', question: 'Name یا عنوان؟' }
+    ])
+
+    expect(screen.getByText('کدام project؟').hasAttribute('data-bidi-prose')).toBe(true)
+    expect(screen.getByText('محیط staging').closest('[data-bidi-prose]')).toBeTruthy()
+    expect(screen.getByText('production').closest('[data-bidi-prose]')).toBeTruthy()
+    expect(
+      screen.getAllByPlaceholderText(/Type your answer/).every(field => field.getAttribute('dir') === 'auto')
+    ).toBe(true)
+    expect(screen.getByText('کدام project؟').closest('form')?.hasAttribute('dir')).toBe(false)
+  })
+
   it('shows every question at once with one submit', () => {
     renderSet()
 

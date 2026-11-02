@@ -1861,6 +1861,15 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* User-facing prose outside the transcript (dialog copy and clarify cards)
+   follows the same first-strong-character rule as chat. Keep this on the text
+   node, not a dialog/choice row: direction:rtl or dir=auto on a flex container
+   would also reverse its icons, shortcut badges, and button order. */
+[data-bidi-prose] {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
 /* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
    Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
    makes shared codepoints (…—“”) render full-width. */

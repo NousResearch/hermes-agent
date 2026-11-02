@@ -294,7 +294,7 @@ def test_source_checkout_channel_follows_its_branch_never_its_remote(tmp_path, m
     assert install.release_channel({}) == channel
 
 
-@pytest.mark.parametrize(("tag", "channel"), [("v0.13.0", "stable"), ("v0.13.0+canary.20260927T120000Z", "main")])
+@pytest.mark.parametrize(("tag", "channel"), [("v0.13.0", "stable"), ("canary.20260927T120000Z-v0.13.0", "main")])
 def test_packaged_build_channel_is_its_baked_channel_not_its_branch(tmp_path, monkeypatch, tag, channel):
     from hermes_cli.update_channel import is_canary_tag
 

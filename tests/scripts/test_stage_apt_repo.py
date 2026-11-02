@@ -86,7 +86,13 @@ def test_two_attempts_of_one_version_use_different_pool_keys(tmp_path):
     assert keys == {"rc.1-v0.21.5", "rc.2-v0.21.5"}
 
 
-@pytest.mark.parametrize("subdir", ["../x", "v0.21.5", "rc.1-v0.21.5/x", ""])
+@pytest.mark.parametrize("subdir", [
+    "../x", "v0.21.5", "rc.1-v0.21.5/x", "",
+    # Canary-shaped near misses: a path below the tag, a short stamp, a trailing newline, the
+    # retired suffix shape.
+    "canary.20261021T064100Z-v0.21.5/x", "canary.2026-v0.21.5", "canary.20261021T064100Z-v0.21.5\n",
+    "v0.21.5+canary.20261021T064100Z",
+])
 def test_pool_subdir_rejects_non_attempt_refs(tmp_path, subdir):
     pool = tmp_path / "pool-in"
     pool.mkdir()
@@ -96,6 +102,59 @@ def test_pool_subdir_rejects_non_attempt_refs(tmp_path, subdir):
             _stage(pool, tmp_path / "repo", "hermes-stable", pool_subdir=subdir)
     else:
         assert _stage(pool, tmp_path / "repo", "hermes-stable", pool_subdir=subdir) == 3
+
+
+CANARY_CLAIM = "canary.20261021T064100Z-v0.21.5"
+
+
+def test_a_canary_claim_keys_the_canary_pool(tmp_path):
+    """A canary's claim tag is its own release tag, so it prefixes its pool like an attempt ref."""
+    pool = tmp_path / "pool-in"
+    pool.mkdir()
+    make_deb(pool / "hermes-agent_0.21.5_aarch64.deb", "hermes-agent", "0.21.5~canary.20261021T064100Z-1")
+    out = tmp_path / "repo"
+    assert _stage(pool, out, "hermes-canary", pool_subdir=CANARY_CLAIM) == 3
+    (key,) = _pool_keys(out, "hermes-canary")
+    assert key.startswith(f"pool/{CANARY_CLAIM}/")
+    assert (out / key).is_file()
+
+
+@pytest.mark.parametrize("subdir,suite", [(CANARY_CLAIM, "hermes-stable"), ("rc.1-v0.21.5", "hermes-canary")])
+def test_a_claim_stages_only_its_own_suite(tmp_path, subdir, suite):
+    pool = tmp_path / "pool-in"
+    pool.mkdir()
+    make_deb(pool / "hermes-agent_0.21.5_aarch64.deb", "hermes-agent", "0.21.5-1")
+    with pytest.raises(SystemExit):
+        _stage(pool, tmp_path / "repo", suite, pool_subdir=subdir)
+    assert not list((tmp_path / "repo").rglob("*.deb"))
+
+
+@pytest.mark.parametrize("claim", ["rc.1-v0.21.5", CANARY_CLAIM])
+def test_the_candidate_workflow_stages_each_claim_into_its_channel(tmp_path, claim):
+    """The Termux candidate job's own arguments, for a stable attempt and a canary claim.
+
+    Stable Release passes its claim tag as the pool prefix and derives the suite from the payload
+    tag (deb_version.py --channel); for a canary the claim *is* the payload tag.
+    """
+    from ruamel.yaml import YAML
+    from scripts.termux.deb_version import channel_for_tag
+
+    jobs = YAML(typ="base").load((REPO_ROOT / ".github/workflows/desktop-bundled-release.yml")
+                                 .read_text(encoding="utf-8"))["jobs"]
+    steps = [step for job in jobs.values() for step in job.get("steps", [])]
+    stage_step = next(step for step in steps if step.get("name") == "Stage the APT repo and publish to R2")
+    derive = next(step for step in steps if step.get("name") == "Derive the channel from the tag")
+    assert 'deb_version.py --channel "$TAG"' in derive["run"]
+    assert '--suite "hermes-$CHANNEL"' in stage_step["run"]
+    assert 'stage_args+=(--pool-subdir "$RELEASE_CLAIM_TAG")' in stage_step["run"]
+    assert stage_step["env"]["RELEASE_CLAIM_TAG"] == "${{ inputs.claim-tag }}"
+    payload = "v0.21.5" if claim.startswith("rc.") else claim
+    pool = tmp_path / "pool-in"
+    pool.mkdir()
+    make_deb(pool / "hermes-agent_0.21.5_aarch64.deb", "hermes-agent", "0.21.5-1")
+    suite = f"hermes-{channel_for_tag(payload)}"
+    assert _stage(pool, tmp_path / "repo", suite, pool_subdir=claim) == 3
+    assert {key.split("/")[1] for key in _pool_keys(tmp_path / "repo", suite)} == {claim}
 
 
 def test_canary_versions_below_stable():

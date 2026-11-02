@@ -49,7 +49,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     run_url = "https://github.example/o/r/actions/runs/12345"
     base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
     channel_key = "releases/canary/index.html"
-    previous = b'<meta name="hermes-build" content="v0.27.0+canary.20260817T101010Z">'
+    previous = b'<meta name="hermes-build" content="canary.20260817T101010Z-v0.27.0">'
     r2_server.store[channel_key] = (previous, "text/html")
     helper = tmp_path / "bin"
     helper.mkdir()

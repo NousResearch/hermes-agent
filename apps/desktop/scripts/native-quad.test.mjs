@@ -10,22 +10,24 @@ const EPOCH = Date.parse('2026-09-22T00:14:03Z') / 1000
 
 test('stable keeps the store quad while canary uses yy.mmdd.hh.mmss', () => {
   assert.equal(nativeQuad('v0.21.5', EPOCH), '2026.6336.843.0')
-  assert.equal(nativeQuad('v0.21.4+canary.20260922T001403Z', EPOCH), '26.922.0.1403')
+  assert.equal(nativeQuad('canary.20260922T001403Z-v0.21.4', EPOCH), '26.922.0.1403')
 })
 
 test('historical release identities are rejected', () => {
+  // The retired suffix shape and its dash spelling are no longer release identities.
+  assert.throws(() => nativeQuad('v0.21.4+canary.20260922T001403Z', EPOCH))
   assert.throws(() => nativeQuad('v0.21.4-canary.20260922T001403Z', EPOCH))
   assert.throws(() => nativeQuad('v2026.9.21', EPOCH))
-  assert.throws(() => nativeQuad('v2026.9.21+canary.20260922T001403Z', EPOCH))
+  assert.throws(() => nativeQuad('canary.20260922T001403Z-v2026.9.21', EPOCH))
 })
 
 test('a later canary sorts above an earlier canary across a month boundary', () => {
   const earlier = nativeQuad(
-    'v0.21.4+canary.20260131T235959Z',
+    'canary.20260131T235959Z-v0.21.4',
     Date.parse('2026-01-31T23:59:59Z') / 1000
   ).split('.').map(Number)
   const later = nativeQuad(
-    'v0.21.4+canary.20260201T000000Z',
+    'canary.20260201T000000Z-v0.21.4',
     Date.parse('2026-02-01T00:00:00Z') / 1000
   ).split('.').map(Number)
   const first = later.findIndex((value, index) => value !== earlier[index])
@@ -35,7 +37,7 @@ test('a later canary sorts above an earlier canary across a month boundary', () 
 
 test('every field stays inside 16 bits', () => {
   for (const stamp of ['2026-01-01T00:00:00Z', '2026-12-31T23:59:59Z', '2028-12-31T23:59:59Z']) {
-    for (const ref of ['v0.21.5', `v0.21.4+canary.${stamp.replace(/[-:]/g, '').replace('.000', '')}`]) {
+    for (const ref of ['v0.21.5', `canary.${stamp.replace(/[-:]/g, '').replace('.000', '')}-v0.21.4`]) {
       const parts = nativeQuad(ref, Date.parse(stamp) / 1000).split('.').map(Number)
       assert.equal(parts.length, 4)
       assert.ok(parts.every(value => value >= 0 && value <= 65535))

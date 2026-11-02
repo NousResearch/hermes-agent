@@ -60,6 +60,7 @@ async def test_send_delegates_to_replacement_adapter_installed_mid_wait():
 
     runner = MagicMock()
     runner.adapters = {}
+    runner._adapters_for_profile = lambda _profile: runner.adapters
     old.gateway_runner = runner
 
     async def install_replacement() -> None:
@@ -82,6 +83,7 @@ async def test_send_delegates_immediately_when_replacement_already_live():
     live._bot = _connected_bot()
     runner = MagicMock()
     runner.adapters = {old.platform: live}
+    runner._adapters_for_profile = lambda _profile: runner.adapters
     old.gateway_runner = runner
     old._wait_for_reconnection = AsyncMock(
         side_effect=AssertionError("must not wait when replacement is already live")
@@ -146,3 +148,48 @@ async def test_reset_after_the_request_was_written_is_never_resent():
     adapter._bot.send_message = AsyncMock(side_effect=[refused, MagicMock(message_id=9)])
     with patch("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock()):
         assert (await adapter.send("4242", "hello")).success  # never left: retried and delivered
+
+
+def test_replacement_lookup_stays_inside_the_adapters_own_profile():
+    """#143364: a torn-down secondary must never borrow the primary's bot.
+
+    ``runner.adapters`` holds only the primary map; the replacement lookup
+    goes through ``_adapters_for_profile(owner)`` so a secondary with no
+    live replacement fails closed instead of sending under the default
+    profile's identity."""
+    secondary = _make_adapter()
+    secondary._bot = None
+    secondary._owner_profile = "yori"
+
+    primary_live = _make_adapter()
+    primary_live._bot = _connected_bot()
+
+    asked = []
+
+    def _for_profile(profile):
+        asked.append(profile)
+        # The gate answers {} for a named profile with no live adapter.
+        return {} if profile == "yori" else {secondary.platform: primary_live}
+
+    runner = MagicMock()
+    runner.adapters = {secondary.platform: primary_live}
+    runner._adapters_for_profile = _for_profile
+    secondary.gateway_runner = runner
+
+    assert secondary._replacement_telegram_adapter() is None
+    assert asked == ["yori"]
+
+
+def test_replacement_lookup_returns_same_profile_replacement():
+    secondary = _make_adapter()
+    secondary._bot = None
+    secondary._owner_profile = "yori"
+
+    replacement = _make_adapter()
+    replacement._bot = _connected_bot()
+
+    runner = MagicMock()
+    runner._adapters_for_profile = lambda _profile: {secondary.platform: replacement}
+    secondary.gateway_runner = runner
+
+    assert secondary._replacement_telegram_adapter() is replacement

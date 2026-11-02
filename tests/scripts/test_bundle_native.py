@@ -445,6 +445,28 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
 
 
+@pytest.mark.platforms("posix")
+def test_staged_cache_keeps_wheel_entries_as_links(tmp_path):
+    """uv stores each cached wheel as a relative link into ``archive-v0/``. Following it
+    shipped every unpacked wheel twice and handed the seed a directory where uv renames
+    its own link (#141891); the payload must carry the link itself."""
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "pkg").mkdir(parents=True)
+    (bucket / "pkg" / "__init__.py").write_text("shipped = True\n", encoding="utf-8")
+    wheel = cache / "wheels-v6" / "pypi" / "pkg"
+    wheel.mkdir(parents=True)
+    os.symlink("../../../archive-v0/bucket", wheel / "1.0-py3-none-any")
+
+    shipped = tmp_path / "payload" / "uv-cache"
+    native.stage_uv_cache(cache, shipped)
+
+    link = shipped / "wheels-v6" / "pypi" / "pkg" / "1.0-py3-none-any"
+    assert link.is_symlink(), "staging followed the wheel link and copied the archive again"
+    assert os.readlink(link) == "../../../archive-v0/bucket"
+    assert (link / "pkg" / "__init__.py").read_text(encoding="utf-8") == "shipped = True\n"
+
+
 SELF_BUILD_BACKEND = '''import os, zipfile
 
 
@@ -559,6 +581,12 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
         # or built: a per-install venv rebuild must not depend on network
         # reachability for any package the payload already shipped.
         assert any(shipped.rglob("wheel_proof*")), "downloadable wheels ship in the full cache"
+        # uv's wheel entries are links into archive-v0/ (POSIX); each ships as the same link.
+        for link in (path for path in cache.rglob("*") if path.is_symlink()):
+            copy = shipped / link.relative_to(cache)
+            assert copy.is_symlink() and os.readlink(copy) == os.readlink(link), copy
+        # The payload prunes its cache to the lock after staging; the rebuild below reads that.
+        native.prune_uv_cache_to_lock(shipped, project)
 
         # A fresh mutable venv rebuilds OFFLINE from the shipped cache alone.
         shutil.rmtree(cache, ignore_errors=True)

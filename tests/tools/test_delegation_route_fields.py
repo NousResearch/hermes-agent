@@ -386,7 +386,7 @@ def test_the_retry_builder_rebuilds_the_same_route_with_only_effort_and_goal_cha
         from tools.delegate_tool import delegate_task
         delegate_task(tasks=[{"goal": "original goal", "output_schema": {"type": "object"}}], parent_agent=_parent())
         (_, _, first), = batches[0].children
-        retry = first._delegate_build_retry("medium", "RETRY GOAL with handoff")
+        retry = first._delegate_build_retry("medium")
     first_kw, retry_kw = (call.kwargs for call in agent.call_args_list)
     assert first_kw["reasoning_config"] == {"enabled": True, "effort": "low"}
     assert retry_kw["reasoning_config"] == {"enabled": True, "effort": "medium"}

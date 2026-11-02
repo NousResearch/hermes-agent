@@ -148,8 +148,8 @@ def _run_direct(monkeypatch, script, *, effort="low", ceiling="high", enabled=Tr
         if ceiling is not None:
             child._delegate_escalate_ceiling = ceiling
         if builder and enabled and ceiling:
-            child._delegate_build_retry = lambda e, g: make({**kw, "reasoning_config": parse_reasoning_effort(e),
-                                                             "goal": g, "subagent_id": child._subagent_id})
+            child._delegate_build_retry = lambda e: make({**kw, "reasoning_config": parse_reasoning_effort(e),
+                                                          "subagent_id": child._subagent_id})
         if schema is not None:
             child._delegate_output_schema = schema
         child._live_transcript_path = TRANSCRIPT
@@ -282,8 +282,8 @@ def test_a_subagent_stopped_by_id_never_escalates(monkeypatch, stop_at):
         else:
             builder = child._delegate_build_retry
 
-            def build(effort, goal):
-                retry = builder(effort, goal)
+            def build(effort):
+                retry = builder(effort)
                 assert interrupt_subagent(child._subagent_id)
                 return retry
             child._delegate_build_retry = build
@@ -413,7 +413,7 @@ def test_an_escalating_attempt_gets_no_schema_retry_turn(monkeypatch):
 def test_a_failed_retry_build_ends_the_chain_with_a_normal_result(monkeypatch):
     events = []
 
-    def boom(_effort, _goal):
+    def boom(_effort):
         raise ValueError("owner refused")
 
     entry, log, _ = _run_direct(monkeypatch, {"low": M("ran out")}, effort="low", ceiling="high", builder=False,
@@ -461,8 +461,8 @@ def test_background_retry_tracking_and_cancellation(monkeypatch, cancel_during_b
         dispatch._dispatch_unit(unit, "unit", None, {})
         builder = first._delegate_build_retry
 
-        def build(effort, goal):
-            retry = builder(effort, goal)
+        def build(effort):
+            retry = builder(effort)
             _attach_child(parent, retry)
             if cancel_during_build is True:
                 callbacks["interrupt_fn"]()
@@ -544,7 +544,7 @@ def test_worktree_is_created_once_and_finalized_only_when_the_chain_ends(monkeyp
     def make(kw):
         child = _FakeChild(script, log, kw)
         child._delegate_escalate_reasoning, child._delegate_escalate_ceiling = True, "high"
-        child._delegate_build_retry = lambda e, g: make({**kw, "reasoning_config": parse_reasoning_effort(e)})
+        child._delegate_build_retry = lambda e: make({**kw, "reasoning_config": parse_reasoning_effort(e)})
         child._live_transcript_path = TRANSCRIPT
         return child
 
@@ -795,6 +795,28 @@ def test_retries_keep_the_dispatched_subagent_id_for_steer_and_stop():
     assert seen["attribution"]["subagent_id"] == first._subagent_id
 
 
+def test_a_retry_is_one_spawn_and_carries_the_tasks_goal_not_the_handoff():
+    """The handoff prompt (with the unredacted previous summary) is the retry's first user message only: the spawn
+    event and the subagent_start hook fire once per task, and every relayed event keeps the task's goal label."""
+    events, starts = [], []
+    parent = _mock_parent()
+    parent.tool_progress_callback = lambda event, *_a, **kw: events.append((event, kw.get("goal")))
+
+    def hook(name, **kw):
+        if name == "subagent_start":
+            starts.append(kw.get("child_goal"))
+
+    with patch("hermes_cli.lifecycle.invoke_hook", side_effect=hook):
+        result, log, _, _ = _delegate({"low": M(), "medium": D()},
+                                      [{**ESC, "reasoning_effort": "low", "escalate_ceiling": "medium"}],
+                                      parent=parent)
+    assert len(log) == 2 and "[REASONING ESCALATION]" in log[1].messages[0]
+    assert result["results"][0]["status"] == "completed"
+    assert starts == ["task number 0"]
+    assert [e for e, _ in events].count("subagent.spawn_requested") == 1
+    assert events and all(goal == "task number 0" for _, goal in events)
+
+
 def test_a_detached_units_retry_is_never_attached_to_the_parent():
     from tools.delegate_tool_child_run import _detach_child
     attached_at_build = []
@@ -804,8 +826,8 @@ def test_a_detached_units_retry_is_never_attached_to_the_parent():
         _detach_child(parent, child)  # a background unit is detached before it runs
         builder = child._delegate_build_retry
 
-        def build(effort, goal):
-            retry = builder(effort, goal)
+        def build(effort):
+            retry = builder(effort)
             attached_at_build.append(retry in parent._active_children)
             return retry
         child._delegate_build_retry = build

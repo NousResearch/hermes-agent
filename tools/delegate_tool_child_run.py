@@ -808,13 +808,14 @@ class _EscalationChain:
         return entry
 
 
-def _build_retry_child(child: Any, parent_agent: Any, next_effort: str, retry_goal: str) -> Any:
+def _build_retry_child(child: Any, next_effort: str) -> Any:
     """The next attempt's child. A child built by ``_build_children`` carries ``_delegate_build_retry``, which
-    rebuilds it on the exact same route with only the reasoning level and goal changed. A child without one (a
-    direct ``_run_single_child`` caller) is rerun itself at the next level."""
+    rebuilds it on the exact same route with only the reasoning level changed (the handoff goal is the attempt's
+    first user message, not build input). A child without one (a direct ``_run_single_child`` caller) is rerun
+    itself at the next level."""
     builder = getattr(child, "_delegate_build_retry", None) if "_delegate_build_retry" in dir(child) else None
     if builder is not None:
-        return builder(next_effort, retry_goal) if callable(builder) else None
+        return builder(next_effort) if callable(builder) else None
     from hermes_constants import parse_reasoning_effort
     child.reasoning_config = parse_reasoning_effort(next_effort)
     child.session_estimated_cost_usd = 0.0  # the chain already recorded this attempt
@@ -1046,7 +1047,7 @@ class _ChildRun:
         )
         chain.record(self.child, entry.get("exit_reason"))  # before the build: a reused child's level changes
         try:
-            next_child = _build_retry_child(self.child, self.parent_agent, next_effort, retry_goal)
+            next_child = _build_retry_child(self.child, next_effort)
         except Exception as exc:  # boundary: a failed retry build degrades to "no escalation", never crashes the parent
             logger.warning("Subagent %d reasoning escalation to %s not started: %s", self.task_index, next_effort, exc,
                            exc_info=True)

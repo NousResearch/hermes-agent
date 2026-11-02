@@ -252,6 +252,7 @@ def _build_child_agent(
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
+    escalation_retry = subagent_id is not None
     subagent_id = subagent_id or f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
 
@@ -353,6 +354,8 @@ def _build_child_agent(
 
     if attach_to_parent:
         _attach_child(parent_agent, child)  # interrupt propagation
+    if escalation_retry:
+        return child  # the same subagent: its spawn and subagent_start already fired (subagent_stop fires once)
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
     _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
@@ -548,8 +551,8 @@ def _build_task_child(
     attach_to_parent: bool = True,
 ) -> Any:
     """Build one task's child on its route and pin everything the run reads off it. With reasoning escalation on
-    (``escalate_reasoning`` + ``escalate_ceiling``) the child also carries ``_delegate_build_retry(effort, goal)``:
-    the same call with only the reasoning level and goal changed, so every attempt runs the exact same route
+    (``escalate_reasoning`` + ``escalate_ceiling``) the child also carries ``_delegate_build_retry(effort)``:
+    the same call with only the reasoning level changed, so every attempt runs the exact same route
     (limits, tier, schema, images, live transcript, delegation id). The route itself is never modified."""
     from tools.delegation_live_log import wrap_progress_callback
     child: Any = _build_child_preserving_parent_tools(
@@ -569,11 +572,12 @@ def _build_task_child(
     if route.escalate_ceiling is not None:
         child._delegate_escalate_ceiling = route.escalate_ceiling
     if route.escalate_reasoning and route.escalate_ceiling:
-        def _build_retry(next_effort: str, retry_goal: str) -> Any:
-            # Same subagent_id as the attempt it replaces; attached only if that attempt still is.
+        def _build_retry(next_effort: str) -> Any:
+            # Same subagent_id as the attempt it replaces; attached only if that attempt still is. Same goal too:
+            # the handoff is only the retry's first user message (``_run_single_child``), never its spawn metadata.
             attached = child in getattr(parent_agent, "_active_children", ())
             return _build_task_child(
-                i, t, route, goal=retry_goal, reasoning_effort=next_effort, context=context, task_schema=task_schema,
+                i, t, route, goal=goal, reasoning_effort=next_effort, context=context, task_schema=task_schema,
                 images=images, writer=writer, live_deleg_id=live_deleg_id, top_role=top_role,
                 max_iterations=max_iterations, task_count=task_count, parent_agent=parent_agent,
                 subagent_id=getattr(child, "_subagent_id", None), attach_to_parent=attached,

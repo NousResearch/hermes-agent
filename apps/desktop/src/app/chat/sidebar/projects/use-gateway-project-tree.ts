@@ -71,7 +71,8 @@ export function useGatewayProjectTree(
     )
   }, [tree, live, registry, owners, localLabel])
 
-  // Each owner's project looks, read once per (gateway, profile) its projects here come from.
+  // Each owner's project looks, read once per (gateway, profile) its projects here come from, and
+  // only over a socket already open to it: a render that finds none retries on the next render.
   const ownerRoutes = useMemo(() => {
     const routes = new Map<string, AgentProfileRoute>()
 
@@ -86,7 +87,7 @@ export function useGatewayProjectTree(
     return [...routes.values()]
   }, [merged])
 
-  useEffect(() => loadGatewayProjectLooks(ownerRoutes), [ownerRoutes])
+  useEffect(() => loadGatewayProjectLooks(ownerRoutes))
 
   const themed = useMemo(
     () =>

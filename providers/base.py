@@ -588,7 +588,16 @@ class ProviderProfile:
 
         try:
             with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                raw = resp.read()
+            # Some providers honor our Accept-Encoding: gzip header and return a compressed
+            # body; urllib does not transparently decompress, so handle the gzip magic here
+            # instead of failing the decode (byte 0x8b) and silently serving the stale
+            # curated catalog forever.
+            if raw[:2] == b"\x1f\x8b":
+                import gzip
+
+                raw = gzip.decompress(raw)
+            data = json.loads(raw.decode())
             items = data if isinstance(data, list) else data.get("data", [])
             from hermes_cli.chat_catalog import chat_catalog_ids
 

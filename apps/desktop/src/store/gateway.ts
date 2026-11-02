@@ -575,6 +575,20 @@ export function activeGatewayConnectionId(): null | string {
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
 }
 
+function activeRouteProfile(): string {
+  return g.activeKey === g.primaryProfile
+    ? g.primaryProfile
+    : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
+}
+
+/** The (connection, bare profile) the active socket serves, read from the
+ *  registry itself. A $gateway listener can run before applyActive publishes
+ *  the route's profile ($activeGatewayRoute), so pairing activeGatewayConnectionId()
+ *  with that atom there named the new gateway with the OLD route's profile. */
+export function activeGatewayRoute(): { connectionId: null | string; profile: string } {
+  return { connectionId: activeGatewayConnectionId(), profile: activeRouteProfile() }
+}
+
 /**
  * Registry connections currently served by a live (open-socket) secondary.
  * Used by the reconnect path when the restarted primary's own registry
@@ -638,8 +652,7 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   // truth for "which profile is the active gateway on" — every eviction /
   // fallback path funnels through applyActive, so the published profile can
   // never linger on a backend that is no longer selected (#89206).
-  const routeProfile =
-    g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
+  const routeProfile = activeRouteProfile()
 
   // One notification frame for the whole route: a $gateway listener (the
   // display-toggle auto-push) notified before the profile half was published

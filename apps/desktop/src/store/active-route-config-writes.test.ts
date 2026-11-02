@@ -103,4 +103,42 @@ describe('config writes on a remote-only profile', () => {
     expect(getConnection).not.toHaveBeenCalledWith('gamma')
     expect(primaryRequest).not.toHaveBeenCalledWith('config.set', expect.anything())
   })
+
+  it('a saved toggle re-sent on a gateway switch lands on the new route only (local/default -> box/gamma)', async () => {
+    const primaryRequest = vi.fn(async () => ({}))
+
+    const getConnectionFor = vi.fn(async ({ profile }: { connectionId: string; profile: string }) => ({
+      ...boxGamma,
+      profile,
+      wsUrl: profile === 'gamma' ? boxGamma.wsUrl : `ws://box.invalid/api/ws?profile=${profile}`
+    }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(async () => ({ mode: 'local', port: 4242, token: 'primary-token' })),
+      getConnectionFor
+    }
+
+    configureGatewayRegistry({ onActiveRouteChanged: profile => $activeGatewayProfile.set(profile), onEvent: vi.fn() })
+    setPrimaryGateway({ connectionState: 'open', request: primaryRequest } as never, 'default')
+    // The user touched the toggle earlier: every socket change re-sends it.
+    localStorage.setItem('hermes.desktop.route-test-toggle.v1', 'true')
+
+    try {
+      await expect(ensureGatewayForAgent('box', 'gamma')).resolves.toBe(true)
+
+      const box = sockets.find(socket => socket.wsUrl === boxGamma.wsUrl)
+
+      await vi.waitFor(() =>
+        expect(box?.requests).toContainEqual([
+          'config.set',
+          { key: 'display.in_app_tips', value: String($toggle.get()) }
+        ])
+      )
+      expect(getConnectionFor).not.toHaveBeenCalledWith(expect.objectContaining({ profile: 'default' }))
+      expect(sockets.filter(socket => socket !== box).flatMap(socket => socket.requests)).toEqual([])
+      expect(primaryRequest).not.toHaveBeenCalledWith('config.set', expect.anything())
+    } finally {
+      localStorage.removeItem('hermes.desktop.route-test-toggle.v1')
+    }
+  })
 })

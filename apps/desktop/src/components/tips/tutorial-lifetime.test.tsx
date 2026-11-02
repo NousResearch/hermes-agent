@@ -13,6 +13,7 @@ vi.mock('@/store/gateway', async () => {
     activeGateway: () => ({ request }),
     activeGatewayConnectionId: () => null,
     activeGatewayProfileKey: () => 'default',
+    activeGatewayRoute: () => ({ connectionId: null, profile: 'default' }),
     requestGatewayForAgent: (_connection: unknown, _profile: string, ...call: unknown[]) =>
       (request as (...args: unknown[]) => unknown)(...call),
     requestGatewayForProfile: (_profile: string, ...call: unknown[]) =>

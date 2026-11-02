@@ -9,7 +9,6 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Optional
 
-from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
 
@@ -85,9 +84,8 @@ class GatewayTurnWiringMixin:
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
         adapter = self._delivery_adapter_for(source)
-        if turn_ctx.tool_progress_enabled and adapter is not None and (
-            getattr(adapter, "name", "") == "matrix" or source.platform == Platform.MATRIX
-        ):
+        from gateway.matrix_tool_activity import is_matrix_pane_target
+        if turn_ctx.tool_progress_enabled and adapter is not None and is_matrix_pane_target(adapter, source):
             from gateway.matrix_activity_pane import MatrixActivityPane
             turn_ctx.matrix_activity_pane = MatrixActivityPane(
                 adapter=adapter, chat_id=source.chat_id, reply_to=turn_ctx._progress_reply_to,

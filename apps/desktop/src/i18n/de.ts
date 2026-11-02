@@ -4676,6 +4676,14 @@ export const deOverrides = {
     terminalNew: 'Neues Terminal',
     terminalCloseOthers: 'Andere schließen',
     terminalCloseAll: 'Alle schließen',
+    terminalNewOn: 'Neues Terminal auf…',
+    terminalGatewayRemoved: 'Entfernter Gateway',
+    terminalGatewayRemovedBody:
+      'Der Gateway, auf dem dieses Terminal lief, wurde entfernt; es kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalGatewayNoShellBody:
+      'Dieser Gateway bietet keinen Shell-Zugang; dieses Terminal kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalDisconnectedBody:
+      'Terminal getrennt. Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.',
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {

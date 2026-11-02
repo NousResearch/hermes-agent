@@ -4089,6 +4089,14 @@ export const zhOverrides = {
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
+    terminalNewOn: '新建终端于…',
+    terminalGatewayRemoved: '已移除的网关',
+    terminalGatewayRemovedBody:
+      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody:
+      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody:
+      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 

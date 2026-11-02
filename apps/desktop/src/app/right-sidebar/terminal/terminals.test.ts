@@ -40,6 +40,23 @@ describe('terminal store persistence', () => {
     ])
   })
 
+  it('a restored tab keeps the gateway it recorded; a later adoption never moves it', async () => {
+    const first = await loadTerminalStore()
+    const nasTab = first.createTerminal('/repo', { connectionId: 'nas', profile: 'work' })
+    const freshTab = first.createTerminal('/repo')
+
+    // Relaunch: the SSH tab must not come back gateway-less (it would follow the Sessions pick).
+    vi.resetModules()
+    const { $terminals, adoptTerminalGateway } = await loadTerminalStore()
+
+    expect($terminals.get().find(term => term.id === nasTab)).toMatchObject({ connectionId: 'nas', profile: 'work' })
+
+    adoptTerminalGateway(nasTab, { connectionId: 'local' })
+    adoptTerminalGateway(freshTab, { connectionId: 'local' })
+    expect($terminals.get().find(term => term.id === nasTab)).toMatchObject({ connectionId: 'nas', profile: 'work' })
+    expect($terminals.get().find(term => term.id === freshTab)?.connectionId).toBe('local')
+  })
+
   it('persists user tabs and history synchronously, skipping agent mirrors', async () => {
     const { createTerminal, ensureAgentTerminal, renameTerminal, selectTerminal, updateTerminalReviveBuffer } =
       await loadTerminalStore()
@@ -227,6 +244,30 @@ describe('session cwd → terminal tab linking', () => {
     selectTerminal(first)
     $currentCwd.set('/repo')
     expect($activeTerminalId.get()).toBe(first)
+  })
+
+  it("selects the session's own host's tab when two hosts share the path", async () => {
+    const { $activeTerminalId, $currentCwd, bindTerminalDefaultGateway, createTerminal } = await loadTerminalStore()
+    const $host = atom<{ connectionId: string } | undefined>({ connectionId: 'nas' })
+    bindTerminalDefaultGateway($host)
+
+    const nasTab = createTerminal('/repo', { connectionId: 'nas', profile: 'default' })
+    const localTab = createTerminal('/repo', { connectionId: 'local' })
+    createTerminal('/elsewhere', { connectionId: 'local' })
+
+    // The NAS session's /repo is the NAS tab, never This device's /repo.
+    $currentCwd.set('/repo')
+    expect($activeTerminalId.get()).toBe(nasTab)
+
+    // An active tab on the wrong host with the same path does not keep focus,
+    // even though the path string never changes.
+    $host.set({ connectionId: 'local' })
+    $currentCwd.set('/repo')
+    expect($activeTerminalId.get()).toBe(localTab)
+
+    $host.set({ connectionId: 'nas' })
+    $currentCwd.set('/repo')
+    expect($activeTerminalId.get()).toBe(nasTab)
   })
 })
 

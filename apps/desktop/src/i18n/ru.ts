@@ -3337,6 +3337,14 @@ export const ruOverrides = {
     terminalNew: 'Новый терминал',
     terminalCloseOthers: 'Закрыть другие',
     terminalCloseAll: 'Закрыть все',
+    terminalNewOn: 'Новый терминал на…',
+    terminalGatewayRemoved: 'Удалённый шлюз',
+    terminalGatewayRemovedBody:
+      'Шлюз, на котором работал этот терминал, удалён, поэтому его нельзя открыть снова. Закройте эту вкладку.',
+    terminalGatewayNoShellBody:
+      'У этого шлюза нет доступа к оболочке, поэтому терминал нельзя открыть снова. Закройте эту вкладку.',
+    terminalDisconnectedBody:
+      'Терминал отключён. Нажмите Enter, чтобы запустить новую оболочку; история прокрутки сохранена.',
     addToChat: 'Добавить в чат'
   },
   preview: {

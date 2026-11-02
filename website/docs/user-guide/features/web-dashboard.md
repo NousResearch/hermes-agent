@@ -1267,7 +1267,8 @@ cookies are `SameSite=Lax`, and browsers send them from a page on another port o
 A desktop dev build passes the variable to the backends it starts over SSH, and replaces a backend
 it started earlier for a different renderer URL. The sockets Desktop opens to a gateway on the same
 machine are one-use, ticketed native dials that carry no Origin, so a dev build can use a local
-gateway that is already running without restarting it. Only a connection that presents the dev
+gateway that is already running without restarting it, and it does not pass the variable to a
+gateway it starts (that gateway outlives the dev session). Only a connection that presents the dev
 renderer's Origin to a backend Desktop did not start (for example a remote backend you start
 yourself and reach directly) needs that backend started with `HERMES_DESKTOP_DEV_SERVER` set to the
 build's renderer URL.

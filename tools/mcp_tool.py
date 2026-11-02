@@ -524,6 +524,8 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # key (its policy for the name, even when it adopted another profile's connection);
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: dict[Any, str] = {}
+# Consent policy belongs to the consuming profile, like trust (not the shared connection).
+_server_approval_policies: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
 # Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
 # ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.

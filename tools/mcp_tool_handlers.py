@@ -64,9 +64,17 @@ def _trust_approval_key(server_name: str, tool_name: str) -> str:
     return f"mcp:{server_name}/{tool_name}"
 
 
+def _requires_per_call_approval(server_name: str) -> bool:
+    """Read the calling profile's policy, including for an adopted connection."""
+    from tools.mcp_tool_scope import _server_key
+    return _core._server_approval_policies.get(_server_key(server_name), "scoped") == "per_call"
+
+
 def _trust_granted(server_name: str, tool_name: str) -> bool:
-    """A remembered Session/Always answer, or YOLO / ``approvals.mode: off`` for the calling session.
+    """A remembered grant or approval bypass, unless the profile requires per-call consent.
     Covers only the trust prompt: the spend limit is a budget, not an approval, and still asks."""
+    if _requires_per_call_approval(server_name):
+        return False  # Ignore grants without reading or changing the operator's grant store.
     from tools.approval import is_approval_bypass_active, is_approved
     from tools.approval_context import get_current_session_key
     return is_approval_bypass_active() or is_approved(get_current_session_key(),
@@ -122,7 +130,7 @@ def _format_trust_gate_arguments(args: dict) -> str:
 
 def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
                       args: Optional[dict] = None) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
+    """Approval gate for per-call servers or untrusted write-capable tools, plus the declared spend
     limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
     block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
     caller can refund it when the call never reaches the server."""
@@ -131,8 +139,9 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
     key = _server_key(server_name)
     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
-    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
-             and not _trust_granted(server_name, tool_name))
+    gated = (_requires_per_call_approval(server_name)
+             or (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+                 and not _trust_granted(server_name, tool_name)))
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
         from tools.approval_context import get_current_session_key
@@ -163,18 +172,23 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
                 return None
             over = True
     extra = charge.lines(spent) if charge is not None else []
+    per_call = _requires_per_call_approval(server_name)
     if gated:
-        head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."
-        tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
+        tier = "" if per_call else "UNTRUSTED "
+        head = f"MCP tool '{tool_name}' on {tier}server '{server_name}' wants to run."
+        tail = ("This server requires approval for every tool call." if per_call else
+                "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state.")
         # The limit notice leads, and the arguments trail: a prompt cut to a platform's cap keeps the notice.
         message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
         if args:
             message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
         # Over the limit the answer covers this call only: a remembered trust grant must not
         # pre-approve the next over-limit call.
-        remember_key = None if over else _trust_approval_key(server_name, tool_name)
-        scope = "once" if over else "once, for this session, or always"
-        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
+        once_only = over or per_call
+        remember_key = None if once_only else _trust_approval_key(server_name, tool_name)
+        scope = "once" if once_only else "once, for this session, or always"
+        policy = "approval_policy: per_call" if per_call else "trust: untrusted"
+        description = (f"Server '{server_name}' is configured '{policy}'. "
                        f"Approve to run '{tool_name}' {scope}, or deny to block it.")
         title = f"MCP server '{server_name}' is asking"
     else:
@@ -192,7 +206,8 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         if over and charge is not None:
             return tool_error(charge.refusal(spent))
-        return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
+        server_kind = "server" if per_call else "untrusted server"
+        return tool_error(f"MCP tool '{tool_name}' on {server_kind} '{server_name}' was blocked: the approval "
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
         if charge is not None:
@@ -204,7 +219,9 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
                 tool_name, "untrusted" if gated else "spend-limited", server_name)
     if over and charge is not None:
         return tool_error(charge.refusal(spent))
-    return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
+    qualifier = "" if per_call else "write-capable "
+    tier = "" if per_call else "untrusted "
+    return tool_error(f"The user did not approve running {qualifier}MCP tool '{tool_name}' on {tier}server "
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
 

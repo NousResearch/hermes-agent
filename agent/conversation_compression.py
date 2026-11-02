@@ -2511,7 +2511,11 @@ def _queue_context_engine_compression_notification(agent: Any, *, new_session_id
 
 
 def finalize_context_engine_compression_notification(agent: Any, *, committed: bool) -> bool:
-    """Emit or discard a deferred notification; repeated calls are no-ops."""
+    """Emit or discard a deferred notification; repeated calls are no-ops. ``agent`` may be None
+    (a restored session with no agent handle yet): nothing was staged, so there is nothing to finalize —
+    and the error path calls this, where a raise would replace the original failure (#145137)."""
+    if agent is None:
+        return False
     pending = getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)
     setattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None)
     if not committed or not callable(pending):

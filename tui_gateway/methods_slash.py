@@ -483,7 +483,7 @@ _SLASH_MIRRORS = {
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
     "approvals": _mirror_approvals, "personality": _mirror_personality,
     "compress": lambda sid, session, agent, arg: (
-        _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),
+        _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else _NO_AGENT),
     "fast": _mirror_fast,
     "reload-mcp": _mirror_reload_mcp, "stop": _mirror_stop,
     "autoprune": _mirror_autoprune}

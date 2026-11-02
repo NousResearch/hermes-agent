@@ -14,6 +14,13 @@ export const frModelMenu = {
   cacheRead: 'lecture en cache',
   priceTitle: (input: string, output: string, cache: string) =>
     `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
+  pricing: {
+    title: 'Tarifs',
+    titlePerMillion: 'Tarifs · par million de tokens',
+    input: 'Entrée',
+    output: 'Sortie',
+    free: 'Gratuit'
+  },
   localSetup: {
     title: 'Exécuter en local · gratuit, privé',
     text: (model: string, size: string) => `${model} tient sur cette machine · téléchargement de ${size}`,

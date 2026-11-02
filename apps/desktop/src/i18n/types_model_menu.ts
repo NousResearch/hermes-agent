@@ -14,6 +14,7 @@ export interface ModelMenuTranslations {
   free: string
   cacheRead: string
   priceTitle: (input: string, output: string, cache: string) => string
+  pricing: { title: string; titlePerMillion: string; input: string; output: string; free: string }
   localSetup: { title: string; text: (model: string, size: string) => string; action: string }
   limited: string
   limitedUntil: (time: string) => string

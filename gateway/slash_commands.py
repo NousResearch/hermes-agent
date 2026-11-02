@@ -1250,24 +1250,22 @@ class GatewaySlashCommandsMixin(
         return await self._deliver_approval_confirmation(event, confirmation_text, "deny")
 
     async def _handle_curator_command(self, event: MessageEvent) -> str:
-        """Handle /curator — the ``hermes curator`` handler set (status by default), as main's CLI ran
-        it in-process; its printed report is the reply. Runs in the executor with the session's
-        context so the profile's skills tree and curator state are the ones read and written."""
-        import io
-        from contextlib import redirect_stderr, redirect_stdout
-        from hermes_cli.curator import cli_main
-        tokens = shlex.split(event.get_command_args() or "") or ["status"]
+        """Handle /curator — the ``hermes curator`` handler set (status by default).
+
+        ``run_slash`` returns the report as a string. It does not swap process-global
+        stdout/stderr (those races with other gateway sessions). Runs in the executor
+        with the session's context so the profile's skills tree and curator state are
+        the ones read and written.
+        """
+        from hermes_cli.curator import run_slash
+
+        text = event.get_command_args() or ""
 
         def _run() -> str:
-            out = io.StringIO()
-            with redirect_stdout(out), redirect_stderr(out):
-                try:
-                    cli_main(tokens)
-                except SystemExit:
-                    pass  # argparse exits on --help/usage errors; its text is the reply
-                except Exception as exc:  # health: allow BLE001 -- main's CLI handler: the failure line is the reply
-                    print(t("cli.commands.curator.failed", error=exc))
-            return out.getvalue().rstrip()
+            try:
+                return run_slash(text)
+            except Exception as exc:  # health: allow BLE001 -- the failure line is the reply
+                return t("cli.commands.curator.failed", error=exc)
 
         return await self._run_in_executor_with_context(_run)
 

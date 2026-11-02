@@ -1857,9 +1857,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 "Interrupt recursion depth %d reached for session %s — "
                 "queueing message instead of recursing.", _interrupt_depth, session_key,
             )
-            adapter = self._delivery_adapter_for(source)
-            if adapter and pending_event:
-                self._requeue_event_at_front(session_key, pending_event, adapter)
+            self._requeue_at_depth_cap(session_key, source, pending_event, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
         # Interrupted: discard the response ("Operation interrupted." is noise).

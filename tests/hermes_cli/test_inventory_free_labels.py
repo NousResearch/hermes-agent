@@ -237,3 +237,62 @@ def test_row_without_slug_or_name_is_skipped():
                return_value={"model_free_labels": {"": ["a"]}}):
         inv._apply_declared_free_labels(rows)
     assert "pricing" not in rows[0]
+
+
+# ── Regression: the two silent-drop cases the review found ────────────────────
+# Both used to leave the user with no badge and no hint why. `read_raw_config()`
+# fails OPEN — it returns `FailedConfigRead`, a dict subclass, rather than
+# raising — so a bare `except` around the read never fired for a config.yaml
+# that merely fails to parse.
+
+
+def test_malformed_config_uses_the_real_reader_and_names_the_section(caplog):
+    """A parse failure arrives as FailedConfigRead, not an exception. The guard must
+    detect the sentinel — a mocked side_effect cannot stand in for the real reader."""
+    import logging
+    from hermes_cli.config_read_errors import FailedConfigRead
+
+    raw = FailedConfigRead({"model_free_labels": {"acme": "*"}}, error=ValueError("bad yaml"))
+    rows = [{"slug": "acme", "models": ["a"]}]
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.inventory"):
+        with patch("hermes_cli.config.read_raw_config", return_value=raw):
+            inv._apply_declared_free_labels(rows)
+    assert any("could not be parsed" in m and "model_free_labels" in m for m in caplog.messages)
+    assert "pricing" not in rows[0]
+
+
+def test_provider_key_matching_no_row_warns(caplog):
+    """A typo'd provider key is as unusable as a typo'd model list, and gets a warning."""
+    import logging
+    rows = [{"slug": "acme", "models": ["a"]}]
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.inventory"):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"model_free_labels": {"acme-typo": "*"}}):
+            inv._apply_declared_free_labels(rows)
+    assert any("acme-typo" in m and "no configured provider" in m for m in caplog.messages)
+    assert "pricing" not in rows[0]
+
+
+def test_provider_key_matches_case_insensitively(caplog):
+    """Canonical rows carry no aliases — only a lowercase slug and a Title-Cased name —
+    so a key spelled the way the user reads the picker must still match."""
+    import logging
+    rows = [{"slug": "nous", "name": "Nous Portal", "models": ["hermes-4"]}]
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.inventory"):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"model_free_labels": {"nous portal": "*"}}):
+            inv._apply_declared_free_labels(rows)
+    assert set(rows[0]["pricing"]) == {"hermes-4"}
+    assert caplog.messages == []  # a successful match is not a warning
+
+
+def test_exact_slug_still_matches_without_warning(caplog):
+    """The exact-match path is unchanged and must not start warning."""
+    import logging
+    rows = [{"slug": "acme", "models": ["a"]}]
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.inventory"):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"model_free_labels": {"acme": "*"}}):
+            inv._apply_declared_free_labels(rows)
+    assert set(rows[0]["pricing"]) == {"a"}
+    assert caplog.messages == []

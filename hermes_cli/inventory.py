@@ -1057,7 +1057,15 @@ def _apply_declared_free_labels(rows: list[dict]) -> None:
     An unusable declaration is logged, never raised: a picker open must not fail because a
     hand-edited config has a typo, but the entry is named so the mistake is findable instead of
     silently ignored (CONTRIBUTING → fail loud at integration boundaries).
+
+    A malformed config cannot be caught by the ``except`` below: ``read_raw_config()`` fails
+    OPEN, returning a ``FailedConfigRead`` (a ``dict`` subclass) instead of raising, so that
+    guard never fires and a typo'd ``config.yaml`` dropped every label in silence. Detect the
+    sentinel and name the underlying parse error, which says nothing about ``model_free_labels``
+    on its own.
     """
+    from hermes_cli.config_read_errors import FailedConfigRead
+
     try:
         from hermes_cli.config import read_raw_config
 
@@ -1065,6 +1073,13 @@ def _apply_declared_free_labels(rows: list[dict]) -> None:
     except Exception as exc:
         logger.warning("model_free_labels: could not read config (%s) — no free labels applied",
                        exc, exc_info=True)
+        return
+    if isinstance(raw, FailedConfigRead):
+        logger.warning(
+            "model_free_labels: config.yaml could not be parsed (%s) — the section cannot be "
+            "read, so no free labels were applied",
+            raw.read_error,
+        )
         return
     declared = raw.get("model_free_labels")
     if declared is None:
@@ -1079,19 +1094,31 @@ def _apply_declared_free_labels(rows: list[dict]) -> None:
     if not declared:
         return
 
+    declarable = sorted({str(k).strip() for k in declared if str(k).strip()}, key=str.lower)
+    seen_keys: set[str] = set()
     for row in rows:
         # A row is addressable by its slug, but the GUI writes custom providers under
         # ``custom:<key>`` and older configs key them by display name — match the whole
         # identity set ``_apply_custom_aliases`` attached so one entry covers every spelling.
+        # The fallback folds case: ``_apply_custom_aliases`` lowercases every alias via
+        # ``custom_provider_aliases``, and a canonical row carries no aliases at all — only a
+        # lowercase ``slug`` and a Title-Cased ``name`` — so a key spelled the way the user
+        # reads it off the picker ("nous portal") matched nothing.
         candidates = [
             str(row.get(field) or "").strip()
             for field in ("slug", "name")
             if str(row.get(field) or "").strip()
         ]
         candidates.extend(str(alias) for alias in (row.get("aliases") or []))
-        matched_key = next((c for c in candidates if c in declared), None)
-        if matched_key is None:
+        exact = next((k for k in declared if k in candidates), None)
+        folded = (
+            next((k for k in declared if str(k).strip().lower() in {c.lower() for c in candidates}), None)
+            if exact is None else None
+        )
+        if exact is None and folded is None:
             continue
+        matched_key = exact if exact is not None else folded
+        seen_keys.add(str(matched_key).strip())
         entry = declared[matched_key]
         models = [str(m) for m in (row.get("models") or [])]
         if not models:
@@ -1135,6 +1162,18 @@ def _apply_declared_free_labels(rows: list[dict]) -> None:
                 continue  # a real quote wins over a declaration
             pricing[mid] = {"input": "free", "output": "free", "cache": None, "free": True}
         row["pricing"] = pricing
+
+    # Every other unusable input above logs; a key matching no row at all did not, so a typo
+    # ("acme-typo" for slug "acme") or a spelling that does not survive the fold dropped the
+    # declaration in silence. Name it once per key, not once per row.
+    for key in declarable:
+        if key in seen_keys:
+            continue
+        logger.warning(
+            "model_free_labels.%s: no configured provider matches this key — the entry is "
+            "ignored (declared keys: %s)",
+            key, declarable,
+        )
 
 
 

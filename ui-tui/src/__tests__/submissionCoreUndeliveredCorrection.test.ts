@@ -47,38 +47,57 @@ function correction(settle: (accepted: boolean) => void): QueueItem {
 }
 
 const refusals: Array<[string, () => Promise<unknown>]> = [
-  ['stale_generation', async () => {
-    throw new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation' } })
-  }],
-  ['execution_not_ready', async () => {
-    throw new JsonRpcGatewayError('execution_not_ready', { code: 4001, data: { reason: 'execution_not_ready' } })
-  }],
-  ['rejected undelivered', async () => ({ status: 'rejected', delivered: false, text: 'next thought', execution_generation: 4 })]
+  [
+    'stale_generation',
+    async () => {
+      throw new JsonRpcGatewayError('stale_generation', { code: 4001, data: { reason: 'stale_generation' } })
+    }
+  ],
+  [
+    'execution_not_ready',
+    async () => {
+      throw new JsonRpcGatewayError('execution_not_ready', { code: 4001, data: { reason: 'execution_not_ready' } })
+    }
+  ],
+  [
+    'rejected undelivered',
+    async () => ({ status: 'rejected', delivered: false, text: 'next thought', execution_generation: 4 })
+  ]
 ]
 
-it.each(refusals)('re-admits a correction refused undelivered (%s) as a prompt with the same submission_id', async (_name, refuse) => {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
-  const settle = vi.fn()
+it.each(refusals)(
+  're-admits a correction refused undelivered (%s) as a prompt with the same submission_id',
+  async (_name, refuse) => {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+    const settle = vi.fn()
 
-  const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params })
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params })
 
-    return method === 'prompt.submit' ? { status: 'queued' } : refuse()
-  })
+      return method === 'prompt.submit' ? { status: 'queued' } : refuse()
+    })
 
-  const item = correction(settle)
-  submitPrompt('next thought', deps({ isCanonical: true, request } as unknown as GatewayClient), true, undefined, {
-    behindTurn: true,
-    queueItem: item,
-    skipDetectDrop: true
-  })
+    const item = correction(settle)
+    submitPrompt('next thought', deps({ isCanonical: true, request } as unknown as GatewayClient), true, undefined, {
+      behindTurn: true,
+      queueItem: item,
+      skipDetectDrop: true
+    })
 
-  await vi.waitFor(() => expect(calls.map(c => c.method)).toEqual(['session.redirect', 'prompt.submit']))
-  expect(calls[1]!.params).toMatchObject({ session_id: 'owner', text: 'next thought', submission_id: 'sub-1', queued: true })
-  expect(calls[1]!.params).not.toHaveProperty('execution_generation')
-  // The journal no longer holds a control a later retry would replay against the dead generation.
-  expect(loadPendingInputs(captureDestination()).find(row => row.submissionId === 'sub-1')?.controlMethod).toBeUndefined()
-})
+    await vi.waitFor(() => expect(calls.map(c => c.method)).toEqual(['session.redirect', 'prompt.submit']))
+    expect(calls[1]!.params).toMatchObject({
+      session_id: 'owner',
+      text: 'next thought',
+      submission_id: 'sub-1',
+      queued: true
+    })
+    expect(calls[1]!.params).not.toHaveProperty('execution_generation')
+    // The journal no longer holds a control a later retry would replay against the dead generation.
+    expect(
+      loadPendingInputs(captureDestination()).find(row => row.submissionId === 'sub-1')?.controlMethod
+    ).toBeUndefined()
+  }
+)
 
 it('keeps an ambiguous transport failure as a retained control, never replayed as a prompt', async () => {
   const calls: string[] = []

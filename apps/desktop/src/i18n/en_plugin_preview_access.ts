@@ -5,7 +5,8 @@ export const enPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptPromptTitle: (plugin: string) => `Let ${plugin} run scripts on this page?`,
   previewScriptPromptBody: (plugin: string, origin: string) =>
     `${plugin} wants to run JavaScript in the preview Browser on ${origin}.`,
-  previewScriptPromptRisk: 'Scripts can read and change everything on that site, including pages from accounts you are signed in to there.',
+  previewScriptPromptRisk:
+    'Scripts can read and change everything on that site, including pages from accounts you are signed in to there.',
   previewScriptPromptRevokeHint: 'Applies to this site only. You can revoke it in Capabilities ▸ Plugins.',
   previewScriptAllow: 'Allow on this site',
   previewScriptDeny: "Don't allow",

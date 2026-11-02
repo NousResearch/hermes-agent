@@ -13,7 +13,10 @@ export const clarifyQuestionCountLabel = (count: number) =>
 /** The transcript a settled clarify leaves behind, as main's TUI wrote it: the collapsed tool row
  * `Clarify("N question(s)")` and one user bubble of `question → answer` lines (a blank answer reads
  * as skipped). The canonical one-card path and the batch path both settle through this. */
-export function clarifySettledRows(questions: ClarifyTranscriptQuestion[], answers: Record<string, string | undefined>) {
+export function clarifySettledRows(
+  questions: ClarifyTranscriptQuestion[],
+  answers: Record<string, string | undefined>
+) {
   return {
     trail: buildToolTrailLine('clarify', clarifyQuestionCountLabel(questions.length)),
     userText: questions

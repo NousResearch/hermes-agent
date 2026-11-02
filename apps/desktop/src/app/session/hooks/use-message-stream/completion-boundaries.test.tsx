@@ -195,7 +195,11 @@ it('binds the sent prompt to the receipt row named by its submission', async () 
   await h.send('message.complete', {
     text: ANSWER,
     persisted_turn: {
-      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      row_ids: [71, 72],
+      user_row_id: 71,
+      user_row_ids: [71],
+      final_assistant_row_id: 72,
+      complete: true,
       submission_id: submissionIdOf(h)
     }
   })
@@ -223,12 +227,21 @@ it('binds the prompt and the steer of a turn whose receipt is not complete', asy
   await h.send('message.complete', {
     text: 'Revised.',
     persisted_turn: {
-      row_ids: [71, 72, 73, 74], user_row_id: 71, user_row_ids: [71, 73], final_assistant_row_id: 74,
-      complete: false, submission_id: submissionIdOf(h)
+      row_ids: [71, 72, 73, 74],
+      user_row_id: 71,
+      user_row_ids: [71, 73],
+      final_assistant_row_id: 74,
+      complete: false,
+      submission_id: submissionIdOf(h)
     }
   })
 
-  expect(h.state().messages.filter(m => m.role === 'user').map(m => m.rowId)).toEqual([71, 73])
+  expect(
+    h
+      .state()
+      .messages.filter(m => m.role === 'user')
+      .map(m => m.rowId)
+  ).toEqual([71, 73])
   h.dispose()
 })
 
@@ -240,13 +253,20 @@ it('binds a viewer that never sent the turn only when it shows exactly the recei
     { id: 61, role: 'assistant', content: 'Before.' }
   ])
 
-  h.update(state => ({ ...state, messages: [...earlier, { id: 'user-peer', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }] }))
+  h.update(state => ({
+    ...state,
+    messages: [...earlier, { id: 'user-peer', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }]
+  }))
   await h.send('message.start')
   await h.send('message.delta', { text: ANSWER })
   await h.send('message.complete', {
     text: ANSWER,
     persisted_turn: {
-      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      row_ids: [71, 72],
+      user_row_id: 71,
+      user_row_ids: [71],
+      final_assistant_row_id: 72,
+      complete: true,
       submission_id: 'sent-from-another-window'
     }
   })

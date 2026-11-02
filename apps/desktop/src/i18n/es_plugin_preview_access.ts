@@ -5,7 +5,8 @@ export const esPluginPreviewAccess: PluginPreviewAccessTranslations = {
   previewScriptPromptTitle: (plugin: string) => `¿Permitir que ${plugin} ejecute scripts en esta página?`,
   previewScriptPromptBody: (plugin: string, origin: string) =>
     `${plugin} quiere ejecutar JavaScript en el navegador de vista previa en ${origin}.`,
-  previewScriptPromptRisk: 'Los scripts pueden leer y cambiar todo en ese sitio, incluidas las páginas de cuentas en las que tienes la sesión iniciada.',
+  previewScriptPromptRisk:
+    'Los scripts pueden leer y cambiar todo en ese sitio, incluidas las páginas de cuentas en las que tienes la sesión iniciada.',
   previewScriptPromptRevokeHint: 'Solo se aplica a este sitio. Puedes revocarlo en Capacidades ▸ Plugins.',
   previewScriptAllow: 'Permitir en este sitio',
   previewScriptDeny: 'No permitir',

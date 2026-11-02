@@ -231,7 +231,10 @@ describe('deriveUpdateStatus', () => {
     $backendUpdateStatus.set({ supported: true, error: 'backend-check-failed' })
 
     const { unmount } = render(
-      <UpdateStatusCard target="backend" version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo} />
+      <UpdateStatusCard
+        target="backend"
+        version={{ appVersion: '0.19.0', bundleSwapPending: true } as DesktopVersionInfo}
+      />
     )
 
     expect(screen.getByText(en.updates.cantReach)).toBeTruthy()

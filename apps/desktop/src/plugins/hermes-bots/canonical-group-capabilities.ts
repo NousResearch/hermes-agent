@@ -22,11 +22,16 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
     return 'unavailable'
   }
 
-  if (driver === true) {return 'canonical'}
+  if (driver === true) {
+    return 'canonical'
+  }
 
   // App-managed hosted owners can be nonpersistent, even when their driver stops.
-  const ownsRooms = Object.hasOwn(capability, 'protocol_version') || Object.hasOwn(capability, 'authority_gateway_id')
-    || methods?.includes('groups.create') || features?.includes('canonical_session_owner')
+  const ownsRooms =
+    Object.hasOwn(capability, 'protocol_version') ||
+    Object.hasOwn(capability, 'authority_gateway_id') ||
+    methods?.includes('groups.create') ||
+    features?.includes('canonical_session_owner')
 
   if (driver === false && persistent_process === false && !ownsRooms) {
     return 'legacy'
@@ -53,11 +58,15 @@ export function groupSeatableProfiles(value: unknown): null | Set<string> {
  *  capability was read under (default: now); the predicate turns false once the
  *  connection, profile, socket or activation epoch moves, so a late result is
  *  neither acted on nor published. */
-export function groupCreationSource(route: { connectionId: string; profile: string },
-  activationEpoch = gatewayActivationEpoch()) {
-  return () => gatewayActivationEpoch() === activationEpoch &&
+export function groupCreationSource(
+  route: { connectionId: string; profile: string },
+  activationEpoch = gatewayActivationEpoch()
+) {
+  return () =>
+    gatewayActivationEpoch() === activationEpoch &&
     route.connectionId === host.state.connectionId.get() &&
-    route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+    route.profile === host.state.profile.get() &&
+    host.state.gateway.get() === 'open'
 }
 
 export interface GroupCapabilityState {
@@ -104,7 +113,9 @@ export function useGroupCapability(active: boolean) {
       () => settle(null, true)
     )
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [activationEpoch, active, connectionId, gateway, profile, source])
 
   const current = capability?.source === source ? capability : null
@@ -125,7 +136,11 @@ export function useGroupCapability(active: boolean) {
  *  both the dialog's picker and the menu item that opens it. */
 export function seatableGroupBots(
   roster: RosterRow[],
-  { connectionId, mode, seatable }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
+  {
+    connectionId,
+    mode,
+    seatable
+  }: { connectionId: null | string; mode: GroupExecutionMode | 'checking'; seatable: null | Set<string> }
 ): RosterRow[] {
   const currentConnection = String(connectionId || '').trim()
 
@@ -135,8 +150,10 @@ export function seatableGroupBots(
     }
 
     if (bot.connectionId) {
-      return bot.connectionId === currentConnection &&
+      return (
+        bot.connectionId === currentConnection &&
         (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
+      )
     }
 
     return !bot.remoteSource && (!bot.route?.connectionId || bot.route.connectionId === currentConnection)
@@ -152,7 +169,9 @@ export function seatableGroupBots(
     }
 
     // The profile is the one createCanonicalGroup will send.
-    return belongsToCurrentConnection(bot) &&
+    return (
+      belongsToCurrentConnection(bot) &&
       (!seatable || seatable.has(bot.route?.targetProfile ?? bot.targetProfile ?? bot.name))
+    )
   })
 }

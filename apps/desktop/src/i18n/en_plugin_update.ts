@@ -29,5 +29,5 @@ export const enPluginUpdate: PluginUpdateTranslations = {
   updateScanConfirm: 'Update anyway',
   updateScanBlocked: (name: string) =>
     `The security scan blocked the update to ${name} (dangerous verdict). It cannot be overridden.`,
-  updatedGit: (name: string) => `${name} updated to the latest commit.`,
+  updatedGit: (name: string) => `${name} updated to the latest commit.`
 }

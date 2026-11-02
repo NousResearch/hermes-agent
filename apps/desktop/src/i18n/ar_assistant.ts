@@ -132,8 +132,7 @@ export const arAssistant = {
         },
         truncated: {
           title: 'انقطع الرد قبل اكتماله',
-          body: (_provider, model) =>
-            `توقف ${model || 'النموذج'} قبل أن يُنهي ردّه. اختر «متابعة» ليكمل من حيث توقف.`
+          body: (_provider, model) => `توقف ${model || 'النموذج'} قبل أن يُنهي ردّه. اختر «متابعة» ليكمل من حيث توقف.`
         },
         invalid_response: {
           title: 'تعذّرت قراءة الرد',

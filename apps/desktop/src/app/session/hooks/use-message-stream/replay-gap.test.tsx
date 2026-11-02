@@ -10,23 +10,17 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
-import {
-  $sessionTiles,
-  sessionTileDelegate,
-  setSessionTileDelegate
-} from '@/store/session-states'
+import { $sessionTiles, sessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
 import { renderMessageStream } from './test-harness'
 
-const replayGap = (
-  sessionId: string,
-  owner: { connectionId?: string; profile?: string }
-): GatewayEvent => ({
-  ...owner,
-  payload: { latest_seq: 41, replay_epoch: 'epoch-next' },
-  session_id: sessionId,
-  type: 'session.replay_gap'
-}) as GatewayEvent
+const replayGap = (sessionId: string, owner: { connectionId?: string; profile?: string }): GatewayEvent =>
+  ({
+    ...owner,
+    payload: { latest_seq: 41, replay_epoch: 'epoch-next' },
+    session_id: sessionId,
+    type: 'session.replay_gap'
+  }) as GatewayEvent
 
 const inertDelegate = () => ({
   archiveSession: vi.fn(async () => undefined),
@@ -97,12 +91,14 @@ describe('session.replay_gap recovery', () => {
     const delegate = { ...inertDelegate(), resumeTile }
     const state = createClientSessionState('stored-tile')
 
-    state.messages = [{
-      id: 'pending-user',
-      parts: [{ type: 'text', text: 'local pending prompt' }],
-      pending: true,
-      role: 'user'
-    }]
+    state.messages = [
+      {
+        id: 'pending-user',
+        parts: [{ type: 'text', text: 'local pending prompt' }],
+        pending: true,
+        role: 'user'
+      }
+    ]
     $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
     setSessionTileDelegate(delegate as never)
     stashSessionDraft('stored-tile', 'unsent tile draft', [])
@@ -113,12 +109,9 @@ describe('session.replay_gap recovery', () => {
 
     act(() => stream.handleEvent(replayGap('runtime-tile', ownerRoute)))
 
-    await waitFor(() =>
-      expect(resumeTile).toHaveBeenCalledWith('stored-tile', { authoritativeSnapshot: true })
-    )
+    await waitFor(() => expect(resumeTile).toHaveBeenCalledWith('stored-tile', { authoritativeSnapshot: true }))
     expect($sessionTiles.get()[0]?.ownerRoute).toEqual(ownerRoute)
     expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
     expect(sessionTileDelegate()).toBe(delegate)
   })
-
 })

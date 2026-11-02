@@ -3443,6 +3443,7 @@ export const jaOverrides = {
       skillActivity: {
         loading: 'スキルを読み込み中',
         loaded: 'スキルを読み込みました',
+        unchanged: 'スキルは変更なし',
         loadFailed: 'スキルの読み込みに失敗しました',
         readingResource: 'スキルのリソースを読み込み中',
         readResource: 'スキルのリソースを読み込みました',

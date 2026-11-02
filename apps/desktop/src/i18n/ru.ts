@@ -3630,6 +3630,7 @@ export const ruOverrides = {
       skillActivity: {
         loading: 'Загружается скилл',
         loaded: 'Загружен скилл',
+        unchanged: 'Скилл не изменился',
         loadFailed: 'Не удалось загрузить скилл',
         readingResource: 'Читается ресурс скилла',
         readResource: 'Прочитан ресурс скилла',

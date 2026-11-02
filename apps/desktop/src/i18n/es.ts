@@ -5156,6 +5156,7 @@ export const esOverrides = {
       skillActivity: {
         loading: 'Cargando skill',
         loaded: 'Skill cargada',
+        unchanged: 'Skill sin cambios',
         loadFailed: 'No se pudo cargar la skill',
         readingResource: 'Leyendo recurso de la skill',
         readResource: 'Recurso de la skill leído',

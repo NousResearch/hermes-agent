@@ -4050,6 +4050,7 @@ export interface Translations extends NoticeTranslations {
       skillActivity: {
         loading: string
         loaded: string
+        unchanged: string
         loadFailed: string
         readingResource: string
         readResource: string

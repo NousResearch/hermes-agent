@@ -321,6 +321,7 @@ export const arAssistant = {
       skillActivity: {
         loading: 'جارٍ تحميل المهارة',
         loaded: 'تم تحميل المهارة',
+        unchanged: 'لم تتغير المهارة',
         loadFailed: 'تعذر تحميل المهارة',
         readingResource: 'جارٍ قراءة مورد المهارة',
         readResource: 'تمت قراءة مورد المهارة',

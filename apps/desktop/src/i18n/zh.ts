@@ -4461,6 +4461,7 @@ export const zhOverrides = {
       skillActivity: {
         loading: '正在加载技能',
         loaded: '已加载技能',
+        unchanged: '技能未变更',
         loadFailed: '技能加载失败',
         readingResource: '正在读取技能资源',
         readResource: '已读取技能资源',

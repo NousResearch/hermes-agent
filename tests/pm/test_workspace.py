@@ -216,6 +216,30 @@ def test_plugin_extras_its_own_requirements_name_stay_in_the_snapshot(layout):
     assert optional == {"runtime": ["plugin-member[extra-io]"], "extra_io": ["other-dep==1.0"]}
 
 
+def test_plugin_extras_named_only_for_another_platform_do_not_constrain_the_lock(layout):
+    """``plugin[windows]; sys_platform == 'win32'`` installs nothing on Linux, so a Windows-only
+    pin inside that extra must not fail the Linux lock (and evict the plugin on update)."""
+    import tomllib
+
+    from packaging.markers import default_environment
+
+    tmp, core, plugin, _ = layout
+    other = next(p for p in ("win32", "linux") if p != default_environment()["sys_platform"])
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\n'
+        f'runtime=["plugin-member[other]; sys_platform == {other!r}", "chosen-dep==1.0"]\n'
+        'other=["base-dep==2.0"]\n')
+    root = tmp / "workspace"
+    ws.lock_and_sync([plugin], ["runtime"], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+    snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+    # Still declared, so a build backend validating the reference accepts it, but empty.
+    assert snapshot["project"]["optional-dependencies"]["other"] == []
+    locked = {p["name"]: p["version"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    assert locked["base-dep"] == "1.0" and "chosen-dep" in locked
+
+
 def test_classify_network_failure_stays_generic():
     from pm.workspace import ResolutionConflict, classify_uv_failure
 

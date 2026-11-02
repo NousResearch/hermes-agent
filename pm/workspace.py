@@ -145,9 +145,11 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity, extras=extras).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    candidates = {identity: source for identity, source in member_sources(plugin_dirs).items()
+                  if _is_member_candidate(source)}
+    target = _target_environment(python) if candidates else {}
+    members = [_workspace_member(source, root, identity=identity, extras=extras, target=target)
+               .relative_to(root).as_posix() for identity, source in candidates.items()]
 
     if members:
         import tomllib
@@ -160,7 +162,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
-        _solve_only_for(uv_policy, python)
+        _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -184,25 +186,55 @@ def _without_release_age(text: str) -> str:
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
-def _solve_only_for(uv_policy: dict, python: Path) -> None:
-    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+# packaging.markers.default_environment(), computed by the target interpreter itself; stdlib
+# only, because that interpreter need not have packaging installed.
+_MARKER_ENVIRONMENT_PROBE = """
+import json, os, platform, sys
+v = sys.implementation.version
+level = "" if v.releaselevel == "final" else f"{v.releaselevel[0]}{v.serial}"
+print(json.dumps({
+    "implementation_name": sys.implementation.name,
+    "implementation_version": f"{v.major}.{v.minor}.{v.micro}{level}",
+    "os_name": os.name,
+    "platform_machine": platform.machine(),
+    "platform_release": platform.release(),
+    "platform_system": platform.system(),
+    "platform_version": platform.version(),
+    "python_full_version": platform.python_version(),
+    "platform_python_implementation": platform.python_implementation(),
+    "python_version": ".".join(platform.python_version_tuple()[:2]),
+    "sys_platform": sys.platform,
+}))
+"""
 
-    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
-    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
-    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
-    A generation installs into one interpreter on one machine; only core's committed lock
-    has to cover every platform, and it never passes through here. The interpreter is asked
-    rather than this process, because PM can run under a bootstrap Python (an older Termux
-    interpreter reports ``linux``) while uv evaluates markers against *python*.
+
+def _target_environment(python: Path) -> dict[str, str]:
+    """The PEP 508 marker environment of the interpreter that installs the generation.
+
+    Asked of *python* rather than taken from this process, because PM can run under a
+    bootstrap Python (an older Termux interpreter reports ``linux``) while uv evaluates
+    markers against *python*.
     """
     import subprocess
 
     from pm.filesystem import native
 
-    probe = subprocess.run([native(python), "-I", "-c", "import platform, sys; print(sys.platform); print(platform.machine())"],
+    probe = subprocess.run([native(python), "-I", "-c", _MARKER_ENVIRONMENT_PROBE],
                            capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
-    sys_platform, machine = probe.stdout.split()
-    host = f"sys_platform == {sys_platform!r} and platform_machine == {machine!r}"
+    return json.loads(probe.stdout)
+
+
+def _solve_only_for(uv_policy: dict, target: Mapping[str, str]) -> None:
+    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+
+    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
+    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
+    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
+    A generation installs into one interpreter on one machine (*target*, from
+    ``_target_environment``); only core's committed lock has to cover every platform, and it
+    never passes through here.
+    """
+    host = f"sys_platform == {target['sys_platform']!r} and platform_machine == {target['platform_machine']!r}"
     uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]
 
 
@@ -292,37 +324,62 @@ def _member_key(identity: Path) -> str:
     return f"{name}-{digest}"
 
 
-def _selected_member_extras(document: dict, extras: Iterable[str]) -> set[str]:
-    """The member's extras this generation installs: those ``uv sync --extra`` names
-    (it applies a name to every member declaring it), closed over the member's own
-    ``name[extra]`` references, which install whatever references them."""
+def _selected_member_extras(document: dict, extras: Iterable[str],
+                            target: Mapping[str, str] | None = None) -> tuple[set[str], set[str]]:
+    """The member's extras this generation installs, and those it only names.
+
+    Installed: those ``uv sync --extra`` names (it applies a name to every member declaring
+    it), closed over the member's own ``name[extra]`` references, which install whatever
+    references them. A reference whose marker is false on *target* (the installing
+    interpreter's marker environment, ``extra`` set to the extra that declares it) installs
+    nothing there, so ``plugin[windows]; sys_platform == 'win32'`` installs no ``windows``
+    on Linux; that extra is returned as named, because the build backend still validates
+    the reference against the extras table. With no *target*, or a marker it cannot
+    evaluate, the reference installs.
+    """
+    from packaging.markers import UndefinedComparison, UndefinedEnvironmentName
     from packaging.requirements import InvalidRequirement, Requirement
     from packaging.utils import canonicalize_name
 
     from pm.install import _extra_key
 
+    def active(requirement: Requirement, extra: str) -> bool:
+        if requirement.marker is None or target is None:
+            return True
+        try:
+            return requirement.marker.evaluate({**target, "extra": extra})
+        except (UndefinedComparison, UndefinedEnvironmentName):
+            return True
+
     project = document.get("project", {})
     declared = {_extra_key(key): specs for key, specs in project.get("optional-dependencies", {}).items()}
     own = canonicalize_name(str(project.get("name", "")))
-    pending = list(project.get("dependencies", []))
+    pending = [(spec, "") for spec in project.get("dependencies", [])]
     selected: set[str] = set()
+    named: set[str] = set()
     for key in {_extra_key(extra) for extra in extras} & declared.keys():
         selected.add(key)
-        pending.extend(declared[key])
+        pending.extend((spec, key) for spec in declared[key])
     while pending:
+        spec, extra = pending.pop()
         try:
-            requirement = Requirement(pending.pop())
+            requirement = Requirement(spec)
         except InvalidRequirement:
             continue  # uv reports it; this pass only decides what to keep.
         if canonicalize_name(requirement.name) != own:
             continue
-        for key in {_extra_key(extra) for extra in requirement.extras} & declared.keys() - selected:
+        keys = {_extra_key(name) for name in requirement.extras} & declared.keys()
+        if not active(requirement, extra):
+            named |= keys
+            continue
+        for key in keys - selected:
             selected.add(key)
-            pending.extend(declared[key])
-    return selected
+            pending.extend((spec, key) for spec in declared[key])
+    return selected, named - selected
 
 
-def _runtime_member_metadata(document: dict, extras: Iterable[str]) -> bool:
+def _runtime_member_metadata(document: dict, extras: Iterable[str],
+                             target: Mapping[str, str] | None = None) -> bool:
     """Keep what this generation installs, not a plugin checkout's development environment.
 
     uv locks every declared group and extra of every member even when sync excludes it, so a
@@ -337,8 +394,10 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str]) -> bool:
     project = document.get("project", {})
     optional = project.get("optional-dependencies")
     if optional:
-        keep = _selected_member_extras(document, extras)
-        kept = {key: specs for key, specs in optional.items() if _extra_key(key) in keep}
+        keep, named = _selected_member_extras(document, extras, target)
+        # A named-only extra stays declared but empty: its pins cannot reach the lock.
+        kept = {key: specs if _extra_key(key) in keep else [] for key, specs in optional.items()
+                if _extra_key(key) in keep | named}
         if kept != optional:
             changed = True
             if kept:
@@ -365,7 +424,8 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str]) -> bool:
     return changed
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = ()) -> Path:
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),
+                      target: Mapping[str, str] | None = None) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -386,7 +446,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = _runtime_member_metadata(document, extras)
+        changed = _runtime_member_metadata(document, extras, target)
         if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
             changed = True

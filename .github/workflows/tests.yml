@@ -20,6 +20,13 @@ on:
         type: boolean
         required: false
         default: true
+      durations_key:
+        description: >-
+          Exact duration cache entry every slice restores (ci.yaml detect picks it). Set, the
+          slices split the suite by measured time; empty keeps the split by file name.
+        type: string
+        required: false
+        default: ''
       strict_acceptance:
         description: >-
           Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
@@ -94,12 +101,15 @@ jobs:
         # file is absent on a fresh runner and the scaler is inert.
         # Exact key never matches (run_id differs); restore-keys picks the
         # most recent cache saved by a main push. PRs read, only main writes.
+        # With inputs.durations_key every slice restores that one entry instead
+        # (a miss fails the job: a slice on a different cache would split the
+        # suite differently and drop or double-run files).
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: test-durations-never-exact
-          restore-keys: |
-            test-durations-
+          key: ${{ inputs.durations_key || 'test-durations-never-exact' }}
+          restore-keys: ${{ inputs.durations_key == '' && 'test-durations-' || '' }}
+          fail-on-cache-miss: ${{ inputs.durations_key != '' }}
 
       - name: Run tests
         # Per-file isolation via scripts/run_tests.sh: each test file runs
@@ -113,6 +123,7 @@ jobs:
           scripts/run_tests.sh
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
+          HERMES_TEST_SLICE_BY_DURATION: ${{ inputs.durations_key != '' && '1' || '' }}
           HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs

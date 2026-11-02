@@ -92,6 +92,8 @@ jobs:
       e2e_desktop_core: ${{ steps.gate-lanes.outputs.e2e_desktop_core }}
       e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
       event_name: ${{ github.event_name }}
+      durations_key: ${{ steps.durations-linux.outputs.cache-matched-key }}
+      os_durations_keys: ${{ steps.os-durations.outputs.keys }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -132,6 +134,61 @@ jobs:
                   output.write(f'{lane}={value}\n')
           PY
 
+      # Pick ONE per-file duration cache entry per platform for this whole run.
+      # Every test slice restores exactly this entry, so the slices agree on a
+      # split balanced by measured time (scripts/run_tests_parallel.py
+      # _slice_files). Lookup only: nothing is downloaded here.
+      - name: Pick the Linux duration cache
+        id: durations-linux
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: test-durations-never-exact
+          restore-keys: |
+            test-durations-
+          lookup-only: true
+      - name: Pick the Windows x64 duration cache
+        id: durations-windows-x64
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: os-test-durations-never-exact
+          restore-keys: |
+            os-test-durations-Windows-X64-
+          lookup-only: true
+      - name: Pick the Windows ARM64 duration cache
+        id: durations-windows-arm64
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: os-test-durations-never-exact
+          restore-keys: |
+            os-test-durations-Windows-ARM64-
+          lookup-only: true
+      - name: Pick the macOS duration cache
+        id: durations-macos
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: os-test-durations-never-exact
+          restore-keys: |
+            os-test-durations-macOS-ARM64-
+          lookup-only: true
+      - name: Collect the OS duration cache keys
+        id: os-durations
+        env:
+          WINDOWS_X64: ${{ steps.durations-windows-x64.outputs.cache-matched-key }}
+          WINDOWS_ARM64: ${{ steps.durations-windows-arm64.outputs.cache-matched-key }}
+          MACOS_ARM64: ${{ steps.durations-macos.outputs.cache-matched-key }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          keys = {"Windows-X64": os.environ["WINDOWS_X64"], "Windows-ARM64": os.environ["WINDOWS_ARM64"],
+                  "macOS-ARM64": os.environ["MACOS_ARM64"]}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("keys=" + json.dumps({k: v for k, v in keys.items() if v}) + "\n")
+          PY
+
   # ─────────────────────────────────────────────────────────────────────
   # Lane-gated sub-workflows. Each runs in parallel after detect finishes.
   # Skipped workflows (if condition is false) don't spin up runners.
@@ -150,6 +207,7 @@ jobs:
     uses: ./.github/workflows/tests.yml
     with:
       commit: ${{ inputs.commit }}
+      durations_key: ${{ needs.detect.outputs.durations_key }}
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
       strict_acceptance: ${{ inputs.strict_acceptance || '' }}
@@ -167,6 +225,7 @@ jobs:
     uses: ./.github/workflows/tests-os.yml
     with:
       commit: ${{ inputs.commit }}
+      durations_keys: ${{ needs.detect.outputs.os_durations_keys }}
       # The Windows lane spawns the real desktop-update hand-off script
       # (tests/test_desktop_update_windows_*.py) only when that surface
       # changed; unit-level platforms("windows") tests always run.

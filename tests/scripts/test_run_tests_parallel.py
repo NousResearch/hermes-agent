@@ -808,3 +808,25 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
     slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
               for i in range(3)]
     assert sorted(f for s in slices for f in s) == sorted(files)
+
+
+def test_duration_split_partitions_exactly_and_balances_slow_files(capsys) -> None:
+    """CI pins every slice to one cache entry; the slices then split by measured time."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_dur_slices", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    root = Path("/repo")
+    files = [root / f"tests/t_{i:03d}.py" for i in range(40)]
+    # Four slow files next to each other in name order: split by name, two land in each
+    # slice only by luck of the round-robin; split by time, each slice gets two.
+    cache = {f"tests/t_{i:03d}.py": (150.0 if i in (8, 10, 12, 14) else 2.0) for i in range(40)}
+    slices = [rtp._slice_files(list(reversed(files)) if i else files, i + 1, 2, cache, root, True)
+              for i in range(2)]
+    assert sorted(f for s in slices for f in s) == sorted(files)
+    totals = [sum(cache[rtp._format_file(f, root)] for f in s) for s in slices]
+    assert abs(totals[0] - totals[1]) <= 2.0
+    digests = {line.split("partition ")[1] for line in capsys.readouterr().out.splitlines() if "partition " in line}
+    assert len(digests) == 1

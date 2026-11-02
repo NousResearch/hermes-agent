@@ -59,6 +59,13 @@ on:
         type: boolean
         required: false
         default: true
+      durations_keys:
+        description: >-
+          JSON map "<runner.os>-<runner.arch>" -> exact duration cache entry (ci.yaml detect
+          picks one per platform). A lane with an entry splits its slices by measured time.
+        type: string
+        required: false
+        default: ''
       strict_acceptance:
         description: >-
           Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py).
@@ -127,6 +134,17 @@ jobs:
           extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
+
+      - name: Restore per-file duration cache
+        # The exact entry ci.yaml's detect job picked for this platform, so every
+        # slice of the run sees the same durations and agrees on the split. A miss
+        # fails the job rather than let two slices split the suite differently.
+        if: fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] != null
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: ${{ fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] }}
+          fail-on-cache-miss: true
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
@@ -202,11 +220,22 @@ jobs:
           # starves cold child startup before the fixture's idle deadline.
           HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
           HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
+          HERMES_TEST_SLICE_BY_DURATION: ${{ fromJSON(inputs.durations_keys || '{}')[format('{0}-{1}', runner.os, runner.arch)] != null && '1' || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
+
+      - name: Save per-file duration cache (main only)
+        # Only green first-attempt durations are written by the runner. One entry
+        # per platform and slice; each keeps the restored entries for the other
+        # slices' files, so the newest entry is complete.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test_durations.json
+          key: os-test-durations-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ strategy.job-index }}
 
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that

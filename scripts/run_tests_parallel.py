@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -999,12 +1000,19 @@ def _compute_lpt_slices(
     return bucket_files
 
 
+def _partition_digest(buckets: list[list[Path]], repo_root: Path) -> str:
+    """Short hash of the whole split; every slice of one run must print the same."""
+    text = "\n".join("|".join(_format_file(f, repo_root) for f in b) for b in buckets)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
 def _slice_files(
     files: list[Path],
     slice_index: int,
     slice_count: int,
     durations: dict[str, float],
     repo_root: Path,
+    by_duration: bool = False,
 ) -> list[Path]:
     """Return the subset of *files* belonging to slice *slice_index*.
 
@@ -1025,7 +1033,13 @@ def _slice_files(
         )
         sys.exit(2)
 
-    bucket_files = _compute_lpt_slices(sorted(files), slice_count, {}, repo_root)
+    # By default the split ignores the cache: each slice job restores its own copy
+    # and a main push can save a newer one in between. CI pins every slice of one
+    # run to the same cache entry and sets HERMES_TEST_SLICE_BY_DURATION, so the
+    # slices agree on a split balanced by measured time instead of file count.
+    bucket_files = _compute_lpt_slices(
+        sorted(files), slice_count, durations if by_duration else {}, repo_root
+    )
 
     target = bucket_files[slice_index - 1]
     target_dur = sum(
@@ -1038,7 +1052,9 @@ def _slice_files(
     )
     print(
         f"Slice {slice_index}/{slice_count}: {len(target)} files "
-        f"(~{target_dur:.0f}s estimated of {total_dur:.0f}s total)",
+        f"(~{target_dur:.0f}s estimated of {total_dur:.0f}s total, "
+        f"split by {'duration' if by_duration else 'file name'}; "
+        f"partition {_partition_digest(bucket_files, repo_root)})",
         flush=True,
     )
 
@@ -1486,6 +1502,7 @@ def main() -> int:
     # Read once, here: test processes inherit this env, and a runner they start (the
     # runner's own probe tests) must run its whole file set, not "its" slice of it.
     os.environ.pop("HERMES_TEST_SLICE", None)
+    slice_by_duration = os.environ.pop("HERMES_TEST_SLICE_BY_DURATION", "") == "1"
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
@@ -1531,7 +1548,9 @@ def main() -> int:
     # Apply slicing if requested (partition from the checkout alone; see _slice_files).
     if slice_index is not None:
         durations = _load_durations(repo_root)
-        files = _slice_files(files, slice_index, slice_count, durations, repo_root)
+        files = _slice_files(
+            files, slice_index, slice_count, durations, repo_root, slice_by_duration
+        )
         # Recount after slicing.
         test_counts = {f: test_counts[f] for f in files if f in test_counts}
         approx_total_tests = sum(test_counts.values())

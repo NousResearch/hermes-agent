@@ -310,6 +310,36 @@ class TestLazyFirstUseConnect:
         assert "playwright" in mcp._lazy_server_configs
 
 
+class TestLazyParkedConnectIsNotReplaced:
+    def test_retry_after_parked_first_use_keeps_one_run_task(self, monkeypatch):
+        """A first-use connect that parks is adopted and owns revival; a later first use must not
+        start a second task beside it (the replaced one kept probing and later held a live child)."""
+        import asyncio
+        import sys
+
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+
+        monkeypatch.setattr(mcp, "_MAX_INITIAL_CONNECT_RETRIES", 0)  # park on the first failed spawn
+        monkeypatch.setattr(mcp, "_CONNECT_RETRY_BASE_BACKOFF_SEC", 0.0)  # no lazy-connect cooldown
+        config = {"command": sys.executable, "args": ["-c", "import sys; sys.exit(1)"], "lazy": True}
+        entry = {"tools": [{"name": "t", "inputSchema": {"type": "object", "properties": {}}}]}
+        assert _mcp_registration._register_from_cache_sync("crashy", config, entry)
+
+        def live_run_owners():
+            async def _owners():
+                return [t.get_coro().cr_frame.f_locals["self"] for t in asyncio.all_tasks()
+                        if getattr(t.get_coro(), "__qualname__", "").endswith("RunMixin.run")]
+            return asyncio.run_coroutine_threadsafe(_owners(), mcp._mcp_loop).result(10)
+
+        try:
+            for _ in range(2):
+                assert _mcp_discovery._ensure_lazy_server_connected("crashy") is False
+            owners = live_run_owners()
+            assert owners == [mcp._servers["crashy"]]
+        finally:
+            shutdown_mcp_servers()
+
+
 class TestCacheLoadDescriptionScan:
     def test_scan_runs_on_cache_load_path(self):
         # Defense-in-depth: the cache file is user-writable JSON, so the

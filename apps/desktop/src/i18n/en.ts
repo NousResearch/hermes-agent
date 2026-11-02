@@ -3665,6 +3665,13 @@ export const en: Translations = {
       agentShipUnavailable: "The chat that owns these changes isn't on screen.",
       agentShipPrompt:
         'Review the current changes, commit them with a clear conventional-commit message, push the branch, and open a pull request.',
+      commentOnLine: (path: string, line: number) => `Comment on ${path}:${line}`,
+      commentPlaceholder: (shortcut: string) => `Comment (${shortcut} to add)`,
+      addComment: 'Add comment',
+      commentsCount: (count: number) => `${count} comment${count === 1 ? '' : 's'}`,
+      clearComments: 'Clear comments',
+      removeComment: 'Remove comment',
+      sendComments: 'Send comments to Hermes',
       newBranch: 'New branch',
       branchOffFrom: base => `New branch from ${base}`,
       switchTo: branch => `Switch to ${branch}`,

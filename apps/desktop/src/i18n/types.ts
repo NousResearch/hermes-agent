@@ -3153,6 +3153,13 @@ export interface Translations extends NoticeTranslations {
       agentShip: string
       agentShipUnavailable: string
       agentShipPrompt: string
+      commentOnLine: (path: string, line: number) => string
+      commentPlaceholder: (shortcut: string) => string
+      addComment: string
+      commentsCount: (count: number) => string
+      clearComments: string
+      removeComment: string
+      sendComments: string
       newBranch: string
       branchOffFrom: (base: string) => string
       switchTo: (branch: string) => string

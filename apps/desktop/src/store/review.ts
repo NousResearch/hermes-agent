@@ -137,6 +137,75 @@ export const $reviewSelectedPath = persistentAtom<null | string>(SELECTED_KEY, n
 export const $reviewDiff = atom<null | string>(null)
 export const $reviewDiffLoading = atom(false)
 
+// Line comments on the selected file's diff. Anchored to a file + line
+// number (new-file side when the row survives, old-file side for removals)
+// with the row's text kept as a snippet, so the list — and the prompt sent
+// to the agent — stays readable even after the diff shifts. Pane-session
+// state only: comments are a review conversation, not repo data.
+export interface ReviewComment {
+  body: string
+  id: string
+  kind: 'add' | 'context' | 'remove'
+  line: number
+  path: string
+  side: 'new' | 'old'
+  snippet: string
+}
+
+export const $reviewComments = atom<ReviewComment[]>([])
+
+let reviewCommentSeq = 0
+
+export function addReviewComment(comment: Omit<ReviewComment, 'id'>): void {
+  reviewCommentSeq += 1
+  $reviewComments.set([...$reviewComments.get(), { ...comment, id: `rc-${reviewCommentSeq}` }])
+  $reviewCommentDraft.set(null)
+}
+
+export function removeReviewComment(id: string): void {
+  $reviewComments.set($reviewComments.get().filter(comment => comment.id !== id))
+}
+
+export function clearReviewComments(): void {
+  if ($reviewComments.get().length > 0) {
+    $reviewComments.set([])
+  }
+}
+
+/** The prompt handed to the agent: every comment with its file/line anchor
+ *  and the diff row it was left on, grouped in file order. */
+export function formatReviewCommentsPrompt(comments: ReviewComment[]): string {
+  const lines = comments.map(comment => {
+    const side = comment.side === 'new' ? 'new' : 'old'
+    const marker = comment.kind === 'add' ? '+' : comment.kind === 'remove' ? '-' : ' '
+
+    return `- ${comment.path}:${comment.line} (${side} line)\n  diff: ${marker}${comment.snippet}\n  comment: ${comment.body}`
+  })
+
+  return [
+    'Please address these review comments I left on the current diff:',
+    '',
+    ...lines,
+    '',
+    'Make the changes, then briefly summarize what you changed for each comment.'
+  ].join('\n')
+}
+
+// The line a comment is being composed on (set by clicking a diff row in
+// the review pane). Lives in the store so the diff panel and the comment
+// list under it share one draft.
+export type ReviewCommentDraft = Omit<ReviewComment, 'body' | 'id'>
+
+export const $reviewCommentDraft = atom<null | ReviewCommentDraft>(null)
+
+export function startReviewComment(draft: ReviewCommentDraft): void {
+  $reviewCommentDraft.set(draft)
+}
+
+export function cancelReviewCommentDraft(): void {
+  $reviewCommentDraft.set(null)
+}
+
 // Ship state: gh availability + this branch's PR, and a busy flag for the
 // commit/push/PR action bar (disables buttons + shows progress).
 export const $reviewShipInfo = atom<HermesReviewShipInfo>({ ghReady: false, pr: null })
@@ -373,6 +442,15 @@ function refreshShipInfoIfStale(): void {
  *  session's cwd when null — see `$reviewScopeCwd`. Keep the originating
  *  composer target alongside it for agent-ship actions. */
 export function openReview(scopeCwd: null | string = null, scopeTarget = 'main'): void {
+  // Comments anchor to the repo they were written against; a different
+  // origin starts a fresh review conversation.
+  const originChanged =
+    ($reviewScopeCwd.get() ?? null) !== (scopeCwd?.trim() || null) || $reviewScopeTarget.get() !== (scopeTarget.trim() || 'main')
+
+  if (originChanged) {
+    clearReviewComments()
+  }
+
   $reviewScopeCwd.set(scopeCwd?.trim() || null)
   $reviewScopeTarget.set(scopeTarget.trim() || 'main')
   $reviewOpen.set(true)

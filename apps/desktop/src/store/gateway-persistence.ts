@@ -26,10 +26,7 @@ function servedByPrimary(connection: DesktopRegistryConnection, primary: Primary
 }
 
 /** The registry connections that need their own kept socket. */
-export function persistentGatewayIds(
-  registry: DesktopConnectionsRegistry | null,
-  primary: PrimaryGatewayRoute
-): string[] {
+function persistentGatewayIds(registry: DesktopConnectionsRegistry | null, primary: PrimaryGatewayRoute): string[] {
   return (registry?.connections ?? []).filter(connection => !servedByPrimary(connection, primary)).map(c => c.id)
 }
 

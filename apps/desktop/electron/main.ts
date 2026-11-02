@@ -350,6 +350,7 @@ import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { localProfileIsLive } from './local-profile-liveness'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
@@ -17824,7 +17825,7 @@ app.whenReady().then(() => {
     hasRemoteOverride: profileHasRemoteOverride,
     launchProfile: parseLaunchProfile(process.argv),
     log: rememberLog,
-    profileExists: profile => fs.statSync(path.join(HERMES_HOME, 'profiles', profile), { throwIfNoEntry: false })?.isDirectory() ?? false
+    profileExists: profile => localProfileIsLive(HERMES_HOME, profile)
   })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.

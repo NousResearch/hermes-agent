@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, test } from 'vitest'
 
 import { createDesktopProfilePreferences, type MissingLocalProfileCheck } from './desktop-profile'
+import { localProfileIsLive } from './local-profile-liveness'
 
 // The preference file lives in Electron userData, which a Hermes reinstall
 // does not touch; the profiles live under HERMES_HOME, which it can wipe.
@@ -32,7 +33,7 @@ function check(overrides: Partial<MissingLocalProfileCheck> = {}): MissingLocalP
     hasRemoteOverride: () => false,
     launchProfile: null,
     log: line => logs.push(line),
-    profileExists: profile => fs.existsSync(path.join(profilesRoot, profile)),
+    profileExists: profile => localProfileIsLive(path.dirname(profilesRoot), profile),
     ...overrides
   }
 }
@@ -54,6 +55,7 @@ test('existing, default and explicitly launched profiles are kept', () => {
   const preferences = createDesktopProfilePreferences(target)
 
   fs.mkdirSync(path.join(profilesRoot, 'work'))
+  fs.writeFileSync(path.join(profilesRoot, 'work', 'config.yaml'), '')
   preferences.remember('work')
   assert.deepEqual(preferences.forgetMissingLocalProfiles(check()), [])
   assert.equal(preferences.readActive(), 'work')
@@ -67,6 +69,40 @@ test('existing, default and explicitly launched profiles are kept', () => {
   assert.deepEqual(preferences.forgetMissingLocalProfiles(check({ launchProfile: 'typo' })), [])
   assert.equal(preferences.readActive(), 'typo')
   assert.deepEqual(logs, [])
+})
+
+// hermes_constants.named_profile_is_live refuses both shapes, so `--profile`
+// would fail every launch while the preference survived.
+test.each([
+  ['tombstoned by `hermes profile delete`', (home: string) => {
+    fs.writeFileSync(path.join(home, 'config.yaml'), '')
+    fs.mkdirSync(path.join(profilesRoot, '.deleted'))
+    fs.writeFileSync(path.join(profilesRoot, '.deleted', 'ghost'), 'deleted\n')
+  }],
+  ['a marker-less runtime leftover', (home: string) => fs.mkdirSync(path.join(home, 'logs'))]
+])('a remembered profile directory that is %s is forgotten', (_label, shape) => {
+  const home = path.join(profilesRoot, 'ghost')
+  fs.mkdirSync(home)
+  shape(home)
+  const preferences = createDesktopProfilePreferences(target)
+  preferences.remember('ghost')
+  preferences.setDefault({ connectionId: null, profile: 'ghost' })
+
+  assert.deepEqual(preferences.forgetMissingLocalProfiles(check()), ['ghost', 'ghost'])
+  assert.equal(preferences.readActive(), 'default')
+  assert.equal(preferences.getDefault(), null)
+})
+
+// Unprivileged Windows cannot create symlinks.
+test.skipIf(process.platform === 'win32')('a profile whose only identity marker is a dangling symlink stays live, as in the CLI', () => {
+  const home = path.join(profilesRoot, 'cloned')
+  fs.mkdirSync(home)
+  fs.symlinkSync(path.join(root, 'missing-config.yaml'), path.join(home, 'config.yaml'))
+  const preferences = createDesktopProfilePreferences(target)
+  preferences.remember('cloned')
+
+  assert.deepEqual(preferences.forgetMissingLocalProfiles(check()), [])
+  assert.equal(preferences.readActive(), 'cloned')
 })
 
 test('profiles served by a remote gateway are never judged by the local disk', () => {

@@ -242,7 +242,13 @@ def _build_child_agent(
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    # Read the kill switch in the TARGET profile's scope, not the caller's: a caller
+    # (e.g. Iris) may resolve config from its own home, while the target (e.g. Core)
+    # is the profile that opts into orchestrator behaviour. The target scope is the
+    # one the child actually runs in, so it is the one that decides the child's role.
+    with delegated_profile_scope(profile_home):
+        _target_orchestrator_enabled = _get_orchestrator_enabled()
+    effective_role = "orchestrator" if _target_orchestrator_enabled and child_depth < max_spawn else "leaf"
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.

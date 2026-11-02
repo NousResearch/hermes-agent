@@ -1960,6 +1960,25 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
   )
 }
 
+/** The exact (connection-bearing) owner the store already knows for a stored
+ *  id, through the same sync ladder session RPCs use; undefined when it knows
+ *  only a bare profile or nothing. */
+function knownExactOwnerRoute(storedSessionId: string): SessionProfileRoute | undefined {
+  const owner = resolveSessionRpcOwner({
+    routingSessionId: storedSessionId,
+    tileOwnerRoute: sessionTileOwnerRoute,
+    sessionOwnerHint: getSessionOwnerHint,
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
+    eventOwner: runtimeSessionOwner
+  })
+
+  if (!owner || typeof owner !== 'object' || !String(owner.connectionId ?? '').trim()) {
+    return undefined
+  }
+
+  return owner
+}
+
 export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }
 
 export async function resolveStoredSession(
@@ -1978,8 +1997,17 @@ export async function resolveStoredSession(
  *  ids that live on a profile not yet listed (#125678). */
 export async function probeStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  explicitOwnerRoute?: SessionProfileRoute
 ): Promise<StoredSessionProbe> {
+  // A caller that names no owner still gets the exact one the store already
+  // knows (tile route, unique hint, tagged row, proven runtime event). The
+  // profile ladder below walks the AMBIENT source's profile names; a session
+  // whose known owner is another connection (This device's Bot Chat on a
+  // remote-primary Desktop) has nothing to find there, and every name in that
+  // walk reached the owner's connection through the read pin, which refused
+  // or dialed each one in turn ("Profile \"rift\" no longer exists", and a
+  // 120 s remote-dashboard wait for another).
+  const ownerRoute = explicitOwnerRoute ?? knownExactOwnerRoute(storedSessionId)
   let allGone = true
 
   const recordFailure = (error: unknown) => {

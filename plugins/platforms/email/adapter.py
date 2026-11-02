@@ -473,6 +473,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
+        self._imap_folder = setting("EMAIL_IMAP_FOLDER", "imap_folder").strip() or "INBOX"
         self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
         self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
@@ -535,7 +536,10 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            imap.select("INBOX")
+            selected = imap.select(self._imap_folder)
+            if isinstance(selected, tuple) and selected and selected[0] != "OK":
+                data = selected[1] if len(selected) > 1 else []
+                raise imaplib.IMAP4.error(f"Cannot select mailbox {self._imap_folder!r}: {data}")
             yield imap
         finally:
             _close_imap(imap)

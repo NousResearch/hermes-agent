@@ -458,8 +458,8 @@ creates the annotated `channel.<YYYYMMDDTHHMMSSZ>-v<version>` claim on it (its
 message records the channel, branding, lanes, `requireGreen` and bundle
 defaults). With `--publish` it pushes the claim and dispatches Stable Release
 from the default branch. Like a commit build, it takes `--only`, `--with` and
-`--without` (starting from the stable default minus `upgrade` and
-`windows-store`; `install-e2e` runs, since channel installs update), plus
+`--without` (starting from the stable default minus `windows-store`;
+`install-e2e` runs, since channel installs update), plus
 `--[no-]require-green`, `--bundle-env`/`--bundle-unset` and
 `--channel-specific-data-dirs`. The local command needs only a `gh` token with
 write, maintain or admin permission on the selected repository. It needs no R2
@@ -480,9 +480,12 @@ stamped Windows quad, and they live in the claim archive
 `releases/tag/<claim>/channel-request.json`, makes reruns find the same
 request. Admission's allocation doubles as the CAS/CDN probe: R2 must refuse
 the stale record under its old ETag, and the public origin must show the
-allocation. Every candidate leg builds that request beside its claim tag. Once
-the candidate is accepted (with `--require-green`, once every suite is green),
-`publish-channel` writes the build's feeds and manifest under
+allocation. Every candidate leg builds that request beside its claim tag. Its
+signed-package upgrade arms upgrade the channel's head (the build its
+subscribers run, whose claim archive holds the matching candidate manifest) to
+this one; a new channel has no head, so they are skipped. Once the candidate is
+accepted and every upgrade arm that ran passed (with `--require-green`, once
+every suite is green), `publish-channel` writes the build's feeds and manifest under
 `releases/channel-builds/BUILD_ID/` from the accepted candidate's receipts.
 It then advances `releases/channels/NAME.json`, and never a stable or canary
 head, feed, Docker tag, GitHub release or Store listing. The claim archive's

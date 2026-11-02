@@ -503,7 +503,7 @@ jobs:
   windows-packaged:
     name: Windows signed-package acceptance
     needs: [admit, transitions-win32]
-    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
+    # Without a published baseline (the last stable, the last canary, or the channel head) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['windows-packaged'] && needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -522,7 +522,7 @@ jobs:
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
     needs: [admit, transitions-darwin-arm64]
-    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
+    # Without a published baseline (the last stable, the last canary, or the channel head) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-arm64'] && needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -541,7 +541,7 @@ jobs:
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
     needs: [admit, transitions-darwin-x64]
-    # Without a published baseline (the last stable, or for a canary the last canary) there is no OLD package.
+    # Without a published baseline (the last stable, the last canary, or the channel head) there is no OLD package.
     if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-x64'] && needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -786,12 +786,20 @@ jobs:
     # releases/channel-builds/<id>/ and CASes the preview channel head
     # (scripts/releases/channel_claims.py publish). Never a stable or canary head, feed, Docker tag,
     # GitHub release or Store. With require-green it waits for every suite; without, for the
-    # accepted candidate.
-    needs: [admit, candidate-manifest, acceptance]
+    # accepted candidate and, like publish-canary, every upgrade arm that ran (its channel's head ->
+    # this build) passed or was skipped (lane off, no head yet).
+    needs: [admit, candidate-manifest, acceptance, transitions-darwin-arm64, transitions-darwin-x64,
+            transitions-win32, macos-packaged-arm64, macos-packaged-x64, windows-packaged]
     if: >-
       !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-channel']
       && needs.candidate-manifest.result == 'success'
       && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-arm64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-darwin-x64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.transitions-win32.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-arm64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos-packaged-x64.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.windows-packaged.result)
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     permissions:
@@ -801,6 +809,8 @@ jobs:
       CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
       CHANNEL_BUILD: ${{ needs.admit.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.admit.outputs.channel-request-sha256 }}
+      # channel_claims custody re-requires the upgrade arms.
+      RELEASE_NEEDS: ${{ toJSON(needs) }}
       GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}

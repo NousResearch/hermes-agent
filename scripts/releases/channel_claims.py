@@ -124,6 +124,7 @@ def publish_claim(env: dict, root: Path) -> dict:
     admitted = stable.check_claim(env)
     if admitted["policy"] != "channel":
         raise ChannelError("publish-channel serves channel claims only")
+    stable.require_upgrade_arms(json.loads(env.get("RELEASE_NEEDS", "{}")))  # publish-channel gates the same
     tag, commit = admitted["claim_tag"], admitted["commit"]
     request = require_admitted_request(tag, admitted, env)
     publisher = _publisher(env, frozenset({"promote"}))

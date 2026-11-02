@@ -205,3 +205,133 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
         assert env["GIT_CONFIG_COUNT"] == "1", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args
+
+
+# ---------------------------------------------------------------------------
+# The OUTCOME side of a failed fetch (#106026): the diagnosis printed to the
+# terminal is not a record. Everything below drives the real apply path against
+# a real (broken) git remote, then reads the receipt the command boundary would
+# persist — no mock of the receipt, the classifier or the fetch seam except in
+# the one test that must pin *what* the classified reason carries.
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+import pytest
+
+import hermes_cli.update_receipt as ur
+
+
+def _git(root, *args):
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
+                          text=True, stdin=subprocess.DEVNULL).stdout.strip()
+
+
+class TestFailedFetchLeavesADiscriminableRecord:
+    """A failed fetch on the apply path must say so in the run's RECORD.
+
+    Issue #106026 reported a success banner after an HTTP 429 fetch failure.
+    The banner is not reproducible on current main (the apply path exits 1), but
+    the record was still mute: the receipt carried ``outcome: failed`` /
+    ``exit_code: 1`` — the same shape every other aborted update produces — and
+    ``stop_class`` is a closed metrics token (``fetch_failed``). A post-mortem
+    could not tell a rate-limited fetch from a venv-holder refusal, and the
+    classified diagnosis (which names 429 vs auth vs DNS) lived in scrollback
+    only. Both halves are pinned here.
+    """
+
+    RATE_LIMIT_STDERR = (
+        "error: RPC failed; HTTP 429 curl 22 The requested URL returned error: 429\n"
+        "fatal: expected flush after ref listing"
+    )
+
+    @pytest.fixture()
+    def updating_install(self, tmp_path, monkeypatch):
+        """A real checkout whose origin cannot be fetched, and a hermetic HERMES_HOME."""
+        home, origin, checkout = (tmp_path / name for name in ("home", "origin", "checkout"))
+        home.mkdir()
+        origin.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
+        _git(origin, "init", "-q", "-b", "main")
+        _git(origin, "config", "user.name", "Fetch Fixture")
+        _git(origin, "config", "user.email", "fixture@example.invalid")
+        _git(origin, "config", "commit.gpgsign", "false")
+        (origin / "README.md").write_text("fixture\n", encoding="utf-8")
+        _git(origin, "add", ".")
+        _git(origin, "commit", "-q", "-m", "fixture")
+        _git(tmp_path, "clone", "-q", str(origin), str(checkout))
+
+        from hermes_cli import main
+        opts = update_cmd._UpdateOptions(
+            pre_update_version=None, gw_input_fn=None, assume_yes=True, keep_stash=False,
+            switch_branch=False, discard_local_changes=False, no_gateway_restart=True)
+        monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
+        monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: checkout)
+        monkeypatch.setattr(update_cmd._commit, "preflight_refusal", lambda *a, **k: None)
+        monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: opts)
+        monkeypatch.setattr(update_cmd, "_pause_gateways_for_update", lambda *_: None)
+        monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: (ur.begin_update_receipt(), None)[1])
+        monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
+        monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+        ur._current.set(None)
+        yield SimpleNamespace(root=checkout, home=home, origin=origin)
+        ur._current.set(None)
+
+    @staticmethod
+    def _run(monkeypatch):
+        """Drive the apply path to the fetch, then close the receipt as the boundary does."""
+        from hermes_cli import main
+
+        args = SimpleNamespace(branch="main", yes=True, keep_stash=False, switch_branch=False,
+                               no_gateway_restart=True)
+        with pytest.raises(SystemExit) as exit_info:
+            update_cmd._cmd_update_impl(args, gateway_mode=False)
+        assert exit_info.value.code == 1
+        # Exactly what the command boundary does for a SystemExit(1) (main.py `sys.exit({_code})`).
+        main._finalize_update_receipt(1, "sys.exit(1)")
+        return ur.read_latest_receipt()
+
+    def test_receipt_names_the_failed_fetch_and_stdout_ends_saying_nothing_applied(
+            self, updating_install, monkeypatch, capsys):
+        # A remote that is gone: the fetch fails for real (no mocked CompletedProcess).
+        _git(updating_install.root, "remote", "set-url", "origin",
+             str(updating_install.origin / "gone"))
+
+        receipt = self._run(monkeypatch)
+
+        out = capsys.readouterr().out
+        assert "Failed to fetch updates from origin." in out
+        # The last word on the terminal names the outcome, not just the cause.
+        assert out.strip().splitlines()[-1] == (
+            "✗ Update not applied — code unchanged (fetch failed)")
+
+        assert receipt["outcome"] == "failed"
+        assert receipt["exit_code"] == 1
+        fetch_steps = [s for s in receipt["steps"] if s["name"] == "fetch"]
+        assert len(fetch_steps) == 1, receipt["steps"]
+        assert fetch_steps[0]["ok"] is False
+        # The record says WHICH step died and why — the invariant a post-mortem needs.
+        assert "Failed to fetch updates from origin." in fetch_steps[0]["detail"]
+
+    def test_recorded_reason_is_the_classified_diagnosis_not_a_bare_token(
+            self, updating_install, monkeypatch, capsys):
+        """A rate-limited fetch records the 429 classification, not just ``fetch_failed``."""
+        from hermes_cli import gitlock
+
+        monkeypatch.setattr(
+            gitlock, "fetch_with_partial_clone_recovery",
+            lambda run, git_cmd, args, root: subprocess.CompletedProcess(
+                args, 1, stdout="", stderr=self.RATE_LIMIT_STDERR))
+
+        receipt = self._run(monkeypatch)
+
+        fetch_steps = [s for s in receipt["steps"] if s["name"] == "fetch"]
+        assert len(fetch_steps) == 1, receipt["steps"]
+        detail = fetch_steps[0]["detail"]
+        assert detail.startswith("GitHub is rate limiting requests"), detail
+        assert "HTTP 429" in detail
+        # The closed metrics token is still there for the aggregate — the detail is additive.
+        assert receipt["stop_class"] == "fetch_failed"
+        assert "rate limiting" in capsys.readouterr().out

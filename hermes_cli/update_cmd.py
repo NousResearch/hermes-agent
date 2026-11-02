@@ -1930,9 +1930,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
                       " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")
             _print_fetch_failure(fetch_result.stderr, git_cmd=git_cmd, root=_m().PROJECT_ROOT)
+            # The classified diagnosis above is the only trace of WHY the fetch failed; it lives in
+            # scrollback, not in the run's record. ``stop_class`` names the exit but is a closed
+            # metrics token (``fetch_failed``) — a post-mortem reading ``steps``/``stop_class`` after
+            # the fact could not tell a rate-limited fetch from any other aborted update (#106026).
+            _record_update_step(
+                "fetch", False,
+                _classify_fetch_failure(fetch_result.stderr).removeprefix("✗ ").strip())
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             _record_stop("git_timeout" if fetch_result.returncode == 124 else "disk_full"
                          if "No space left on device" in (fetch_result.stderr or "") else "fetch_failed")
+            # Last line before the exit: nothing below reopens the update, so a reader who scrolled
+            # past the diagnosis still ends on an explicit "nothing was applied" (#106026).
+            print("✗ Update not applied — code unchanged (fetch failed)")
             sys.exit(1)
 
         _check.fetch_release_tag(git_cmd, _m().PROJECT_ROOT, completion_request)

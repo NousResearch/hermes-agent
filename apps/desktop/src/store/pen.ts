@@ -174,7 +174,16 @@ export function watchPenSession(): () => void {
   void sync($selectedStoredSessionId.get())
 
   const offEvents =
-    pen.onEvent?.(({ event }) => {
+    pen.onEvent?.(({ event, payload }) => {
+      // The editor's own dashboard opened another canvas in this pane.
+      if (event === 'switch-document') {
+        const { doc, url } = (payload ?? {}) as { doc?: { displayName?: string; docId?: string }; url?: string }
+
+        if (doc?.docId && url) {
+          openPenCanvasTile({ docId: doc.docId, title: doc.displayName || 'Canvas', url })
+        }
+      }
+
       if (event === 'close-document') {
         void pen.status?.().then(status => {
           if (!status?.openDocuments.length) {

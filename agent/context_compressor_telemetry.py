@@ -81,7 +81,7 @@ class CompressionTelemetryMixin:
         if not isinstance(telemetry, dict):
             return
         telemetry["aux_prompt_tokens"] = estimate_messages_tokens_rough(prompt_messages)
-        # The summary prompt is built fresh per attempt and never estimated again; don't let the memo pin it.
+        # The summary prompt is built fresh per attempt and never estimated again; don't let the memo hold it.
         forget_message_token_memo(prompt_messages)
         telemetry["aux_output_reservation"] = _safe_int(max_tokens)
         if aux_provider:

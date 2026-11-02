@@ -25,6 +25,7 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.model_metadata_token_memo import current_token_memo_owner
 
 logger = logging.getLogger(__name__)
 
@@ -2420,37 +2421,32 @@ def _strip_stale_thinking_for_estimate(messages: list[dict[str, Any]]) -> list[d
     ]
 
 
-# Per-message token-estimate memo keyed by an exact value fingerprint: strings by ``id()`` AND
-# pinned (strong ref in the entry, so the id can't be reused and immutability makes id-equality
-# value-equality); numbers/bools/None by value; dicts/lists structurally in key order (``str(shadow)``
-# depends on it); any other type aborts the memo. api_messages shallow-copies dicts but shares the strings.
-# ``estimate_messages_tokens_rough`` is called on the full history every loop iteration (conversation_loop
+# Per-message token-estimate memo keyed by an exact value fingerprint: strings, numbers, bools and None by
+# value; dicts/lists structurally in key order (``str(shadow)`` depends on it); any other type aborts the
+# memo. ``estimate_messages_tokens_rough`` runs on the full history every loop iteration (conversation_loop
 # preflight), repeatedly during compaction telemetry, and inside an O(n^2) shrink loop in moa_loop. The
-# per-message helpers are pure functions of the message's value, so a memo keyed on a fingerprint that
-# uniquely determines the value is exactly equivalent. Fingerprint design (soundness argument): While the
-# entry lives, that id cannot be reused by another object, so id-equality implies object-equality — strings
-# are immutable, so value-equality too (no #50372-style aliasing). Equal fingerprints therefore imply
-# deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
-# estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
-# same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: dict[Any, tuple[list, int, int]] = {}  # pins, text tokens, image count
+# per-message helpers are pure functions of the message's value, so equal fingerprints ⇒ identical
+# ``str(shadow)`` bytes ⇒ identical estimate. A str caches its hash, so the history strings every per-call
+# shallow copy shares cost O(1); a per-call string with the same bytes (a ``.strip()``ped row, the ephemeral
+# system-prompt concat, a re-rendered MoA fold) hits instead of pinning one more copy per request. Each entry
+# also records the agent whose turn inserted it (``current_token_memo_owner``), so close() releases request-time
+# strings that no history holds.
+_MSG_TOKENS_CACHE: dict[Any, tuple[int, int, int | None]] = {}  # text tokens, image count, owner
 _MSG_TOKENS_CACHE_MAX = 4096
 
 
-def _msg_fingerprint(value: Any, pins: list) -> Any:
+def _msg_fingerprint(value: Any) -> Any:
     if value is None or value is True or value is False:
         return value
     t = type(value)
     if t is str:
-        pins.append(value)
-        return ("s", id(value))
+        return ("s", value)
     if t is int or t is float:
         return ("n", t.__name__, value)
     if t is dict:
-        return ("d", tuple((_msg_fingerprint(k, pins), _msg_fingerprint(v, pins)) for k, v in value.items()))
+        return ("d", tuple((_msg_fingerprint(k), _msg_fingerprint(v)) for k, v in value.items()))
     if t is list or t is tuple:
-        return ("l" if t is list else "t", tuple(_msg_fingerprint(v, pins) for v in value))
+        return ("l" if t is list else "t", tuple(_msg_fingerprint(v) for v in value))
     raise ValueError("unfingerprintable message value")
 
 
@@ -2460,21 +2456,19 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
-        pins: list = []
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
-        key = _msg_fingerprint(
-            without_persistence_fields(msg) if type(msg) is dict else msg, pins)
+        key = _msg_fingerprint(without_persistence_fields(msg) if type(msg) is dict else msg)
         hash(key)
     except Exception:
         text, images = _compute()
         return text + images * image_cost
     cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
-        return cached[1] + cached[2] * image_cost
+        return cached[0] + cached[1] * image_cost
     text, images = _compute()
     tokens = text + images * image_cost
-    _MSG_TOKENS_CACHE[key] = (pins, text, images)
+    _MSG_TOKENS_CACHE[key] = (text, images, current_token_memo_owner())
     while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
         try:
             _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))

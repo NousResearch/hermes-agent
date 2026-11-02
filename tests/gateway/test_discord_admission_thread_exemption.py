@@ -71,11 +71,18 @@ def test_third_party_mention_in_bot_thread_is_admitted(monkeypatch):
 
 def test_third_party_mention_in_a_plain_channel_is_still_dropped_and_logged(monkeypatch, caplog):
     # Outside a bot thread the gate keeps its meaning (don't barge into a conversation
-    # addressed to someone else) and now says so, instead of dropping silently.
+    # addressed to someone else) and now says so, instead of dropping silently. The receipt
+    # is the shared one from _log_admission_refusal (#91919), which supersedes this path's
+    # own debug line; it fires on the live claim, since a claim=False preview would log a
+    # second receipt for a message the claim already accounted for.
     monkeypatch.delenv("DISCORD_IGNORE_NO_MENTION", raising=False)
     caplog.set_level("DEBUG", logger="plugins.platforms.discord.adapter")
 
     admitted, _ = _adapter()._discord_message_admission(
-        _mentions_third_party(SimpleNamespace(id=THREAD_ID, parent_id=None)), claim=False)
+        _mentions_third_party(SimpleNamespace(id=THREAD_ID, parent_id=None)), claim=True)
     assert admitted is False
-    assert any("admission: dropping message 123" in r.getMessage() for r in caplog.records)
+    assert any(
+        "admission refused: reason=mention_required" in r.getMessage()
+        and "message_id=123" in r.getMessage()
+        for r in caplog.records
+    )

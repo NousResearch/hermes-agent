@@ -191,7 +191,9 @@ addresses by LID matches through the phone number Baileys supplies alongside it,
 `allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
 needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
 message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
-bot, or `/commands` (groups in `free_response_chats` are exempt).
+bot, or `/commands` (groups in `free_response_chats` are exempt). A typed mention counts only as a standalone
+`@<number>` / `@+<number>` token with the bot's full number; order numbers, invoices or emails that merely contain
+those digits do not wake it.
 
 Then start the gateway:
 

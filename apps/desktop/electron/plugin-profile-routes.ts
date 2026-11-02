@@ -1,5 +1,7 @@
 import crypto from 'node:crypto'
 
+import { registryTargetProfile } from './connection-registry'
+
 export interface ProfileRouteConfig {
   cloudOrg: string
   mode: 'cloud' | 'local' | 'remote' | 'ssh'
@@ -295,7 +297,7 @@ export function buildRegistryProfileRoutes({
       mode: 'remote',
       ...(source.id === primaryConnectionId ? { primary: true } : {}),
       profile,
-      targetProfile: source.kind === 'ssh' && source.remoteProfile ? normalizeProfile(source.remoteProfile) : profile
+      targetProfile: source.kind === 'ssh' ? registryTargetProfile(source, profile) : profile
     })
   }
 

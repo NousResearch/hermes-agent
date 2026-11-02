@@ -253,6 +253,15 @@ def _stub_runtime_main():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _disable_background_titles(monkeypatch):
+    # The wire tests run full turns through the real AIAgent, whose auto-title
+    # daemon prints its failure via _vprint(force=True) after the turn returns;
+    # unsynchronised against pytest's capture teardown that write is the
+    # interpreter SIGSEGV of #120547, so no title worker may outlive a turn here.
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+
+
 class TestPrologueStamping:
     def test_stamps_api_content_from_plugin_context(self):
         agent = _FakeAgent()
@@ -605,6 +614,17 @@ class TestWireInvariant:
             agent2.run_conversation("second question", conversation_history=history, task_id="t2")
         replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
         assert replayed == history[0]["content"]
+
+    def test_full_turns_spawn_no_auto_title_worker(self, wire_env):
+        """#120547: with titling left on, a full turn writes the instant derived
+        title AND starts the model-upgrade daemon — the leftover worker's
+        failure print past the turn is what segfaults CI. Assert the whole
+        titling path stays dark so removing the autouse stub fails here."""
+        make_agent, _handler, db, sid = wire_env
+        agent = make_agent()
+        agent.run_conversation("hello please", conversation_history=[], task_id="t")
+        assert not db.get_session_title(sid)
+        assert getattr(agent, "_deferred_title_upgrade", None) is None
 
 
 # ---------------------------------------------------------------------------

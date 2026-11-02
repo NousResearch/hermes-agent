@@ -556,9 +556,45 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+
+def _normalize_web_search_query(args: dict) -> str | None:
+    """Normalize a single search query from model-generated arguments."""
+    query = args.get("query")
+    if isinstance(query, str) and query.strip():
+        return query.strip()
+
+    queries = args.get("queries")
+    if isinstance(queries, str):
+        try:
+            queries = json.loads(queries)
+        except json.JSONDecodeError:
+            return None
+
+    if (
+        isinstance(queries, list)
+        and len(queries) == 1
+        and isinstance(queries[0], str)
+        and queries[0].strip()
+    ):
+        return queries[0].strip()
+
+    return None
+
+
+def _web_search_handler(args, **kwargs):
+    """Handle web_search calls, including single-query model variants."""
+    query = _normalize_web_search_query(args)
+    if query is None:
+        return (
+            "Invalid web_search arguments: expected a non-empty 'query' string "
+            "or a single-element 'queries' list."
+        )
+    return web_search_tool(query, limit=args.get("limit", 5))
+
+
 registry.register(
     name="web_search", toolset="web", schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=_web_search_handler,
     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
     max_result_size_chars=100_000,
 )

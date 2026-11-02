@@ -534,6 +534,25 @@ def test_plugin_host_wire_preserves_full_manager_accepted_observation_tuple():
     )
 
 
+def test_plugin_host_provider_return_preserves_unicode_observation_budget():
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from agent.memory_provider import MAX_MEMORY_OBSERVATION_BATCH_BYTES, MemoryObservation, MemoryPrefetchResult
+    from hermes_cli.plugin_host_wire import decode
+    from hermes_cli.plugin_host_wire_memory import encode_memory_prefetch_result
+    from tests.agent.test_memory_provider import FakeMemoryProvider
+
+    provider = FakeMemoryProvider(name="wireprobe")
+    raw = MemoryPrefetchResult(observations=tuple(
+        MemoryObservation("recall", "wireprobe.recall", 1, {"text": ["漢" * 2500, "漢" * 2500]})
+        for _ in range(4)
+    ))
+    direct = normalize_prefetch_result(provider, raw, remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES)
+    wire = json.loads(json.dumps(encode_memory_prefetch_result(raw, None, 0)))
+    hosted = normalize_prefetch_result(provider, decode(wire), remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES)
+    assert len(direct.result.observations) == 4
+    assert hosted == direct
+
+
 def test_plugin_host_wire_oversized_string_subclass_is_opaque_before_copy():
     from agent.memory_provider import MAX_MEMORY_OBSERVATION_FIELD_CHARS, MemoryObservation
     from hermes_cli.plugin_host_wire import Opaque, decode, encode
@@ -632,7 +651,7 @@ def test_plugin_host_wire_bounds_raw_dict_prefetch_before_generic_encoding():
     )
 
 
-def test_plugin_host_wire_truncation_reaches_memory_manager_warning(
+def test_plugin_host_wire_preserves_full_ascii_batch_without_warning(
     monkeypatch, caplog
 ):
     from agent.memory_manager import MemoryManager
@@ -665,7 +684,7 @@ def test_plugin_host_wire_truncation_reaches_memory_manager_warning(
     assert len(direct.result.observations) == MAX_MEMORY_OBSERVATIONS
 
     decoded = decode(encode(raw))
-    assert len(decoded.observations) == MAX_MEMORY_OBSERVATIONS - 1
+    assert len(decoded.observations) == MAX_MEMORY_OBSERVATIONS
     provider._prefetch_result = decoded
     manager = MemoryManager()
     manager.add_provider(provider)
@@ -681,14 +700,15 @@ def test_plugin_host_wire_truncation_reaches_memory_manager_warning(
     with caplog.at_level("WARNING", logger="agent.memory_manager"):
         result = manager.prefetch_all_result("question")
 
-    assert len(result.observations) == MAX_MEMORY_OBSERVATIONS - 1
-    assert "truncat" in caplog.text.lower()
+    assert len(result.observations) == MAX_MEMORY_OBSERVATIONS
+    assert "truncat" not in caplog.text.lower()
 
 
 def test_plugin_host_wire_enforces_aggregate_observation_bytes():
     from agent.memory_provider import (
         MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+        MAX_MEMORY_OBSERVATIONS,
         MemoryObservation,
         MemoryPrefetchResult,
     )
@@ -706,7 +726,7 @@ def test_plugin_host_wire_enforces_aggregate_observation_bytes():
 
     assert wire["fields"]["context"] == "context stays intact"
     assert len(json.dumps(wire, separators=(",", ":")).encode()) <= (
-        MAX_MEMORY_OBSERVATION_BATCH_BYTES + 2_048
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3 + MAX_MEMORY_OBSERVATIONS * 1024 + 2_048
     )
 
 

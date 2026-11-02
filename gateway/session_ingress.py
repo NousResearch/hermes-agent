@@ -191,9 +191,11 @@ async def deliver_resolved(authority, admission_id, *, owed):
 
 
 def _take_post_delivery(authority, admission_id, source, route):
-    """Move the turn's post-delivery callback off its adapter's per-route slot onto this admission."""
-    adapter = authority.runner._delivery_adapter_for(source) if source is not None else None
-    callback = adapter.pop_post_delivery_callback(route) if adapter is not None else None
+    """Move the turn's post-delivery callback off its adapter's per-route slot onto this admission.
+    A runner or adapter without the seam (a webhook sink, a bare test double) holds none."""
+    resolve = getattr(authority.runner, '_adapter_for_source', None)
+    pop = getattr(resolve(source), 'pop_post_delivery_callback', None) if resolve and source else None
+    callback = pop(route) if pop is not None else None
     if callback is not None:
         _registry(authority, 'post_delivery')[admission_id] = callback
 

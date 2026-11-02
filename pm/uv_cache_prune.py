@@ -14,12 +14,17 @@ import shutil
 from pathlib import Path
 
 
+def _normalized(name: str) -> str:
+    """PEP 503 name: a ``ruamel.yaml-*.dist-info`` bucket is the lock's ``ruamel-yaml``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def lock_package_names(source_repo: Path) -> set[str]:
     """Dist names the lock can resolve; the exactness contract for a cache."""
     import tomllib
 
     data = tomllib.loads((source_repo / "uv.lock").read_text(encoding="utf-8"))
-    return {entry["name"].lower().replace("_", "-") for entry in data["package"]}
+    return {_normalized(entry["name"]) for entry in data["package"]}
 
 
 def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
@@ -36,7 +41,7 @@ def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
         for marker_file in bucket.glob("*.dist-info"):
             match = dist_info.match(marker_file.name)
             if match:
-                return match.group(1).lower().replace("_", "-")
+                return _normalized(match.group(1))
         return None
 
     pruned = 0
@@ -53,7 +58,7 @@ def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
         if not family_dir.is_dir():
             continue
         for entry in family_dir.iterdir():
-            if entry.is_dir() and entry.name.lower().replace("_", "-") not in keep:
+            if entry.is_dir() and _normalized(entry.name) not in keep:
                 shutil.rmtree(entry, ignore_errors=True)
                 pruned += 1
     return pruned

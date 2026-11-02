@@ -386,6 +386,30 @@ def test_staged_cache_prunes_wheel_index_entries_outside_the_lock(tmp_path):
     assert not (cache / "sdists-v9" / "pypi" / "old-sdist-only").exists()
 
 
+def test_staged_cache_keeps_a_dotted_dist_the_lock_resolves(tmp_path):
+    """``ruamel.yaml`` and ``jaraco.classes`` keep the dot in their dist-info names, while
+    uv.lock lists them as ``ruamel-yaml``; the prune must compare normalized names or it
+    deletes the archive the shipped venv was installed from."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text(
+        "[[package]]\n"
+        'name = "ruamel-yaml"\n'
+        'version = "0.18.16"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "cache"
+    bucket = cache / "archive-v0" / "bucket"
+    (bucket / "ruamel.yaml-0.18.16.dist-info").mkdir(parents=True)
+    index = cache / "wheels-v6" / "pypi" / "ruamel-yaml"
+    index.mkdir(parents=True)
+
+    assert native.prune_uv_cache_to_lock(cache, lock) == 0
+    assert bucket.is_dir()
+    assert index.is_dir()
+
+
 @pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
 def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
     cache = tmp_path / "cache"

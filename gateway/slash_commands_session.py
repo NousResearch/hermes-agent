@@ -341,9 +341,8 @@ class GatewaySessionCommandsMixin:
     def _is_shared_session_source(self, source: SessionSource) -> bool:
         """Whether *source*'s session key is shared by every participant (not per-user); mirrors
         build_session_key's isolation rules so the guards stay in lock-step with the key."""
-        return is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+        from gateway.session_scope import scope_for_runner
+        return is_shared_multi_user_session(source, **scope_for_runner(self, source))
 
     def _resume_caller_is_admin(self, source: SessionSource) -> bool:
         """Whether *source* is an EXPLICITLY-configured admin (cross-origin /resume, /sessions).

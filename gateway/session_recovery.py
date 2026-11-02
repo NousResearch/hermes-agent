@@ -11,6 +11,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime
 from gateway.config import Platform
+from gateway.session_scope import SessionScopeMixin
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
@@ -30,7 +31,7 @@ def _origin_json(source) -> Optional[str]:
         return None
 
 
-class SessionRecoveryMixin:
+class SessionRecoveryMixin(SessionScopeMixin):
     """SessionStore durable-row recovery and the SQLite side of routing transitions."""
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
@@ -93,9 +94,7 @@ class SessionRecoveryMixin:
         from gateway.session import build_session_key
         return build_session_key(
             key_source if key_source is not None else source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
-            profile=self._resolve_profile_for_key(source))
+            profile=self._resolve_profile_for_key(source), **self.resolve_session_scope(source))
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Pre-workspace Slack key for an explicitly scoped source. Deliberately Slack-only: an

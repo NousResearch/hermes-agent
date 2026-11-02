@@ -278,7 +278,7 @@ class GatewayInboundHooksMixin:
             # HERMES_SESSION_ID / session_id name what a later /new reports as old_session_id (#123245).
             session_entry = await self.async_session_store.lookup_by_session_key(
                 self._session_key_for_source(source))
-        _plugin_context = build_session_context(source, self.config, session_entry)
+        _plugin_context = build_session_context(source, self.config, session_entry, session_store=getattr(self, "session_store", None))
         if session_entry is None:
             _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip() if args is None else args

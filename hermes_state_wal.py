@@ -215,13 +215,13 @@ def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinf
 
 def _detect_cross_vm_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> bool:
     """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path``."""
-    if sys.platform != "linux":
-        return False
     return _mountinfo_fstype(directory, mountinfo_path) in _CROSS_VM_FSTYPES
 
 
 def _path_on_cross_vm_fs(path: str) -> bool:
     """True when ``path`` resides on a virtiofs/9p (cross-VM) filesystem; cached per resolved directory."""
+    if sys.platform != "linux":
+        return False
     try:
         directory = os.path.dirname(os.path.realpath(path)) or "/"
     except (OSError, ValueError):

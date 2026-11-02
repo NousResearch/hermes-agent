@@ -522,6 +522,23 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertIs(seen[0]["approval_cb"], cb_two)
 
+    def test_cell_authority_forwards_session_identity(self):
+        from tools.code_kernel import CellAuthority
+
+        seen = {}
+
+        def _handle(tool_name, tool_args, task_id=None, session_id=None, turn_id=None):
+            seen.update(tool=tool_name, task_id=task_id, session_id=session_id, turn_id=turn_id)
+            return json.dumps({"ok": True})
+
+        authority = CellAuthority("turn-1", session_id="sess-A", turn_id="turn-A")
+        with patch("model_tools.handle_function_call", new=_handle):
+            assert json.loads(authority.dispatch("web_search", {"query": "q"})) == {"ok": True}
+        self.assertEqual(
+            seen,
+            {"tool": "web_search", "task_id": "turn-1", "session_id": "sess-A", "turn_id": "turn-A"},
+        )
+
     def test_a_settled_cells_authority_refuses_dispatch(self):
         from tools.code_kernel import CellAuthority
 

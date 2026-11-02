@@ -1,4 +1,3 @@
-import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
@@ -83,6 +82,7 @@ import {
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
+import { publishSessionUsage } from './session-usage'
 
 export {
   chatMessageArraysEquivalent,
@@ -2326,8 +2326,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
-      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot of THIS session: an omitted readout clears.
+      publishSessionUsage(sessionState.usage)
     }
   }
 

@@ -202,6 +202,17 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
                 captured["session_usage"] = stats
 
 
+def snapshot_usage(authority, ref, agent) -> dict | None:
+    """The resident agent's status-bar ``usage`` for a resume / ``session.info`` snapshot, so a viewer
+    switching back to the session paints its own cache-hit and ``t/s`` instead of the last-viewed
+    session's. ``None`` without a resident agent: its zeros would erase what the viewer last saw."""
+    if agent is None:
+        return None
+    result = usage_stats(agent)
+    result["compression_count"] = carried_compression_count(authority.sessions.get(ref.session_id), agent)
+    return tui_usage(result)
+
+
 async def stats(connection, ref, params):
     """``session.stats {session_id}``: the same dict ``session.usage`` carries."""
     from hermes_state_runtime import RuntimeStoreError

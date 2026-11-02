@@ -1,0 +1,22 @@
+name: kanban-empowered
+title: "Kanban Empowered"
+version: "0.1.0"
+repo: https://github.com/dellanio/hermes-kanban-empowered
+sha: 3d3a8c5ab7689f23e49976b5416e161567c03332
+description: "Makes the Hermes kanban work for a fleet of agent profiles and a human in the loop: a card blocked on a person gets a structured ask, Telegram reminders, an escalation and a digest, and the owner unblocks it by replying to the item on Telegram or from a Hermes Desktop page; cards held by respawn guards are reported with a hand-off command, parks caused by host failures are undone within a per-card budget, and a pinned live panel plus explain/status commands show why a card is not moving. Disclosure — a coordinator runs inside the gateway's kanban dispatch tick (coordinator profile only, leader lock, no extra process); it reads every board's kanban database and metadata through Hermes' kanban functions and writes only through them (comments, unblocking a waiting card when its owner answers, undoing an infrastructure park, reassigning a card on the release command), keeps its own SQLite state under plugin-data/kanban-empowered, reads TELEGRAM_BOT_TOKEN only through Hermes' secret scope, and calls only the Telegram Bot API (sendMessage, editMessageText, pinChatMessage to the configured owner chats, one pinned panel; never getUpdates) plus Hermes' own IPv4 fallback path (DNS-over-HTTPS lookups of api.telegram.org at dns.google and cloudflare-dns.com); no shell commands and no telemetry; imports private Hermes kanban, i18n, profile, plugin and Telegram-network modules (listed in its README); ships an optional core patch adding kanban veto hooks that the plugin never applies, and registers kanban_pre_claim only on a Hermes build that exposes it."
+maintainer: dellanio
+tier: community
+category: automation
+requires_hermes: ">=0.22"
+docs_url: https://github.com/dellanio/hermes-kanban-empowered#readme
+image: https://raw.githubusercontent.com/dellanio/hermes-kanban-empowered/3d3a8c5ab7689f23e49976b5416e161567c03332/docs/assets/banner.jpg
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_kanban_dispatch_tick
+    - on_kanban_worker_exited
+    - pre_gateway_dispatch
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

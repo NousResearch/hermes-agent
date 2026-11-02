@@ -79,6 +79,9 @@ const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord
 // its legacy global profile can briefly be paired with the wrong connection.
 const startupLastProfileByConnection = { ...$lastProfileByConnection.get() }
 let pendingTarget: null | string = null
+// Cancels the pick in flight: aborts its activation and points a draft it
+// already re-homed back at the gateway still in front.
+let abandonInFlight: (() => void) | null = null
 let restoreAttempted = false
 let switchRevision = 0
 
@@ -490,9 +493,17 @@ function restoreYields(options: SelectConnectionOptions, openedSession: string):
 
 /** The pick in flight loses ownership: its late steps see a newer revision. */
 function abandonPick(): void {
+  abandonInFlight?.()
+  abandonInFlight = null
   switchRevision += 1
   pendingTarget = null
   $pendingConnectionId.set(null)
+}
+
+function rollbackRehome(rehomed: boolean, profile: string, landed: () => boolean): void {
+  if (rehomed && !landed()) {
+    rehomeNewChatDraft(profile)
+  }
 }
 
 function openSessionKey(): string {
@@ -591,6 +602,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
+  abandonInFlight = () => {
+    activation.abort()
+    rollbackRehome(rehomed, currentProfile, targetIsActive)
+  }
   $pendingConnectionId.set(connectionId)
 
   // Runs inside the activation's serialized section, synchronously right
@@ -704,6 +719,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   } finally {
     if (revision === switchRevision) {
       pendingTarget = null
+      abandonInFlight = null
       $pendingConnectionId.set(null)
     }
   }

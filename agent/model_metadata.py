@@ -26,6 +26,7 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.model_metadata_token_memo import _MSG_TOKENS_CACHE, remember_message_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -2432,9 +2433,7 @@ def _strip_stale_thinking_for_estimate(messages: list[dict[str, Any]]) -> list[d
 # deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: dict[Any, tuple[list, int, int]] = {}  # pins, text tokens, image count
-_MSG_TOKENS_CACHE_MAX = 4096
+# objects every turn. Storage, LRU + retained-bytes bounds and release live in ``model_metadata_token_memo``.
 
 
 def _msg_fingerprint(value: Any, pins: list) -> Any:
@@ -2464,22 +2463,17 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
-        hash(key)
+        cached = _MSG_TOKENS_CACHE.get(key)
     except Exception:
         text, images = _compute()
         return text + images * image_cost
-    cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
+        with contextlib.suppress(KeyError):  # another thread may have evicted it since the get
+            _MSG_TOKENS_CACHE.move_to_end(key)
         return cached[1] + cached[2] * image_cost
     text, images = _compute()
-    tokens = text + images * image_cost
-    _MSG_TOKENS_CACHE[key] = (pins, text, images)
-    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
-        try:
-            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
-        except (StopIteration, KeyError, RuntimeError):
-            break
-    return tokens
+    remember_message_tokens(key, (pins, text, images))
+    return text + images * image_cost
 
 
 def _count_parts(parts: Any, types: set) -> int:

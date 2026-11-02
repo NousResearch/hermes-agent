@@ -84,6 +84,9 @@ class LiveSession:
     # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
     control_seq: int = 0
     control_published_seq: int = 0
+    # ``(execution stamp,)`` the last viewer close completed at: a drain alive then retires the closed
+    # conversation at its idle exit unless a turn claimed since (gateway/session_retirement.py).
+    closed_stamp: tuple | None = None
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -150,6 +153,9 @@ class SessionAuthority:
         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
+        # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
+        # it is deleted or retired again): their source and frozen policy stay on the local adapter.
+        self.retired_local = set()
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -440,6 +446,8 @@ class SessionAuthority:
                                 controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
     def _publish_pending(self, ref):
+        from gateway.session_retirement import restore_retired
+        restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
@@ -459,6 +467,8 @@ class SessionAuthority:
         wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
+        from gateway.session_retirement import restore_retired
+        restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
         if live.task is None or live.task.done():
@@ -1304,6 +1314,8 @@ class SessionAuthority:
                 await settle_viewer_close(self, ref.session_id)  # a close that arrived mid-turn
                 if live.rescan:
                     continue
+                from gateway.session_retirement import retire_at_idle
+                retire_at_idle(self, ref, live)
                 return
             admission_id = row['admission_id']
             try:

@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import json
 import logging
@@ -74,6 +75,14 @@ _offered: set = set()
 # ``startup_replay`` on the sweep's later re-offers too, so a refused one stays gated.
 _startup_replayed: set = set()
 _last_orphan_sweep: dict[str, float] = {}
+# (home key, delegation_id) -> when the sweep last re-offered a lost copy. A consumer that keeps
+# handing the copy back would otherwise be re-offered every tick: re-offering touches no ledger
+# column, so each re-offer gets its own ``_CLAIM_LEASE_S`` here, and only the first one warns.
+_reoffered_at: dict[tuple[str, str], float] = {}
+# delegation_id -> number of copies a consumer holds off-queue (``mark_copy_held``). The sweep counts
+# them as live alongside the queued ones, so it never adds a duplicate beside a held copy.
+_held_copies: collections.Counter = collections.Counter()
+_held_lock = threading.Lock()  # taken after a queue's mutex, never before
 
 # ── Stale-delegation detection (progress-based, on by default) ──────────────
 # A runner wedged before returning never reaches its finalizer, so it would show
@@ -400,10 +409,38 @@ def _replay_pending(conn, rows, target_queue, now: float, *, startup: bool = Fal
     return restored
 
 
+def completion_copy_id(evt: Any) -> str:
+    """The delegation id ``evt`` is the final-result copy of, or "" (other events, interim notices)."""
+    if not isinstance(evt, dict) or evt.get("type") != "async_delegation" or is_interim_delegation_event(evt):
+        return ""
+    return str(evt.get("delegation_id") or "")
+
+
+def mark_copy_held(delegation_id: str) -> None:
+    """Record that a consumer holds a copy of ``delegation_id`` off every queue (a poller between dequeue and
+    requeue, a parked copy). The orphan sweep treats a held copy like a queued one. A holder that moves a copy
+    onto a queue marks before it dequeues, or under the queue's mutex, and unmarks only after any requeue, so
+    the sweep never sees the copy as neither queued nor held. Pair every call with ``unmark_copy_held``."""
+    if delegation_id:
+        with _held_lock:
+            _held_copies[delegation_id] += 1
+
+
+def unmark_copy_held(delegation_id: str) -> None:
+    """End one ``mark_copy_held`` hold on ``delegation_id``."""
+    if delegation_id:
+        with _held_lock:
+            _held_copies[delegation_id] -= 1
+            if _held_copies[delegation_id] <= 0:
+                del _held_copies[delegation_id]
+
+
 def _queued_completion_ids(*queues) -> Optional[set]:
-    """Delegation ids with a final-result copy sitting in any of ``queues``, read under each queue's own
-    mutex (the lock ``put``/``get`` take), or None when a queue cannot be inspected. Interim per-task
-    notices share their batch's id but are not the result, so they never count as its copy."""
+    """Delegation ids with a final-result copy sitting in any of ``queues`` or held off-queue by a consumer
+    (``mark_copy_held``), or None when a queue cannot be inspected. Each queue is read under its own mutex
+    (the lock ``put``/``get`` and ``take_ready`` take) with the held ids read inside it, so a copy moving
+    between a queue and a hold is always seen in one of them. Interim per-task notices share their batch's
+    id but are not the result, so they never count as its copy."""
     ids: set = set()
     for q in {id(q): q for q in queues if q is not None}.values():
         mutex, items = getattr(q, "mutex", None), getattr(q, "queue", None)
@@ -411,10 +448,39 @@ def _queued_completion_ids(*queues) -> Optional[set]:
             return None
         with mutex:
             snapshot = list(items)
-        ids.update(str(evt.get("delegation_id") or "") for evt in snapshot
-                   if isinstance(evt, dict) and evt.get("type") == "async_delegation"
-                   and not is_interim_delegation_event(evt))
+            with _held_lock:
+                ids.update(_held_copies)
+        ids.update(completion_copy_id(evt) for evt in snapshot)
+    ids.discard("")
     return ids
+
+
+def _copy_may_be_live(delegation_id: str, pid, updated_at: float, live_ids: set, home: str,
+                      offered: set, now: float) -> bool:
+    """For a row whose copy this process made (it owns the row or offered it): whether that copy may still be
+    delivered, so the sweep must not add another. Live = queued or held (``live_ids``), or the row or this
+    process's last re-offer was touched within a claim lease, the span after which a silent claim counts as
+    abandoned. A row owned by ANOTHER live process is left to it: its queue is out of sight."""
+    if not (delegation_id in offered or int(pid) == os.getpid()):
+        return True
+    if delegation_id in live_ids or updated_at >= now - _CLAIM_LEASE_S:
+        return True
+    with _orphan_lock:
+        return _reoffered_at.get((home, delegation_id), float("-inf")) >= now - _CLAIM_LEASE_S
+
+
+def _note_reoffers(home: str, lost: list, now: float) -> None:
+    """Start each lost copy's re-offer lease and log it: WARNING the first time a row is re-offered, DEBUG
+    after that (a consumer that keeps handing the copy back would otherwise warn once per lease)."""
+    with _orphan_lock:
+        first = [d for d in lost if (home, d) not in _reoffered_at]
+        for key in [k for k, at in _reoffered_at.items() if now - at > _MAX_COMPLETION_REPLAY_AGE_S]:
+            del _reoffered_at[key]  # its row is past the replay cap, so it was dropped
+        _reoffered_at.update({(home, d): now for d in lost})
+        _offered.difference_update({(home, d) for d in lost})
+    log = logger.warning if first else logger.debug
+    log("Re-offering %d pending async completion(s) whose in-memory copy was lost while this process ran: %s",
+        len(lost), ", ".join(lost))
 
 
 def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
@@ -432,10 +498,11 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
       a queue no delivery loop drains), and without this the row would stay pending with zero
       attempts until a restart (#144563).
 
-    A live copy is never fought: it is either queued (seen here), under a claim lease (filtered above),
-    or held off-queue by a consumer for less than a lease (a claim, defer or release refreshes
-    ``updated_at``). A row owned by ANOTHER
-    live process is left to that process, whose queue this one cannot see. The consumer's
+    The sweep never adds a copy beside a live one: queued, held off-queue by a consumer
+    (``mark_copy_held``), under a claim lease (filtered above), or touched within a lease (a claim, defer
+    or release refreshes ``updated_at``). Each re-offer starts its own lease, so a consumer that keeps
+    handing the copy back sees it at most once per lease, and only the first re-offer warns. A row owned
+    by ANOTHER live process is left to that process, whose queue this one cannot see. The consumer's
     ``claim_completion_delivery`` stays the atomic cross-process gate, so a duplicate copy can never
     deliver twice. Rows past the delivery budget or the replay age converge to ``dropped``. Reads the
     current profile's ledger: callers bind the owning profile first."""
@@ -446,7 +513,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     now = time.time() if now is None else now
     home = hermes_home_key(get_hermes_home())
     from tools.process_registry import process_registry
-    queued = _queued_completion_ids(target_queue, process_registry.completion_queue)
+    live = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
     with _DB_LOCK, _transaction() as conn:
@@ -459,14 +526,9 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
                ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
         orphans, lost = [], []
         for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts, updated_at in rows:
-            owner_alive = alive(pid, started)
-            copy_lost = owner_alive or delegation_id in offered
-            # Only a copy this process made (or would have made) can be proven lost: it is on neither
-            # queue, and nobody claimed, deferred or released the row for a whole claim lease, the
-            # same span after which a silent claim counts as abandoned. A consumer holding the copy
-            # off-queue for less than that keeps it.
-            if copy_lost and (queued is None or delegation_id in queued or updated_at >= now - _CLAIM_LEASE_S
-                              or not (delegation_id in offered or int(pid) == os.getpid())):
+            copy_lost = alive(pid, started) or delegation_id in offered
+            if copy_lost and (live is None or _copy_may_be_live(delegation_id, pid, updated_at, live, home,
+                                                                  offered, now)):
                 continue
             if (attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
                 # Its last claimant died holding the final attempt; converge like release_completion_delivery.
@@ -481,10 +543,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
             if copy_lost:
                 lost.append(delegation_id)
         if lost:
-            logger.warning("Re-offering %d pending async completion(s) whose in-memory copy was lost while "
-                           "this process ran: %s", len(lost), ", ".join(lost))
-            with _orphan_lock:
-                _offered.difference_update({(home, delegation_id) for delegation_id in lost})
+            _note_reoffers(home, lost, now)
         return _replay_pending(conn, orphans, target_queue, now)
 
 
@@ -1382,3 +1441,6 @@ def _reset_for_tests() -> None:
         _offered.clear()
         _startup_replayed.clear()
         _last_orphan_sweep.clear()
+        _reoffered_at.clear()
+    with _held_lock:
+        _held_copies.clear()

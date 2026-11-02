@@ -6,6 +6,7 @@ tests produce the orphan with a real owner process against a real temp ``state.d
 (``now=``) or written into the row, never raced against the wall clock.
 """
 
+import logging
 import os
 import queue
 import sqlite3
@@ -19,7 +20,9 @@ import pytest
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools import async_delegation as ad
+from tests.waiting import wait_until
 from tools.process_registry import process_registry
+from tools.process_registry_awaiting import release, take_ready
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -140,30 +143,39 @@ def test_row_owned_by_a_live_process_is_never_swept(tmp_path):
     assert q.empty()
 
 
-def test_live_owner_row_whose_queue_copy_was_lost_is_re_offered_after_a_lease(tmp_path, monkeypatch):
+def test_live_owner_row_whose_queue_copy_was_lost_is_re_offered_after_a_lease(tmp_path, monkeypatch, caplog):
     """The owner is alive but its one in-memory copy never reaches a drained queue (#140718, #144563):
-    the ledger re-offers it once nobody touched the row for a claim lease, and never while a copy is
-    queued or the row belongs to another live process, whose queue this one cannot see."""
+    the ledger re-offers it once nobody touched the row for a claim lease, never while a copy is queued
+    or held off-queue by a poller, never for another live process's row (its queue is out of sight),
+    and a copy handed back again waits out the re-offer's own lease; only the first re-offer warns."""
     home = tmp_path / "home"
     home.mkdir()
-    q = queue.Queue()
-    monkeypatch.setattr(process_registry, "completion_queue", queue.Queue())  # nobody drains this one
+    q, lost_q = queue.Queue(), queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", lost_q)  # nobody drains this one
     with _Home(home):
         handle = ad.dispatch_async_delegation(
             goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key="live",
             runner=lambda: {"status": "completed", "summary": "done"})
-        deadline = time.monotonic() + 10
-        while ad.active_count() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: ad.active_count() == 0, timeout=10, what="delegation finished")
         delegation_id = handle["delegation_id"]
         row = _row(home, delegation_id)
         assert row["owner_pid"] == os.getpid() and row["delivery_state"] == "pending"
-        monkeypatch.setattr(process_registry, "completion_queue", q)  # the copy is gone
+        monkeypatch.setattr(process_registry, "completion_queue", q)
         lease = row["updated_at"] + ad._CLAIM_LEASE_S + 1
         # A consumer may still hold the copy off-queue: leave it for a whole lease.
         assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 0
+        held = take_ready(lost_q, 0)  # another session's poller is still routing the copy
+        assert ad.sweep_orphaned_completions(q, now=lease) == 0
+        release(held)  # ...and dropped it: the copy is gone
+        caplog.set_level(logging.DEBUG, logger="tools.async_delegation")
         assert ad.sweep_orphaned_completions(q, now=lease) == 1
         assert ad.sweep_orphaned_completions(q, now=lease + 60) == 0  # the re-offered copy is queued
+        (evt,) = _drain(q)
+        ad.return_completion_offer(evt)  # dropped and handed back again
+        assert ad.sweep_orphaned_completions(q, now=lease + 90) == 0  # within the re-offer's own lease
+        assert ad.sweep_orphaned_completions(q, now=lease + ad._CLAIM_LEASE_S + 1) == 1
+        assert [r.levelno for r in caplog.records if "Re-offering" in r.getMessage()] == [logging.WARNING,
+                                                                                          logging.DEBUG]
         (evt,) = _drain(q)
         assert evt["delegation_id"] == delegation_id and evt["summary"] == "done"
         claim = ad.claim_event_delivery(evt, "first")
@@ -173,9 +185,7 @@ def test_live_owner_row_whose_queue_copy_was_lost_is_re_offered_after_a_lease(tm
         other = ad.dispatch_async_delegation(
             goal="theirs", context=None, toolsets=None, role="leaf", model="m", session_key="live",
             runner=lambda: {"status": "completed", "summary": "done"})
-        deadline = time.monotonic() + 10
-        while ad.active_count() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: ad.active_count() == 0, timeout=10, what="delegation finished")
         _drain(q)
         _set(home, other["delegation_id"], owner_pid=os.getppid(), owner_started_at=None)
         assert ad.sweep_orphaned_completions(q, now=time.time() + 3600) == 0

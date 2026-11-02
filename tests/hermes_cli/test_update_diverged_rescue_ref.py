@@ -120,6 +120,81 @@ def test_hermes_update_stops_on_merge_conflict_and_retains_recovery_ref(
     assert "Recovery ref retained" in out
 
 
+@pytest.mark.parametrize("abort_failure", ["returncode", "exception", "probe_returncode", "probe_exception"])
+def test_hermes_update_stops_when_merge_abort_is_unproven_and_keeps_conflict_state(
+        diverged_checkout, monkeypatch, capsys, abort_failure):
+    """An abort error or unreadable merge state must not be reported as clean rollback."""
+    checkout, local_sha = diverged_checkout
+    upstream = checkout.parent / "upstream"
+    (checkout / "shared.txt").write_text("local change\n", encoding="utf-8")
+    local_sha = _commit(checkout, "shared.txt", "local change\n")
+    (upstream / "shared.txt").write_text("upstream change\n", encoding="utf-8")
+    _git(upstream, "add", "shared.txt")
+    _git(upstream, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "commit", "-q", "-m", "conflicting upstream")
+    upstream_sha = _git(upstream, "rev-parse", "HEAD").stdout.strip()
+    _git(checkout, "fetch", "-q", "origin", "main")
+    assert _git(checkout, "rev-parse", "origin/main").stdout.strip() == upstream_sha
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    real_git_run = update_cmd._git_run
+    stop_reasons = []
+    monkeypatch.setattr(update_cmd, "_record_stop", lambda reason: stop_reasons.append(reason))
+
+    def fail_abort(git_cmd, args, *rest, **kwargs):
+        if args == ["merge", "--abort"]:
+            if abort_failure == "exception":
+                raise OSError("fixture abort refusal")
+            if abort_failure == "returncode":
+                return subprocess.CompletedProcess(git_cmd + args, 1, stdout="", stderr="fixture abort refusal")
+            # Probe-failure fixtures leave the real conflict state untouched while
+            # reporting a successful abort, so the subsequent state probe is the
+            # only thing deciding whether recovery was proven.
+            return subprocess.CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+        if abort_failure == "probe_exception" and args == ["rev-parse", "-q", "--verify", "MERGE_HEAD"]:
+            raise OSError("fixture merge-state refusal")
+        if abort_failure == "probe_returncode" and args == ["rev-parse", "-q", "--verify", "MERGE_HEAD"]:
+            return subprocess.CompletedProcess(
+                git_cmd + args, 128, stdout="", stderr="fixture merge-state refusal")
+        return real_git_run(git_cmd, args, *rest, **kwargs)
+
+    monkeypatch.setattr(update_cmd, "_git_run", fail_abort)
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._pull_updates(
+            GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
+            discard_local_changes=False, keep_stash=False)
+
+    assert exc.value.code == 1
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == local_sha
+    assert (checkout / ".git" / "MERGE_HEAD").exists()
+    assert any(sha == local_sha for sha in _rescue_refs(checkout).values())
+    out = capsys.readouterr().out
+    assert "could not be safely aborted" in out
+    assert "merge_abort_failed" not in out  # stop token is recorded, not printed
+    assert stop_reasons == ["merge_abort_failed"]
+
+
+def test_hermes_update_protects_current_rescue_ref_during_retention_burst(tmp_path):
+    """The just-created ref survives same-second lexical pruning, even above the keep count."""
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--allow-empty", "-qm", "base")
+    _git(tmp_path, "branch", "-M", "main")
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    prefix = "refs/hermes-update-backups/orphan-main-"
+    candidates = [prefix + stamp + f"-{index:03d}" for index in range(11)]
+    protected = prefix + stamp + "-current"
+    for ref in [*candidates, protected]:
+        _git(tmp_path, "update-ref", ref, "HEAD")
+
+    update_cmd._prune_orphan_rescue_refs(
+        ["git"], tmp_path, "main", keep=1, protect_ref=protected)
+    remaining = set(_git(
+        tmp_path, "for-each-ref", "--format=%(refname)", "refs/hermes-update-backups/"
+    ).stdout.splitlines())
+    assert remaining == {candidates[-1], protected}
+
+
 @pytest.fixture()
 def fast_forward_checkout(tmp_path):
     """A checkout whose HEAD is strictly behind origin/main."""

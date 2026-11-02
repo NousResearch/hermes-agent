@@ -184,7 +184,7 @@ def _home(authority, actor, profile):
 async def _target(authority, actor):
     ref = lane = None
     row = authority.db.get_session_by_title('Bot Chat')
-    if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
+    if row is None or (displaced := displaceable_bot_chat(authority, row, actor.subject)) is not None:
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
@@ -212,14 +212,13 @@ async def _target(authority, actor):
     return ref, live, entry
 
 
-def displaceable_bot_chat(authority, row):
-    """The id holding the canonical title when the Bot Chat is a conversation no FIFO can own (an
-    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row, an
-    unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
-    adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
-    over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts (``_kept_local_history``) and a Desktop row a login stamped as its own are
-    never moved."""
+def displaceable_bot_chat(authority, row, subject=None):
+    """The id holding the canonical title when the Bot Chat is a conversation this delivery can
+    never adopt, rename (the title is its identity) or rename over the API, so it would refuse
+    every delivery for good: an ``api_`` row an older gateway or a plain ``POST /api/sessions``
+    minted, a messaging row, or a lineage whose compression tip (the row a delivery adopts) is
+    unbound local history ``_kept_local_history`` does not keep for the delivering *subject*.
+    Else None: a bound local chat and kept history are never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -241,9 +240,9 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
-        if _kept_local_history(db, candidate):
-            return None
-    return row['id']
+    # Only the tip is adopted (``_target``), so only the tip decides: a root the owner could adopt
+    # above a tip nobody can would otherwise hold the title and refuse every delivery.
+    return None if _kept_local_history(db, tip, subject) else row['id']
 
 
 def release_superseded_bot_chat(db, store, route, session_id):
@@ -274,31 +273,37 @@ def release_superseded_bot_chat_at_boot(db, store):
         release_superseded_bot_chat(db, store, tip.get('session_key'), row['id'])
 
 
-def _kept_local_history(db, row):
+def _kept_local_history(db, row, subject=None):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts (unstamped, or stamped with a subject a native ticket
-    carries: the host's own OS identity, or a structured login subject a same-user peer forwards),
-    or a Desktop row a served login stamped with its label (kept as on main, even with a route
-    column or another profile's name). Any other local-source row no open can ever adopt (a route
-    column left by a crash or reconnect, another profile's stamp, or outside Desktop any other
-    stamp, such as a login label ``basic:alice``) is not: it held the title and refused every
-    delivery for good (#141243, #143715)."""
+    or Desktop row the delivering *subject* or the host owner adopts by the native open's own rule
+    (``validate_legacy_row``: unstamped, or stamped with one of that adopter's identities), or a
+    Desktop row a foreign login stamped with its label (#140183: kept even with a route column or
+    another profile's name). Any other local-source row (a route column left by a crash or
+    reconnect, another profile's stamp, a stamp neither adopter owns, or outside Desktop a foreign
+    label) is not: kept, it held the title and refused every delivery for good (#141243, #143715).
+    *subject* None: the row's own ``auth:v1`` or owner-label stamp is the adopter, as a peer DM's
+    turn enters the chat."""
+    from gateway.owner_identity import host_owner_subject, same_owner
     from gateway.session_identity import parse_authenticated_subject
-    from gateway.session_worker_reservation import owner_worker_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
     user_id = row.get('user_id')
-    if (user_id and not legacy_account_label(row) and user_id != owner_worker_subject()
+    owner = host_owner_subject()
+    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner)
+            and not (subject and same_owner(user_id, subject))
             and parse_authenticated_subject(user_id) is None):
-        # A Desktop row a login stamped stays where it is, as on main (#140183). On any other local
-        # source such a stamp names no subject a native ticket carries, so nobody adopts it (#143715).
+        # A label neither adopter owns: Desktop keeps it (#140183); elsewhere no open adopts it.
         return row.get('source') == 'desktop'
-    try:
-        validate_legacy_row(db, row, subject=user_id)
-    except RuntimeStoreError:
-        return False
-    return True
+    # A forwarded login (control socket) adopts its own stamp; the owner's history is never moved
+    # aside for a delivery that cannot adopt it.
+    for adopter in dict.fromkeys((user_id if subject is None else subject, owner)):
+        try:
+            validate_legacy_row(db, row, subject=adopter)
+        except RuntimeStoreError:
+            continue
+        return True
+    return False
 
 
 def _moved_aside_by_this_door(authority, holder, pinned):
@@ -350,7 +355,7 @@ async def _create_bot_chat(authority, actor, *, displace=None):
     async with lock:
         held = authority.db.get_session_by_title('Bot Chat')
         if held is not None:
-            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held) != displace:
+            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held, actor.subject) != displace:
                 return None
             logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
             # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's

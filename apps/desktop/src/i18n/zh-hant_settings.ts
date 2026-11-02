@@ -244,6 +244,17 @@ export const zhHantSettings = {
           description: 'Hermes 在背景時，桌面外掛傳送了通知。'
         }
       },
+      browserPermission: {
+        title: '瀏覽器通知',
+        allow: '允許',
+        states: {
+          default: '分頁在背景時由此瀏覽器顯示提醒。在你允許之前，只有分頁標題會閃爍。',
+          granted: '已允許。此分頁在背景時會顯示提醒，分頁標題也會閃爍。',
+          denied: '已在此瀏覽器的網站設定中被封鎖。分頁標題仍會閃爍。',
+          insecure: '需要 HTTPS，例如 Tailscale serve。使用一般 HTTP 時只有分頁標題會閃爍。',
+          unsupported: '此瀏覽器無法顯示通知。分頁標題仍會閃爍。'
+        }
+      },
       test: '傳送測試通知',
       testTitle: 'Hermes',
       testBody: '通知運作正常。',

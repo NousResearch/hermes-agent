@@ -13,42 +13,42 @@ import {
 } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
-import {
-  beginGatewaySwitch,
-  endGatewaySwitch,
-  type GatewaySwitchToken,
-  recoverActiveSourceAfterFailedGatewaySwitch
-} from '@/store/gateway-switch'
+import { supersedeGatewaySwitch } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
   $freshSessionRequest,
+  $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
   $showAllProfiles,
   captureNewChatSource,
   currentNewChatIntent,
   ensureGatewayAgent,
+  isLegacyNewChatProfile,
   normalizeProfileKey,
   openGatewayAgent,
+  pinLegacyNewChatProfile,
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
-import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { exitProjectScope } from '@/store/project-scope'
+import {
+  $activeSessionId,
+  $connection,
+  $selectedStoredSessionId,
+  setActiveSessionId,
+  setSelectedStoredSessionId
+} from '@/store/session'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
-// Every await of a source switch is bounded. A wedged spawn, ticket mint,
+// Every await of a gateway pick is bounded. A wedged spawn, ticket mint,
 // handshake or IPC (the #93454 class) must surface as a failed click — not a
-// spinner that also swallows every later click on the same source, and never
-// a barrier left up or a wipe left unpainted.
-//
-// The dial and the commit are different work and so carry different budgets.
-// The commit is local (sever the old bindings, activate, publish) and stays at
-// the reconnect-class 20 s. The dial is the main process's whole remote
-// bring-up chain, which the renderer cannot time from here — see
+// spinner that also swallows every later click on the same gateway. A cold
+// dial is the main process's whole remote bring-up chain; see
 // SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
-const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
 // this; anything longer means the primary is not coming and the registry
@@ -94,14 +94,19 @@ const $activeConnectionProfile = computed(
 )
 
 // The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
-// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
-// runs inside beforeActivate — BEFORE applyActive publishes the new request
-// scope (setApiRequestConnection) — so that invalidation's refetches ride the
-// OUTGOING backend. Re-invalidate on the actual connection-id change, which
-// applyActive publishes only after the tag moved, so the refetch lands on the
+// A gateway pick runs no switch reset (only a connection apply does), so this is
+// what moves gateway-scoped caches to the picked backend. It fires on the
+// actual connection-id change, which applyActive publishes only after the
+// request scope (setApiRequestConnection) moved, so the refetches land on the
 // backend the tags now name. `listen` (not `subscribe`) skips the mount-time
 // fire, and the computed dedupes equal ids, so this only runs on a real switch.
-$activeConnectionId.listen(() => invalidateProfileScopedQueries())
+$activeConnectionId.listen(() => {
+  invalidateProfileScopedQueries()
+  // The star map is a scan of one backend's skills and memory; same-named
+  // profiles on two gateways are different graphs.
+  resetStarmapGraph()
+  reloadOpenStarmapGraph()
+})
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -130,23 +135,105 @@ export function _resetConnectionsForTests(): void {
   pendingTarget = null
   restoreAttempted = false
   switchRevision = 0
+  tentativeRehome = null
   $pendingConnectionId.set(null)
 }
 
-// A connection switch is a new-chat intent on THAT source: keep the registry
+// A gateway pick is a new-chat intent on THAT gateway: keep the registry
 // identity with the profile so the next create names local::x / <source>::x
 // exactly, never a bare profile string. An older explicit agent route must not
 // override the selected source. The silent boot restore is not a user choice,
 // so it keeps a route the user pinned (gateway-group +) while it was in flight.
-function rehomeNewChatDraft(profile: string, keepExplicitRoute = false): void {
+function rehomeNewChatDraft(profile: string, keepExplicitRoute = false, connectionId?: string): void {
   $newChatProfile.set(profile)
 
   if (!keepExplicitRoute) {
     $newChatRoute.set(null)
   }
 
-  captureNewChatSource()
+  captureNewChatSource(connectionId)
   requestFreshSession()
+}
+
+// Returns what puts the current draft back (an explicit agent route and a
+// legacy profile pin included), for a pick whose activation then fails.
+function snapshotNewChatDraft(): () => void {
+  const profile = $newChatProfile.get()
+  const route = $newChatRoute.get()
+  const source = $newChatConnectionId.get()
+  const legacy = profile !== null && isLegacyNewChatProfile(profile) ? profile : null
+
+  return () => {
+    if (legacy !== null) {
+      pinLegacyNewChatProfile(legacy)
+
+      return
+    }
+
+    $newChatProfile.set(profile)
+    $newChatRoute.set(route)
+    captureNewChatSource(source)
+  }
+}
+
+// A pick's tentative draft re-home: the new-chat intent it produced, whether
+// the pick's target is active, how to give back the draft from before the
+// click, and the intent that give-back produced once it ran.
+interface DraftRehome {
+  intent: number
+  landed: () => boolean
+  restore: () => void
+  revision: number
+  undoneAs: null | number
+}
+
+// The re-home of the latest pick that reached its turn and whose pick has not
+// finished (landed or not).
+// Activations are serialized, so a pick queued behind it takes its turn right
+// after that activation settles, possibly before that pick's caller resumes.
+let tentativeRehome: DraftRehome | null = null
+
+// The tentative re-home the draft shows when a pick starts, if any: the pick
+// ahead of it whose pick has not finished (landed or not).
+function rehomeAhead(draftIntent: number): DraftRehome | null {
+  return tentativeRehome?.intent === draftIntent ? tentativeRehome : null
+}
+
+// True while no new-chat intent newer than the pick's own start has taken the
+// draft over. The pick ahead failing and giving its draft back is not one.
+function noNewerDraftIntent(draftIntent: number, ahead: DraftRehome | null): boolean {
+  const intent = currentNewChatIntent()
+
+  return intent === draftIntent || (ahead !== null && intent === ahead.undoneAs)
+}
+
+function releaseTentativeRehome(revision: number): void {
+  if (tentativeRehome?.revision === revision) {
+    tentativeRehome = null
+  }
+}
+
+// What a failed pick gives back. While the draft is still the tentative
+// re-home of a pick ahead that did not land, that pick's give-back has not run
+// yet, so it is the draft from before that click, not the tentative one.
+function draftBeforePick(ahead: DraftRehome | null): () => void {
+  if (ahead !== null && ahead.intent === currentNewChatIntent() && !ahead.landed()) {
+    return ahead.restore
+  }
+
+  return snapshotNewChatDraft()
+}
+
+// Gives the draft back, but only while no newer new-chat intent has taken it
+// over since the re-home.
+function undoDraftRehome(rehome: DraftRehome): void {
+  if (currentNewChatIntent() !== rehome.intent) {
+    return
+  }
+
+  rehome.restore()
+  requestFreshSession()
+  rehome.undoneAs = currentNewChatIntent()
 }
 
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
@@ -330,29 +417,21 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 }
 
 /**
- * Re-home Sessions to one registered source, restoring that source's last
- * profile. Only the selected source is dialed; merely rendering the switcher
- * never probes or opens remote gateways.
+ * Re-scope Sessions to one registered gateway, landing on the profile the
+ * caller names or the one last used there.
  *
- * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Dial the target — and for OAuth remotes prove a protected REST read —
- *     WITHOUT activating it. The previous source stays fully bound and
- *     painted, so a dead target loses nothing.
- *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
- *     session bindings wiped — then activate the already-open socket. The
- *     wipe runs inside the activation's serialized section, synchronously
- *     before the publication, so no route/session effect can observe the new
- *     source while $activeSessionId still names the previous backend's
- *     runtime. Activating first and wiping after (across an IPC round-trip)
- *     is exactly how that id leaked to the new backend and came back as
- *     "session not found" (#93937).
+ * Every registered gateway is already connected (store/gateway-persistence),
+ * so this is the same live activation a profile pick or a cross-gateway resume
+ * makes: no session wipe, no barrier, no confirm. A gateway that is down fails
+ * at the open, before anything in front is touched. Sessions on the gateway left
+ * behind keep streaming on their own sockets, and the lists re-read for the
+ * new scope because the active connection id moved. Session RPCs route by
+ * their owner (connection, profile), never by the gateway in front, so nothing
+ * bound to the previous gateway has to be severed first.
  *
- * Overlap and stalls: clicks can supersede a switch at any point. A switch
- * superseded while queued behind another activation declines its commit —
- * no wipe, no activation — so the winner's wipe is always the one that
- * precedes the final publication, and the barrier is owned by the latest
- * switch. Every await is bounded; a commit that stalls after the wipe lowers
- * the barrier and repaints the source that is still active.
+ * Overlap: a newer click supersedes an older one at any point. A superseded
+ * activation still queued behind another declines (beforeActivate), so the
+ * user never flips through it; one that times out loses its right to publish.
  */
 export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
@@ -452,45 +531,83 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   const revision = ++switchRevision
-  // A draft the user starts while this switch is in flight (a gateway group's
-  // "+", a profile pick) is newer than the switch; the late re-home must not
-  // take it over. switchRevision only sees other switches.
+  // A draft the user starts while this pick is in flight (a gateway group's
+  // "+", a profile pick) is newer than it; the late re-home must not take it over.
   const draftIntent = currentNewChatIntent()
+  const ahead = rehomeAhead(draftIntent)
+  const activation = new AbortController()
+  let rehomed = false
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
-  // Set by the commit hook once THIS switch has wiped — i.e. it owns the
-  // barrier and, if the commit then fails, owes the still-active source a
-  // repaint. Null while queued, or if it stepped aside before its turn.
-  let token = null as GatewaySwitchToken | null
+  let undoRehome = (): void => undefined
+
+  // Runs inside the activation's serialized section, synchronously right
+  // before the target is published, so the center is already a fresh draft on
+  // the target when route effects first see it (#93937). A superseded pick
+  // declines here: no draft, no activation, so the user never flips through it.
+  const beforeActivate = () => {
+    if (revision !== switchRevision) {
+      return false
+    }
+
+    supersedeGatewaySwitch()
+
+    if (!restoreOnBoot) {
+      $showAllProfiles.set(false)
+    }
+
+    // Projects belong to one profile on one backend; leave before the fresh
+    // draft copies the project's folder into its cwd.
+    if (currentConnectionId !== connectionId || currentProfile !== targetProfile) {
+      exitProjectScope()
+    }
+
+    if (noNewerDraftIntent(draftIntent, ahead)) {
+      // The open runtime belongs to the gateway being left; unbind it now, not
+      // when the fresh draft renders, so nothing pairs it with the target.
+      setActiveSessionId(null)
+      setSelectedStoredSessionId(null)
+      const restore = draftBeforePick(ahead)
+      rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId)
+
+      const rehome: DraftRehome = {
+        intent: currentNewChatIntent(),
+        landed: targetIsActive,
+        restore,
+        revision,
+        undoneAs: null
+      }
+
+      tentativeRehome = rehome
+      undoRehome = () => undoDraftRehome(rehome)
+      rehomed = true
+    }
+
+    return true
+  }
 
   try {
-    // Phase 1 — open the target's socket; the active route is untouched.
-    // Always use the explicit registry route. `local` must mean This device,
-    // and a registry primary can differ from a legacy per-profile override.
-    await withTimeout(
-      openGatewayAgent(connectionId, targetProfile),
-      SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-      `Timed out connecting to "${targetConnection.label}".`
-    )
+    const timeoutMessage = `Timed out connecting to "${targetConnection.label}".`
+    // Open the target WITHOUT activating it, so a dead gateway fails here and
+    // the one in front loses nothing — not even the draft. Every registered
+    // gateway is normally connected already, so this resolves at once.
+    await withTimeout(openGatewayAgent(connectionId, targetProfile), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage)
 
-    // A newer click owns the switch from here on. The superseded dial never
-    // activates, so the user doesn't flip through it on the way to the source
-    // they picked last; its socket stays warm for that click or idles out.
     if (revision !== switchRevision) {
       return
     }
 
+    // A kept socket can outlive cookie/native OAuth REST auth. Prove the
+    // cheapest protected read before the draft is replaced; the exact failure
+    // reaches the caller (network failures are not sign-in errors).
     if (
       targetConnection.authMode === 'oauth' &&
       (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
     ) {
-      // Retained sockets can outlive cookie/native OAuth REST auth. Prove the
-      // cheapest protected read the target always serves before wiping. Keep
-      // the exact failure for caller UX (network failures are not sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
         SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-        `Timed out connecting to "${targetConnection.label}".`
+        timeoutMessage
       )
 
       if (revision !== switchRevision) {
@@ -498,113 +615,51 @@ export async function selectConnection(connectionId: string, options: SelectConn
       }
     }
 
-    // Phase 2 — commit. The hook runs inside the activation's serialized
-    // section, right before the socket is activated: sever the previous
-    // backend's bindings, then publish, with nothing in between. A click that
-    // superseded this switch while it was queued makes the hook decline —
-    // neither wipe nor activation — so the user never flips through it.
-    const activationController = new AbortController()
-    let markActivationStarted: () => void = () => undefined
-
-    const activationStarted = new Promise<void>(resolve => {
-      markActivationStarted = resolve
-    })
-
     try {
-      try {
-        const activation = ensureGatewayAgent(connectionId, targetProfile, {
-          signal: activationController.signal,
-          beforeActivate: () => {
-            if (revision !== switchRevision) {
-              return false
-            }
-
-            token = beginGatewaySwitch()
-            markActivationStarted()
-
-            return true
-          }
-        })
-
-        const timedActivation = activationStarted.then(() =>
-          withTimeout(
-            activation,
-            SWITCH_COMMIT_TIMEOUT_MS,
-            `Timed out activating "${targetConnection.label}".`,
-            error => {
-              // withTimeout does not cancel its input. Every timed-out owner
-              // loses future activation/publication rights, even when low-level
-              // activation already published the target and the commit remains
-              // fail-open. The shared activation signal suppresses any trailing
-              // descriptor/profile publication when stale work later settles.
-              activationController.abort(error)
-            }
-          )
-        )
-
-        // Queue time belongs to the profile-store mutex. Start the bounded
-        // commit window only once beforeActivate grants this request its turn.
-        await Promise.race([activation, timedActivation])
-      } catch (error) {
-        // The socket is activated and its descriptor published synchronously;
-        // only best-effort descriptor resync trails it. A commit that timed out
-        // AFTER the new source became active has landed, so keep it fail-open;
-        // the timeout signal still revokes all trailing publication rights.
-        if (!isTimeoutError(error) || !targetIsActive()) {
-          throw error
-        }
-      }
-
-      if (revision !== switchRevision) {
-        return
-      }
-
-      if (!targetIsActive()) {
-        throw new Error(`Connection "${targetConnection.label}" did not become active.`)
-      }
-    } finally {
-      // Lower the barrier the moment the commit settles — before the
-      // bookkeeping awaits below — but only if this switch still owns it.
-      if (token !== null) {
-        endGatewaySwitch(token)
+      await withTimeout(
+        ensureGatewayAgent(connectionId, targetProfile, { beforeActivate, signal: activation.signal }),
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+        timeoutMessage,
+        error => activation.abort(error)
+      )
+    } catch (error) {
+      // A timeout after the target already became active has landed.
+      if (!isTimeoutError(error) || !targetIsActive()) {
+        throw error
       }
     }
 
-    // A newer click owns the final refresh. Serialized gateway activation
-    // already makes the latest source win; this guard also prevents an older
-    // request from repainting its profile list after that newer activation.
+    if (!targetIsActive()) {
+      throw new Error(`Connection "${targetConnection.label}" did not become active.`)
+    }
+
+    if (revision !== switchRevision) {
+      return
+    }
+
+    await rememberConnection(connectionId)
+
     if (revision === switchRevision) {
-      await rememberConnection(connectionId)
-
-      // Remembering crosses IPC too; a newer click may now own the draft.
-      if (revision !== switchRevision) {
-        return
-      }
-
-      if (!restoreOnBoot) {
-        $showAllProfiles.set(false)
-      }
-
-      if (currentNewChatIntent() === draftIntent) {
-        rehomeNewChatDraft(targetProfile, restoreOnBoot)
-      }
-
       await refreshActiveProfile()
     }
   } catch (error) {
-    if (revision === switchRevision) {
-      if (token !== null) {
-        // This switch wiped for a commit that never landed. The previous
-        // source is still the active one, and nothing reactive re-pulls its
-        // lists (no scope moved): repaint it and land on a fresh draft there,
-        // matching what a failed Settings apply leaves behind.
-        recoverActiveSourceAfterFailedGatewaySwitch(token)
-        requestFreshSession()
-      }
-
-      throw error
+    // The target never became active: give back the draft as it was before
+    // the click, even when a newer pick superseded this one (its re-home is
+    // still the draft until that pick takes its turn). A draft the user
+    // started since the re-home is newer than this pick and is left alone.
+    if (rehomed) {
+      undoRehome()
     }
+
+    // A newer pick owns the outcome; this one's failure is moot.
+    if (revision !== switchRevision) {
+      return
+    }
+
+    throw error
   } finally {
+    releaseTentativeRehome(revision)
+
     if (revision === switchRevision) {
       pendingTarget = null
       $pendingConnectionId.set(null)

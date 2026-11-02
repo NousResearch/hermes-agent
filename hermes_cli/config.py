@@ -586,6 +586,8 @@ def ensure_hermes_home():
 # ---- Config loading/saving ----
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
+from hermes_cli import config_provider_env as _config_provider_env
+from hermes_cli.config_provider_env import core_declared_env_names
 from hermes_cli.config_providers import (
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
@@ -2280,6 +2282,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        _note_policy("note_config_policy", (expanded.get("security") or {}).get("redact_secrets"))
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while
             # load_config_readonly() callers all see the same stable object. The env snapshot
@@ -2418,7 +2421,17 @@ def load_env() -> dict[str, str]:
         return {}
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
-    return load_env_file(get_env_path())
+    env = load_env_file(get_env_path())
+    _note_policy("note_env_policy", env.get("HERMES_REDACT_SECRETS"))
+    return env
+
+
+def _note_policy(setter: str, raw: Any) -> None:
+    """Record the loaded profile's redaction policy for the log formatter, which never reads config."""
+    note = getattr(sys.modules.get("agent.redact"), setter, None)
+    if note is not None:
+        from hermes_constants import hermes_home_key
+        note(hermes_home_key(), raw)
 
 
 def _parse_env_value(raw_value: str) -> str:
@@ -2963,13 +2976,13 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
 
 
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
-    """Dotted config-key path -> ``(is_known, suggestion)``: the schema walk, then (only for a refused key)
-    the runtime-read keys DEFAULT_CONFIG leaves unseeded (config_runtime_keys)."""
+    """CLI-syntax key (``\\.`` escapes a dot) -> ``(is_known, suggestion)``: the schema walk, then (only for a
+    refused key) the runtime-read keys DEFAULT_CONFIG leaves unseeded (config_runtime_keys)."""
     known, suggestion = _validate_schema_key(key)
     if known or not key:
         return known, suggestion
     from hermes_cli.config_runtime_keys import is_runtime_read_key
-    return (True, None) if is_runtime_read_key(".".join(_split_key_path(key))) else (False, suggestion)
+    return (True, None) if is_runtime_read_key(_split_key_path(key)) else (False, suggestion)
 
 
 def _validate_schema_key(key: str) -> tuple[bool, Optional[str]]:
@@ -3734,34 +3747,7 @@ def config_command(args):
     sys.exit(1)
 
 
-# ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
-
-def _inject_profile_env_vars() -> None:
-    """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
-    without editing this file."""
-    try:
-        from providers import list_providers
-        for _pp in list_providers():
-            if _pp.auth_type != "api_key":
-                continue
-            for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
-                    continue
-                _is_key = not _var.endswith(("_BASE_URL", "_URL"))
-                _label = _pp.display_name or _pp.name
-                OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_label} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_label} {'API key' if _is_key else 'base URL (leave empty for default)'}",
-                    "url": _pp.signup_url or None,
-                    "password": _is_key,
-                    "category": "provider",
-                    "advanced": True}
-    except Exception:
-        pass
-
-
-_inject_profile_env_vars()
-
+# ---- OPTIONAL_ENV_VARS: platform plugin entries at import; provider entries on first read ----
 
 PlatformManifestSource = Literal["all", "bundled", "user"]
 
@@ -3884,13 +3870,13 @@ def _platform_manifest_env_entries(manifest: dict, *, optional: bool = True):
         yield name, is_secret, meta
 
 
-def _manifest_secret_envs(manifests) -> frozenset[str]:
+def _manifest_secret_envs(manifests, core: Optional[frozenset[str]] = None) -> frozenset[str]:
     """Upper-cased secret messaging env names the given manifests declare, minus core-declared
     names: a manifest never reclassifies a core variable such as OPENAI_API_KEY."""
     names = {name.upper() for _dir, manifest in manifests
              for name, is_secret, meta in _platform_manifest_env_entries(manifest)
              if is_secret and (meta.get("category") or "messaging") == "messaging"}
-    return frozenset(names - {n.upper() for n in CORE_DECLARED_ENV_NAMES})
+    return frozenset(names - {n.upper() for n in (core if core is not None else core_declared_env_names())})
 
 
 def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformManifestSource = "user", *,
@@ -3898,8 +3884,8 @@ def platform_manifest_secret_envs(home: Optional[Path] = None, source: PlatformM
     """Secret env names declared by one source's platform plugin manifests: ``"user"`` reads only
     ``home``'s user-installed plugins, which belong to that profile alone; ``"bundled"`` returns
     the set read once at import (re-read strictly if that read hit an I/O error)."""
-    if source == "bundled" and BUNDLED_PLATFORM_SECRET_ENVS is not None:
-        return BUNDLED_PLATFORM_SECRET_ENVS
+    if source == "bundled" and BUNDLED_PLATFORM_SECRET_ENVS is not None:  # minus provider names, known only now
+        return frozenset(BUNDLED_PLATFORM_SECRET_ENVS - {n.upper() for n in core_declared_env_names()})
     return _manifest_secret_envs(_platform_plugin_manifests(home, source, strict=strict))
 
 
@@ -3941,11 +3927,19 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
                 "url": meta.get("url") or None,
                 "password": is_secret,
                 "category": meta.get("category") or "messaging"}
-    return _manifest_secret_envs(bundled) if bundled is not None else None
+    return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
 
 
 # Names declared in core, before any platform manifest is read. A manifest never reclassifies
 # one: the config form keeps the core entry, and the child-env scrub keeps a plugin that lists
-# OPENAI_API_KEY from turning a provider key into an adapter secret.
-CORE_DECLARED_ENV_NAMES: frozenset[str] = frozenset(OPTIONAL_ENV_VARS)
+# OPENAI_API_KEY from turning a provider key into an adapter secret. CORE_DECLARED_ENV_NAMES adds
+# the provider profiles' names on first use (module __getattr__): listing them reads config.
+_STATIC_CORE_ENV_NAMES: frozenset[str] = frozenset(dict.keys(OPTIONAL_ENV_VARS))
 BUNDLED_PLATFORM_SECRET_ENVS: frozenset[str] | None = _inject_platform_plugin_env_vars()
+_config_provider_env.arm(OPTIONAL_ENV_VARS, _STATIC_CORE_ENV_NAMES)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "CORE_DECLARED_ENV_NAMES":
+        return core_declared_env_names()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

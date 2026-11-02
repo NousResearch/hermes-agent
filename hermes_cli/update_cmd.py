@@ -81,7 +81,7 @@ from hermes_cli.update_cmd_stash import (
     _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
     _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
     _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
-    _stash_local_changes_if_needed, _unrestored_autostash_notice,
+    _stash_local_changes_if_needed, _target_would_move_head, _unrestored_autostash_notice,
     _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
@@ -887,21 +887,77 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
         print(f"✗ Could not create the pre-merge recovery ref {rescue_ref}; no history was changed.")
         _record_stop("checkout_move_failed")
         sys.exit(1)
+    # Apply retention immediately after pinning the current recovery point. This keeps the
+    # policy effective even if the subsequent merge or its abort fails and leaves the
+    # checkout in a manual-recovery state. The current ref is protected from same-second
+    # ordering/age pruning below.
+    _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch, protect_ref=rescue_ref)
     print(
         f"  ⚠ Local history diverged from {merge_ref}; merging the fetched target so local commits survive.\n"
         f"    Recovery ref: {rescue_ref}"
     )
     merge_result = _git_run(git_cmd, ["merge", "--no-edit", merge_ref])
     if merge_result.returncode == 0:
+        # Retention is deliberately best-effort, but run it after the new rescue ref
+        # exists so repeated divergent updates cannot grow refs without bound.
+        _prune_orphan_rescue_refs(
+            git_cmd, _m().PROJECT_ROOT, branch, protect_ref=rescue_ref)
         return
 
-    _git_run(git_cmd, ["merge", "--abort"])
+    abort_result = None
+    abort_error = None
+    try:
+        abort_result = _git_run(git_cmd, ["merge", "--abort"])
+    except (OSError, subprocess.SubprocessError) as exc:
+        abort_error = exc
+    probe_result = None
+    probe_error = None
+    try:
+        probe_result = _git_run(
+            git_cmd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        probe_error = exc
+    # `rev-parse --verify MERGE_HEAD` returns 1 only when MERGE_HEAD is absent.
+    # Any other result is an unreadable or still-active merge state and must fail closed.
+    merge_in_progress = probe_result is not None and probe_result.returncode == 0
+    merge_state_unverified = (
+        probe_error is not None
+        or probe_result is None
+        or probe_result.returncode not in (0, 1)
+    )
+    if (
+        abort_error is not None
+        or abort_result is None
+        or abort_result.returncode != 0
+        or merge_in_progress
+        or merge_state_unverified
+    ):
+        print("✗ Merge conflict could not be safely aborted; update stopped with the checkout preserved for manual recovery.")
+        if abort_result is not None and abort_result.returncode != 0:
+            detail = abort_result.stderr or abort_result.stdout
+        elif abort_error is not None:
+            detail = str(abort_error)
+        elif probe_result is not None and probe_result.returncode not in (0, 1):
+            detail = probe_result.stderr or probe_result.stdout
+        else:
+            detail = str(probe_error or "merge state remains active")
+        detail = (detail or "").strip()
+        if detail:
+            print(f"  Abort details: {detail}")
+        print(f"  Resolve or abort manually: cd {_m().PROJECT_ROOT} && git status && git merge --abort")
+        print(f"  Recovery ref retained: {rescue_ref}")
+        _record_stop("merge_abort_failed")
+        sys.exit(1)
+
     print("✗ Merge conflict between local Hermes code and upstream; update stopped without discarding local commits.")
     detail = (merge_result.stderr or merge_result.stdout or "").strip()
     if detail:
         print(f"  {detail}")
     print(f"  Resolve manually: cd {_m().PROJECT_ROOT} && git merge {merge_ref}")
     print(f"  Recovery ref retained: {rescue_ref}")
+    _prune_orphan_rescue_refs(
+        git_cmd, _m().PROJECT_ROOT, branch, protect_ref=rescue_ref)
     _record_stop("merge_conflict")
     sys.exit(1)
 
@@ -1007,11 +1063,15 @@ def _landed_off_target(git_cmd, target_sha: str, *, merged: bool = True) -> str 
     return landed or "an unreadable HEAD"
 
 
-def _refuse_unselected_head(git_cmd, target_sha: str, unmoved: str | None) -> None:
-    """``sys.exit(1)`` (the caller settles it as a failed move, its marker still on disk) when git
-    landed on a commit other than the armed one (review O2/O3). A HEAD still on ``unmoved`` is
-    ``_verify_head_after_pull``'s "code did not move" refusal."""
-    if (landed := _landed_off_target(git_cmd, target_sha)) not in (None, unmoved):
+def _refuse_unselected_head(
+    git_cmd, target_sha: str, unmoved: str | None, *, require_exact: bool = False
+) -> None:
+    """``sys.exit(1)`` when a move landed off the armed target.
+
+    Branch updates may land on a merge commit containing the target; detached
+    release/channel moves must land on the selected commit itself.
+    """
+    if (landed := _landed_off_target(git_cmd, target_sha, merged=not require_exact)) not in (None, unmoved):
         print(f"✗ The checkout landed on {landed[:10]}, not the selected commit {target_sha[:10]} "
               "(a ref moved during the update).")
         _record_stop("head_moved")
@@ -1122,7 +1182,9 @@ def _pull_updates(
             # The paused gateways' tree gate must know this move's target before git writes a file.
             with _checkout_move(_windows_gateway_resume, target_sha):
                 _move_checkout_to(git_cmd, branch, merge_ref, target_sha, pre_pull_sha)
-            _refuse_unselected_head(git_cmd, target_sha, pre_pull_sha)  # before the marker goes
+            _refuse_unselected_head(
+                git_cmd, target_sha, pre_pull_sha,
+                require_exact=(merge_ref != f"origin/{branch}"))  # before the marker goes
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:
@@ -1373,9 +1435,10 @@ def _prepare_checkout_for_update(
         target_ref = f"origin/{branch}"
     release_tag = target_ref != f"origin/{branch}"
     if release_tag:
-        # A release lands detached at its exact commit, never merges into or
-        # rewrites the user's branch. Branch-policy machinery is main-only.
-        parked_branch_switched, in_place_update, switch_block_reason = False, True, None
+        # A release lands detached at its exact commit.  It must never be
+        # accepted merely because the selected commit is an ancestor of a
+        # descendant that happened to be on the checkout.
+        parked_branch_switched, in_place_update, switch_block_reason = False, False, None
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
@@ -1385,8 +1448,16 @@ def _prepare_checkout_for_update(
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
         # Before the stash: its refs/stash would contain HEAD until it is dropped.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
+    # A local terminal answers "keep local changes?" before anything moves (declining discards,
+    # so nothing is stashed); a no-op update never asks. Forks stay unscoped: the upstream sync
+    # lands on a ref fetched only later.
+    prompt_for_restore = not assume_yes and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+    ask_first = prompt_for_restore and not gateway_mode and (
+        (not release_tag and not in_place_update and current_branch != branch)
+        or _target_would_move_head(git_cmd, _m().PROJECT_ROOT, target_ref))
     auto_stash_ref = _m()._stash_local_changes_if_needed(
-        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume))
+        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume), ask_first=ask_first,
+        untracked_targets=() if is_fork else (target_ref, f"origin/{branch}", f"refs/heads/{branch}"))
     moved_from_sha = None
     rollback_branch = None
     if not release_tag and not in_place_update and current_branch != branch:
@@ -1405,17 +1476,14 @@ def _prepare_checkout_for_update(
             _exit_after_failed_branch_switch(
                 git_cmd, branch, track_result, auto_stash_ref, gw_input_fn, _windows_gateway_resume)
 
-    prompt_for_restore = (
-        auto_stash_ref is not None
-        and not assume_yes
-        and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+    prompt_for_restore = auto_stash_ref is not None and prompt_for_restore and not ask_first
 
     if release_tag:
         # An ancestor release still needs applying when switching channels.
         head_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         return _CheckoutPlan(
             auto_stash_ref=auto_stash_ref, commit_count=0 if head_sha == target_ref else -1,
-            in_place_update=True, parked_branch_switched=False,
+            in_place_update=False, parked_branch_switched=False,
             prompt_for_restore=prompt_for_restore, switch_block_reason=None, upstream_checked=True)
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
@@ -1730,9 +1798,22 @@ def _finish_already_up_to_date(
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
 
     if completion_request is not None:
-        # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
-        # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
-        completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
+        exact_target = bool(completion_request.get("require_exact_target_sha"))
+        target_sha = completion_request.get("target_sha")
+        if exact_target:
+            observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+            if (not target_sha or not is_object_id(target_sha)
+                    or not observed or not is_object_id(observed)
+                    or observed != target_sha):
+                print("✗ Could not verify the checkout SHA after the channel update. No completion was applied.")
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                _record_stop("head_moved")
+                sys.exit(1)
+            completion_request["expected_sha"] = observed
+        else:
+            # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
+            # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
+            completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
         completion_request["completion_message"] = held_message or (
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")
@@ -1749,16 +1830,28 @@ def _apply_pulled_update(
         _windows_gateway_resume=_windows_gateway_resume)
 
     if completion_request is not None:
-        observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
+        observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) if completion_request.get(
+            "require_exact_target_sha") else (_capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha)
         pinned = completion_request.get("expected_sha")
-        # In-place updates intentionally land on a merge commit containing the
-        # selected target, so the checkout SHA is not expected to equal the
-        # target SHA. The ancestry gate below still proves that the selected
-        # commit was applied; exact SHA equality remains required for detached
-        # release/channel moves.
         target_sha = completion_request.get("target_sha")
+        exact_target = bool(completion_request.get("require_exact_target_sha"))
+        target_is_valid = bool(target_sha and is_object_id(target_sha))
+        sha_check_required = bool(target_sha or pinned or exact_target)
+        if sha_check_required and (not observed or not is_object_id(observed)):
+            print("✗ Could not verify the checkout SHA after the update. No completion was applied.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _record_stop("head_moved")
+            sys.exit(1)
+        if exact_target and (not target_is_valid or observed != target_sha):
+            print("✗ Checkout no longer matches the selected channel commit. No completion was applied.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _record_stop("head_moved")
+            sys.exit(1)
+        # In-place branch updates intentionally land on a merge commit containing
+        # the selected target. Release/channel moves set ``exact_target`` above and
+        # must never accept a descendant of the selected SHA.
         landed_target_ok = bool(
-            target_sha
+            target_is_valid
             and _git_run(git_cmd, ["merge-base", "--is-ancestor", target_sha, observed]).returncode == 0
         )
         if pinned is not None and observed != pinned and not landed_target_ok:
@@ -1812,10 +1905,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # fail with "File exists" until an operator removed the lock by hand (#132089). Idempotent,
     # and _sweep_stale skips everything while a git process holds it. A killed update's
     # index.lock is younger than the sweep's age floor, so it goes here once its git is proven
-    # dead (we hold the update lock: no other update's git can own it).
-    from hermes_cli.gitlock import release_dead_index_lock
+    # dead (we hold the update lock: no other update's git can own it). Its killed fetch's ref
+    # and shallow locks likewise, or every later fetch fails ("reference already exists").
+    from hermes_cli.gitlock import release_dead_fetch_locks, release_dead_index_lock
     if release_dead_index_lock(_m().PROJECT_ROOT):
         print("  (removed .git/index.lock left by a git that was killed)")
+    for lock in release_dead_fetch_locks(_m().PROJECT_ROOT):
+        print(f"  (removed {lock} left by a git that was killed)")
     _check.clear_git_debris(_m().PROJECT_ROOT)
 
     opts = _resolve_update_options(args, gateway_mode)
@@ -1860,6 +1956,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     branch = completion_request["branch"]
     if release_sha:
         completion_request["target_sha"] = release_sha
+        completion_request["require_exact_target_sha"] = True
 
     if use_zip_update:
         try:
@@ -1929,6 +2026,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if held:
                 target_ref = held
                 held_message = f"✓ Holding at this build until a newer {channel} release ships."
+                # The selected release is intentionally not applied because it predates the
+                # runtime's state history. The safe target for completion is the verified
+                # current HEAD returned by the downgrade guard, and the no-op path must
+                # validate that exact held SHA rather than silently reusing the release SHA.
+                completion_request["target_sha"] = held
+                completion_request["expected_sha"] = held
         _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,

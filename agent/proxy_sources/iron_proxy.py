@@ -636,9 +636,15 @@ def _pid_alive(pid: int) -> bool:
             env_bytes = Path(f"/proc/{pid}/environ").read_bytes()
             if any(f"{_HERMES_IRON_PROXY_NONCE_ENV}={n}".encode() in env_bytes for n in nonce_candidates):
                 return True
-    with suppress(OSError):
-        if (cmdline_path := Path(f"/proc/{pid}/cmdline")).exists():
-            return os.path.basename(cmdline_path.read_bytes().split(b"\x00")[0].decode("utf-8", errors="ignore")).startswith("iron-proxy")
+    if Path("/proc/self/cmdline").exists():  # Linux: /proc answers for every pid
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except (FileNotFoundError, ProcessLookupError):
+            return False  # exited since the liveness probe; `ps` would fail and read as alive below
+        except OSError:
+            cmdline = None
+        if cmdline is not None:
+            return os.path.basename(cmdline.split(b"\x00")[0].decode("utf-8", errors="ignore")).startswith("iron-proxy")
     with suppress(OSError, subprocess.TimeoutExpired):  # macOS / non-Linux fallback
         res = _run(["ps", "-p", str(pid), "-o", "comm="], timeout=2, text=True)
         if res.returncode == 0:

@@ -551,8 +551,8 @@ class _ShallowLock:
     """Git's own ``shallow.lock`` protocol, so a concurrent ``git fetch`` that
     writes ``.git/shallow`` between our read and our write is never clobbered:
     the fetch fails fast on the lock and we re-read before writing. The lock stays
-    open while held: :func:`release_dead_fetch_locks` runs no git between its git
-    calls, so the open fd (an unlink refusal on Windows) is how it sees this holder."""
+    open while held: this holder runs no git between its git calls, so the open fd
+    (an unlink refusal on Windows) is how :func:`release_dead_fetch_locks` sees it."""
 
     def __init__(self, shallow_path: Path):
         self._path = shallow_path
@@ -565,8 +565,14 @@ class _ShallowLock:
             raise RuntimeError(f"shallow lock held: {self._lock_path}")
         except OSError as exc:
             raise RuntimeError(f"cannot create shallow lock: {exc}") from exc
+        try:
+            os.write(fd, b"hermes shallow maintenance\n")
+        except OSError as exc:
+            # A leaked fd would read as a live holder (and pin the file on Windows).
+            os.close(fd)
+            self._lock_path.unlink(missing_ok=True)
+            raise RuntimeError(f"cannot write shallow lock: {exc}") from exc
         self._fd = fd
-        os.write(fd, b"hermes shallow maintenance\n")
         return self
 
     def __exit__(self, *exc_info) -> None:

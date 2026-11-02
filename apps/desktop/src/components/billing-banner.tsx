@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { $billingBlock, billingCtaLabel, clearBillingBlock, runBillingRecovery } from '@/store/billing-block'
+import { recordFriction } from '@/store/desktop-metrics'
 
 function firstLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
@@ -16,8 +17,9 @@ function firstLine(text: string): string {
  * one piece with the composer card (no bordered alert-in-a-card). It never
  * disables the composer — slash commands (`/topup`, `/model`, `/login`) stay
  * usable — it only offers recovery: Nous opens Settings → Billing in-app, other
- * providers deep-link out. The sticky toast is the loud surface; this is the calm
- * reminder that outlives it.
+ * providers deep-link out. The failed turn's card also names the wall (it can't
+ * know whether this banner is on screen: a collapsed drawer, a popped-out
+ * composer); a wall in a background chat also raises a sticky toast.
  */
 export function BillingBanner({ sessionId }: { sessionId: null | string }) {
   const active = useStore($billingBlock)
@@ -49,7 +51,10 @@ export function BillingBanner({ sessionId }: { sessionId: null | string }) {
           <Button
             aria-label={copy.dismiss}
             className="size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-            onClick={() => clearBillingBlock(sessionId)}
+            onClick={() => {
+              recordFriction('notice_dismissed', 'billing_banner')
+              clearBillingBlock(sessionId)
+            }}
             size="icon-xs"
             type="button"
             variant="ghost"

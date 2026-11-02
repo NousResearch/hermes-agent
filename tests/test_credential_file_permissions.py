@@ -15,9 +15,7 @@ import pytest
 
 from utils import warn_if_credential_file_broadly_readable
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix", reason="POSIX permission-bit semantics required"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX permission-bit semantics required
 
 
 class TestWarnIfCredentialFileBroadlyReadable:

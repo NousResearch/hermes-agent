@@ -123,8 +123,8 @@ class TestReadJournalMode:
         assert "not a database" in error
 
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.platforms("posix")  # chmod is a no-op on Windows
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
     def test_read_only_directory_is_still_readable(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
@@ -243,12 +243,13 @@ class TestLiveConnectionSafety:
 
 
 class TestUnreadableReason:
+    @pytest.mark.platforms("linux")
     def test_missing_file_keeps_the_os_error_text(self, tmp_path):
         reason = doctor_platform._unreadable_reason(tmp_path / "gone.db")
 
         assert "No such file or directory" in reason
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+    @pytest.mark.platforms("posix")  # chmod is a no-op on Windows
     @pytest.mark.skipif(
         # os.geteuid is POSIX-only, and a skipif condition is evaluated at
         # collection time — calling it unguarded would raise AttributeError
@@ -341,7 +342,8 @@ class TestReportDatabaseJournalModes:
         assert "state.db is in WAL mode" in out
         assert "projects.db: rollback journal mode" in out
         assert "kanban.db: rollback journal mode" in out
-        assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
+        board_rel = os.path.join("kanban", "boards", "myboard", "kanban.db")
+        assert f"{board_rel} is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
         doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
@@ -364,8 +366,8 @@ class TestReportDatabaseJournalModes:
         out = capsys.readouterr().out
         assert "state.db: rollback journal mode" in out
 
-    @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.platforms("posix")  # chmod is a no-op on Windows
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores file permissions")
     def test_unreadable_database_does_not_crash(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db)
@@ -426,7 +428,6 @@ class TestConfiguredDeleteNeverApplied:
         assert "state.db: WAL journal mode" not in out
         assert ("To clear the exposure:" in out) is exposed
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="holder scan has no Windows backend")
     def test_wal_db_under_configured_delete_names_its_holders(self, tmp_path, capsys, monkeypatch):
         # The offline conversion needs the file quiet, so doctor must say WHICH process to stop — a
         # subprocess holding a real connection is named by PID; the doctor process itself is not a holder.
@@ -435,12 +436,13 @@ class TestConfiguredDeleteNeverApplied:
         monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
-             "print('ready', flush=True); sys.stdin.readline()", str(db)],
+             "import os, sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('SELECT count(*) FROM t'); "
+             "print(f'held:{os.getpid()}', flush=True); sys.stdin.readline()", str(db)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
         try:
-            assert holder.stdout.readline().strip() == "ready"
+            marker, sqlite_pid = holder.stdout.readline().strip().split(":", 1)
+            assert marker == "held"  # child-reported: Popen.pid is the venv launcher on Windows
             doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
         finally:
             holder.stdin.write("\n")
@@ -448,7 +450,7 @@ class TestConfiguredDeleteNeverApplied:
             holder.wait(timeout=30)
 
         out = capsys.readouterr().out
-        assert f"state.db is held by PID {holder.pid}" in out and "state.db" in out.split("held by PID")[1]
+        assert f"state.db is held by PID {sqlite_pid}" in out and "state.db" in out.split("held by PID")[1]
         assert "no other process holds it" not in out and "cannot prove" not in out
 
     def test_partial_holder_scan_is_never_an_all_clear(self, tmp_path, capsys, monkeypatch):

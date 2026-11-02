@@ -70,4 +70,18 @@ describe('ResponseLoadingIndicator timer', () => {
 
     expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
   })
+
+  it('keeps the ticking timer out of the live region accessibility tree', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    renderIndicator()
+
+    act(() => vi.advanceTimersByTime(2_000))
+
+    const status = screen.getByRole('status')
+    const timer = [...status.querySelectorAll('[aria-hidden="true"]')].find(el => el.textContent === '2s')
+
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(timer).toBeDefined()
+  })
 })

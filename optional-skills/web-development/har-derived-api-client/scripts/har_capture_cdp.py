@@ -3,7 +3,7 @@
 
 Use this when the browser is owned by someone else and only reachable over the
 Chrome DevTools Protocol: Hermes cloud backends (Browserbase, Browser-Use,
-Firecrawl), a Camofox session exposing CDP, or anything wired via
+Firecrawl), or anything wired via
 `/browser connect <url>` / BROWSER_CDP_URL / browser.cdp_url in config.
 
 Why this exists: Playwright's record_har_path only works on a context you

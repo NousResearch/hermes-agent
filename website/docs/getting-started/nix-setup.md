@@ -29,6 +29,27 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 **For NixOS module users**, the entire lifecycle is different: configuration lives in `configuration.nix`, secrets go through sops-nix/agenix, the service is a systemd unit, and CLI config commands are blocked. You manage hermes the same way you manage any other NixOS service.
 :::
 
+## Runtime pins
+
+PM's tool lock is also a Nix build input. `nix/npm-pinned.nix` reads the npm
+pin, and `nix/pm-packages.nix` exposes matching archives as `pm-NAME` derivations:
+
+```bash
+nix build .#pm-ripgrep
+```
+
+These outputs unpack the pinned archives. They are not the complete Hermes
+wrapper or a guarantee that each archive runs without platform integration.
+The application still uses the uv2nix environment and Nix wrapper.
+
+`nix/pythonLock.nix` reads Python's major/minor from `pm/lock.json`.
+The uv2nix environment, package overrides, plugin packages, and developer shell
+use that interpreter family. If the pinned nixpkgs lacks that family, evaluation
+stops instead of selecting a different Python.
+
+Native Nix evaluation and builds remain CI gates. Update through Nix. Do not
+repair a Nix store path with pip.
+
 ## Prerequisites
 
 - **Nix with flakes enabled** — [Determinate Nix](https://install.determinate.systems) recommended (enables flakes by default)
@@ -347,7 +368,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
 | Run the backend for the desktop app or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
-| Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
+| Add an optional extra the package does not ship | `extraDependencyGroups` | `[ "google-meet" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -656,7 +677,7 @@ macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at log
 
 ### Running the Desktop / Dashboard Backend
 
-`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. Hermes Desktop and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. `backend.mode` runs that process with the gateway:
+`gateway.enable` runs the messaging gateway for Telegram, Discord, Slack and the other platforms. A Hermes Desktop **remote** connection and the web dashboard connect to a *different* process, which is `hermes serve` or `hermes dashboard`. (A Desktop running on the same host attaches to the gateway itself via `hermes gateway ensure`.) `backend.mode` runs that process with the gateway:
 
 ```nix
 {
@@ -674,6 +695,26 @@ macOS has no equivalent option. A `launchd` agent with `RunAtLoad` starts at log
 :::warning Binding to an address other than loopback
 The default address is `127.0.0.1`. Each other address starts the authentication gate of the dashboard. The server also refuses each request with a `Host` header that is different from the address that the server bound to. This is a defence against DNS rebinding. Bind to the name or the address that your client uses.
 :::
+
+### Running the Webapp
+
+The package ships the [Webapp](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser) (Hermes Desktop in a browser) prebuilt, so nothing is built at run time; the store is read-only. The gateway serves it when its settings turn it on (see [Configuration → Webapp](../user-guide/configuration.md#webapp)):
+
+```nix
+{
+  services.hermes-agent = {
+    enable = true;
+    gateway.enable = true;
+    settings.webapp = {
+      enabled = true;
+      host = "127.0.0.1";
+      port = 9120;
+    };
+  };
+}
+```
+
+Open it with `hermes webapp`. A non-loopback `host` or a `public_url` needs one of the [dashboard's sign-in providers](../user-guide/features/web-dashboard.md#authentication-gated-mode), as for the dashboard. `nix build .#webapp` builds the bundle on its own. The wrapper points `HERMES_WEBAPP_DIST` at it, so `hermes webapp --force-build` has nothing to rebuild and says so.
 
 ### Verify It Works
 
@@ -779,7 +820,7 @@ For pip-packaged plugins that register via `[project.entry-points."hermes_agent.
 
 ```nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "rtk-hermes";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -789,7 +830,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
@@ -798,22 +839,18 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 
 ### Optional Dependency Groups (`extraDependencyGroups`)
 
-For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra not in the default `[all]` set — on Nix, runtime installation into the read-only store is not possible.
+For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra the selected package does not already ship — on Nix, runtime installation into the read-only store is not possible.
 
 ```nix
-# Enable Discord, Telegram, Slack
-services.hermes-agent.extraDependencyGroups = [ "messaging" ];
+# Add Google Meet support on top of what the package ships
+services.hermes-agent.extraDependencyGroups = [ "google-meet" ];
 ```
 
-```nix
-# Enable a memory provider
-services.hermes-agent = {
-  extraDependencyGroups = [ "honcho" ];
-  settings.memory.provider = "honcho";
-};
-```
+`extraDependencyGroups` and `extraPythonPackages` **add to** the groups the selected package ships; they never replace them. The `default` package already ships `messaging`, `voice`, `exa` and the other groups in the table below, so naming one of those changes nothing. The same holds for `pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }`. For a smaller build, start from a smaller package: `package = inputs.hermes-agent.packages.${system}.minimal;` (or `#messaging`), or `.override { defaultDependencyGroups = [ ]; }` to drop the shipped groups and list only the ones you want.
 
-This is resolved by uv alongside core dependencies — no PYTHONPATH patching, no collision risk. Available groups:
+These groups join the core dependency resolution at build time. Conflicting
+requirements can still fail that resolution. The table lists common groups;
+`pyproject.toml` is authoritative for the complete list and platform markers.
 
 | Group | What it enables |
 |-------|-----------------|
@@ -827,7 +864,6 @@ This is resolved by uv alongside core dependencies — no PYTHONPATH patching, n
 | `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
 | `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |
-| `honcho` | Honcho memory provider |
 | `modal` | Modal terminal backend |
 | `daytona` | Daytona terminal backend |
 | `exa` | Exa web search |
@@ -854,7 +890,7 @@ A directory plugin with third-party Python dependencies needs both options:
 ```nix
 services.hermes-agent = {
   extraPlugins = [ my-plugin-src ];          # plugin source
-  extraPythonPackages = [ pkgs.python312Packages.redis ];  # its Python dep
+  extraPythonPackages = [ config.services.hermes-agent.package.python.pkgs.redis ];  # its Python dep
   extraPackages = [ pkgs.redis ];            # system binary it needs
 };
 ```
@@ -870,7 +906,9 @@ External flakes can override the package directly:
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # Then:
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    # Both add to the groups the default package ships. To drop those:
+    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
 }
 ```
@@ -896,17 +934,16 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides a development shell with Python 3.12, uv, Node.js, and all runtime tools:
+The flake provides an editable Python venv with the `dev` dependency group, running
+on the interpreter `pm/lock.json` pins. `HERMES_PYTHON` and `VIRTUAL_ENV` point at it,
+and it needs no `PYTHONPATH`. It does not install
+Python dependencies into a repository-local `.venv`. The shell also provides
+Node.js and runtime tools. Its npm hook refreshes JS workspaces when their inputs change.
 
 ```bash
 cd hermes-agent
 nix develop
-
-# Shell provides:
-#   - Python 3.12 + uv (deps installed into .venv on first entry)
-#   - Node.js 26, ripgrep, git, openssh, ffmpeg on PATH
-#   - Stamp-file optimization: re-entry is near-instant if deps haven't changed
-
+"$HERMES_PYTHON" -c "import sys; print(sys.executable); print(sys.version)"
 hermes setup
 hermes chat
 ```
@@ -918,7 +955,7 @@ The included `.envrc` activates the dev shell automatically:
 ```bash
 cd hermes-agent
 direnv allow    # one-time
-# Subsequent entries are near-instant (stamp file skips dep install)
+# Nix reuses its built Python environment; the npm hook checks JS inputs.
 ```
 
 ### Flake Checks
@@ -1016,14 +1053,14 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
-| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
-| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["honcho"]`). Resolved by uv — no collisions |
+| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["google-meet"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 
 ### Backend (`hermes serve` / `hermes dashboard`)
 
-This option runs the process that Hermes Desktop and the web dashboard connect to, with the gateway. You cannot use it with `container.enable`.
+This option runs the process that a remote Hermes Desktop connection and the web dashboard connect to, with the gateway. You cannot use it with `container.enable`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -1225,7 +1262,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
-| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
+| `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Read `journalctl -u hermes-agent` for `InstallError` or `requirements not met` and the underlying cause. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
 | `hermes --version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |

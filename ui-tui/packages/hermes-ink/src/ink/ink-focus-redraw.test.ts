@@ -22,7 +22,7 @@ import { DISABLE_MOUSE_TRACKING } from './termio/dec.js'
  *     no frame can be presented between "screen cleared" and "content drawn".
  *     A separate erase write is the visible flash on an ordinary tab switch.
  *
- * Both hold on the alt screen and on the main screen (INLINE_MODE / Termux).
+ * Both hold on the alt screen and on the main screen (INLINE_MODE).
  */
 
 /** Minimal terminal emulator: replays ANSI into a cell grid. */

@@ -1,18 +1,11 @@
 name: hermes-jailbreak-kernel
 repo: https://github.com/Enchanted0911/hermes-jailbreak-kernel
-sha: 6b305c4892048aff7d30fab60a18294c8f22eca3
-description: >-
-  Jailbreak-kernel plugin for Hermes Agent (ported from dsh-infinite-gen-4): dual-layer
-  same-source system-prompt injection + llm_request request-layer system rebuild + opencode
-  session rotation, removing model refusals. Ships /jailbreak status command and a 54-check
-  offline self-test. Disclosure — llm_request middleware that replaces/appends the system prompt
-  with a refusal-removal ("jailbreak") kernel on every request and rotates the x-opencode-session
-  header; writes a per-session diagnostic dump of the full system prompt (which can include
-  memory/persona text) to its own plugin dir (dumps/). No network, no exec.
+sha: eca97e0659794a98602d3cbc679dd4d0907800b6
+description: "Jailbreak-kernel plugin for Hermes Agent (ported from dsh-infinite-gen-4): session-scoped modes (off/slim/on/full) with kernel profiles (core/research/creative/max), session-aware system-prompt sections, llm_request request-layer system rebuild, and opencode session rotation, removing model refusals. Ships a /jailbreak command, a progressive-disclosure ops skill, and a 276-check offline self-test. Disclosure — llm_request middleware that, by default (`on`/`full` modes), replaces the system prompt on every request with a refusal-removal (\"jailbreak\") kernel plus only the memory and runtime-environment sections (agent rules, skills index, context files and other plugins' sections are dropped); `slim` appends it instead, and `off` passes requests through but strips all plugin prompt sections, including other plugins'. Rotates the x-opencode-session header on opencode routes. Writes a diagnostic dump per session (full system prompt incl. memory/persona text, plus the first 200 chars of every other message and the model/provider/base_url) to its own plugin dir (dumps/); `/jailbreak dump off` or `HERMES_JAILBREAK_DUMP=0` turns it off. No network, no exec."
 maintainer: Enchanted0911
 tier: community
 category: general
-requires_hermes: ">=0.19"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Enchanted0911/hermes-jailbreak-kernel#readme
 capabilities:
   provides_tools: []
@@ -20,3 +13,4 @@ capabilities:
   provides_middleware:
     - llm_request
   requires_env: []
+version: 2.0.1

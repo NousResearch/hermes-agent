@@ -1,17 +1,13 @@
 name: hermes-talk
 repo: https://github.com/TheSmokeDev/hermes-talk
-sha: 7219f2fdff353df72f5323b219bfe759991b0365
-description: >-
-  Realtime voice for Hermes through terminal, Discord, dashboard and Desktop.
-  Live voice mode (TALK_VOICE_MODE=live, TALK_LIVE_AUTH=subscription) connects with your
-  own Codex OAuth session to the undocumented chatgpt.com/backend-api/codex/realtime/calls
-  endpoint, which is outside the vendor's published API terms and may change or stop
-  working without notice.
+sha: 790f6d283d4720302eda21f9086d4fc01be3ec0a
+description: "Realtime voice for Hermes through terminal, Discord, dashboard and Desktop. Disclosure — Realtime on the ChatGPT subscription uses the profile's Codex sign-in only through Hermes's credentialed_provider_request (requires_auth: openai-codex); the plugin never reads, refreshes or holds a token. GPT-Live on the subscription (TALK_VOICE_MODE=live, TALK_LIVE_AUTH=subscription) starts one local `codex app-server` child per call on the Codex CLI's own login (API-key variables removed from its environment); that call uses the undocumented chatgpt.com Codex realtime endpoint, which is outside the vendor's published API terms and may change or stop working without notice. The app-server's Codex thread is ephemeral and fenced (no environment, read-only sandbox, approvals declined, apps, shell, web search, plugins, sub-agents and each configured MCP server disabled, replies only \"skip\"); Talk reads only the MCP server names to disable them, and each voice request costs one small Codex turn of subscription quota. Voice audio and conversation context go to the selected provider (OpenAI, xAI, Google, optionally ElevenLabs); on Desktop the voice model can list the profile's sessions, read their titles and recent messages, create sessions and queue or steer prompts into them without a per-action confirmation; spoken requests are handed to the user's Hermes agent, whose tools run under Hermes approvals. No telemetry."
 maintainer: TheSmokeDev
 tier: community
 category: voice
-version: "0.21.0"
-docs_url: https://github.com/TheSmokeDev/hermes-talk/blob/7219f2fdff353df72f5323b219bfe759991b0365/README.md
+requires_hermes: ">=0.21.7"
+version: "0.22.1"
+docs_url: https://github.com/TheSmokeDev/hermes-talk/blob/790f6d283d4720302eda21f9086d4fc01be3ec0a/README.md
 capabilities:
   provides_tools: []
   provides_hooks:

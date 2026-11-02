@@ -60,6 +60,10 @@ SID = "op-rpc-session"
 @pytest.fixture
 def owned(monkeypatch):
     live.reset_for_tests()
+    # A connect from the panel creates the guest identity first; in an empty test home that is a
+    # real mint on the live Portal (up to 5s), which outlived the 2s reply wait on a slow Portal.
+    monkeypatch.setattr("tools.connectors.ensure_guest_identity", lambda: None)
+    monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
     with ExitStack() as stack:
         owner, stranger = PipeClient(stack), PipeClient(stack)
         session = dict(transport=owner.transport, agent=None, session_key=SID, history=[],
@@ -191,6 +195,9 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     mints = []
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
@@ -221,6 +228,9 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 

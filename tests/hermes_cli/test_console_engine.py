@@ -169,7 +169,7 @@ def test_sessions_export_all_rejects_single_oversized_session(
 
     assert result.status == "error"
     assert "runaway" in result.output
-    assert "more than 3 active" in result.output
+    assert "more than 3 exportable" in result.output
     assert "streaming Export" in result.output
     assert "max_export_messages" in result.output
     assert export_all_calls == []
@@ -285,7 +285,7 @@ _ORPHAN_STORE_STATUS = {
 
 def _patch_checkpoint_manager(monkeypatch, prune_calls: list) -> None:
     """Report one orphan project and record the resulting prune call."""
-    import tools.checkpoint_manager as ckpt_mgr
+    import tools.checkpoint_maintenance as ckpt_mgr
 
     monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: _ORPHAN_STORE_STATUS)
 

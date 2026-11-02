@@ -23,7 +23,6 @@ from cron.jobs import (
     _hermes_now,
 )
 
-
 @pytest.fixture()
 def temp_home(tmp_path, monkeypatch):
     """Redirect cron storage to a temp dir (same pattern as the sibling
@@ -32,7 +31,6 @@ def temp_home(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
-
 
 def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
     job = create_job(

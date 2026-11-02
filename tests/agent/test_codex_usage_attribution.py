@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
-from hermes_cli import __version__
+from hermes_cli.version_info import get_version_info
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -109,7 +109,7 @@ def wire(profile, monkeypatch):
 
 def _assert_identity(request, account_id="acct-attribution-test"):
     assert request.headers["originator"] == "hermes-agent"
-    assert request.headers["user-agent"] == f"HermesAgent/{__version__}"
+    assert request.headers["user-agent"] == f"HermesAgent/{get_version_info().base_version}"
     assert request.headers["chatgpt-account-id"] == account_id
     assert "extra_headers" not in json.loads(request.content)
 
@@ -141,7 +141,7 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
 
     assert headers["originator"] == ("hermes-agent" if attributed else "codex_cli_rs")
     assert headers["User-Agent"] == (
-        f"HermesAgent/{__version__}"
+        f"HermesAgent/{get_version_info().base_version}"
         if attributed else "codex_cli_rs/0.0.0 (Hermes Agent)"
     )
 
@@ -192,7 +192,7 @@ def test_auxiliary_raw_and_async_clients_send_expected_headers(
     from agent import auxiliary_client
 
     monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
-    monkeypatch.setattr(auxiliary_client, "_read_codex_access_token", _jwt)
+    monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
 
     wrapped, model = auxiliary_client._build_codex_client(MODEL)
     raw, raw_model = auxiliary_client.resolve_provider_client(
@@ -258,7 +258,8 @@ def test_legacy_disabled_setting_cannot_disable_attribution_for_new_clients(
 ):
     from agent import auxiliary_client
 
-    monkeypatch.setattr(auxiliary_client, "_read_codex_access_token", _jwt)
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda _p: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", _jwt)
     _set_legacy_attribution(profile, True)
     old, _ = auxiliary_client.resolve_provider_client(
         "openai-codex", model=MODEL, raw_codex=True,

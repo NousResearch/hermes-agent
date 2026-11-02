@@ -10,6 +10,7 @@ import logging
 import re
 import sqlite3
 import time
+from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -59,7 +60,7 @@ def save_completed_result(session) -> None:
     try:
         from hermes_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
         _result_paths()
     except OSError:
@@ -102,7 +103,7 @@ def load_completed_results(prefix: str = "") -> dict:
         if not path.stem.startswith(prefix):
             continue
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
             if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
                 continue
             if not _owns_result(owner, record.get("parent_session_id")):

@@ -36,7 +36,6 @@ def test_cron_fire_profile_lookup_off_loop(monkeypatch, loop_probe):
 
     def fake_find(job_id):
         probe("find")
-        return None
 
     monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", fake_find)
 

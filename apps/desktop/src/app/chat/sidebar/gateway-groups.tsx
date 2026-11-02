@@ -31,6 +31,7 @@ import { $sessionProfilesUsage } from '@/store/session'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import { SidebarGroupRow, SidebarRowGrab, SidebarRowLink, SidebarRowStack } from './chrome'
+import { gatewayLabel, showsProfileTotals } from './gateway-group-model'
 import {
   $gatewayGroupAliases,
   $gatewayGroupCollapsed,
@@ -51,6 +52,9 @@ interface GatewayProfileGroupsProps {
   sensors?: ReturnType<typeof useSensors>
   onNewSessionSplit?: NewSessionSplitHandler
   nested?: boolean
+  // Inside another section (a messaging platform) that owns paging and has no
+  // business starting desktop sessions: flat owner groups, headers only.
+  embedded?: boolean
 }
 
 export function GatewayProfileGroups({
@@ -58,8 +62,10 @@ export function GatewayProfileGroups({
   renderRows,
   sensors,
   onNewSessionSplit,
-  nested = false
+  nested = false,
+  embedded = false
 }: GatewayProfileGroupsProps) {
+  const { t } = useI18n()
   const registry = useStore($connectionsRegistry)
   const order = useStore($gatewayGroupOrder)
   const gatewayProfiles = new Map<string, SidebarSessionGroup[]>()
@@ -67,8 +73,8 @@ export function GatewayProfileGroups({
 
   for (const group of groups) {
     // Unknown legacy ownership stays unassigned; never guess a local gateway.
-    if (nested || !group.connectionId) {
-      sections.push(nested ? { ...group, label: group.profile! } : group)
+    if (nested || embedded || !group.connectionId) {
+      sections.push(group)
 
       continue
     }
@@ -83,8 +89,7 @@ export function GatewayProfileGroups({
       sections.push({
         id,
         connectionId: group.connectionId,
-        label:
-          registry?.connections.find(connection => connection.id === group.connectionId)?.label || group.connectionId,
+        label: gatewayLabel(group.connectionId, registry, t.settings.gateway.webappHostTitle),
         mode: 'profile',
         path: null,
         sessions: []
@@ -105,6 +110,7 @@ export function GatewayProfileGroups({
     <ReorderableList ids={ids} onReorder={reorderGatewayGroups} sensors={sensors}>
       {ordered.map((group, index) => (
         <GatewayProfileGroup
+          embedded={embedded}
           first={index === 0}
           group={group}
           key={group.id}
@@ -116,7 +122,7 @@ export function GatewayProfileGroups({
           {gatewayProfiles.has(group.id) && (
             <div className="ml-3 border-l border-border/50 pl-1">
               <GatewayProfileGroups
-                groups={gatewayProfiles.get(group.id)!}
+                groups={gatewayProfiles.get(group.id)!.map(profile => ({ ...profile, label: profile.profile! }))}
                 nested
                 onNewSessionSplit={onNewSessionSplit}
                 renderRows={renderRows}
@@ -137,6 +143,7 @@ interface GatewayProfileGroupProps {
   onNewSessionSplit?: NewSessionSplitHandler
   first: boolean
   last: boolean
+  embedded: boolean
   children?: ReactNode
 }
 
@@ -146,6 +153,7 @@ function GatewayProfileGroup({
   onMove,
   first,
   last,
+  embedded,
   onNewSessionSplit,
   children
 }: GatewayProfileGroupProps) {
@@ -155,9 +163,11 @@ function GatewayProfileGroup({
   const aliases = useStore($gatewayGroupAliases)
   const collapsed = useStore($gatewayGroupCollapsed)
   const rankIds = useStore($sidebarSessionRankIds)
-  // Legacy totals are keyed only by profile. Never attribute those figures to
-  // a registry gateway that happens to expose the same profile name.
-  const usage = useStoreSelector($sessionProfilesUsage, all => (group.connectionId ? undefined : all[group.profile!]))
+
+  const usage = useStoreSelector($sessionProfilesUsage, all =>
+    showsProfileTotals(group.connectionId, embedded) ? all[group.profile!] : undefined
+  )
+
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const [visibleCount, setVisibleCount] = useState(SIDEBAR_GROUP_PAGE)
@@ -165,7 +175,7 @@ function GatewayProfileGroup({
   const label = aliases[group.id] || group.label
   const open = !collapsed.includes(group.id)
   const sessions = rankSessions(group.sessions, rankIds)
-  const hiddenCount = Math.max(0, sessions.length - visibleCount)
+  const hiddenCount = embedded ? 0 : Math.max(0, sessions.length - visibleCount)
   const route = group.connectionId ? { connectionId: group.connectionId, profile: group.profile! } : undefined
 
   const startSession = () => {
@@ -199,7 +209,7 @@ function GatewayProfileGroup({
         // below); the full handle stays on the grabber (see useSortableBindings).
         actions={
           <div className="flex items-center">
-            {group.profile && (
+            {group.profile && !embedded && (
               <WorkspaceAddButton
                 label={s.newSessionIn(label)}
                 onClick={startSession}
@@ -298,10 +308,15 @@ function GatewayProfileGroup({
       {open && (
         <>
           {children}
-          {group.profile ? (
+          {group.profile && !embedded ? (
             <ProfileGroupHeaderSlot connectionId={group.connectionId ?? null} profile={group.profile} />
           ) : null}
-          {renderRows(sessions.slice(0, visibleCount))}
+          <ProfileGroupRows
+            emptyLabel={s.noSessions}
+            profile={group.profile}
+            renderRows={renderRows}
+            sessions={embedded ? sessions : sessions.slice(0, visibleCount)}
+          />
           {hiddenCount > 0 && (
             <WorkspaceShowMoreButton
               count={Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)}
@@ -388,4 +403,25 @@ function ProfileGroupHeaderItem({
   const Row = useMemo(() => () => render({ connectionId, profile }), [connectionId, profile, render])
 
   return <ContribRender render={Row} />
+}
+
+interface ProfileGroupRowsProps {
+  profile?: string
+  sessions: SessionInfo[]
+  renderRows: (sessions: SessionInfo[]) => ReactNode
+  emptyLabel: string
+}
+
+// A profile with no chats keeps its section: a muted line under the header says so. A gateway
+// section holds its profiles as children, not rows, so it never shows the line.
+function ProfileGroupRows({ profile, sessions, renderRows, emptyLabel }: ProfileGroupRowsProps) {
+  if (!sessions.length && profile) {
+    return (
+      <div className="px-2 py-1 text-xs text-(--ui-text-tertiary)" data-gateway-group-empty>
+        {emptyLabel}
+      </div>
+    )
+  }
+
+  return <>{renderRows(sessions)}</>
 }

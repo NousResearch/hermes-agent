@@ -5,9 +5,10 @@ import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 
 import { $terminalFontFamily, applyTerminalFontFamily, resolveTerminalFontFamily } from './terminal-font'
+import { redrawAllTerminals } from './terminals'
 
 interface TerminalFontControllerOptions {
-  fitRef: RefObject<((visible: boolean) => void) | null>
+  fitRef: RefObject<(() => void) | null>
   termRef: RefObject<Terminal | null>
   webglRef: RefObject<WebglAddon | null>
 }
@@ -38,11 +39,16 @@ export function useTerminalFontController({ fitRef, termRef, webglRef }: Termina
 
     void applyTerminalFontFamily({
       clearTextureAtlas: () => webglRef.current?.clearTextureAtlas(),
-      fit: () => fitRef.current?.(true),
+      fit: () => fitRef.current?.(),
       fontFamily,
       isCurrent: () => !cancelled && generationRef.current === generation,
       term
     })
+    // Font is an atlas-share key: changing one terminal's font rebuilds the
+    // shared glyph set, so siblings sharing the atlas must rebuild their
+    // models too (see redrawAllTerminals). The caller clears itself inline
+    // (applyTerminalFontFamily), so skip it in the fan-out.
+    redrawAllTerminals(term)
 
     return () => {
       cancelled = true

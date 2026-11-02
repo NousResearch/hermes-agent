@@ -242,6 +242,71 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
     assert msg.text == ""
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mention_room, mention_body, claims, same_sync_batch", [
+    ("!room1:example.org", "@hermes:example.org", True, False),
+    ("!room2:example.org", "@hermes:example.org", False, False),
+    ("!room1:example.org", "@hermes:example.org hi", False, False),
+    ("!room1:example.org", "@hermes:example.org", True, True),
+    ("!room1:example.org", "@hermes:example.org", True, "two_voices"),
+])
+async def test_bare_mention_claims_parked_voice_only_in_same_room(
+        monkeypatch, mention_room, mention_body, claims, same_sync_batch):
+    """An unmentioned MSC3245 voice (empty m.mentions) is answered by the sender's bare @mention
+    typed right after it in the SAME room; a bare mention in another room never pulls it across,
+    and a mention carrying text is answered as that text. mautrix runs one /sync batch's events as
+    concurrent tasks, so the claim must also win while the voice still awaits a room-identity fetch.
+    ``two_voices``: batch [voice (slow gate), mention, voice2 (fast)] then mention2 -- each mention
+    answers the voice sent before it, even though voice2 parks first, and nothing stays parked."""
+    import asyncio
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._download_and_cache_media = AsyncMock(return_value="/tmp/voice.ogg")
+    adapter._background_read_receipt = MagicMock()
+    voice = _make_event("voice message", event_id="$voice")
+    voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
+                          "org.matrix.msc3245.voice": {}, "m.mentions": {}})
+    mention = _make_event(mention_body, event_id="$text", room_id=mention_room,
+                          mention_user_ids=["@hermes:example.org"])
+
+    if same_sync_batch:
+        resolve_identity = adapter._resolve_room_identity
+        delays = [0.1] if same_sync_batch == "two_voices" else []
+
+        async def slow_identity(room_id):  # stale 60s cache -> homeserver round-trip
+            await asyncio.sleep(delays.pop(0) if delays else 0.01)
+            return await resolve_identity(room_id)
+        adapter._resolve_room_identity = slow_identity
+        batch = [voice, mention]
+        if same_sync_batch == "two_voices":
+            voice2 = _make_event("voice message", event_id="$voice2")
+            voice2.content.update({k: voice.content[k] for k in (
+                "msgtype", "url", "info", "org.matrix.msc3245.voice", "m.mentions")})
+            batch.append(voice2)
+        await asyncio.gather(*(adapter._on_room_message(e) for e in batch))
+        if same_sync_batch == "two_voices":
+            await adapter._on_room_message(_make_event(
+                "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))
+            dispatched = [m.args[0].message_id for m in adapter.handle_message.await_args_list]
+            assert dispatched == ["$voice", "$voice2"]
+            assert not adapter._parked_voices._parked and not adapter._parked_voices._inflight
+            return
+    else:
+        await adapter._on_room_message(voice)
+        adapter.handle_message.assert_not_awaited()
+        adapter._download_and_cache_media.assert_not_awaited()  # parked voice is never downloaded
+        await adapter._on_room_message(mention)
+
+    dispatched = [(m.args[0].source.chat_id, m.args[0].message_id) for m in adapter.handle_message.await_args_list]
+    assert dispatched == ([("!room1:example.org", "$voice")] if claims else [(mention_room, "$text")])
+    if claims:  # the bare mention is the newest event; the read marker must reach it
+        adapter._background_read_receipt.assert_any_call("!room1:example.org", "$text")
+
+
 # ---------------------------------------------------------------------------
 # Auto-thread in _on_room_message
 # ---------------------------------------------------------------------------
@@ -310,8 +375,29 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
     assert msg.text == "help me"
 
 
-# ---------------------------------------------------------------------------
-# YAML config bridge
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("existing", [None, "operator"])
+@pytest.mark.parametrize("secondary", [False, True])
+def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, secondary):
+    import os
+    from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+    from plugins.platforms.matrix.adapter import _apply_yaml_config
 
-
+    expected = {"MATRIX_REQUIRE_MENTION": "false", "MATRIX_AUTO_THREAD": "false",
+                "MATRIX_FREE_RESPONSE_ROOMS": "!one:example.org,!two:example.org"}
+    config = {"require_mention": False, "auto_thread": False,
+              "free_response_rooms": ["!one:example.org", "!two:example.org"]}
+    for key in expected:
+        monkeypatch.delenv(key, raising=False)
+        if existing is not None:
+            monkeypatch.setenv(key, existing)
+    token = set_secret_scope({}) if secondary else None
+    set_multiplex_active(secondary)
+    try:
+        assert _apply_yaml_config({"matrix": config}, config) == config
+        assert {key: os.environ.get(key) for key in expected} == (
+            dict.fromkeys(expected, existing) if secondary or existing else expected
+        )
+    finally:
+        if token is not None:
+            reset_secret_scope(token)
+        set_multiplex_active(False)

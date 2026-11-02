@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
-import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
+import { backendQuitNeedsWait, backendTeardownOptions, createQuitTeardownCoordinator } from './quit-teardown'
 
 function deferred() {
   let resolve!: () => void
@@ -30,19 +30,17 @@ test('a settled remote descriptor is not backend work that requires a deferred q
   assert.equal(
     backendQuitNeedsWait({
       connectionPending: false,
-      poolPending: false,
       processAttached: false,
       shutdownPending: false
     }),
     false
   )
 
-  for (const key of ['connectionPending', 'poolPending', 'processAttached', 'shutdownPending'] as const) {
+  for (const key of ['connectionPending', 'processAttached', 'shutdownPending'] as const) {
     assert.equal(
       backendQuitNeedsWait({
         connectionPending: false,
-        poolPending: false,
-        processAttached: false,
+          processAttached: false,
         shutdownPending: false,
         [key]: true
       }),
@@ -103,6 +101,15 @@ test('teardown failure still releases the final quit after all branches settle',
   await Promise.resolve()
   await Promise.resolve()
   assert.equal(requestFinalQuit.mock.calls.length, 1)
+})
+
+test('only a teardown that brings a backend back may announce it', () => {
+  // `soft` is what keeps a teardown out of resetBootProgressForReconnect(): the
+  // "[boot] Restarting desktop connection" line in desktop.log and the
+  // hermes:boot-progress push to the renderer. A shutdown must stay silent,
+  // a teardown that re-homes may announce itself.
+  assert.equal(backendTeardownOptions('quit').soft, true, 'a quit must not announce a reconnect')
+  assert.equal(backendTeardownOptions('reconnect').soft, false, 'a re-home keeps the announcement')
 })
 
 test('a synchronous reentrant quit cannot start a second teardown', async () => {

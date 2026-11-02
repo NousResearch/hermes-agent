@@ -19,7 +19,6 @@ from agent.credential_pool import (
     PooledCredential,
 )
 
-
 def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     return PooledCredential(
         provider="openai-codex",
@@ -32,7 +31,6 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
         refresh_token="rt-stale",
         expires_at_ms=1,  # long expired -> needs refresh
     )
-
 
 def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
     pool = CredentialPool("openai-codex", [_codex_entry()])
@@ -62,5 +60,3 @@ def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
     )
     assert selected is not None
     assert selected.access_token == "at-fresh"
-
-

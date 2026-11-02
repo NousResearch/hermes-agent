@@ -14,8 +14,6 @@ fallback calls, contaminating primary state with fallback-provider errors.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 def _make_pool(provider, n_entries=1):
@@ -33,7 +31,6 @@ def _make_pool(provider, n_entries=1):
     pool.current.return_value = entry
     pool.mark_exhausted_and_rotate.return_value = entry
     return pool
-
 
 def _make_agent(provider="openai-codex", model="gpt-5.5",
                 base_url="https://chatgpt.com/backend-api/codex",
@@ -73,13 +70,10 @@ def _make_agent(provider="openai-codex", model="gpt-5.5",
     }
     return agent
 
-
 # ── Test: _try_activate_fallback clears mismatched pool ──────────────
 
 class TestFallbackCredentialIsolation:
     """Test that _try_activate_fallback isolates the credential pool."""
-
-
 
     def test_fallback_attaches_matching_pool_after_clear(self):
         """Provider-switch fallback should attach the fallback provider's pool."""
@@ -163,10 +157,6 @@ class TestFallbackCredentialIsolation:
         assert resolve.call_count == 1 and resolve.call_args.args[0] == "openrouter"
         assert agent.provider == "openrouter" and agent._credential_pool is throttled
 
-
 # ── Test: _recover_with_credential_pool rejects mismatched pool ──────
 
-
-
 # ── Test: base_url not overwritten after fallback ────────────────────
-

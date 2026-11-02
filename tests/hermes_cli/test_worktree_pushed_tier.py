@@ -12,6 +12,7 @@ no network and no mocks.
 import os
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,8 @@ from hermes_cli import worktree_ops
 
 def _run(args, cwd):
     return subprocess.run(
-        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8"
+        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
 
 
@@ -210,7 +212,7 @@ class TestAttendedGcPushedTier:
     """worktree_gc audit/reclaim behavior for the pushed tier."""
 
     def test_audit_verdict_and_reclaim_keeps_branch(self, repo_with_bare_origin):
-        import cli  # noqa: F401  (worktree_gc lazily imports cli)
+        import cli
         from hermes_cli import worktree_gc
 
         repo = repo_with_bare_origin
@@ -227,7 +229,7 @@ class TestAttendedGcPushedTier:
         assert _branch_exists(repo, "salv/pushed-lane")
 
     def test_audit_never_pushed_keeps(self, repo_with_bare_origin):
-        import cli  # noqa: F401
+        import cli
         from hermes_cli import worktree_gc
 
         repo = repo_with_bare_origin
@@ -268,12 +270,12 @@ class TestCronWorktreeMaintenance:
             lambda: [{"workdir": str(repo)}],
         )
         repos = sched._worktree_maintenance_repos()
-        assert str(repo) not in repos
+        assert repo not in [Path(p) for p in repos]
 
         # Adding .worktrees/ makes it eligible.
         (repo / ".worktrees").mkdir()
         repos = sched._worktree_maintenance_repos()
-        assert str(repo) in repos
+        assert repo in [Path(p) for p in repos]
 
     def test_maintenance_prunes_via_real_pruner(self, repo_with_bare_origin, monkeypatch):
         import cron.scheduler as sched

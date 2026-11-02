@@ -18,7 +18,7 @@ from typing import Optional
 _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
     600: (
         # NVIDIA Nemotron behind hosted NIM: documented 60-180s upstream idle kill.
-        "nemotron-3-ultra", "nemotron-3-super",
+        "nemotron-3-ultra", "nemotron-3-super", "nemotron-3.5-super-vl",
         # DeepSeek R1 / V4 (reasoning_content streamed before final content).
         # ``deepseek-flash`` is the version-less canonical Flash id (2026-09 Flash refresh);
         # ``deepseek-v4-flash`` still aliases onto it server-side.
@@ -33,6 +33,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # Mythos-class named models (claude-fable-5): 1M ctx + 128K output, a heavier thinking
         # phase than the numbered line — otherwise the stale detector trips the circuit breaker.
         "claude-fable",
+        # Gemini 4 (gemini-4-argon): thinks longer than 3.x, and a long-decode turn re-prefills the
+        # whole output so far at every hop before the next token arrives.
+        "gemini-4",
     ),
     300: (
         "nemotron-3-nano", "nemotron-3.5-lightning", "qwq-32b", "o3-mini", "o4-mini",
@@ -42,6 +45,9 @@ _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
         # "Ox Alpha" stealth reasoning model (OpenRouter / OpenCode Zen slugs); Thinking
         # Machines Inkling (covers inkling-small and :free SKUs).
         "ox-alpha", "x-preview-f-free", "inkling",
+        # MiniMax M2.x (m2.5/m2.7): reasoning_content before first content token; 240s
+        # mid-think stalls observed (#62353).
+        "minimax-m2",
     ),
     # Anthropic Claude 4.x+ thinking variants (anchored so 3.x never matches).
     240: ("claude-opus-4", "claude-opus-5"),

@@ -365,8 +365,13 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing the home env vars at tmp_path and
+        # creating the file. Windows resolves ~ via USERPROFILE (before HOME),
+        # so set both and clear the HOMEDRIVE/HOMEPATH fallback.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
@@ -631,7 +636,7 @@ class TestProbeApiKeyForwarding:
         """The full lookup path resolves the key from cfg and hands it to the
         probe — the exact chain that sprayed 401s in #89863."""
         key = _fake_key("lookup")
-        import agent.models_dev  # noqa: F401 — make the patch target importable
+        import agent.models_dev
         with patch(
             "agent.models_dev.get_model_capabilities", return_value=None
         ), patch(
@@ -650,8 +655,8 @@ class TestCodexContextVariantVisionLookup:
 
     def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
         from types import SimpleNamespace
-        import agent.models_dev as models_dev
-        import agent.image_routing as image_routing
+        from agent import models_dev
+        from agent import image_routing
 
         seen = []
 

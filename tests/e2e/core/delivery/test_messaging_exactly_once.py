@@ -46,7 +46,7 @@ from tests.e2e.core.delivery._fake_platform import (
     visible_copies,
     wait_until,
 )
-from tests.e2e.core.delivery._pending_fixes import expect_gap, known_failure
+from tests.e2e.core.delivery._pending_fixes import known_failure
 from tests.fakes.fake_llm_provider import FakeLLMServer, StallMidStream, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL + process-group restart harness")
@@ -68,9 +68,9 @@ class Director:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.scripts: Dict[str, List] = {}
-        self.turns: Dict[str, int] = {}
-        self.resumes: Dict[str, int] = {}
+        self.scripts: dict[str, list] = {}
+        self.turns: dict[str, int] = {}
+        self.resumes: dict[str, int] = {}
 
     def script(self, token: str, *responses) -> None:
         with self._lock:
@@ -139,7 +139,7 @@ def gw(tmp_path_factory, llm):
     proc.stop()
 
 
-def ledger_rows(db_path: Path, chat: str) -> List[tuple]:
+def ledger_rows(db_path: Path, chat: str) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, content FROM delivery_obligations WHERE chat_id=?",
@@ -252,18 +252,6 @@ FAULTS = {
 }
 
 
-# Streaming gaps #120315 fixes: an overflowing first send keeps the " (n/n)" indicator on the live
-# tail that later chunks extend / a sealed remainder over the limit is re-sent; a failed first send
-# leaves an uneditable partial preview next to the final. Every cell here fails every run while the
-# gap is open (the chunk pacing above puts each chunk in its own consumer tick).
-STREAM_OVERFLOW_GAP = "LIVE GAP (fixed by #120315): streamed overflow / failed first send"
-STREAM_OVERFLOW_GAP_CELLS = {
-    ("burst_overflow", "fk_tg"), ("burst_overflow", "fk_dc"),
-    ("long_streamed", "fk_dc"),
-    ("stream_timeout_first_send", "fk_tg"), ("stream_timeout_first_send", "fk_dc"),
-}
-
-
 STREAM_ACK_LOST_GAP = (
     "LIVE GAP (#53449/#25349 family): on a streaming platform the stream consumer's first send is the "
     "whole short reply; when the platform accepts it but the ack is lost (timeout), the consumer reports "
@@ -277,14 +265,14 @@ STREAM_ACK_LOST_SIGNATURE = r"^\d+ unmarked copies of A-fk_(tg|dc)\.ack_lost \(s
 XFAILED_TOKENS: set = set()
 
 
-def faults_fired(gw: GatewayProcess, aid: str) -> List[dict]:
+def faults_fired(gw: GatewayProcess, aid: str) -> list[dict]:
     chat = "m-" + aid[2:].replace(".", "-", 1)
     return [f for f in read_jsonl(gw.spool / "faults_fired.jsonl") if f.get("chat_id") == chat]
 
 
 @pytest.mark.parametrize("platform", list(PLATFORMS))
 @pytest.mark.parametrize("fault", list(FAULTS))
-def test_delivery_fault_matrix(gw, director, platform, fault, request):
+def test_delivery_fault_matrix(gw, director, platform, fault):
     kind, op, target, build, expect = FAULTS[fault]
     token = f"{platform}.{fault}"
     chat = f"m-{platform}-{fault}"
@@ -303,8 +291,6 @@ def test_delivery_fault_matrix(gw, director, platform, fault, request):
                f"{token} complete reply\n" + dump(gw, platform, chat), proc=gw.proc, log=gw.log)
     if kind is not None:
         assert faults_fired(gw, aid), f"injected {kind} never hit a platform call\n{dump(gw, platform, chat)}"
-    if (fault, platform) in STREAM_OVERFLOW_GAP_CELLS:
-        expect_gap(request, 120315, STREAM_OVERFLOW_GAP)
     guard = (known_failure(STREAM_ACK_LOST_SIGNATURE, STREAM_ACK_LOST_GAP,
                            on_xfail=lambda: XFAILED_TOKENS.add(token))
              if fault == "ack_lost" and STREAMING[platform] else contextlib.nullcontext())
@@ -560,7 +546,7 @@ def test_zz_whole_run_audit(gw, director):
                if m.group(1) in (f"A-{token}",) or m.group(1).startswith((f"R-{token}-", f"{token}-extra"))}
         unmarked = 0
         for aid in ids:
-            by_chat: Dict[str, list] = {}
+            by_chat: dict[str, list] = {}
             for v in visible:
                 by_chat.setdefault((v.platform, v.chat_id), []).append(v)
             for msgs in by_chat.values():
@@ -606,7 +592,7 @@ def test_zzz_unclean_restart_reruns_nothing(gw, director):
 
 
 
-def all_ledger_rows(db_path: Path) -> List[tuple]:
+def all_ledger_rows(db_path: Path) -> list[tuple]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
         return conn.execute("SELECT state, attempts, chat_id FROM delivery_obligations").fetchall()

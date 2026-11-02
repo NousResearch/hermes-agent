@@ -14,14 +14,14 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-import yaml
+import hermes_yaml as yaml
 
 
 def _write_plugin(
     root: Path,
     name: str,
     *,
-    manifest_extra: Dict[str, Any] | None = None,
+    manifest_extra: dict[str, Any] | None = None,
     register_body: str = "pass",
 ) -> Path:
     plugin_dir = root / name
@@ -33,7 +33,7 @@ def _write_plugin(
     }
     if manifest_extra:
         manifest.update(manifest_extra)
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest))
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )

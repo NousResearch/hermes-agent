@@ -1,4 +1,5 @@
-import { beforeEach, expect, test } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
@@ -77,6 +78,56 @@ test('disk-full / ENOSPC phrasings are classified as disk-full, other storage fa
   expect(isDiskFullErrorMessage('network timeout')).toBe(false)
 })
 
+test('notifyError posts the full error to desktop.log, not the summary', () => {
+  const logLine = vi.fn()
+
+  const previous = (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+
+  ;(window as unknown as { hermesDesktop: { logLine: typeof logLine } }).hermesDesktop = { logLine }
+
+  try {
+    const error = new Error('sqlite3.OperationalError: database is locked')
+    error.stack = 'Error: sqlite3.OperationalError: database is locked\n    at saveSession (session.ts:12)'
+
+    notifyError(error, 'Prompt failed')
+
+    expect(logLine).toHaveBeenCalledTimes(1)
+    expect(logLine.mock.calls[0][0]).toContain('Prompt failed')
+    expect(logLine.mock.calls[0][0]).toContain('database is locked')
+    expect(logLine.mock.calls[0][0]).toContain('session.ts:12')
+  } finally {
+    if (previous === undefined) {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    } else {
+      ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = previous
+    }
+  }
+})
+
+test.each(['missing', 'closed'] as const)(
+  'notifyError still shows a toast when the log bridge is %s',
+  (state: 'missing' | 'closed'): void => {
+    vi.stubGlobal(
+      'hermesDesktop',
+      state === 'missing'
+        ? undefined
+        : {
+            logLine: (): never => {
+              throw new Error('IPC channel closed')
+            }
+          }
+    )
+
+    try {
+      const id: string = notifyError(new Error('database is locked'), 'Prompt failed')
+
+      expect($notifications.get()[0]).toMatchObject({ id, kind: 'error', message: 'database is locked' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  }
+)
+
 test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', () => {
   notifyError(
     new Error(
@@ -90,4 +141,88 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect($notifications.get()[0]?.action?.label).toBe(en.notifications.actions.restartHermes)
   $notifications.get()[0]?.action?.onClick()
   expect($backendRestartRequest.get()).toBe(before + 1)
+})
+
+// RT-39: an edit/restore aimed above a compaction boundary is refused by the owner with
+// invalid_params on target_message_id and a `compacted:` detail. The toast says so in plain words.
+test('a rewind refused for a compacted target says the message was summarized', () => {
+  const refused = new JsonRpcGatewayError('invalid_params', {
+    code: 4001,
+    data: {
+      reason: 'invalid_params',
+      field: 'target_message_id',
+      detail: 'compacted: target user message was summarized when the session was compressed'
+    }
+  })
+
+  notifyError(refused, 'Restore failed')
+
+  const toast = $notifications.get()[0]
+  expect(toast?.title).toBe('Restore failed')
+  expect(toast?.message).toBe(en.promptNotices.compactedTurnUnavailable)
+  expect(toast?.message).not.toMatch(/invalid_params/)
+  expect(toast?.detail).toBeUndefined()
+})
+
+// The same refusal without the marker (a turn another window undid, an assistant row, an unknown id)
+// never claims a compression happened.
+test('a rewind refused for any other stale target says it is no longer in the history', () => {
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', {
+      code: 4001,
+      data: {
+        reason: 'invalid_params',
+        field: 'target_message_id',
+        detail: 'target user message is no longer in session history'
+      }
+    }),
+    'Restore failed'
+  )
+
+  const toast = $notifications.get()[0]
+  expect(toast?.title).toBe('Restore failed')
+  expect(toast?.message).toBe(en.promptNotices.staleTurnUnavailable)
+  expect(toast?.message).not.toBe(en.promptNotices.compactedTurnUnavailable)
+  expect(toast?.detail).toBeUndefined()
+})
+
+test('an unrelated invalid_params keeps the generic toast', () => {
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', { code: 4001, data: { reason: 'invalid_params', field: 'title' } }),
+    'Restore failed'
+  )
+  expect(lastMessage()).toBe('invalid_params')
+
+  clearNotifications()
+  notifyError(
+    new JsonRpcGatewayError('invalid_params', { code: 4001, data: { reason: 'invalid_params' } }),
+    'Edit failed'
+  )
+  expect(lastMessage()).toBe('invalid_params')
+})
+
+// #143133: a model pick or option change on a chat whose launch API key changed showed the raw
+// `launch_credentials_unavailable` code. Every retry repeats it; a new chat runs on the current key.
+test('a launch-credentials refusal says the key changed and offers a new chat', () => {
+  notifyError(
+    new JsonRpcGatewayError('launch_credentials_unavailable', {
+      code: 4001,
+      data: {
+        reason: 'launch_credentials_unavailable',
+        field: 'model.api_key',
+        detail: 'changed in config.yaml since this session started'
+      }
+    }),
+    en.shell.modelOptions.updateFailed
+  )
+
+  const toast = $notifications.get()[0]
+  expect(toast?.message).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+  expect(toast?.message).not.toContain('launch_credentials_unavailable')
+  expect(toast?.action?.label).toBe(en.assistant.thread.errorStartNewSession)
+
+  // A deferred pick's refusal event carries only the bare code.
+  clearNotifications()
+  notifyError(new Error('launch_credentials_unavailable'), en.desktop.modelSwitchFailed)
+  expect(lastMessage()).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
 })

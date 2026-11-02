@@ -8,10 +8,11 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
+import { runDesktopChatSmoke } from '../../../tests-js/scripts/desktop-chat-smoke'
+import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BLOCKING_CLARIFY_QUESTION, BLOCKING_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
+import { expect, test } from './test'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: MockBackendFixture | null = null
@@ -27,66 +28,20 @@ test.afterAll(async () => {
 })
 
 test.describe('chat interaction with mock backend', () => {
-  test('send a message and receive a response', async () => {
-    const page = fixture!.page
-
-    // Find the composer — it's a contenteditable textbox.
-    const composer = page.locator('[contenteditable="true"]').first()
-    await composer.waitFor({ state: 'visible', timeout: 10_000 })
-
-    // Click to focus, then type the message character by character.
-    // Using `type` instead of `fill` because the composer is a
-    // contenteditable div with custom keydown handling that tracks
-    // IME composition state — `fill` bypasses the event chain.
-    await composer.click()
-    await composer.type('Hello, can you hear me?', { delay: 20 })
-
-    // Submit with Enter — the composer's keydown handler intercepts
-    // plain Enter (without Shift) and calls submitDraft().
-    await page.keyboard.press('Enter')
-
-    // Wait for the user's message to appear in the transcript.
-    // The message renders as an assistant-ui message in the chat view.
-    await page.waitForFunction(
-      () => {
-        const body = document.body
-
-        if (!body) {
-          return false
-        }
-
-        return (body.textContent ?? '').includes('Hello, can you hear me?')
-      },
-      undefined,
-      { timeout: 15_000 }
-    )
-
-    // Wait for the mock response to appear. The canned reply is:
-    // "Hello from the mock inference server! The full boot chain is working."
-    // Give it a generous timeout — the inference request goes through the
-    // gateway → hermes serve → mock server → streaming SSE back.
-    await page.waitForFunction(
-      () => {
-        const body = document.body
-
-        if (!body) {
-          return false
-        }
-
-        const text = body.textContent ?? ''
-
-        return text.includes('mock inference server') || text.includes('boot chain is working')
-      },
-      undefined,
-      { timeout: 60_000 }
-    )
+  test('send a message and receive a response', async (): Promise<void> => {
+    await runDesktopChatSmoke(fixture!.page, {
+      mockUrl: fixture!.mockUrl,
+      phase: 'installed',
+      outDir: test.info().outputPath('desktop-chat'),
+    })
   })
 
   test('screenshot of chat with messages', async () => {
     await expectVisualSnapshot(fixture!.page, { name: 'chat-with-messages', app: fixture!.app })
   })
 
-  test('offers stop, steer, and queue actions while busy', async ({}, testInfo) => {
+  test('offers stop, steer, and queue actions while busy', async () => {
+    const testInfo = test.info()
     const page = fixture!.page
     const composer = page.locator('[contenteditable="true"]').first()
     const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')

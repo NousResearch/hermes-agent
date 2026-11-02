@@ -187,17 +187,17 @@ def test_json_write_refuses_only_introduced_nonstandard_constants(tmp_path, toke
     clean.write_text('{"value": 1}\n', encoding="utf-8")
     result = ops.write_file(str(clean), f'{{"value": {token}}}\n')
     assert result.error and token in result.error
-    assert clean.read_text(encoding="utf-8") == '{"value": 1}\n'
+    assert clean.read_text(encoding="utf-8") == '{"value": 1}\n'  # windows-footgun: ok
 
     quoted = f'{{"value": ["{token}", 1.5, null]}}\n'
     assert ops.write_file(str(clean), quoted).error is None
-    assert clean.read_text(encoding="utf-8") == quoted
+    assert clean.read_text(encoding="utf-8") == quoted  # windows-footgun: ok
 
     legacy = tmp_path / "legacy.json"
     legacy.write_text(f'{{"value": {token}, "n": 1}}\n', encoding="utf-8")
     edited = f'{{"value": {token}, "n": 2}}\n'
     assert ops.write_file(str(legacy), edited).error is None
-    assert legacy.read_text(encoding="utf-8") == edited
+    assert legacy.read_text(encoding="utf-8") == edited  # windows-footgun: ok
 
 
 class TestCheckLintDelta:
@@ -250,7 +250,7 @@ class TestSearchContextParsing:
         with patch.object(ops, "_exec") as mock_exec:
             mock_exec.return_value = MagicMock(
                 exit_code=0,
-                stdout="dir/file-12-name.py-8-context here\n",
+                stdout="dir/file-12-name.py-8-context here\ndir/file-12-name.py:9:needle\n",
             )
             result = ops._search_with_grep(
                 "needle",

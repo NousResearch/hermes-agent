@@ -12,7 +12,7 @@ import { atom } from 'nanostores'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import type { HermesConnection } from '@/global'
-import { HermesGateway, setApiRequestConnection } from '@/hermes'
+import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { UnservedProfileError } from '@/lib/browser-served-profiles'
 import {
@@ -34,6 +34,7 @@ import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError } from '@/store/gateway-dial-failures'
 import { isKeptRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
+import { publishRequestConnection } from '@/store/gateway-request-scope'
 import {
   isPrimaryRider,
   notePrimaryRider,
@@ -411,7 +412,7 @@ export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'defa
   g.primaryProfile = next
 
   if (g.activeKey === g.primaryProfile) {
-    setApiRequestConnection(primaryConnectionId())
+    publishRequestConnection(primaryConnectionId(), g.primaryProfile)
   }
 }
 
@@ -431,7 +432,7 @@ export function setPrimaryGatewayConnectionId(
   $primaryGatewayRoute.set({ connectionId: id, mode: primaryMode })
 
   if (g.activeKey === g.primaryProfile) {
-    setApiRequestConnection(id)
+    publishRequestConnection(id, g.primaryProfile)
   }
 }
 
@@ -671,11 +672,6 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   const gateway = activeGateway()
   g.$gateway.set(gateway)
   setGatewayState(gateway?.connectionState ?? 'closed')
-  // Push the active scope's registry connection into the hermes module (null
-  // for the local pool) so connection-building WS calls (pluginSocket) resolve
-  // through the same source of truth every activation path maintains here —
-  // registry-agent activations included, not just profile switches.
-  setApiRequestConnection(activeGatewayConnectionId())
 
   // Publish the BARE profile this route serves, in the same synchronous step
   // as the socket selection. activeKey may be a composite registry scope
@@ -687,6 +683,8 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   const routeProfile =
     g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
 
+  // The registry connection (null: local pool) moves with the profile it serves.
+  publishRequestConnection(activeGatewayConnectionId(), routeProfile)
   g.$activeProfile.set(routeProfile)
   g.config?.onActiveRouteChanged?.(routeProfile)
   traceIdentityChange(

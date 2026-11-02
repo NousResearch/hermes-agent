@@ -238,10 +238,13 @@ def _endpoint_owner(saved, config):
 def adopts_client_history(authority, actor, row):
     """Whether this resume adopts *row*, a phone app's self-labelled chat
     (``hermes_state_local_migration.client_history_row``), as a writable conversation: only for the
-    native owner adoption requires, only when it validates for that owner, and never over a session
-    this authority already serves. Anything else keeps the read-only history mount it had."""
+    native owner adoption requires, and only when it validates for that owner. A read-only view of it
+    already open (a metadata read came first) is promoted in place (restore_local_session); a session
+    this authority serves any other way is left alone."""
+    from gateway.session_history_mount import is_history_mount
     from hermes_state_local_migration import client_history_row, validate_legacy_row
-    if (not client_history_row(row) or row['id'] in authority.sessions
+    live = authority.sessions.get(row['id'])
+    if (not client_history_row(row) or (live is not None and not is_history_mount(live))
             or getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor):
         return False
     try:

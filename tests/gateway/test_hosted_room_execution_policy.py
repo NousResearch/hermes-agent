@@ -110,6 +110,33 @@ def test_room_policy_overrides_broader_live_approval_config(monkeypatch):
         reset_room_execution_policy(token)
 
 
+def test_profile_routed_child_uses_its_own_profiles_approval_mode(monkeypatch):
+    """A subagent routed to another profile is governed by that profile's
+    approvals.mode, not by the room policy signed for the delegating
+    member's profile."""
+    from gateway.hosted_room_execution_policy import (
+        bind_profile_routed,
+        profile_routed,
+        reset_profile_routed,
+    )
+
+    policy = RoomExecutionPolicy.from_mapping(_policy(approval_mode="manual"))
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "off"})
+    policy_token = bind_room_execution_policy(policy)
+    try:
+        assert approval_context._get_approval_mode() == "manual"
+        routed_token = bind_profile_routed()
+        try:
+            assert profile_routed() is True
+            assert approval_context._get_approval_mode() == "off"
+        finally:
+            reset_profile_routed(routed_token)
+        assert profile_routed() is False
+        assert approval_context._get_approval_mode() == "manual"
+    finally:
+        reset_room_execution_policy(policy_token)
+
+
 def test_room_catalog_fails_closed_when_remote_approvals_are_off():
     with pytest.raises(ValueError, match="requires manual or smart approvals"):
         catalog_mapping(

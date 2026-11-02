@@ -1,0 +1,92 @@
+name: Hermes candidate verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Candidate commit or branch to verify
+        required: true
+        type: string
+        default: main
+  push:
+    branches:
+      - main
+      - integrate/hermes-local-patches-20261102
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up locked Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.1'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build dashboard
+        env:
+          HERMES_WEB_BUILD_LIGHT: '1'
+        run: npm run build --workspace web
+
+      - name: Verify emitted dashboard artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s hermes_cli/web_dist/index.html
+          asset=$(sed -nE 's/.*src="([^"]*ChatPage-[^"]+\.js)".*/\1/p' hermes_cli/web_dist/index.html | head -1)
+          if [ -z "$asset" ]; then
+            asset=$(find hermes_cli/web_dist/assets -maxdepth 1 -name 'ChatPage-*.js' -print -quit | sed 's#^hermes_cli/web_dist/##')
+          fi
+          test -n "$asset"
+          file="hermes_cli/web_dist/$asset"
+          test -s "$file"
+          if grep -Fq 'addEventListener("focus",onResume)' "$file" || grep -Fq 'addEventListener("focus", onResume)' "$file"; then
+            echo 'focus-to-onResume listener remains in emitted ChatPage bundle' >&2
+            exit 1
+          fi
+          echo "verified_asset=$asset" >> "$GITHUB_STEP_SUMMARY"
+          grep -Fq 'onWindowFocus' "$file"
+          tar -czf hermes-dashboard-web-dist.tgz hermes_cli/web_dist
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check uv && uv sync --group dev --no-install-project
+
+      - name: Run targeted updater and boundary tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          .venv/bin/python -m pytest -q -o addopts= \
+            tests/hermes_cli/test_update_diverged_rescue_ref.py \
+            tests/hermes_cli/test_update_existing_branch_baseline.py \
+            tests/hermes_cli/test_update_head_moved_gate.py \
+            tests/hermes_cli/test_update_apply_shallow_count.py \
+            tests/hermes_cli/test_update_parked_branch_guard.py \
+            tests/hermes_cli/test_web_server_host_header.py \
+            tests/agent/test_cline_daily_limit_cooldown.py \
+            -k 'not treeless and not promisor and not partial_clone'
+
+      - name: Upload verified dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-dashboard-web-dist-${{ github.sha }}
+          path: hermes-dashboard-web-dist.tgz
+          if-no-files-found: error
+          retention-days: 14

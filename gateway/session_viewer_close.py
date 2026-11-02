@@ -318,6 +318,16 @@ async def settle_viewer_close(authority, session_id):
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
 
 
+def restore_retired(authority, session_id):
+    """Input admitted for a conversation ``_retire_closed`` let go (its frozen policy is still on the
+    local adapter) brings it back from its receipt before the FIFO runs it."""
+    from gateway.config import Platform
+    from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None and session_id in local.policies:
+        restore_local_session(authority, session_id)
+
+
 async def _resolve_abandoned_unknown(authority, session_id, live, close):
     """A turn the previous owner lost (hard kill) recovers ``unknown`` and pauses the FIFO until
     someone Discards it, but the last viewer closed the session: nobody is left to. The viewer's

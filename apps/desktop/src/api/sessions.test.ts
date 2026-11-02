@@ -119,6 +119,14 @@ describe('getSession dial priority', () => {
     expect(hermesApi.mock.calls[0][0]).toMatchObject({ profile: 'tommy', connectionId: 'local' })
     expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('priority')
   })
+
+  it('keeps a background session lookup passive through the API request', async () => {
+    hermesApi.mockResolvedValue({ id: 'sess-6' } as never)
+
+    await getSession('sess-6', { connectionId: 'ssh-host', profile: 'writer' }, { passive: true })
+
+    expect(hermesApi).toHaveBeenCalledWith(expect.objectContaining({ passive: true }))
+  })
 })
 
 describe('setSessionArchived profile scoping', () => {

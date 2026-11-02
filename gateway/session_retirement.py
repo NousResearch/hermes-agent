@@ -84,6 +84,12 @@ def retire_at_idle(authority, ref, live):
     return False
 
 
+def retire_after_review(authority, ref, live):
+    """A cold ``/refine`` review ended (loop side): a close it pinned retires the conversation now."""
+    if authority.sessions.get(ref.session_id) is live and live.closed_stamp is not None:
+        retire_at_idle(authority, ref, live)
+
+
 def restore_retired(authority, session_id):
     """Bring back a conversation ``retire_idle`` let go, from its receipt. A local one keeps its
     frozen policy on the local adapter until it is deleted; an API one keeps its binding receipt.

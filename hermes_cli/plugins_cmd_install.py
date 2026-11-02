@@ -668,9 +668,19 @@ def cmd_install(
     except _pc().PluginOperationError as e:
         _pc()._fail(console, f"[red]{'Blocked' if isinstance(e, _pc().PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _pc()._looks_like_plugin_dir(target):
-        console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
-            f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
+        imported = _pc()._import_bundled_skills(target, installed_name)
+        if imported:
+            console.print(
+                f"[green]Converted:[/green] {installed_name} is not a native Hermes plugin — it is a "
+                f"skill bundle for another AI harness. Imported {len(imported)} skill(s) instead: "
+                f"{', '.join(imported)}. Nothing was enabled as a plugin.")
+        else:
+            console.print(
+                f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
+                f"plugin.json, or __init__.py, and no recognizable skill bundle (skills/, "
+                f".agents/skills/, or .claude/skills/) was found. It may not be a valid Hermes plugin.")
+        # Nothing runnable was installed either way — never offer/auto-enable a dead plugin entry.
+        enable = False
     _prompt_plugin_env_vars(installed_manifest, console)
 
     from pm.workspace import enabled_plugin_dirs
@@ -925,6 +935,24 @@ def dashboard_install_plugin(
     if isinstance(placed, dict):
         return placed
     target, installed_manifest, installed_name = placed
+    if not _pc()._looks_like_plugin_dir(target):
+        # Not a Hermes plugin (no plugin.yaml/plugin.json/__init__.py) — most commonly a skill
+        # bundle authored for another harness (Claude Code's `.claude/skills/`, Codex/Agents'
+        # `.agents/skills/`, or a plain `skills/` dir). Auto-convert any such bundle into real
+        # Hermes skills instead of silently enabling a dead plugin entry the user has no way to
+        # notice failed (it previously just sat in plugins.enabled doing nothing).
+        imported = _pc()._import_bundled_skills(target, installed_name)
+        if imported:
+            warnings.append(
+                f"'{installed_name}' is not a native Hermes plugin; it is a skill bundle for another "
+                f"AI harness. Imported {len(imported)} skill(s) instead: {', '.join(imported)}. "
+                "Nothing was enabled as a plugin.")
+        else:
+            warnings.append(
+                f"'{installed_name}' has no plugin.yaml, plugin.json, or __init__.py, and no "
+                "recognizable skill bundle (skills/, .agents/skills/, or .claude/skills/) was found. "
+                "It may not be a valid Hermes plugin or skill.")
+        enable = False
     deps = _pc()._python_dependency_summary(target, warnings)
     if enable and (refused := _enable_placed(installed_name, deps, step)):
         return refused

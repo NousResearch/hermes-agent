@@ -52,7 +52,7 @@ type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 
-// Placeholder styling is EXPLICIT truecolor only — never SGR dim/inverse:
+// Placeholder styling is EXPLICIT color only — never SGR dim/inverse:
 // both are terminal-interpreted relative to the default fg/bg, and on
 // transparent profiles (terminal.background #00000000) they composite
 // against a black RGB the user never sees — the hint rendered as a slab.
@@ -64,11 +64,15 @@ const hintRgb = (hex?: string): [number, number, number] => {
   return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
 }
 
-const colorizeHint = (s: string, hex?: string) => {
-  const [r, g, b] = hintRgb(hex)
+const hintHex = (hex?: string): string => (/^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex! : HINT_FALLBACK)
 
-  return `${ESC}[38;2;${r};${g};${b}m${s}${ESC}[39m`
-}
+// Through Ink's own `colorize` (see fgSeq below): a hand-rolled 38;2;r;g;b
+// is worse than unparseable on a non-truecolor terminal — legacy
+// Terminal.app consumes the params one by one, and the `2` in `38;2;…`
+// lands as SGR 2 (dim ON) with no `22m` ever emitted. Every subsequent
+// frame's unstyled cells then paint dim until an unrelated bold span's
+// `22m` clears it: text randomly dims after the placeholder renders.
+export const colorizeHint = (s: string, hex?: string) => colorize(s, hintHex(hex), 'foreground')
 
 /**
  * The SGR foreground-open sequence for a theme tone, or '' when it has none.
@@ -110,12 +114,14 @@ export const colorizeEcho = (s: string, hex?: string) => {
 }
 
 /** Synthetic placeholder cursor: a hint-colored chip with luminance-picked
- *  ink, standing in for the hidden hardware cursor (bubbles pattern). */
-const hintCursorCell = (ch: string, hex?: string) => {
+ *  ink, standing in for the hidden hardware cursor (bubbles pattern).
+ *  Both halves go through `colorize` so the escapes match the terminal's
+ *  real color depth (same hazard as colorizeHint above). */
+export const hintCursorCell = (ch: string, hex?: string) => {
   const [r, g, b] = hintRgb(hex)
-  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '0;0;0' : '255;255;255'
+  const ink = 0.2126 * r + 0.7152 * g + 0.0722 * b > 140 ? '#000000' : '#ffffff'
 
-  return `${ESC}[48;2;${r};${g};${b}m${ESC}[38;2;${ink}m${ch}${ESC}[39m${ESC}[49m`
+  return colorize(colorize(ch, ink, 'foreground'), hintHex(hex), 'background')
 }
 
 let _seg: Intl.Segmenter | null = null
@@ -762,6 +768,8 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
+type InputHandler = (inp: string, k: Key, event: InputEvent) => void
+
 type PasteResult = { cursor: number; value: string } | null
 
 const isPasteResultPromise = (
@@ -776,6 +784,8 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  cursorSnapshotRef,
+  ignoreVerticalArrows = false,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -783,8 +793,21 @@ export function TextInput({
   color,
   focus = true
 }: TextInputProps) {
-  const [cur, setCur] = useState(value.length)
+  const [cur, setCur] = useState(() =>
+    cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length
+  )
+
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+  // Bumped on every submit so the value-sync effect below re-runs even when the parent's value
+  // ends where it started: text + Return in ONE stdin read (`tmux send-keys 'text' Enter`) emits
+  // the text and the submit's clear in the same React batch, so `value` never visibly changes and
+  // the submitted text would stay in the composer.
+  const [submitSeq, setSubmitSeq] = useState(0)
+  // Keys that arrive after a submit, before the parent's response has rendered (a kitty Enter
+  // and the next keystroke share one read). They replay once the value-sync effect has applied
+  // the parent's answer, so they edit the next draft instead of the submitted one.
+  const postSubmitKeys = useRef<null | Parameters<InputHandler>[]>(null)
+  const handleInputRef = useRef<InputHandler>(() => {})
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -794,6 +817,10 @@ export function TextInput({
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
+  // The last value handed to onChange. While a deferred key-burst flush is in
+  // flight the user can type past it, so the parent's echo comes back older
+  // than vRef; matching against this keeps such echoes on the own-change path.
+  const emittedValueRef = useRef<string | null>(null)
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -913,13 +940,28 @@ export function TextInput({
   }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
-    const ownEcho = self.current && value === vRef.current
+    // `value === vRef.current` misses a deferred flush still in flight: the
+    // user typed past the emitted value, so the echo comes back older than
+    // vRef. Treating it as external rewound local keystrokes (cursor jumped
+    // backward, letters vanished — #111934). An echo matching the last value
+    // we emitted is still our own; the pending flush for the newer local
+    // value converges the parent on its next timer.
+    const ownEcho = self.current && (value === vRef.current || value === emittedValueRef.current)
     self.current = false
 
-    if (ownEcho) {
+    if (ownEcho || value === vRef.current) {
       return
     }
 
+    // An external value replaced the draft. A key burst still waiting on its
+    // 16ms flush is now stale; letting it fire would hand the parent the old
+    // draft on top of the value it just set.
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    pendingParentValue.current = null
     setCur(value.length)
     setSel(null)
     curRef.current = value.length
@@ -928,7 +970,25 @@ export function TextInput({
     lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
     undo.current = []
     redo.current = []
-  }, [value])
+  }, [value, submitSeq])
+
+  // Declared after the value sync so it runs once the parent's answer to a submit is applied.
+  useEffect(() => {
+    const queued = postSubmitKeys.current
+    postSubmitKeys.current = null
+    queued?.forEach(([inp, k, event]) => handleInputRef.current(inp, k, event))
+  }, [submitSeq])
+
+  // The composer unmounts while full-screen monitors own input. Keep its
+  // insertion point with the shell, not with transient steer/secret inputs.
+  useEffect(
+    () => () => {
+      if (cursorSnapshotRef) {
+        cursorSnapshotRef.current = { cursor: curRef.current, value: vRef.current }
+      }
+    },
+    [cursorSnapshotRef]
+  )
 
   useEffect(() => {
     if (!focus) {
@@ -1024,6 +1084,7 @@ export function TextInput({
 
     if (next !== null) {
       self.current = true
+      emittedValueRef.current = next
       cbChange.current(next)
     }
   }
@@ -1117,6 +1178,7 @@ export function TextInput({
       if (syncParent) {
         flushParentChange()
         self.current = true
+        emittedValueRef.current = next
         cbChange.current(next)
         // A full Ink repaint just happened. Mark it so any fast-echo backspace
         // later in this IME recompose burst is suppressed (it would write
@@ -1335,8 +1397,20 @@ export function TextInput({
     }
   }
 
+  const submit = (text: string) => {
+    postSubmitKeys.current = []
+    setSubmitSeq(n => n + 1)
+    cbSubmit.current?.(text)
+  }
+
+  // Holds keys while a submit is pending. The replay goes through this gate too, so a replayed
+  // Enter queues the keys after it until its own submit has been answered.
+  const queueAfterSubmit = (handler: InputHandler): InputHandler =>
+    (handleInputRef.current = (inp, k, event) =>
+      postSubmitKeys.current ? void postSubmitKeys.current.push([inp, k, event]) : handler(inp, k, event))
+
   useInput(
-    (inp: string, k: Key, event: InputEvent) => {
+    queueAfterSubmit((inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
       // Configured voice shortcut wins over composer-level defaults like
@@ -1344,7 +1418,7 @@ export function TextInput({
       // actually get voice toggled instead of a paste (Copilot round-7
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
-      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+      if (event.keypress.name === 'f7' || shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
         flushKeyBurst()
 
         return
@@ -1387,7 +1461,7 @@ export function TextInput({
         return
       }
 
-      if (k.upArrow || k.downArrow) {
+      if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
         flushKeyBurst()
 
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
@@ -1412,7 +1486,7 @@ export function TextInput({
         if (insertNewline) {
           commit(ins(pending.value, pending.cursor, '\n'), pending.cursor + 1)
         } else {
-          cbSubmit.current?.(pending.value)
+          submit(pending.value)
         }
 
         return
@@ -1431,7 +1505,9 @@ export function TextInput({
       const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
-        (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+        !event.isControlChord &&
+        (event.keypress.isPasted || inp.length > 0) &&
+        PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
@@ -1441,7 +1517,10 @@ export function TextInput({
         return swap(undo, redo)
       }
 
-      if ((mod && inp === 'y') || (mod && k.shift && inp === 'z')) {
+      // Extended-key terminals (kitty CSI-u / modifyOtherKeys) deliver a shifted
+      // letter as its uppercase char, so Cmd+Shift+Z arrives as inp 'Z' — match
+      // case-insensitively like the copy/paste chords above.
+      if ((mod && inp === 'y') || (mod && k.shift && inp.toLowerCase() === 'z')) {
         return swap(redo, undo)
       }
 
@@ -1568,7 +1647,7 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
-      } else if (event.keypress.isPasted || inp.length > 0) {
+      } else if (event.keypress.isPasted || (inp.length > 0 && !event.isControlChord)) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
@@ -1672,7 +1751,7 @@ export function TextInput({
       }
 
       commit(v, c)
-    },
+    }),
     { isActive: focus }
   )
 
@@ -1768,13 +1847,21 @@ export interface PasteEvent {
   value: string
 }
 
+export interface InputCursorSnapshot {
+  cursor: number
+  value: string
+}
+
 interface TextInputProps {
   /** Hex/ansi256 tone for `/skill`, `@ref`, and `[[ token ]]` spans. */
   accentColor?: string
   /** Hex color for typed text (theme text); terminal default when omitted. */
   color?: string
   columns?: number
+  cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
+  /** Leave ↑/↓ to the owner: a form that moves field focus with them owns the key, not the field. */
+  ignoreVerticalArrows?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
@@ -1825,6 +1912,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  (key.ctrl && (input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

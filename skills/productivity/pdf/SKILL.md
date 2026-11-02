@@ -1,20 +1,23 @@
 ---
 name: pdf
-description: Create, read, merge, fill, and secure PDF files.
-version: 1.0.0
+description: "PDF files: create, read, merge, fill, OCR, edit text."
+version: 1.1.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [pdf, documents, forms, reportlab, pypdf, pdfplumber]
+    tags: [pdf, documents, forms, ocr, text-extraction, reportlab, pypdf, pdfplumber, pymupdf, marker]
     category: productivity
-    related_skills: [docx, xlsx, powerpoint, ocr-and-documents]
+    related_skills: [microsoft-office]
 ---
 
 # PDF Skill
 
-Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Scanned (image-only) PDFs contain no text layer: OCR is explicitly out of scope here — when a page is image-only, stop and use the `ocr-and-documents` skill instead of pretending to extract text.
+Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Two absorbed capabilities live in references/ (read the matching file before those tasks):
+
+- **Scanned/image-only PDFs and OCR** (pymupdf fast path, marker-pdf quality path, scripts/extract_pymupdf.py + scripts/extract_marker.py): `references/ocr-extraction.md`
+- **Editing text inside an existing PDF via natural-language prompts** (nano-pdf CLI): `references/nano-pdf-editing.md`
 
 ## When to Use
 
@@ -24,13 +27,52 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 - Merge, split, rotate, extract page subsets, watermark, stamp text/images at coordinates, bookmark, or compress PDFs.
 - Export pages as PNGs for visual review or for OCR hand-off; set/clear document metadata; add/extract file attachments.
 - Fill or flatten AcroForm forms; encrypt or decrypt with passwords.
-- NOT for scanned/image-only PDFs (use `ocr-and-documents`) and NOT for pixel-perfect HTML-to-PDF rendering (use a headless browser).
+- NOT for scanned/image-only PDFs (use `references/ocr-extraction.md`) and NOT for pixel-perfect HTML-to-PDF rendering (use a headless browser).
 
 ## Prerequisites
 
-- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
-  `python -m pip install pypdf reportlab pdfplumber`
-- Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
+- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`.
+- Pick the interpreter with `terminal`. Use `python` when it already imports
+  the libraries (the Hermes Docker image ships them). Otherwise, when `hermes`
+  is on PATH, let Hermes build its shared, pinned documents environment under
+  the Hermes home: it survives container restarts, never touches the Hermes
+  install itself, and is safe to run from several agents at once. When it is
+  not (the terminal runs in a Docker sandbox, which has no Hermes), the block
+  builds a venv in the sandbox home with the same pinned versions. Use this
+  exact block in every document skill so they all share one environment:
+
+  ```bash
+  python -c "import pypdf, reportlab, pdfplumber" 2>/dev/null && PY=python || if command -v hermes >/dev/null 2>&1; then
+    PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"
+  else
+    PY="$HOME/.cache/hermes-docs-venv/bin/python"
+    "$PY" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null || (
+      # Safe to run from several agents at once: each caller builds a private venv,
+      # a symlink publishes the first finished one atomically, the others delete theirs;
+      # a published build is replaced and deleted only while it still fails to import.
+      mkdir -p "$HOME/.cache" && cd "$HOME/.cache" && stage="$(mktemp -d hermes-docs-venv.XXXXXX)" || exit 1
+      old="$(readlink hermes-docs-venv)"  # the published build, if any (another agent may have just published it)
+      python3 -m venv "$stage" &&
+        "$stage/bin/python" -m pip install -q --disable-pip-version-check python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 reportlab==5.1.0 pypdf==6.21.2 pdfplumber==0.11.10 pypdfium2==5.14.0 &&
+        "$stage/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" &&
+        if [ -z "$old" ]; then python3 -c 'import os, sys; os.symlink(*sys.argv[1:])' "$stage" hermes-docs-venv
+        elif [ "$(readlink hermes-docs-venv)" = "$old" ] && ! "$old/bin/python" -c "import docx, openpyxl, pptx, reportlab, pypdf, pdfplumber, pypdfium2" 2>/dev/null; then
+          ln -s "$stage" "$stage.lnk" && python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$stage.lnk" hermes-docs-venv &&
+            case "$old" in hermes-docs-venv.??????) rm -rf "$old" ;; esac
+        fi 2>/dev/null
+      [ "$(readlink hermes-docs-venv)" = "$stage" ] || rm -rf "$stage" "$stage.lnk"
+    )
+  fi
+  export PY
+  "$PY" scripts/pdf_create.py --help
+  ```
+
+  Run every helper below with `"$PY"`. In PowerShell (Hermes runs on that
+  host, so it is on PATH):
+  `$env:PY = hermes pm environment documents --extra documents --extra documents-pdf`.
+  Never `pip install` into the interpreter that runs Hermes or into the
+  `hermes pm environment` one; Hermes owns both.
+- Page rasterization (`pdf_page_image.py`, overlay rendering) uses `pypdfium2`, which the documents environment already has (if your `python` lacks it, switch `PY` to that environment with the command above), or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 
 ## How to Run
@@ -83,7 +125,7 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 
 ## Procedure
 
-1. **Inspect first.** Run `pdf_read.py file.pdf --meta`. Check `encrypted` (if true, decrypt first with `pdf_secure.py --decrypt`) and `likely_scanned_pages`. If pages are image-only, export them with `pdf_page_image.py --pages <scanned> --dpi 300 --out-dir imgs/` and hand the PNGs to the `ocr-and-documents` skill — do not report empty text as "no content".
+1. **Inspect first.** Run `pdf_read.py file.pdf --meta`. Check `encrypted` (if true, decrypt first with `pdf_secure.py --decrypt`) and `likely_scanned_pages`. If pages are image-only, export them with `pdf_page_image.py --pages <scanned> --dpi 300 --out-dir imgs/` and hand the PNGs to the `references/ocr-extraction.md` skill — do not report empty text as "no content".
 2. **Create.** Write a JSON spec with `write_file` (elements: `heading`, `paragraph`, `table`, `image`, `pagebreak`; optional `title`/`author` metadata; page numbers are added automatically), then run `pdf_create.py`. Verify visually with `vision_analyze` on a rendered page image if layout matters.
 3. **Extract.** `--text` gives a JSON list of per-page strings; `--tables` gives row arrays per page and can also emit CSV files. Read results with `read_file`; never eyeball a binary PDF directly.
 4. **Manipulate.** `pdf_merge.py` concatenates and can add one bookmark per source file; `pdf_split.py` handles page ranges (1-based, e.g. `1-3,5,9-`), rotation in 90° steps, and `--compress`. Watermark by preparing a single-page stamp PDF (e.g. via `pdf_create.py`) and overlaying it with `pdf_watermark.py`; for one-liner stamps ("sign here", diagonal DRAFT, corner labels) use `pdf_stamp.py` with text or an image at explicit coordinates.
@@ -95,7 +137,7 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 
 ## Pitfalls
 
-- **Scanned PDFs**: empty `extract_text()` plus page images means there is no text layer. Route to `ocr-and-documents`; do not fabricate text.
+- **Scanned PDFs**: empty `extract_text()` plus page images means there is no text layer. Route to `references/ocr-extraction.md`; do not fabricate text.
 - **Flattening limits**: `pdf_fill_form.py --flatten` uses pypdf's flatten support, which converts widget appearances into page content. It is reliable for plain text fields and checkboxes but can drop or misrender exotic widgets (rich text, custom appearance streams, some radio groups). Verify the flattened output visually with `vision_analyze`; for bulletproof flattening use an external renderer (e.g. Ghostscript or `pdftoppm`+reassembly) as a fallback.
 - **NeedAppearances**: after filling, viewers only render values if appearance streams exist. The fill script sets the AcroForm `NeedAppearances` flag so conforming viewers regenerate them; some minimal viewers ignore it — flatten if display fidelity matters.
 - **Non-Latin form values**: values are stored correctly (UTF-16), but the field's default font may lack glyphs, so a viewer can show blanks even though the data round-trips. Verify with `--fields`, not just visually.

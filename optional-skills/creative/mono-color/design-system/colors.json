@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "substrates": [
+    {"id": "substrate_neutral_white", "name": "Neutral White", "hex": "#FAFAF7", "role": "substrate", "counts_as_ink": false, "use_for": ["contemporary editorial", "culture", "events", "social", "image-led color"]},
+    {"id": "substrate_cool_gray", "name": "Cool Gray", "hex": "#E9E9E5", "role": "substrate", "counts_as_ink": false, "use_for": ["architecture", "technology", "charcoal-led systems", "restrained branding"]},
+    {"id": "substrate_pale_beige", "name": "Pale Beige", "hex": "#F5F1E8", "role": "substrate", "counts_as_ink": false, "use_for": ["tactile", "food", "travel", "intimate", "archive", "explicit nostalgia"]}
+  ],
+  "defaults": {
+    "substrate_id": "substrate_neutral_white",
+    "style_direction": "contemporary editorial",
+    "palette_id": "palette_cobalt_terracotta",
+    "mode": "controlled two-ink",
+    "dominant_percent": [70, 85],
+    "accent_percent": [15, 30],
+    "one_ink_when": ["explicit one-ink request", "explicit monochrome request", "one named ink without a second color"]
+  },
+  "inks": [
+    {"id": "ink_cobalt", "name": "Cobalt", "hex": "#2148B8", "moods": ["knowledge", "city", "music", "culture"]},
+    {"id": "ink_royal_blue", "name": "Royal Blue", "hex": "#2058D4", "moods": ["youth", "fashion", "movement"]},
+    {"id": "ink_botanical_green", "name": "Botanical Green", "hex": "#008A4B", "moods": ["botanical", "ecology", "archive"]},
+    {"id": "ink_mint_green", "name": "Mint Green", "hex": "#5EB783", "moods": ["observation", "nature", "quiet"]},
+    {"id": "ink_terracotta", "name": "Terracotta Orange", "hex": "#C65F38", "moods": ["travel", "summer", "food", "tactile"]},
+    {"id": "ink_signal_red", "name": "Signal Red", "hex": "#C83232", "moods": ["declaration", "music", "event", "civic"]},
+    {"id": "ink_aubergine", "name": "Aubergine", "hex": "#63365F", "moods": ["literature", "cinema", "night", "intimate"]},
+    {"id": "ink_charcoal", "name": "Charcoal", "hex": "#30343A", "moods": ["architecture", "photography", "research"]},
+    {"id": "ink_powder_blue", "name": "Powder Blue", "hex": "#9EB8D3", "moods": ["guide", "information"]},
+    {"id": "ink_oxblood", "name": "Oxblood", "hex": "#8F3434", "moods": ["bookstore", "archive", "natural wine"]},
+    {"id": "ink_electric_blue", "name": "Electric Blue", "hex": "#173AE3", "moods": ["culture", "contrast"]},
+    {"id": "ink_carbon", "name": "Carbon", "hex": "#242321", "moods": ["culture", "image-led"]},
+    {"id": "ink_mint_charcoal", "name": "Warm Charcoal", "hex": "#302D2E", "moods": ["journal", "essay"]},
+    {"id": "ink_ultramarine", "name": "Ultramarine", "hex": "#263E99", "moods": ["movement", "urban", "youth"]},
+    {"id": "ink_safety_orange", "name": "Safety Orange", "hex": "#E55D2B", "moods": ["movement", "object", "urban"]},
+    {"id": "ink_cyan", "name": "Cyan", "hex": "#159DDA", "moods": ["product", "playful", "exhibition"]},
+    {"id": "ink_brick_red", "name": "Brick Red", "hex": "#B64032", "moods": ["product", "playful", "exhibition"]},
+    {"id": "ink_tangerine", "name": "Tangerine", "hex": "#E46C2D", "moods": ["market", "festival", "notice"]},
+    {"id": "ink_slate_blue", "name": "Slate Blue", "hex": "#4773A5", "moods": ["market", "festival", "notice"]}
+  ],
+  "palettes": [
+    {"id": "palette_cobalt", "mode": "pure one-ink", "ink_ids": ["ink_cobalt"]},
+    {"id": "palette_terracotta", "mode": "pure one-ink", "ink_ids": ["ink_terracotta"]},
+    {"id": "palette_signal_red", "mode": "pure one-ink", "ink_ids": ["ink_signal_red"]},
+    {"id": "palette_aubergine", "mode": "pure one-ink", "ink_ids": ["ink_aubergine"]},
+    {"id": "palette_charcoal_signal_red", "mode": "chromatic + black", "ink_ids": ["ink_charcoal", "ink_signal_red"]},
+    {"id": "palette_cobalt_terracotta", "mode": "complementary duotone", "ink_ids": ["ink_cobalt", "ink_terracotta"]},
+    {"id": "palette_ultramarine_safety_orange", "mode": "overprint duotone", "ink_ids": ["ink_ultramarine", "ink_safety_orange"]},
+    {"id": "palette_botanical_oxblood", "mode": "complementary duotone", "ink_ids": ["ink_botanical_green", "ink_oxblood"]},
+    {"id": "palette_cyan_brick_red", "mode": "overprint duotone", "ink_ids": ["ink_cyan", "ink_brick_red"]},
+    {"id": "palette_mint_charcoal", "mode": "chromatic + black", "ink_ids": ["ink_mint_green", "ink_mint_charcoal"]}
+  ]
+}

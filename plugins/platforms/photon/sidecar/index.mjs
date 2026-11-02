@@ -46,8 +46,8 @@
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
 //
-// Requires spectrum-ts 8.x — pinned exactly in package.json because the SDK
-// ships breaking majors; see README "Upgrading spectrum-ts".
+// Requires a pinned spectrum-ts version — the SDK ships breaking majors; see
+// README "Upgrading spectrum-ts".
 //
 // Env vars (required):
 //   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
@@ -69,6 +69,7 @@ import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
 import {
   classifyProbeRejection,
+  createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
@@ -267,7 +268,7 @@ console.log = (...args) => {
 // half-open ("zombie") one. `space.get` is purely local in shared/dedicated
 // mode (no chat is created or messaged); only the message read hits the wire.
 const PROBE_SPACE_ID = process.env.PHOTON_PROBE_SPACE_ID || "any;-;+10000000000";
-const PROBE_MSG_PREFIX = "hermes-liveness-probe-";
+
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -545,6 +546,17 @@ async function normalizeContent(content) {
     }
     return { type: "group", items };
   }
+  if (content.type === "read") {
+    // spectrum-ts v12.5+ surfaces an inbound read receipt only after it has
+    // verified that the target is one of our outbound messages. Keep the
+    // receipt lightweight: Python records it as telemetry, never as an agent
+    // prompt.
+    return {
+      type: "read",
+      targetMessageId: content.target?.id ?? null,
+      targetDirection: content.target?.direction ?? null,
+    };
+  }
   if (content.type === "reaction") {
     const target = content.target;
     return {
@@ -557,6 +569,24 @@ async function normalizeContent(content) {
       targetDirection: target?.direction ?? null,
       // Text of the reacted-to message, so Python can correlate the tapback to
       // the gateway's reply_to_text. Null for attachment/voice-only targets.
+      targetText: reactionTargetText(target),
+    };
+  }
+  // iMessage threaded (swipe) reply: spectrum 12.x wraps it as
+  // {type: "reply", content: <inner Content>, target: <Message>}. Normalise the
+  // inner content with the normal ladder and carry a light pointer to the
+  // quoted message, so Python can unwrap it instead of dropping the user's
+  // words as "content type not handled" (#100663).
+  if (content.type === "reply") {
+    const target = content.target;
+    return {
+      type: "reply",
+      content:
+        content.content && typeof content.content === "object"
+          ? await normalizeContent(content.content)
+          : { type: "unknown" },
+      targetMessageId: target?.id ?? null,
+      targetDirection: target?.direction ?? null,
       targetText: reactionTargetText(target),
     };
   }
@@ -584,6 +614,29 @@ async function normalizeContent(content) {
     };
   }
   return { type: content.type || "unknown" };
+}
+
+// The iMessage SDK exposes `message.read()` for inbound messages. Mark after
+// the event has crossed the sidecar boundary: this means the gateway has
+// actually received it, while a transient agent/tool delay does not leave the
+// sender staring at Delivered. Receipt events themselves must never recurse.
+const readReceiptsEnabled =
+  (process.env.PHOTON_READ_RECEIPTS || "true").trim().toLowerCase() !==
+  "false";
+
+async function acknowledgeInboundRead(message) {
+  if (!readReceiptsEnabled) return;
+  if (message?.content?.type === "read") return;
+  if (typeof message?.read !== "function") return;
+  try {
+    await message.read();
+  } catch (error) {
+    // Read receipts are presence polish, not a delivery dependency.
+    console.warn(
+      "photon-sidecar: failed to mark inbound message read: " +
+        (error?.message || String(error))
+    );
+  }
 }
 
 async function normalizeEvent(space, message) {
@@ -659,6 +712,7 @@ function inboundStreamErrorMessage(e) {
         const event = await normalizeEvent(space, message);
         if (!event) continue;
         await deliver(JSON.stringify(event));
+        await acknowledgeInboundRead(message);
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
       markStreamRecovering("inbound stream ended");
@@ -695,8 +749,7 @@ async function probeUpstream() {
   if (typeof app?.stop !== "function") {
     return { alive: false, hung: false, reason: "spectrum app not constructed" };
   }
-  const probeId =
-    PROBE_MSG_PREFIX + Date.now() + "-" + Math.random().toString(36).slice(2);
+  const probeId = createProbeMessageId();
   let timer = null;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(

@@ -1,0 +1,13 @@
+name: yantrikdb-hermes-dashboard
+repo: https://github.com/wysie/yantrikdb-hermes-dashboard
+sha: 30e8fa249a28bef9cb38e62beaa98e38303a8961
+description: Local-only YantrikDB dashboard for Hermes Agent memory operations
+maintainer: wysie
+tier: community
+category: desktop
+docs_url: https://github.com/wysie/yantrikdb-hermes-dashboard#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

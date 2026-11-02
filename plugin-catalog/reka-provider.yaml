@@ -1,0 +1,31 @@
+name: reka-provider
+title: Reka
+repo: https://github.com/reka-ai/reka-hermes
+sha: df031f732c9eddf8b39a0fa240b898da4ca2d6ff
+subdir: reka-provider
+description: >-
+  Reka as a Hermes model provider: Reka's agent-capable models on Reka's OpenAI-compatible API,
+  each with its context window, tool support and image input declared, and reasoning effort sent
+  as Reka's top-level reasoning_effort. Pick Reka in `hermes model` or use `--provider reka`.
+  Disclosure — registers one model provider at import and nothing else (no tools, hooks,
+  middleware, commands, background work or file access); chat requests (prompts, tool schemas and
+  results, supported user images) and the model list go to https://api.reka.ai/v1 (or
+  REKA_BASE_URL) through Hermes's own client with REKA_API_KEY, which Hermes reads; usage is
+  billed to your Reka account; the plugin itself opens no connections.
+maintainer: reka-ai
+tier: verified
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://developer.reka.ai/integrations/agents#hermes
+version: "1.0.3"
+readme: true
+platforms: []
+known_issues:
+  - "Images inside tool results (screenshots, vision_analyze) reach the model as Hermes's text summary. Images you attach to a message go to the models that accept them."
+  - "The model list is fixed per release. A new Reka model appears after a reviewed SHA bump."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - REKA_API_KEY

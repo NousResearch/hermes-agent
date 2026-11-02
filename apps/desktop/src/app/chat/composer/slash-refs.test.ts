@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { slashCommandMatches } from './slash-refs'
 
@@ -6,6 +8,16 @@ const commands = (text: string, options?: Parameters<typeof slashCommandMatches>
   slashCommandMatches(text, options).map(match => `${match.kind}:${match.command}`)
 
 describe('slashCommandMatches', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog({
+      commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
+    })
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
   it('recognizes a leading command and a skill named mid-prose', () => {
     expect(commands('/some-skill clean this with /other-skill please')).toEqual([
       'skill:/some-skill',

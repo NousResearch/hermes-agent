@@ -17,6 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
+import { assistantMessage, stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
+
 import { Thread } from '.'
 
 interface MockComposerProps {
@@ -34,23 +36,7 @@ vi.mock('./user-edit-composer', () => ({
     return <div data-testid="edit-composer">{props.cwd}</div>
   }
 }))
-
-const createdAt = new Date('2026-05-01T00:00:00.000Z')
-
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
-vi.stubGlobal('CSS', { escape: (str: string) => str })
-
-Element.prototype.scrollTo = function scrollTo() {}
+stubThreadEnvironment()
 
 afterEach(() => {
   cleanup()
@@ -60,54 +46,7 @@ beforeEach(() => {
   composerRenders.length = 0
 })
 
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
-// viewport. Fall through to client* or a sane default so virtualized
-// items render (same stub as user-message-edit.test.tsx).
-function stubOffsetDimension(
-  prop: 'offsetHeight' | 'offsetWidth',
-  clientProp: 'clientHeight' | 'clientWidth',
-  fallback: number
-) {
-  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop)
-
-  Object.defineProperty(HTMLElement.prototype, prop, {
-    configurable: true,
-    get() {
-      return previous?.get?.call(this) || (this as HTMLElement)[clientProp] || fallback
-    }
-  })
-}
-
-stubOffsetDimension('offsetWidth', 'clientWidth', 800)
-stubOffsetDimension('offsetHeight', 'clientHeight', 600)
-
-function userMessage(): ThreadMessage {
-  return {
-    id: 'user-1',
-    role: 'user',
-    content: [{ type: 'text', text: 'edit me please' }],
-    attachments: [],
-    createdAt,
-    metadata: { custom: {} }
-  } as ThreadMessage
-}
-
-function assistantMessage(): ThreadMessage {
-  return {
-    id: 'assistant-1',
-    role: 'assistant',
-    content: [{ type: 'text', text: 'done' }],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as ThreadMessage
-}
+stubThreadViewportSize()
 
 const noopAsync = async () => {}
 

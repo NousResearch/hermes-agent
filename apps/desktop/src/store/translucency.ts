@@ -1,79 +1,184 @@
 /**
  * Window translucency (see-through window).
  *
- * One lever, 0–100. 0 = off (fully opaque, the default). Two modes decide HOW
- * the desktop shows through — see `@hermes/shared/translucency`, which owns the
- * mapping both this store and the main process read.
+ * One lever, 0–100. Two modes decide HOW the desktop shows through — see
+ * `@hermes/shared/translucency`, which owns the mapping both this store and the
+ * main process read.
  *
- * The renderer owns the value and mirrors it to the main process over IPC.
- * Glass additionally needs page-level work, which lives here: the field
- * surfaces have to get out of the way for the vibrancy material underneath the
- * web contents to read (see the `[data-hermes-glass]` block in styles.css).
+ * Settings are kept per light/dark appearance: a tint that reads as a whisper
+ * over a dark palette is a milky sheet over a light one. The book of settings
+ * is the persisted unit (`TranslucencyBook`); `$translucency` publishes the
+ * RESOLVED state for the appearance currently painted, so every consumer —
+ * the CSS field surfaces, the main process, the HUD — keeps reading one flat
+ * state and never has to know appearances were split.
+ *
+ * The renderer owns the value and mirrors the resolved state to the main
+ * process over IPC. Glass additionally needs page-level work, which lives
+ * here: the field surfaces have to get out of the way for the platform
+ * material underneath the web contents to read (see the `[data-hermes-glass]`
+ * block in styles.css).
  */
 
 import {
+  type Appearance,
   clampIntensity,
+  defaultTranslucencyValues,
   GLASS_MATERIALS,
   GLASS_SCOPES,
   type GlassMaterial,
+  glassMaterialForPicker,
+  glassMaterialsFor,
   type GlassScope,
   glassSurfaceKeep,
+  normalizeBook,
   normalizeMaterial,
   normalizeScope,
-  normalizeState,
+  resolveTranslucency,
+  setTranslucencyValues,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP,
+  type TranslucencyBook,
   type TranslucencyMode,
-  type TranslucencyState
+  type TranslucencyState,
+  type TranslucencyValues
 } from '@hermes/shared/translucency'
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
-import { isMacPlatform } from '@/lib/platform'
-import { readJson, writeJson } from '@/lib/storage'
+import { hostHas } from '@/lib/host-capabilities'
+import { isMacPlatform, isWindowsPlatform } from '@/lib/platform'
+import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 
-export { GLASS_MATERIALS, GLASS_SCOPES, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP }
-
-/** Glass rides on the macOS vibrancy material; other platforms only have Clear. */
-export const GLASS_SUPPORTED = isMacPlatform()
-
-const KEY = 'hermes.desktop.translucency.v1'
-
-// The v1 key used to hold a bare intensity (`"23"`). Normalization lives in the
-// shared module so this and the main process resolve the default the same way —
-// including the legacy rule, where a saved NON-ZERO intensity with no mode means
-// a profile that has been rendering as clear all along and must keep doing so.
-const read = (): TranslucencyState => {
-  const stored = readJson<unknown>(KEY)
-
-  return normalizeState(stored && typeof stored === 'object' ? stored : { intensity: stored }, GLASS_SUPPORTED)
+export {
+  defaultTranslucencyValues,
+  GLASS_MATERIALS,
+  GLASS_SCOPES,
+  glassMaterialForPicker,
+  glassMaterialsFor,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP
 }
 
-const initial: TranslucencyState = typeof window === 'undefined' ? normalizeState(null, false) : read()
+export type { Appearance }
 
-export const $translucency = atom<TranslucencyState>(initial)
+/**
+ * Glass needs a native window material. Electron is authoritative (preload
+ * sets `hermesDesktop.glassSupported` from `os.release()` so Win10 cannot
+ * sneak through). Tests and non-Electron shells fall back to a UA sniff —
+ * Mac or Windows — which is why this file pins `navigator.platform` before
+ * import.
+ */
+/** Browser-hosted Desktop has no native window material or opacity surface. */
+export const GLASS_SUPPORTED =
+  hostHas('windowMaterial') &&
+  (typeof window !== 'undefined' && typeof window.hermesDesktop?.glassSupported === 'boolean'
+    ? window.hermesDesktop.glassSupported
+    : isMacPlatform() || isWindowsPlatform())
+
+/**
+ * Whether the setting is offered at all. Linux has no native material and
+ * Settings hides the row there, so the setting also resolves to off there
+ * (see `$translucency`): a hidden lever must not move the window.
+ */
+export const TRANSLUCENCY_SUPPORTED =
+  hostHas('windowMaterial') &&
+  (typeof window !== 'undefined' && typeof window.hermesDesktop?.translucencySupported === 'boolean'
+    ? window.hermesDesktop.translucencySupported
+    : isMacPlatform() || isWindowsPlatform())
+
+/** Windows collapses the frost ladder — see `glassMaterialsFor`. */
+export const GLASS_IS_WINDOWS = GLASS_SUPPORTED && !isMacPlatform()
+
+// v1 held a flat state (one setting for both appearances); v2 is the book.
+// Reading v1 as the seed is what carries an already-tuned window across the
+// upgrade — normalizeBook lands those values in `base`, which both appearances
+// inherit until one of them is edited.
+const KEY = 'hermes.desktop.translucency.v2'
+const LEGACY_KEY = 'hermes.desktop.translucency.v1'
+
+// An older build persisted the book at every load, so a stored default is no
+// choice: keep it provisional, or a browser upgraded from that build would
+// seed it into the machine's shared store over native's tuned glass (#145536).
+if (typeof window !== 'undefined') {
+  const stored = readKey(KEY)
+
+  const book = JSON.stringify(normalizeBook(readJson<unknown>(KEY), true))
+
+  if (stored !== null && [true, false].some(glass => book === JSON.stringify(normalizeBook(null, glass)))) {
+    writeKey(KEY, stored, { isDefault: true, provisional: true })
+  }
+}
+
+const read = (): TranslucencyBook =>
+  normalizeBook(readJson<unknown>(KEY) ?? readJson<unknown>(LEGACY_KEY), GLASS_SUPPORTED)
+
+/** The persisted book. Settings edits it; everything else reads `$translucency`. */
+export const $translucencyBook = atom<TranslucencyBook>(
+  typeof window === 'undefined' ? normalizeBook(null, false) : read()
+)
+
+/**
+ * Which palette is on screen. Published by the theme provider from its
+ * RENDERED mode (background luminance), not the light/dark preference — a
+ * skin that keeps a bright surface in "dark" wants light's tint.
+ */
+export const $appearance = atom<Appearance>('dark')
+
+export function setAppearance(appearance: Appearance): void {
+  if ($appearance.get() !== appearance) {
+    $appearance.set(appearance)
+  }
+}
+
+/**
+ * The resolved state for the painted appearance — the shape every consumer reads.
+ *
+ * Where Settings hides the row, the setting resolves to off. The platform
+ * defaults (29% tint) would otherwise still resolve there, reach main over IPC
+ * and land in translucency.json, and Electron 44 does fade a Linux window when
+ * handed that value. Resolving to off also rewrites a value an earlier build
+ * persisted, so a stuck profile heals on its first launch.
+ */
+export const $translucency = computed([$translucencyBook, $appearance], (book, appearance) => {
+  const state = resolveTranslucency(book, appearance, isWindowsPlatform())
+
+  return TRANSLUCENCY_SUPPORTED ? state : { ...state, intensity: 0, fade: 0 }
+})
+
+/** Write an edit against the appearance being painted. */
+const edit = (patch: Partial<TranslucencyValues>): void => {
+  $translucencyBook.set(setTranslucencyValues($translucencyBook.get(), $appearance.get(), patch))
+}
 
 export function setTranslucency(intensity: number): void {
-  $translucency.set({ ...$translucency.get(), intensity: clampIntensity(intensity) })
+  edit({ intensity: clampIntensity(intensity) })
+}
+
+export function setTranslucencyFade(fade: number): void {
+  edit({ fade: clampIntensity(fade) })
 }
 
 export function setTranslucencyMode(mode: TranslucencyMode): void {
-  $translucency.set({ ...$translucency.get(), mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear' })
+  $translucencyBook.set({
+    ...$translucencyBook.get(),
+    mode: mode === 'glass' && GLASS_SUPPORTED ? 'glass' : 'clear'
+  })
 }
 
 export function setTranslucencyMaterial(material: GlassMaterial): void {
-  $translucency.set({ ...$translucency.get(), material: normalizeMaterial(material) })
+  edit({ material: normalizeMaterial(material) })
 }
 
 export function setTranslucencyScope(scope: GlassScope): void {
-  $translucency.set({ ...$translucency.get(), scope: normalizeScope(scope) })
+  edit({ scope: normalizeScope(scope) })
 }
 
 // Glass thins surfaces only in real chat windows (the primary window and
 // secondary session windows). The HUD, pet overlay, quick entry and wake
 // indicator are transparent special-purpose windows that manage their own
 // backgrounds — a page-surface rewrite there would fight them.
-const CHAT_WINDOW_KINDS = new Set([null, 'secondary'])
+const CHAT_WINDOW_KINDS = new Set([null, 'secondary', 'browser'])
 
 export const isChatWindow = (search = typeof window === 'undefined' ? '' : window.location.search): boolean => {
   try {
@@ -226,22 +331,36 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   }
 
   const root = document.documentElement
-  const glassOn = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED && isChatWindow()
+  // Is the user's Glass setting live at all — the same answer in every window.
+  const glassLive = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED
+  // ...and may THIS window's field surfaces be rewritten for it. Only real
+  // chat windows: the HUD, pet overlay, quick entry and wake indicator are
+  // transparent windows that own their backgrounds, and the surface rewrite
+  // would fight them. The HUD still wants the first answer, because its band
+  // paints the app's field mix from `--translucency-glass-keep` and its native
+  // frost is gated on the setting being on (see the `[data-hud-glass]` rules
+  // and hudFrostFor) — which is why these are two flags and not one.
+  const glassOn = glassLive && isChatWindow()
   // Clear mode fades the whole window uniformly, so overlay text and the
   // covered transcript blend; styles.css strengthens the overlay scrim while
   // this attribute is present. Native opacity applies in every window kind, so
   // no chat-window gate.
   const clearOn = mode === 'clear' && intensity > 0
 
+  root.toggleAttribute('data-hermes-glass-on', glassLive)
   root.toggleAttribute('data-hermes-glass', glassOn)
   root.toggleAttribute('data-hermes-clear', clearOn)
 
-  if (glassOn) {
-    root.setAttribute('data-hermes-glass-scope', scope)
+  if (glassLive) {
     root.style.setProperty('--translucency-glass-keep', `${glassSurfaceKeep(intensity)}%`)
   } else {
-    root.removeAttribute('data-hermes-glass-scope')
     root.style.removeProperty('--translucency-glass-keep')
+  }
+
+  if (glassOn) {
+    root.setAttribute('data-hermes-glass-scope', scope)
+  } else {
+    root.removeAttribute('data-hermes-glass-scope')
   }
 
   if (glassOn && scope === 'sidebar') {
@@ -261,15 +380,32 @@ if (typeof window !== 'undefined') {
   // setOpacity in clear mode and nothing at all under glass.
   let storageTimer: null | number = null
 
+  // Only an edit is written. The book this window loaded, or adopted from a
+  // sibling or the machine's shared preferences, already resolves from
+  // storage: writing it back would push this window's default or its
+  // normalisation (no glass in a browser) into the shared store over the
+  // value the user set in native Desktop (#145213). A v1 state still lands in
+  // v2 on first load, since v2 does not resolve to it yet.
   const persist = () => {
     storageTimer = null
-    writeJson(KEY, $translucency.get())
+    const book = $translucencyBook.get()
+
+    if (JSON.stringify(book) !== JSON.stringify(normalizeBook(readJson<unknown>(KEY), GLASS_SUPPORTED))) {
+      writeJson(KEY, book)
+    }
   }
 
+  // The RESOLVED state drives paint and IPC — main only ever cares about the
+  // appearance on screen. Switching light/dark therefore re-sends, which is
+  // exactly right: the window's tint and native opacity change with it.
   $translucency.subscribe(state => {
     applyGlassSurfaces(state)
     window.hermesDesktop?.setTranslucency?.(state)
+  })
 
+  // Persistence follows the BOOK, so an appearance switch (which changes the
+  // resolved state but not the settings) never schedules a pointless write.
+  $translucencyBook.subscribe(() => {
     if (storageTimer !== null) {
       window.clearTimeout(storageTimer)
     }
@@ -296,15 +432,9 @@ if (typeof window !== 'undefined') {
     }
 
     const next = read()
-    const current = $translucency.get()
 
-    if (
-      next.intensity !== current.intensity ||
-      next.mode !== current.mode ||
-      next.material !== current.material ||
-      next.scope !== current.scope
-    ) {
-      $translucency.set(next)
+    if (JSON.stringify(next) !== JSON.stringify($translucencyBook.get())) {
+      $translucencyBook.set(next)
     }
   })
 

@@ -1,28 +1,70 @@
 import { atom, computed } from 'nanostores'
 
+import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { traceIdentityChange } from '@/lib/identity-trace'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { wipeSessionListsForGatewaySwitch } from '@/store/gateway-switch'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
+import { supersedeGatewaySwitch } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
+  $newChatRoute,
   $showAllProfiles,
+  captureNewChatSource,
+  currentNewChatIntent,
   ensureGatewayAgent,
   normalizeProfileKey,
+  openGatewayAgent,
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { exitProjectScope } from '@/store/project-scope'
+import {
+  $activeSessionId,
+  $connection,
+  $selectedStoredSessionId,
+  setActiveSessionId,
+  setSelectedStoredSessionId
+} from '@/store/session'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
-export const $connectionsRegistry = atom<DesktopConnectionsRegistry | null>(null)
+// Every await of a gateway pick is bounded. A wedged spawn, ticket mint,
+// handshake or IPC (the #93454 class) must surface as a failed click — not a
+// spinner that also swallows every later click on the same gateway. A cold
+// dial is the main process's whole remote bring-up chain; see
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
+const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
+// Matches the primary spawn budget: a healthy cold boot publishes well within
+// this; anything longer means the primary is not coming and the registry
+// restore should stop waiting for it. Shared constant so the boot-class
+// budgets can't drift apart (see with-timeout.ts).
+const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const REGISTRY_READ_TIMEOUT_MS = 5_000
+
+export { $connectionsRegistry } from '@/store/connection-registry-state'
 
 // Use only the resolved descriptor identity Electron publishes. `primary`
 // means the registry default, not necessarily the source this window is using;
 // guessing it here would paint the wrong source as active for an unmatched v1
 // route or while a legacy main is still resolving the descriptor.
 export const $activeConnectionId = computed($connection, connection => connection?.connectionId ?? null)
+
+// The published connection is what plugins stamp rows with; trace it beside
+// the active socket ([gateway-route] active) so a disagreement is visible.
+$activeConnectionId.listen(id => traceIdentityChange('gateway-route', 'published', `connection=${id ?? '-'}`))
 
 export const $hasMultipleConnections = computed(
   $connectionsRegistry,
@@ -47,6 +89,22 @@ const $activeConnectionProfile = computed(
     registryScoped: connection?.registryScoped === true
   })
 )
+
+// The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
+// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
+// runs inside beforeActivate — BEFORE applyActive publishes the new request
+// scope (setApiRequestConnection) — so that invalidation's refetches ride the
+// OUTGOING backend. Re-invalidate on the actual connection-id change, which
+// applyActive publishes only after the tag moved, so the refetch lands on the
+// backend the tags now name. `listen` (not `subscribe`) skips the mount-time
+// fire, and the computed dedupes equal ids, so this only runs on a real switch.
+$activeConnectionId.listen(() => {
+  invalidateProfileScopedQueries()
+  // The star map is a scan of one backend's skills and memory; same-named
+  // profiles on two gateways are different graphs.
+  resetStarmapGraph()
+  reloadOpenStarmapGraph()
+})
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -78,6 +136,22 @@ export function _resetConnectionsForTests(): void {
   $pendingConnectionId.set(null)
 }
 
+// A gateway pick is a new-chat intent on THAT gateway: keep the registry
+// identity with the profile so the next create names local::x / <source>::x
+// exactly, never a bare profile string. An older explicit agent route must not
+// override the selected source. The silent boot restore is not a user choice,
+// so it keeps a route the user pinned (gateway-group +) while it was in flight.
+function rehomeNewChatDraft(profile: string, keepExplicitRoute = false, connectionId?: string): void {
+  $newChatProfile.set(profile)
+
+  if (!keepExplicitRoute) {
+    $newChatRoute.set(null)
+  }
+
+  captureNewChatSource(connectionId)
+  requestFreshSession()
+}
+
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
   $connectionsRegistry.set(registry)
 }
@@ -90,7 +164,12 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     return null
   }
 
-  const registry = await bridge.list()
+  const registry = await withTimeout(
+    bridge.list(),
+    REGISTRY_READ_TIMEOUT_MS,
+    'Timed out reading the connection registry'
+  )
+
   setConnectionsRegistry(registry)
 
   return registry
@@ -104,33 +183,141 @@ async function rememberConnection(connectionId: string): Promise<void> {
   }
 
   try {
-    const result = await setLastUsed(connectionId)
+    const result = await withTimeout(
+      setLastUsed(connectionId),
+      SWITCH_REMEMBER_TIMEOUT_MS,
+      'Timed out remembering the last-used connection'
+    )
+
     setConnectionsRegistry(result.registry)
   } catch {
-    // The source is already usable. A read-only/full userData directory must
-    // not turn a successful backend switch into a false connection failure.
+    // The source is already usable. A read-only/full userData directory (or
+    // a stalled IPC) must not turn a successful backend switch into a false
+    // connection failure.
   }
 }
 
 /**
- * Load the registry once for Sessions and restore the last successfully used
- * source. Later registry refreshes stay side-effect free, so editing Settings
- * in another window never changes the active workspace.
+ * The sidebar registry initializes in parallel with the primary gateway boot.
+ * Wait for main's resolved descriptor before deciding whether the preferred
+ * source needs a secondary dial. Otherwise a remote primary can be opened a
+ * second time through the registry while the identical primary SSH backend is
+ * still publishing its connection identity.
+ *
+ * Bounded: a primary that never publishes (spawn failure, dead SSH target)
+ * must not strand the registry restore forever — after the deadline the
+ * restore proceeds exactly as it did before this wait existed. The listener
+ * is always torn down so a late descriptor can't leak a dangling resolver.
+ */
+function waitForInitialConnection(): Promise<void> {
+  if ($connection.get()) {
+    return Promise.resolve()
+  }
+
+  let unlisten: (() => void) | undefined
+
+  const published = new Promise<void>(resolve => {
+    unlisten = $connection.listen(connection => {
+      if (!connection) {
+        return
+      }
+
+      unlisten?.()
+      resolve()
+    })
+  })
+
+  return withTimeout(
+    published,
+    BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS,
+    'Timed out waiting for the primary connection descriptor'
+  ).catch(error => {
+    unlisten?.()
+
+    if (!isTimeoutError(error)) {
+      throw error
+    }
+  })
+}
+
+/**
+ * Load the registry once for Sessions and restore the explicit default route,
+ * otherwise the last successfully used source. Later registry refreshes stay
+ * side-effect free, so editing Settings in another window never changes the
+ * active workspace.
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
-  const registry = await refreshConnectionsRegistry()
+  const freshSessionRequest = $freshSessionRequest.get()
 
-  if (!registry || restoreAttempted) {
+  const [registry, defaultLoaded] = await Promise.all([
+    refreshConnectionsRegistry(),
+    refreshDefaultProfile().then(
+      () => true,
+      () => false
+    )
+  ])
+
+  // Main may already have opened the explicit default. A failed preference
+  // read is not evidence of an absent preference; keep that live route.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
     return registry
   }
 
   restoreAttempted = true
+  await waitForInitialConnection()
+
+  // The user got there first: a source they picked while boot was settling
+  // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
+  // The launch preference only decides where a window lands when nobody has
+  // said otherwise yet.
+  if (switchRevision > 0 || pendingTarget !== null || $freshSessionRequest.get() !== freshSessionRequest) {
+    return registry
+  }
+
+  // An explicit default is stronger than the registry's last-used preference,
+  // including the last profile remembered on the SAME source. A legacy null
+  // route is already resolved by main's ensureBackend(profile), including any
+  // per-profile remote override; the registry must not reinterpret it as local.
+  const defaultRoute = $defaultProfileRoute.get()
+
+  if (defaultRoute) {
+    if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
+      return registry
+    }
+
+    const connectionId = defaultRoute.connectionId
+
+    if (connectionId === null) {
+      return registry
+    }
+
+    if (registry.connections.some(connection => connection.id === connectionId)) {
+      await selectConnection(connectionId, { profile: defaultRoute.profile, restore: true })
+    }
+
+    return $connectionsRegistry.get() ?? registry
+  }
 
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry
@@ -139,18 +326,62 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   if ($activeConnectionId.get() === preferredId) {
     await rememberConnection(preferredId)
   } else {
-    await selectConnection(preferredId)
+    await selectConnection(preferredId, { restore: true })
   }
 
   return $connectionsRegistry.get() ?? registry
 }
 
 /**
- * Re-home Sessions to one registered source, restoring that source's last
- * profile. Only the selected source is dialed; merely rendering the switcher
- * never probes or opens remote gateways.
+ * Re-scope Sessions to one registered gateway, landing on the profile the
+ * caller names or the one last used there.
+ *
+ * Every registered gateway is already connected (store/gateway-persistence),
+ * so this is the same live activation a profile pick or a cross-gateway resume
+ * makes: no session wipe, no barrier, no confirm. A gateway that is down fails
+ * at the open, before anything in front is touched. Sessions on the gateway left
+ * behind keep streaming on their own sockets, and the lists re-read for the
+ * new scope because the active connection id moved. Session RPCs route by
+ * their owner (connection, profile), never by the gateway in front, so nothing
+ * bound to the previous gateway has to be severed first.
+ *
+ * Overlap: a newer click supersedes an older one at any point. A superseded
+ * activation still queued behind another declines (beforeActivate), so the
+ * user never flips through it; one that times out loses its right to publish.
  */
-export async function selectConnection(connectionId: string): Promise<void> {
+export interface SelectConnectionOptions {
+  /** Land on this profile of the target source instead of the one last used
+   *  there. The fleet profile rail passes the exact square the user clicked. */
+  profile?: null | string
+  /** This call restores the source the window launched on; it is not a switch
+   *  the user asked for, so the persisted "All profiles" browse mode must be
+   *  left alone. The boot path passes it explicitly: the old inference
+   *  (`$activeConnectionId` still null) only held while nothing had published a
+   *  source yet, so a second restore pass — the normal case, because main opens
+   *  the local backend before the registry settles — read as user-initiated. */
+  restore?: boolean
+}
+
+/** The silent boot restore, by its caller's word, or (first pass, before any
+ *  source is published) by the old null-id inference. */
+function isBootRestore(options: SelectConnectionOptions): boolean {
+  return options.restore === true || (pendingTarget === null && $activeConnectionId.get() === null)
+}
+
+/** The requested pair is already live, so nothing was switched: `selectConnection`
+ *  only reaches this with `switching` true because "All profiles" is on. A user
+ *  pick collapses the browse view; a boot restore leaves it alone, since
+ *  collapsing it here dropped the user back to a single profile at every launch. */
+async function settleLivePair(connectionId: string, targetProfile: string, restoreOnBoot: boolean): Promise<void> {
+  if (!restoreOnBoot) {
+    $showAllProfiles.set(false)
+  }
+
+  rehomeNewChatDraft(targetProfile)
+  await rememberConnection(connectionId)
+}
+
+export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
   const registry = $connectionsRegistry.get()
   const targetConnection = registry?.connections.find(connection => connection.id === connectionId)
 
@@ -158,10 +389,40 @@ export async function selectConnection(connectionId: string): Promise<void> {
     return
   }
 
+  // A user-initiated source switch collapses "All profiles" browse mode: the
+  // picker is a concrete-source action. The silent boot-time restore (below,
+  // from initializeConnectionsRegistry) is not — it must leave the persisted
+  // browse-mode preference alone so it survives restart (#93197). The caller
+  // that knows it is restoring says so; the null-id inference stays as the
+  // fallback for the first pass, when no source has been published yet.
+  const restoreOnBoot = isBootRestore(options)
+
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
-  const targetProfile = normalizeProfileKey($lastProfileByConnection.get()[connectionId] ?? 'default')
+  const explicitProfile = String(options.profile ?? '').trim()
+
+  const targetProfile = normalizeProfileKey(
+    explicitProfile || ($lastProfileByConnection.get()[connectionId] ?? 'default')
+  )
+
   const targetKey = `${connectionId}::${targetProfile}`
+
+  // The primary local descriptor (startHermes) historically publishes without
+  // a profile of its own; a profile-less descriptor on the source we are
+  // landing must not strand the switch — the activation already published the
+  // route we asked for, so trust it for the same source instead of comparing
+  // against a "default" it never meant.
+  const targetIsActive = () => {
+    const active = $connection.get()
+
+    if (active?.connectionId !== connectionId) {
+      return false
+    }
+
+    const activeProfile = active.profile === undefined ? null : normalizeProfileKey(active.profile)
+
+    return activeProfile === null || activeProfile === targetProfile
+  }
 
   if (pendingTarget === targetKey) {
     return
@@ -180,42 +441,122 @@ export async function selectConnection(connectionId: string): Promise<void> {
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    $showAllProfiles.set(false)
-    $newChatProfile.set(targetProfile)
-    requestFreshSession()
-    await rememberConnection(connectionId)
+    await settleLivePair(connectionId, targetProfile, restoreOnBoot)
 
     return
   }
 
   const revision = ++switchRevision
+  // A draft the user starts while this pick is in flight (a gateway group's
+  // "+", a profile pick) is newer than it; the late re-home must not take it over.
+  const draftIntent = currentNewChatIntent()
+  const activation = new AbortController()
+  let rehomed = false
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
 
-  try {
-    // Always use the explicit registry route. `local` must mean This device,
-    // and a registry primary can differ from a legacy per-profile override.
-    await ensureGatewayAgent(connectionId, targetProfile)
+  // Runs inside the activation's serialized section, synchronously right
+  // before the target is published, so the center is already a fresh draft on
+  // the target when route effects first see it (#93937). A superseded pick
+  // declines here: no draft, no activation, so the user never flips through it.
+  const beforeActivate = () => {
+    if (revision !== switchRevision) {
+      return false
+    }
 
-    if ($connection.get()?.connectionId !== connectionId) {
+    supersedeGatewaySwitch()
+
+    if (!restoreOnBoot) {
+      $showAllProfiles.set(false)
+    }
+
+    // Projects belong to one profile on one backend; leave before the fresh
+    // draft copies the project's folder into its cwd.
+    if (currentConnectionId !== connectionId || currentProfile !== targetProfile) {
+      exitProjectScope()
+    }
+
+    if (currentNewChatIntent() === draftIntent) {
+      // The open runtime belongs to the gateway being left; unbind it now, not
+      // when the fresh draft renders, so nothing pairs it with the target.
+      setActiveSessionId(null)
+      setSelectedStoredSessionId(null)
+      rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId)
+      rehomed = true
+    }
+
+    return true
+  }
+
+  try {
+    const timeoutMessage = `Timed out connecting to "${targetConnection.label}".`
+    // Open the target WITHOUT activating it, so a dead gateway fails here and
+    // the one in front loses nothing — not even the draft. Every registered
+    // gateway is normally connected already, so this resolves at once.
+    await withTimeout(openGatewayAgent(connectionId, targetProfile), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage)
+
+    if (revision !== switchRevision) {
+      return
+    }
+
+    // A kept socket can outlive cookie/native OAuth REST auth. Prove the
+    // cheapest protected read before the draft is replaced; the exact failure
+    // reaches the caller (network failures are not sign-in errors).
+    if (
+      targetConnection.authMode === 'oauth' &&
+      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
+    ) {
+      await withTimeout(
+        getProfiles({ connectionId, profile: targetProfile }),
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+        timeoutMessage
+      )
+
+      if (revision !== switchRevision) {
+        return
+      }
+    }
+
+    try {
+      await withTimeout(
+        ensureGatewayAgent(connectionId, targetProfile, { beforeActivate, signal: activation.signal }),
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+        timeoutMessage,
+        error => activation.abort(error)
+      )
+    } catch (error) {
+      // A timeout after the target already became active has landed.
+      if (!isTimeoutError(error) || !targetIsActive()) {
+        throw error
+      }
+    }
+
+    if (revision !== switchRevision) {
+      return
+    }
+
+    if (!targetIsActive()) {
       throw new Error(`Connection "${targetConnection.label}" did not become active.`)
     }
 
-    // A newer click owns the final refresh. Serialized gateway activation
-    // already makes the latest source win; this guard also prevents an older
-    // request from repainting its profile list after that newer activation.
+    await rememberConnection(connectionId)
+
     if (revision === switchRevision) {
-      await rememberConnection(connectionId)
-      wipeSessionListsForGatewaySwitch()
-      $showAllProfiles.set(false)
-      $newChatProfile.set(targetProfile)
-      requestFreshSession()
       await refreshActiveProfile()
     }
   } catch (error) {
-    if (revision === switchRevision) {
-      throw error
+    // A newer pick owns the outcome; this one's failure is moot.
+    if (revision !== switchRevision) {
+      return
     }
+
+    // The target never became active: point the draft back at the gateway
+    // still in front so the next message cannot go to the one that failed.
+    if (rehomed) {
+      rehomeNewChatDraft(currentProfile)
+    }
+
+    throw error
   } finally {
     if (revision === switchRevision) {
       pendingTarget = null

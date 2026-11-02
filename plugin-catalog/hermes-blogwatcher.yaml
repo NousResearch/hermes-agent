@@ -1,0 +1,32 @@
+name: hermes-blogwatcher
+title: Blogwatcher
+repo: https://github.com/irfansofyana/hermes-blogwatcher
+sha: 1b6f32afc1a509437a9bc57a078bea99b3d69dab
+description: >-
+  A Blogwatcher inbox for Hermes Desktop and web, with themes, read controls
+  and on-demand AI summaries. Disclosure: runs the original Blogwatcher CLI
+  against its database; scans contact subscribed sites; requested summaries
+  fetch public pages and send text to the configured Hermes model after
+  consent, which may incur costs. Summaries are cached locally. No telemetry
+  or self-update.
+maintainer: irfansofyana
+tier: community
+category: desktop
+docs_url: https://github.com/irfansofyana/hermes-blogwatcher/blob/1b6f32afc1a509437a9bc57a078bea99b3d69dab/README.md
+version: "0.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/irfansofyana/hermes-blogwatcher/1b6f32afc1a509437a9bc57a078bea99b3d69dab/docs/screenshots/follow-hermes.png
+  - https://raw.githubusercontent.com/irfansofyana/hermes-blogwatcher/1b6f32afc1a509437a9bc57a078bea99b3d69dab/docs/screenshots/light.png
+  - https://raw.githubusercontent.com/irfansofyana/hermes-blogwatcher/1b6f32afc1a509437a9bc57a078bea99b3d69dab/docs/screenshots/dark.png
+readme: true
+known_issues:
+  - Requires the original Hyaxia/blogwatcher CLI on the Hermes backend host; the blogwatcher-cli fork is not supported.
+  - Remote Desktop clients need desktop/plugin.js copied locally. Restart the dashboard/API server after installing the backend.
+capabilities:
+  provides_tools:
+    - blogwatcher_list_sources
+    - blogwatcher_list_articles
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

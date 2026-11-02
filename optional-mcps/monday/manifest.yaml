@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: monday
+description: Boards, items, docs, and workflows in monday.com.
+source: https://developer.monday.com/apps/docs/mondaycom-mcp-integration
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://mcp.monday.com/mcp
+
+auth:
+  type: oauth
+
+# Excluded: the 'Advanced API access' trio is a generic execute-any-GraphQL
+# escape hatch (meta-layer — Hermes policy: no server-side API-execute
+# indirection); get_sprint_summary is an AI-product feature;
+# create_notification pings other users' bell/email.
+tools:
+  default_excluded:
+    - all_monday_api
+    - get_graphql_schema
+    - get_type_details
+    - get_sprint_summary
+    - create_notification
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - monday.com
+    - monday board
+  hosts:
+    - monday.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  monday.com (or run `hermes mcp login monday`). Approve access,
+  then restart the session so tools load.

@@ -2,7 +2,7 @@ import { computed } from 'nanostores'
 
 import { sessionProjectColor } from '@/app/chat/sidebar/projects/workspace-groups'
 import { Codecs, persistentAtom } from '@/lib/persisted'
-import { $projects } from '@/store/projects'
+import { $projectOwnerBySessionId, $projects } from '@/store/projects'
 import { $sessions, sessionPinId } from '@/store/session'
 import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
@@ -42,18 +42,19 @@ export function setSessionColorOverride(durableId: string, color: null | string)
 function resolveSessionColor(
   session: SessionInfo,
   projects: ProjectInfo[],
-  overrides: Record<string, string>
+  overrides: Record<string, string>,
+  owners: ReadonlyMap<string, string>
 ): string | undefined {
-  return overrides[sessionPinId(session)] ?? sessionProjectColor(session, projects) ?? undefined
+  return overrides[sessionPinId(session)] ?? sessionProjectColor(session, projects, owners) ?? undefined
 }
 
 export const $sessionColorById = computed(
-  [$sessions, $projects, $sessionColorOverrides],
-  (sessions, projects, overrides) => {
+  [$sessions, $projects, $sessionColorOverrides, $projectOwnerBySessionId],
+  (sessions, projects, overrides, owners) => {
     const map: Record<string, string> = {}
 
     for (const session of sessions) {
-      const color = resolveSessionColor(session, projects, overrides)
+      const color = resolveSessionColor(session, projects, overrides, owners)
 
       if (color) {
         map[session.id] = color
@@ -75,6 +76,7 @@ export function sessionColorFor(session: null | SessionInfo | undefined): string
   }
 
   return (
-    $sessionColorById.get()[session.id] ?? resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get())
+    $sessionColorById.get()[session.id] ??
+    resolveSessionColor(session, $projects.get(), $sessionColorOverrides.get(), $projectOwnerBySessionId.get())
   )
 }

@@ -1455,6 +1455,35 @@ def _isolate_computer_use_approval_state():
 
 
 @pytest.fixture(autouse=True)
+def _restore_aux_runtime_main():
+    """Restore the auxiliary client's main-runtime binding after every test.
+
+    ``build_turn_context`` binds the turn's main route with
+    ``agent.auxiliary_client.set_runtime_main`` in a ContextVar. Production
+    turns each run in their own context; a single pytest process runs every
+    test in one, so a fake agent's route outlives its test and later tests'
+    auxiliary routing treats it as the main model. For example, after
+    ``test_api_content_row_addressed_backfill.py`` (which drives the prologue
+    with a fake ``test/model`` on OpenRouter), six tests in
+    ``test_auxiliary_main_first.py`` fail in the same process: a patched
+    custom vision main resolves to openrouter. Snapshot/restore keeps bindings
+    made by wider-scoped fixtures; a module first imported during the test
+    goes back to its import-time state; a near no-op otherwise. The binding is
+    compared by identity, so a test that mutates a wider fixture's runtime dict
+    in place (``rotate_runtime_main_api_key``) must restore it itself.
+    """
+    # Hold the real variable: a test may swap a stub into sys.modules for the
+    # module, and that swap is undone only after this teardown runs.
+    var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    before = var.get() if var is not None else None
+    yield
+    if var is None:
+        var = getattr(sys.modules.get("agent.auxiliary_client"), "_RUNTIME_MAIN_CONTEXT", None)
+    if var is not None and var.get() is not before:
+        var.set(before)
+
+
+@pytest.fixture(autouse=True)
 def _moa_caches_isolated():
     """Clear module-level MoA cold-start caches before each test.
 

@@ -309,6 +309,17 @@ A real terminal lives in the right sidebar, next to the file browser:
 - **Shells persist while hidden.** Closing or hiding the panel doesn't kill your shell — every open terminal stays mounted with its scrollback and running processes intact until you explicitly close it.
 - **Add to chat** — select terminal output and send it into the composer as context for your next message.
 
+**Per-gateway terminals.** Each terminal tab runs on the gateway it was opened on, and keeps running there
+when you pick another gateway in Sessions. **New terminal** (**+** on the terminal rail) opens on the
+gateway picked in Sessions. When an SSH gateway is registered, the chevron under **+** (or a
+right-click on **+**) opens one on **This device** or any SSH gateway, so several hosts can be open
+side by side. A tab shows its gateway as a small glyph on its rail square and in its tooltip
+(`zsh · NAS`); This device tabs are labeled only once tabs run on more than one host. URL/token and
+cloud gateways have no shell access, so a terminal opened while one is picked runs on This device
+and says so. After a relaunch, each tab reopens on its own gateway. Editing an SSH gateway
+disconnects its tabs (press Enter to reconnect). If a tab's gateway was removed, the tab says so and
+does not start a shell anywhere else.
+
 ### Live subagents
 
 While delegated workers are live, a **Subagents** frame appears above the composer with their count, task names, elapsed time, and latest activity. It previews up to three workers; expand the header for the roster, then select a worker for details and **Steer** / **Stop** controls. Each frame belongs to its chat, including in split panes. Steering acknowledges that guidance is queued for a checkpoint, not that the child has already read it. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents).

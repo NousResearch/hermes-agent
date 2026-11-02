@@ -33,7 +33,7 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
-from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -3571,9 +3571,9 @@ class _StreamingCall(StreamingWaitMonitor):
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
-        _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
-        # ECONNRESET) — the retry loop owns recovery.
+        e = self._as_lifetime_error(e)  # a cap kill: transient, and its copy names the setting
+        _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout, StreamLifetimeExceeded))
+        # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader, ECONNRESET) — retry loop owns it.
         # anthropic.APIConnectionError: the Anthropic SDK wraps connect/read drops
         # (incl. stale-kill aborts) in its own type, not httpx's.
         _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError,
@@ -3728,8 +3728,7 @@ class _StreamingCall(StreamingWaitMonitor):
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
-                # Otherwise /stop closes the connection and the retry opens a
-                # FRESH one, blocking up to a full read timeout per attempt.
+                # Else /stop closes the socket and the retry opens a fresh one (a full read timeout each).
                 if self.agent._interrupt_requested:
                     self._cancel_current_stream_attempt("interrupt_before_stream_retry")
                     raise InterruptedError("Agent interrupted before stream retry")
@@ -3738,6 +3737,7 @@ class _StreamingCall(StreamingWaitMonitor):
                         self.agent, lambda: self._call_wire(stream_attempt_id))
                     return  # success
                 except Exception as e:
+                    self._released_attempt = stream_attempt_id  # unwound: kills during the backoff are not wedge kills
                     self._close_managed_stream()
                     if not self._handle_stream_error(e, _stream_attempt, _max_stream_retries):
                         return

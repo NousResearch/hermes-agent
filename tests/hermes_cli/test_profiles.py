@@ -514,9 +514,9 @@ class TestNoSkillsOptOut:
 class TestBackfillProfileEnvs:
     """Tests for backfill_profile_envs() — the `hermes update` pass that
     gives pre-#44792 profiles (created before .env seeding) their own
-    .env, copied from the default install so credentials don't break."""
+    .env: the placeholder header, never a copy of the default's secrets."""
 
-    def test_copies_default_env_into_envless_profiles(self, profile_env):
+    def test_seeds_placeholder_never_the_default_env(self, profile_env):
         import stat
         tmp_path = profile_env
         (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n", encoding="utf-8")
@@ -530,7 +530,7 @@ class TestBackfillProfileEnvs:
 
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
-            assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
+            assert "root-key" not in (p / ".env").read_text(encoding="utf-8-sig")
             assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
 

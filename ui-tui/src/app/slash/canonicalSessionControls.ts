@@ -289,7 +289,8 @@ function applyModelResult(result: CanonicalControlResult, sys: (text: string) =>
       tools: state.info?.tools ?? {}
     }
   }))
-  sys(t('session.main.modelSwitched', result.model))
+  // `/model reset` on a session already on the configured default: the owner's note, nothing changed.
+  sys(typeof result.note === 'string' ? result.note : t('session.main.modelSwitched', result.model))
 
   if (typeof result.effort === 'string') {
     // The level committed in the same selection (a deferred result carries none yet).

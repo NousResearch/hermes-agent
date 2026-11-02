@@ -1764,7 +1764,7 @@ export function ChatSidebar({
                 card={cardRows}
                 contentClassName="flex flex-col gap-px rounded-lg pb-2 pt-1"
                 dndSensors={dndSensors}
-                emptyState={<SidebarPinnedEmptyState />}
+                emptyState={<SidebarPinnedEmptyState archived={showArchived} filtered={filtersNarrow} />}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}

@@ -23,7 +23,8 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
-import { pendingSessionReplay, sharedPrimaryRoute } from '@/store/gateway'
+import { pendingSessionReplay } from '@/store/gateway'
+import { sharedPrimaryRoute } from '@/store/gateway-shared-route'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
@@ -66,6 +67,8 @@ import {
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
+
+import { useLiveWorkRoster } from './use-live-work-roster'
 
 interface ActiveTranscriptSession {
   ownerRoute?: SessionOwnerRoute
@@ -1068,6 +1071,7 @@ export function useBackgroundSync({
   requestGateway,
   updateSessionState
 }: BackgroundSyncParams): void {
+  useLiveWorkRoster()
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)

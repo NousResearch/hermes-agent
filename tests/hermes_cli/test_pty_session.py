@@ -93,7 +93,8 @@ async def test_attach_replays_buffer_then_streams_live():
     bridge = FakeBridge([b"hello ", b"world", None])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
-    await asyncio.sleep(0.05)                      # drain consumes "hello world"
+    # Each read is an executor round trip, so a wall-clock sleep loses to a loaded runner.
+    await async_wait_until(lambda: not s.alive, timeout=15)   # drain read "hello world", then EOF
     ws = FakeWS()
     await s.attach(ws)
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
@@ -382,7 +383,7 @@ async def test_reattach_can_force_complete_tui_redraw_after_replay():
     bridge = FakeBridge([b"partial differential frame", b""])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
-    await asyncio.sleep(0.05)
+    await async_wait_until(lambda: s.outputs == 1, timeout=15)
 
     ws = FakeWS()
     assert await s.attach(ws, force_redraw=True) is True
@@ -499,7 +500,9 @@ async def test_detach_keeps_draining_into_buffer():
     s.detach(ws)
     assert s.attached is False
     assert s.last_detached_at is not None
-    await asyncio.sleep(0.05)                      # "two" drains while detached
+    # "two" drains while detached. Three executor round trips (one, an idle tick, two) outlast
+    # any fixed sleep on a loaded runner: wait for the drain's own count of chunks read.
+    await async_wait_until(lambda: s.outputs == 2, timeout=15)
     ws2 = FakeWS()
     await s.attach(ws2)
     replay = b"".join(p for kind, p in ws2.sent if kind == "bytes")
@@ -515,7 +518,7 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     await s.start()
     ws = FakeWS()
     await s.attach(ws)
-    await asyncio.sleep(0.05)                      # drain hits None (EOF)
+    await async_wait_until(lambda: ws.close_code is not None, timeout=15)   # drain hits None (EOF)
     assert s.alive is False
     assert ws.close_code == 4410
     await s.close()

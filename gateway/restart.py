@@ -246,8 +246,8 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
     systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME`` (or the wrapper-forwarded
     ``HERMES_LAUNCHD_LABEL`` the grandchild sees), the s6 sentinel, or the explicit
     ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
-    deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
-    (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
+    deliberately NOT read here: a Windows launcher from before its restart loop sets it with no restart
+    policy (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
     """
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")

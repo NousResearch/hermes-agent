@@ -319,8 +319,26 @@ def test_elevated_gateway_command_uses_hidden_console_python(monkeypatch):
     assert cwd
 
 
+def test_refused_reinstall_keeps_the_registered_task(monkeypatch, tmp_path):
+    """Registering a logon trigger needs elevation, deleting your own task does not: a repair from a normal
+    shell that deleted first was refused the create and left no task at all, so nothing supervised the gateway."""
+    calls = []
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
+
+    def fake_schtasks(args):
+        calls.append(args[0])
+        return (1, "", "ERROR: Access is denied.")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", tmp_path / "Hermes_Gateway_alice.cmd")
+
+    assert ok is False and "Access is denied" in detail
+    assert "/Delete" not in calls
+
+
 def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_path):
-    """Install must delete+create so stale minute-repeat task settings are not preserved.
+    """Install must replace the whole definition so stale minute-repeat task settings are not preserved.
 
     Host-agnostic on purpose: ``_install_scheduled_task`` only renders the task
     XML and shells out through ``_exec_schtasks`` (mocked here as the genuine
@@ -334,8 +352,6 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
     def fake_schtasks(args):
         calls.append(tuple(args))
-        if args[0] == "/Delete":
-            return (0, "SUCCESS", "")
         if args[0] == "/Create":
             xml_path = Path(args[args.index("/XML") + 1])
             xml_seen["text"] = xml_path.read_text(encoding="utf-16")
@@ -347,10 +363,9 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 
     assert ok is True
     assert "/Change" not in [arg for call in calls for arg in call]
-    assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
-    assert calls[1][0] == "/Create"
-    assert "/XML" in calls[1]
-    assert "/SC" not in calls[1]
+    assert calls[0][:4] == ("/Create", "/F", "/TN", "Hermes_Gateway_alice")
+    assert "/XML" in calls[0]
+    assert "/SC" not in calls[0]
     assert "<Delay>PT30S</Delay>" in xml_seen["text"]
     assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_seen["text"]
     assert "<StopOnIdleEnd>false</StopOnIdleEnd>" in xml_seen["text"]
@@ -386,11 +401,65 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window, waits for the real gateway
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def test_gateway_vbs_script_restarts_only_an_abnormal_exit(monkeypatch):
+    """RestartOnFailure does not fire on an action's nonzero exit, so the launcher owns the restart. A clean
+    exit (planned stop, handoff) and the permanent config refusal (78, as launchd maps it) stay stopped."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    lines = gateway_windows._build_gateway_vbs_script(r"C:\venv\Scripts\python.exe", r"C:\Hermes", r"C:\Hermes", "").splitlines()
+
+    assert lines[-6] == "Do"
+    assert lines[-5].startswith("  exit_code = sh.Run(") and lines[-5].endswith(", 0, True)")
+    assert lines[-4:] == [
+        "  If exit_code = 0 Or exit_code = 78 Then Exit Do",
+        "  WScript.Sleep 60000",
+        "Loop",
+        "WScript.Quit 0",
+    ]
+
+
+def test_gateway_vbs_generated_launcher_passes_the_identity_check(monkeypatch, tmp_path):
+    """The generator and the identity grammar must move together or Desktop refuses its own launcher."""
+    from hermes_cli.gateway_runtime_service_identity import _vbs_identity
+
+    python = str(tmp_path / "python.exe")
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python", lambda exe: (python, tmp_path, []))
+    content = gateway_windows._build_gateway_vbs_script(python, str(tmp_path), str(tmp_path), "")
+
+    home, argv = _vbs_identity(content)
+
+    assert home == str(tmp_path)
+    assert argv[0] == python and argv[-2:] == ["gateway", "run"]
+
+
+@pytest.mark.parametrize("run_code,spawned", [(0, 0), (1, 1)])
+def test_start_goes_through_a_registered_task_so_its_launcher_supervises(monkeypatch, run_code, spawned):
+    """A direct spawn beside a registered task has no owner to restart it; a refused /Run still starts one."""
+    calls, spawns = [], []
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "reconcile_scheduled_task", lambda name: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Test")
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda *a, **k: spawns.append(1) or 123)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args, **k: calls.append(args) or (run_code, "", "denied"))
+
+    gateway_windows.start()
+
+    assert calls == [["/Run", "/TN", "Hermes_Test"]]
+    assert len(spawns) == spawned
 
 
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
@@ -713,7 +782,7 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     monkeypatch.setattr("builtins.print", lambda *a, **k: None)
 
     assert gateway_windows.reconcile_scheduled_task("Hermes_Gateway") is True
-    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Delete", "/Create"]
+    assert [c[0] for c in calls if c[0] in ("/Delete", "/Create")] == ["/Create"]
     assert "<RestartOnFailure>" in registered["xml"]
     assert gateway_windows.compare_scheduled_task_drift(registered["xml"], template) == []
 

@@ -266,8 +266,13 @@ export function useTerminalSession({
     const session = createSessionAttemptController(id, {
       isDisposed: () => disposed,
       isReplayingHistory: () => history.isReplaying(),
-      onStarted: started => {
-        lastSentSize = { cols: term.cols, rows: term.rows }
+      onStarted: (started, spawnedSize) => {
+        // The shell was spawned at the size start() sent, which a fit while that
+        // start was still in flight can have moved past. Claiming xterm's live
+        // size here would leave the PTY on the old columns until the user
+        // happened to drag the pane, so record what the shell really has and
+        // reconcile below (#148181).
+        lastSentSize = spawnedSize
         shellNameRef.current = started.shell || 'shell'
         setShellName(started.shell || 'shell')
         onShellRef.current?.(started.shell || 'shell')
@@ -275,6 +280,7 @@ export function useTerminalSession({
         const initial = term.hasSelection() ? term.getSelection() : ''
         selectionRef.current = initial
         selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
+        fitRef.current?.()
       },
       resolveCwd: () => lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd,
       restoreHistory: () => history.restore(),

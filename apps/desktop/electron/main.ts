@@ -11827,6 +11827,7 @@ async function startHermes(requestedProfile?: string, intent: { inheritsPrimary?
         advanceBootProgress,
         waitForRemote: waitForRemoteHermes,
         readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        readStatus: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }),
         connectionProfile: desktopProfilePreferences.connectionProfile,
         // The machine-local preference stays: only this remote does not serve it.
         onProfileRestored: profile => {

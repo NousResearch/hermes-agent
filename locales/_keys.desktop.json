@@ -652,6 +652,7 @@
     "catalog.searchPlugins",
     "catalog.searchSkills",
     "catalog.seeAll",
+    "catalog.showCommunity",
     "catalog.skillsFor",
     "catalog.slideOf",
     "catalog.snapshotHint",

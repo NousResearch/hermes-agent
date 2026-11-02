@@ -146,6 +146,7 @@ website/static/api/skills-index.json
 # git for the same reason as skills-index.json (large, generated, change
 # every build).
 website/static/api/skills.json
+website/static/api/skills-official.json
 website/static/api/skills-meta.json
 # plugins.json + plugins-meta.json are build artifacts emitted by
 # website/scripts/extract-plugins.py during prebuild (Plugin Catalog page).

@@ -81,6 +81,10 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
   try {
     const result = await options.requestConfirmed()
 
+    if (options.isStale?.()) {
+      return false
+    }
+
     if (result?.confirm_required) {
       throw new Error(result.confirm_message?.trim() || options.failureMessage)
     }
@@ -89,6 +93,10 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
 
     return true
   } catch (err) {
+    if (options.isStale?.()) {
+      return false
+    }
+
     options.rollback?.()
     notifyError(err, options.failureMessage)
 

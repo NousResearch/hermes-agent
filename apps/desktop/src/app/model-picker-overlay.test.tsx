@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { WritableAtom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { I18nProvider } from '@/i18n'
 import { requestModelOptions } from '@/lib/model-options'
 import { startManualOnboarding } from '@/store/onboarding'
@@ -15,6 +16,11 @@ import { ModelPickerOverlay } from './model-picker-overlay'
 
 // The mock below replaces the computed store with a writable atom.
 const $focusedTreePaneId = $focusedTreePaneIdMock as unknown as WritableAtom<null | string>
+const modelControls = vi.hoisted(() => ({ selectModel: vi.fn() }))
+
+vi.mock('@/app/session/hooks/use-model-controls', () => ({
+  useModelControls: vi.fn(() => modelControls)
+}))
 
 vi.mock('@/store/session-focus', async () => {
   const { atom, computed } = await import('nanostores')
@@ -86,6 +92,13 @@ it('reads the catalog from the backend profile but hands the Desktop alias to pr
 
   await waitFor(() => expect(requestModelOptions).toHaveBeenCalled())
   expect(vi.mocked(requestModelOptions).mock.calls.every(([options]) => options.profile === 'backend-b')).toBe(true)
+  expect(useModelControls).toHaveBeenCalledWith(
+    expect.objectContaining({
+      cacheOwnerConnectionId: 'connection-b',
+      cacheOwnerProfile: 'desktop-b',
+      cacheProfile: 'backend-b'
+    })
+  )
 
   fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }))
   expect(startManualOnboarding).toHaveBeenCalledWith(undefined, { connectionId: 'connection-b', profile: 'desktop-b' })

@@ -20,11 +20,23 @@ function repaintCommitted(
   { deps, sessionId }: Pick<GatewayEventContext, 'deps' | 'sessionId'>,
   target: unknown,
   model: string,
-  provider: string
+  provider: string,
+  expectedProvider?: string
 ) {
-  deps.updateSessionState(sessionId!, state => ({ ...state, model, ...(provider ? { provider } : {}) }))
+  // Repaint only while the surface still shows the pick this outcome settles — its model, and its
+  // provider when it named one — so a newer selection (even the same model through another
+  // provider) is never overwritten by the older outcome.
+  const stillShowsPick = (shown: { model: string; provider?: string }) =>
+    shown.model === target && (expectedProvider === undefined || (shown.provider ?? '') === expectedProvider)
 
-  if (deps.activeSessionIdRef.current === sessionId && $currentModel.get() === target) {
+  deps.updateSessionState(sessionId!, state =>
+    stillShowsPick(state) ? { ...state, model, ...(provider ? { provider } : {}) } : state
+  )
+
+  if (
+    deps.activeSessionIdRef.current === sessionId &&
+    stillShowsPick({ model: $currentModel.get(), provider: $currentProvider.get() })
+  ) {
     setCurrentModelTransient(model)
 
     if (provider) {
@@ -66,6 +78,7 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
     const before = { model: $currentModel.get(), provider: $currentProvider.get() }
     const target = String(update.target_model ?? pick.model ?? '')
     const committed = typeof update.committed_model === 'string' ? update.committed_model : ''
+    const expectedProvider = typeof pick.provider === 'string' && pick.provider ? pick.provider : undefined
 
     void surfaceModelSwitchConfirm({
       confirmMessage: typeof update.confirm_message === 'string' ? update.confirm_message : undefined,
@@ -80,8 +93,16 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
       finish: invalidate
     }).then(applied => {
       // Declined, or the confirmed resend failed: the committed model is still the session's.
-      if (!applied && committed && ownSource) {
-        repaintCommitted(ctx, target, committed, typeof update.committed_provider === 'string' ? update.committed_provider : '')
+      // The source is re-checked at settlement: the active (connection, profile) can move while
+      // the dialog is open, and a replacement owner may hold this runtime id now.
+      if (!applied && committed && fromActiveSource()) {
+        repaintCommitted(
+          ctx,
+          target,
+          committed,
+          typeof update.committed_provider === 'string' ? update.committed_provider : '',
+          expectedProvider
+        )
         invalidate()
       }
     })

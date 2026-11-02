@@ -497,6 +497,48 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
     )
 
 
+def test_update_restores_parked_branch_when_configured(
+    repo_pair, monkeypatch, capsys
+):
+    """updates.restore_parked_branch: true — after a switch-strategy update
+    lands on the target, the checkout returns to the parked branch (its
+    unmerged commit intact) instead of staying on main."""
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"updates": {"restore_parked_branch": True}},
+    )
+    (repo_pair / "feature.txt").write_text("unmerged work\n", encoding="utf-8")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "feature work")
+    feature_sha = _git(repo_pair, "rev-parse", "old-feature").stdout.strip()
+    _patch_update_flow(monkeypatch, repo_pair)
+
+    # Let the update run to completion: the receipt/restart long tail is the
+    # no-op we don't exercise, so the branch restore is the last step.
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda *a, **k: None)
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+
+    hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "CODE UPDATE SKIPPED" not in out
+    # The checkout returned to the parked branch...
+    assert (
+        _git(repo_pair, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        == "old-feature"
+    )
+    # ...its unmerged commit intact, and main was still fast-forwarded to origin/main.
+    assert _git(repo_pair, "rev-parse", "old-feature").stdout.strip() == feature_sha
+    assert (
+        _git(repo_pair, "rev-parse", "main").stdout.strip()
+        == _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
+    )
+    assert "Restored 'old-feature'" in out
+
+
 def test_update_updates_unmerged_branch_in_place_when_configured(
     repo_pair, monkeypatch, capsys
 ):

@@ -1735,6 +1735,38 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
         finalize_update_receipt(status)
 
 
+def _restore_parked_branch_after_update(git_cmd, branch, _plan) -> None:
+    """Check a parked branch back out after a successful switch-strategy update.
+
+    The default ends on the target (``branch``): re-parking on a stale branch
+    recreates the parked-branch confusion the guard prevents. When
+    ``updates.restore_parked_branch`` is enabled, the checkout returns to the
+    branch the update switched away from (its unmerged commits intact), so an
+    operator iterating on a feature branch lands back on it. The serving install
+    is unaffected — it was already synced to the target during the update.
+    """
+    if not _plan.parked_branch_switched:
+        return
+    restore = False
+    with _best_effort('Could not read updates.restore_parked_branch: %s'):
+        restore = bool(_updates_config().get("restore_parked_branch", False))
+    if not restore:
+        return
+    parked = _plan.rollback_branch
+    if not parked or parked == "HEAD":
+        return
+    if _current_branch_name(git_cmd) == parked:
+        return
+    if _git_run(git_cmd, ["checkout", parked]).returncode == 0:
+        if _plan.switch_block_reason and _plan.switch_block_reason.startswith("unmerged:"):
+            _count = _plan.switch_block_reason.split(":", 1)[1]
+            print(f"  ✓ Restored '{parked}' — {_count} unmerged commit(s) kept on it.")
+        else:
+            print(f"  ✓ Restored '{parked}'.")
+    else:
+        print(f"  ⚠ Could not check out '{parked}'; staying on {branch} (git checkout {parked} to return).")
+
+
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
     _windows_gateway_resume=None, held_message: str | None = None) -> None:
@@ -1757,6 +1789,8 @@ def _finish_already_up_to_date(
         else:
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
 
+    # Preserve the selected channel SHA for the receipt/fleet completion before
+    # a checkout can return to its feature branch.
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
         # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
@@ -1765,6 +1799,9 @@ def _finish_already_up_to_date(
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")
     _complete_source_update(completion_request)
+    # Restore the checkout's feature branch only if the user explicitly opted
+    # in; by default the target remains checked out to keep the running code current.
+    _restore_parked_branch_after_update(git_cmd, branch, _plan)
 
 
 def _apply_pulled_update(
@@ -1786,6 +1823,9 @@ def _apply_pulled_update(
             sys.exit(1)
         completion_request["expected_sha"] = pinned or observed
     _complete_source_update(completion_request)
+    # Restore the checkout's feature branch only if the user explicitly opted
+    # in; by default the target remains checked out to keep the running code current.
+    _restore_parked_branch_after_update(git_cmd, branch, _plan)
 
 
 def _pause_gateways_for_update(opts):

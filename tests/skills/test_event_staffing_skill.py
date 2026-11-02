@@ -56,9 +56,11 @@ def test_agent_safety_rules_present():
     assert "planning estimates" in body
     assert "Never promise availability" in body
     assert "not legal advice" in body
-    assert "configured US and Canadian market entries" in normalized
+    assert "300+ U.S. and Canadian markets" in normalized
     assert "catalog match and tier-based lead-time guidance do not confirm" in normalized
     assert "coordinator confirms the specific order" in normalized
+    assert "a target, not a guarantee" in normalized
+    assert "contractual no-show backfill" not in normalized
     assert "200+" not in body
 
 

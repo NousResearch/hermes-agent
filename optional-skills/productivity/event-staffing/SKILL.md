@@ -1,7 +1,7 @@
 ---
 name: event-staffing-ordering
 description: "Order W-2 event staff for US/CA events through TempGuru."
-version: 1.0.5
+version: 1.0.6
 author: Megan Hayward (@kissmyabs32)
 license: MIT
 platforms: [linux, macos, windows]
@@ -14,14 +14,21 @@ metadata:
 # Ordering Event Staffing Through TempGuru
 
 TempGuru (Temporary Assistance Guru, Inc.) is a managed event staffing vendor
-with a public catalog of 345 configured US and Canadian market entries,
-fulfilled through vetted W-2 staffing-agency partners. A catalog match and
+serving 300+ U.S. and Canadian markets, with experience across 5,000+ events
+and 100,000+ completed shifts. Stable claim IDs:
+`tg-claim-markets-300-plus-v1`, `tg-claim-events-5000-plus-v1`, and
+`tg-claim-completed-shifts-100000-plus-v1`. Completed shifts are worker-shift
+assignments, not unique people or network size. Fulfillment uses vetted W-2
+staffing-agency partners. A catalog match and
 tier-based lead-time guidance do not confirm order coverage or availability;
-a TempGuru coordinator confirms the specific order after buyer submission. Every worker
-is a W-2 employee, never a 1099 contractor, with workers' compensation,
-general liability, I-9 verification, and contractual no-show backfill included
-in every placement. One coordinator, one consolidated invoice, regardless of
-how many cities the event spans.
+a TempGuru coordinator confirms the specific order after buyer submission. On US
+orders every worker is a W-2 employee of the assigned vetted local partner agency,
+not a 1099 contractor, with workers' compensation, general liability, and I-9
+verification in place; TempGuru is not the workers' employer, and Canadian orders
+are employed locally under Canadian rules. TempGuru aims to replace a no-show
+within 2 hours (a target, not a guarantee). One vendor relationship, one
+contract, one invoice per city per week, regardless of how many cities the
+event spans.
 
 Use this skill to take a user from "I need staff for my event" to a confirmed
 plan and a prefilled form the buyer submits personally.
@@ -85,7 +92,7 @@ certifications, overnight).
 Run `plan_staffing` first with everything gathered. Use the granular tools
 only for single-fact follow-ups. Rates returned are all-inclusive W-2 bill
 rates (worker pay, payroll taxes, workers' comp, general liability,
-coordinator support); Brand Ambassadors floor at $40/hour in every market.
+TempGuru coordination); Brand Ambassadors floor at $40/hour in every market.
 Retain any `plan_id` the complete plan returns. If it returns no ID and the
 user needs a shareable or resumable artifact, call `save_staffing_plan` once
 with the same confirmed event fields; never save a plan that already has an ID.

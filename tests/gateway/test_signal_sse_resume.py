@@ -29,11 +29,11 @@ async def test_reconnect_sends_last_event_id_of_the_last_handled_event(monkeypat
         seen_headers.append(request.headers.get("last-event-id"))
         if len(seen_headers) == 1:  # an id whose data line never arrived must not become the resume point
             return httpx.Response(200, text=_event(1) + "id:2\n")
-        adapter._running = False
-        return httpx.Response(200, text=_event(2))
+        return httpx.Response(200, text=_event(2))  # the daemon replays what came after Last-Event-ID
 
     async def record(envelope):
         delivered.append(envelope["envelope"]["dataMessage"]["message"])
+        adapter._running = len(delivered) < 2
 
     adapter.client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     adapter._handle_envelope = record
@@ -41,4 +41,4 @@ async def test_reconnect_sends_last_event_id_of_the_last_handled_event(monkeypat
     await asyncio.wait_for(adapter._sse_listener(), timeout=5)
 
     assert seen_headers == [None, "1"]
-    assert delivered == ["m1"]  # the listener stopped before reading the replay on the second stream
+    assert delivered == ["m1", "m2"]

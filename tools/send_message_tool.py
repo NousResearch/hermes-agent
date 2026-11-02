@@ -293,10 +293,11 @@ def _handle_send(args):
                 result["partial_success"] = True
                 result["error"] = (f"Delivery incomplete: {len(media_dropped)} requested MEDIA attachment(s) "
                                    "dropped before delivery (see media_dropped)")
-            if result.get("success"):
-                # Book after the partial-attachment downgrade: only a delivery the caller's exit
-                # code books as success appears as a delivered row in the ledger.
-                _ledger_outbound_send(platform_name, chat_id, thread_id, mirror_text)
+            # Book after the partial-attachment downgrade: only a delivery the caller's exit
+            # code books as success appears as a delivered row in the ledger. The gate lives in
+            # the helper so ``_handle_send`` stays inside its CC ratchet.
+            _ledger_outbound_send(platform_name, chat_id, thread_id, mirror_text,
+                                  booked=bool(result.get("success")))
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
@@ -442,7 +443,7 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
         return False
 
 
-def _ledger_outbound_send(platform_name, chat_id, thread_id, content):
+def _ledger_outbound_send(platform_name, chat_id, thread_id, content, *, booked=True):
     """Best-effort delivered-row ledger for outbound-first sends (accounting only).
 
     The gateway response path WALs its finals into the delivery ledger BEFORE sending
@@ -458,6 +459,8 @@ def _ledger_outbound_send(platform_name, chat_id, thread_id, content):
     'default'. Failures and partial sends are deliberately not booked: a 'failed' row IS
     sweep-eligible, and granting outbound-first sends cross-process retry semantics is a design
     decision, not a side effect. Never raises."""
+    if not booked:
+        return
     try:
         from gateway.delivery_ledger import (
             compute_obligation_id, ledger_enabled, record_delivered_obligation)

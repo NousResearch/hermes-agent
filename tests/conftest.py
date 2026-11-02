@@ -847,9 +847,9 @@ def _reset_tui_gateway_server_state():
     # Addressed notifications parked for an absent session: a leak would let a
     # later test's session claim a stale event, or spend the cap and refuse its
     # own park.
-    parked = getattr(mod, "_unowned_parked", None)
-    if isinstance(parked, list):
-        parked.clear()
+    park = sys.modules.get("tui_gateway.notification_park")
+    if park is not None:
+        park.clear()
 
     if snapshot is not None:
         mod._methods.clear()

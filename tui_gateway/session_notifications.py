@@ -5,7 +5,6 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
-import threading
 
 from .method_ctx import bind_module
 
@@ -172,93 +171,14 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-# An addressed notification whose owner session is not LIVE must not be discarded: a session can end
-# (explicit close, a reap, a backend-side teardown) while a ``notify_on_complete`` process or an async
-# delegation it started is still running, and ``resume`` brings the very same ``session_key`` back.
-# Every poller drains one process-wide queue, so whichever drains first used to drop such an event
-# (#118653, #129071). It is parked instead, for a bounded window: the owner's own poller claims it on
-# its first pass after it is live again, through the same ownership gate delivery uses, so no foreign
-# session ever adopts it. Parking keeps the event OUT of ``completion_queue``: a foreign event left in
-# the queue keeps every live poller's ``take_ready`` returning at once and spins those loops.
-# Both doors park: a foreign poller's live drain AND the closing session's own shutdown drain (it is
-# ``_finalized`` by then, so it no longer proves ownership of its own events). The caps are total AND
-# per owner, so a session that is gone for good cannot spend the whole budget.
-# A startup replay (``restored``) delegation is not parked: its row's owner process is dead, so the
-# orphan sweep re-offers it until its owner is back. A live delegation's owner is THIS process, which
-# the sweep skips, so its parked copy is the only one; when the park lets go of it (TTL, cap) the
-# offer is handed back to the durable ledger instead of being dropped.
-_UNOWNED_RETENTION_SECONDS = 600.0
-_UNOWNED_RETAINED_MAX = 16
-_UNOWNED_RETAINED_PER_KEY_MAX = 4
-_unowned_parked: list[tuple[float, dict]] = []
-_unowned_park_lock = threading.Lock()
-
-
-def _parkable(evt: dict) -> bool:
-    return not (evt.get("type") == "async_delegation" and evt.get("restored"))
-
-
-def _release_unparked(events) -> None:
-    """Events the park let go of: a delegation's offer goes back to the durable ledger's re-offer path."""
-    from tools.async_delegation import return_completion_offer
-    for evt in events:
-        if evt.get("type") == "async_delegation":
-            return_completion_offer(evt)
-        logger.debug("Dropping parked %s notification past its retention window (key=%r)",
-                     evt.get("type", "completion"), str(evt.get("session_key") or ""))
-
-
-def _park_unowned_notification(evt: dict) -> bool:
-    """Retain an addressed event whose owner session is not live (bounded TTL + caps). False when the
-    park cannot take it -- the caller then disposes of the event exactly as it did before."""
-    if not _parkable(evt):
-        return False
-    now = time.monotonic()
-    key = str(evt.get("session_key") or "")
-    with _unowned_park_lock:
-        expired = [parked for deadline, parked in _unowned_parked if deadline <= now]
-        _unowned_parked[:] = [(deadline, parked) for deadline, parked in _unowned_parked if deadline > now]
-        admitted = len(_unowned_parked) < _UNOWNED_RETAINED_MAX and not (
-            key and sum(1 for _deadline, parked in _unowned_parked
-                        if str(parked.get("session_key") or "") == key) >= _UNOWNED_RETAINED_PER_KEY_MAX)
-        if admitted:
-            _unowned_parked.append((now + _UNOWNED_RETENTION_SECONDS, evt))
-    _release_unparked(expired)
-    return admitted
-
-
-def _claim_parked_notifications(sid: str, session: dict) -> list:
-    """Parked events this session provably owns, in arrival order; expired ones are released here.
-    Ownership (``_session_owns_notification_event``, which may read the lineage store) is decided on a
-    snapshot outside the lock; an event is claimed only if it is still parked, so exactly one poller
-    takes it."""
-    if not _unowned_parked:
-        return []
-    now = time.monotonic()
-    with _unowned_park_lock:
-        snapshot = list(_unowned_parked)
-    mine = {id(parked) for deadline, parked in snapshot
-            if deadline > now and _session_owns_notification_event(sid, session, parked)}
-    claimed: list = []
-    with _unowned_park_lock:
-        expired = [parked for deadline, parked in _unowned_parked if deadline <= now]
-        keep = []
-        for deadline, parked in _unowned_parked:
-            if deadline <= now:
-                continue
-            (claimed.append(parked) if id(parked) in mine else keep.append((deadline, parked)))
-        _unowned_parked[:] = keep
-    _release_unparked(expired)
-    return claimed
-
-
 def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
-    """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it
-    for its owner's return; past the park, a delegation's offer goes back to the ledger (or onto
-    ``deferred`` during a shutdown drain, which requeues it) and anything else drops."""
+    """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it for its
+    owner's return (``notification_park``). One the park refuses: a delegation's offer goes back to the ledger
+    (or onto ``deferred`` during a shutdown drain, which requeues it); anything else drops."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
-    if _park_unowned_notification(evt):
+    from tui_gateway import notification_park
+    if notification_park.park(evt):
         logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
                      evt_type, origin, key)
     elif deferred is not None:
@@ -833,8 +753,8 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
 
 def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
-    (ownership routing: _notif_handle_event), claims the events parked for this session while it had
-    no live owner (_claim_parked_notifications), and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
+    (ownership routing: _notif_handle_event), claims the events parked while their owner was not live
+    (``notification_park``), and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
     delivery path for platform="tui" rows.
 
     Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this session's TUI kanban
@@ -844,6 +764,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     from tools import async_delegation
     from tools.process_registry import process_registry
     from tools.process_registry_awaiting import release as release_in_flight, take_ready
+    from tui_gateway import notification_park
     from tools.process_registry_notifications import format_process_notification
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
@@ -855,14 +776,6 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
-        # Addressed events parked while this session had no live owner (see _park_unowned_notification): the
-        # moment the session is live again they are its to deliver, ahead of the shared queue.
-        parked = _claim_parked_notifications(sid, session)
-        if parked:
-            try:
-                handle(parked, None)
-            except Exception as exc:
-                _notif_log_failure("parked notification dispatch failed", exc)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -877,11 +790,14 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
             _notif_poll_kanban(sid, session)
         # Dequeue and in-flight hold are one step: until routing admits a turn, requeues or drops each event, its
         # owner session stays protected from the reapers (it is in neither the queue nor ``running`` meanwhile).
-        ready = take_ready(queue, 0.5)
-        if not ready:
+        # Addressed events parked while their owner was not live (notification_park): once this session proves it
+        # owns one, it is this session's to deliver, ahead of the shared queue.
+        parked = notification_park.claim(lambda evt: _session_owns_notification_event(sid, session, evt))
+        ready = take_ready(queue, 0 if parked else 0.5)
+        if not parked and not ready:
             continue
         try:
-            handle(ready, None)
+            handle(parked + ready, None)
         except Exception as exc:
             # This thread is the session's only path to notifications, /loop, /heartbeat and its
             # bot mailbox; one bad event must not end all four.
@@ -895,8 +811,6 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     ready = take_ready(queue, 0)
     try:
         handle(ready, deferred)
-    except Exception as exc:
-        _notif_log_failure("shutdown notification drain failed", exc)
     finally:
         for evt in deferred:
             queue.put(evt)

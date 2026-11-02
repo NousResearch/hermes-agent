@@ -21,6 +21,10 @@ export type RenderOptions = {
   terminalWidth: number
   terminalRows: number
   altScreen: boolean
+  // Keep sticky scrollboxes fixed while the user is selecting text. Without
+  // this, streaming output moves the selection off-screen before it can be
+  // copied.
+  freezeScrollFollow: boolean
   // True when the previous frame's screen buffer was mutated post-render
   // (selection overlay), reset to blank (alt-screen enter/resize/SIGCONT),
   // or reset to 0×0 (forceRedraw). Blitting from such a prevScreen would
@@ -120,6 +124,7 @@ export default function createRenderer(node: DOMElement, stylePool: StylePool): 
     // Normal-flow removals don't paint cross-subtree and are fine.
     const absoluteRemoved = consumeAbsoluteRemovedFlag()
     renderNodeToOutput(node, output, {
+      freezeScrollFollow: options.freezeScrollFollow,
       prevScreen: absoluteRemoved || options.prevFrameContaminated ? undefined : prevScreen
     })
 

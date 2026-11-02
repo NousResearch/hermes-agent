@@ -1624,6 +1624,7 @@ def _adopt_live_compression_child(
                 child_session_id, boundary_reason="compression", old_session_id=parent_session_id,
                 session_db=session_db, platform=getattr(agent, "platform", None) or "cli",
                 conversation_id=getattr(agent, "_gateway_session_key", None),
+                memory_manager=getattr(agent, "_memory_manager", None),
             )
     else:
         bind_state = getattr(agent.context_compressor, "bind_session_state", None)
@@ -2488,6 +2489,7 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
             new_session_id, boundary_reason="compression", old_session_id=old_session_id,
             platform=getattr(agent, "platform", None) or "cli",
             conversation_id=getattr(agent, "_gateway_session_key", None),
+            memory_manager=getattr(agent, "_memory_manager", None),
         )
         return True
     except Exception:

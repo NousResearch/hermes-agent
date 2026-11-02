@@ -810,7 +810,7 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
         raw_input = arguments
     return acp.start_tool_call(
         tool_call_id, build_tool_title(tool_name, arguments), kind=get_tool_kind(tool_name),
-        content=content, locations=extract_locations(arguments), raw_input=raw_input,
+        content=content, locations=extract_locations(arguments, tool_name), raw_input=raw_input,
     )
 
 
@@ -827,9 +827,11 @@ def build_tool_complete(
     else:
         content = _build_tool_complete_content(tool_name, result, function_args=function_args, snapshot=snapshot)
     structured = isinstance(_json_loads_maybe(result), (dict, list))
+    failed = is_error or _tool_result_failed(result, tool_name)
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
+        status="failed" if failed else "completed", content=content,
+        locations=None if failed else _edit_locations(tool_name, result),
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
     )
 
@@ -846,8 +848,50 @@ def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
     )
 
 
-def extract_locations(arguments: Args) -> list[ToolCallLocation]:
-    """Extract file-system locations from tool arguments."""
+def extract_locations(arguments: Args, tool_name: str = "") -> list[ToolCallLocation]:
+    """Extract file-system locations from tool arguments (ACP lines are 1-based).
+
+    ``search_files``' ``offset`` skips N results; it is not a line, so a client
+    following the agent must not jump to it."""
     if not (path := arguments.get("path")):
         return []
-    return [ToolCallLocation(path=path, line=arguments.get("offset") or arguments.get("line"))]
+    offset = None if tool_name == "search_files" else arguments.get("offset")
+    return [ToolCallLocation(path=path, line=offset or arguments.get("line"))]
+
+
+def _first_changed_lines(diff_text: str) -> list[tuple[str, int]]:
+    """``(path, 1-based new-file line)`` of each file's first changed line in a unified diff."""
+    found: list[tuple[str, int]] = []
+    path, line, recorded = None, 0, False
+    for raw in diff_text.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].strip()
+            path = path[2:] if path.startswith(("a/", "b/")) else path
+            recorded = path == "/dev/null"
+        elif raw.startswith("@@"):
+            try:
+                line = int(raw.split("+", 1)[1].split(",", 1)[0].split(" ", 1)[0])
+            except (IndexError, ValueError):
+                recorded = True  # unparseable header: skip this file rather than guess
+        elif path is None or recorded or raw.startswith("--- "):
+            continue
+        elif raw.startswith(("+", "-")):
+            found.append((path, max(line, 1)))
+            recorded = True
+        elif raw.startswith(" "):
+            line += 1
+    return found
+
+
+def _edit_locations(tool_name: str, result: Optional[str]) -> Optional[list[ToolCallLocation]]:
+    """Where a finished ``patch``/``write_file`` landed: absolute path + first changed line,
+    so an ACP client following the agent opens the edit itself, not the top of the file."""
+    if tool_name not in ("patch", "write_file") or not isinstance(data := _json_loads_maybe(result), dict):
+        return None
+    if data.get("error") or data.get("success") is False:
+        return None
+    changed = _first_changed_lines(data["diff"]) if isinstance(data.get("diff"), str) else []
+    resolved = data.get("resolved_path")
+    if isinstance(resolved, str) and resolved and len(changed) <= 1:
+        return [ToolCallLocation(path=resolved, line=changed[0][1] if changed else None)]
+    return [ToolCallLocation(path=p, line=n) for p, n in changed] or None

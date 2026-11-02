@@ -384,6 +384,19 @@ def test_handoff_carries_goal_summary_transcript_and_working_dir(monkeypatch, tm
     assert retry.task_ids[0] != first.task_ids[0]
 
 
+def test_a_late_parent_steer_appears_once_in_the_handoff_and_never_as_the_summary(monkeypatch):
+    from tools.delegate_tool_registry import steer_subagent
+
+    def low(child, *_):
+        assert steer_subagent(child._subagent_id, "use the v2 API")
+        return M(summary="")
+
+    _entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D()}, effort="low", ceiling="medium")
+    handoff = log[1].messages[0]
+    assert "left no summary" in handoff and "Previous attempt's summary" not in handoff
+    assert handoff.count("use the v2 API") == 1
+
+
 def test_a_retry_with_no_working_dir_of_its_own_falls_back_to_the_parents(monkeypatch, tmp_path):
     from tools.terminal_tool import record_session_cwd
     record_session_cwd("parent-task", str(tmp_path))

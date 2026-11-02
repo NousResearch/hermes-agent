@@ -746,7 +746,9 @@ def _escalation_handoff(
         f"before finishing. You are a fresh attempt at reasoning effort '{next_effort}' with the same limits. "
         "Continue from where it stopped instead of starting over.",
     ]
-    summary = entry.get("summary")
+    summary, missed = entry.get("summary"), entry.get("missed_steer")
+    if isinstance(summary, str) and isinstance(missed, str) and missed.strip():
+        summary = summary.removesuffix(_missed_steer_note(missed))  # the steer is handed off on its own below
     if isinstance(summary, str) and summary.strip() and summary.strip() != "(empty)":
         lines += ["", "Previous attempt's summary:", elide(summary.strip(), _HANDOFF_SUMMARY_CHARS)]
     else:
@@ -757,7 +759,6 @@ def _escalation_handoff(
     if working_dir:
         lines.append(f"Working directory: {working_dir} — keep working there; the previous attempt's changes are "
                      "already in it.")
-    missed = entry.get("missed_steer")
     if isinstance(missed, str) and missed.strip():
         lines.append(f"A steer from the parent arrived after the previous attempt stopped and was never delivered: "
                      f"{missed.strip()}")
@@ -825,6 +826,10 @@ def _build_retry_child(child: Any, next_effort: str) -> Any:
     child.reasoning_config = parse_reasoning_effort(next_effort)
     child.session_estimated_cost_usd = 0.0  # the chain already recorded this attempt
     return child
+
+
+def _missed_steer_note(steer: str) -> str:
+    return f"[steer did not land — the subagent finished before it could be delivered: {steer}]"
 
 
 def _build_result_entry(
@@ -925,7 +930,7 @@ def _build_result_entry(
     _missed_steer = result.get("pending_steer")
     if isinstance(_missed_steer, str) and _missed_steer.strip():
         entry["missed_steer"] = _missed_steer
-        _miss_note = ("[steer did not land — the subagent finished before it could " f"be delivered: {_missed_steer}]")
+        _miss_note = _missed_steer_note(_missed_steer)
         entry["summary"] = f"{summary}\n\n{_miss_note}" if summary else _miss_note
     return entry
 

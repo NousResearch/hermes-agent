@@ -249,7 +249,9 @@ export function ModelRouteDialog({ route, taken, scope, onClose, onSave }: Model
                 <Checkbox
                   checked={draft.escalate_reasoning}
                   id="delegation-route-escalate"
-                  onCheckedChange={checked => setDraft(current => ({ ...current, escalate_reasoning: checked === true }))}
+                  onCheckedChange={checked =>
+                    setDraft(current => ({ ...current, escalate_reasoning: checked === true }))
+                  }
                 />
               </div>
               <FieldHint>{r.escalateHint}</FieldHint>

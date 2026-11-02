@@ -77,7 +77,8 @@ export const enDelegationRouting: DelegationRoutingTranslations = {
   escalateHint: 'Retry a subagent that hits its turn limit or timeout at the next reasoning level.',
   ceilingLabel: 'Escalation ceiling',
   ceilingNone: 'No ceiling (off)',
-  ceilingHint: 'Highest level a retry steps up to. With no ceiling, escalation stays off; if the current effort already equals the ceiling, no retry is made.',
+  ceilingHint:
+    'Highest level a retry steps up to. With no ceiling, escalation stays off; if the current effort already equals the ceiling, no retry is made.',
   optional: 'optional',
   errors: {
     required: 'Required',

@@ -86,10 +86,12 @@ export const esDelegationRouting: DelegationRoutingTranslations = {
   timeoutHint:
     'Segundos de inactividad antes de detener un subagente en esta ruta. 0 lo desactiva; los valores menores que 30 usan 30.',
   escalateLabel: 'Escalar el razonamiento',
-  escalateHint: 'Reintenta un subagente que alcanza su límite de turnos o tiempo de espera con el siguiente nivel de esfuerzo de razonamiento.',
+  escalateHint:
+    'Reintenta un subagente que alcanza su límite de turnos o tiempo de espera con el siguiente nivel de esfuerzo de razonamiento.',
   ceilingLabel: 'Límite de escalado',
   ceilingNone: 'Sin límite (desactivado)',
-  ceilingHint: 'Nivel más alto al que sube un reintento. Sin límite, el escalado queda desactivado; si el esfuerzo actual ya es igual al límite, no se reintenta.',
+  ceilingHint:
+    'Nivel más alto al que sube un reintento. Sin límite, el escalado queda desactivado; si el esfuerzo actual ya es igual al límite, no se reintenta.',
   optional: 'opcional',
   errors: {
     required: 'Obligatorio',

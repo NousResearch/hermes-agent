@@ -84,7 +84,8 @@ export const jaDelegationRouting: DelegationRoutingTranslations = {
   escalateHint: 'ターン上限またはタイムアウトに達したサブエージェントを、1 段階上の推論強度で再試行します。',
   ceilingLabel: '引き上げの上限',
   ceilingNone: '上限なし（オフ）',
-  ceilingHint: '再試行で引き上げる最高レベル。上限がない場合は引き上げはオフのままです。現在の推論強度がすでに上限と同じ場合、再試行は行われません。',
+  ceilingHint:
+    '再試行で引き上げる最高レベル。上限がない場合は引き上げはオフのままです。現在の推論強度がすでに上限と同じ場合、再試行は行われません。',
   optional: '任意',
   errors: {
     required: '必須',

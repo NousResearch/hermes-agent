@@ -440,8 +440,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     ref = "refs/tags/rc.1-v1.2.3"
     env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object}
     message = {"schema": 1, "version": "1.2.3", "attempt": 1, "commit": commit,
-               "autopublish": False, "skipBundles": False, "skipTests": False,
-               "claimEpoch": 1_790_000_000}
+               "autopublish": False, "lanes": sorted(lane_set.DEFAULT),
+               "lanesRevision": lane_set.LANES_REVISION, "claimEpoch": 1_790_000_000}
 
     def git(argv):
         if argv[1] == "ls-remote":
@@ -461,7 +461,6 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     assert check_claim(env, git) == {
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
-        # A claim cut before lanes existed reads as the lane set that gated the same jobs.
         "autopublish": False, "lanes": lane_set.DEFAULT, "require_green": True,
         "claim_epoch": 1_790_000_000, "policy": "stable",
     }
@@ -491,7 +490,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     metadata = json.dumps({
         "schema": 1, "version": "1.2.3", "attempt": 1, "commit": actual,
         "autopublish": False, "lanes": sorted(lane_set.DEFAULT),
-        "claimEpoch": 1_790_000_000,
+        "lanesRevision": lane_set.LANES_REVISION, "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
         ["git", "tag", "-a", "rc.1-v1.2.3", "-m", metadata], check=True,
@@ -519,39 +518,37 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         check_claim(env)
 
 
-def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_same_jobs():
-    """rc.1..rc.11 of v0.21.6/v0.21.7 carry skipBundles/skipTests and no include keys."""
+def test_a_stable_claim_is_read_only_in_the_current_lanes_shape():
+    """The admitted attempt's claim records lanes at the current lanesRevision. The pre-lanes shape
+    (skipBundles/skipTests[/includeMacosIntel/includeTermux], rc.4-v0.21.6) and lanes without a
+    revision (rc.2-v0.22.1) are refused, never translated."""
     from scripts.releases.stable import _claim_metadata, validate_claim
 
     commit = "a" * 40
-    old = {"schema": 1, "version": "0.21.7", "attempt": 11, "commit": commit,
-           "autopublish": True, "skipBundles": False, "skipTests": False,
-           "claimEpoch": 1_790_000_000}
-    raw = json.dumps(old, sort_keys=True, separators=(",", ":"))
+    current = {"schema": 1, "version": "0.21.7", "attempt": 11, "commit": commit,
+               "autopublish": True, "lanes": ["docker", "windows"],
+               "lanesRevision": lane_set.LANES_REVISION, "claimEpoch": 1_790_000_000}
+    raw = json.dumps(current, sort_keys=True, separators=(",", ":"))
     parsed = _claim_metadata(raw, version="0.21.7", attempt=11, commit=commit)
-    assert parsed == {**old, "lanes": lane_set.DEFAULT}
-    assert old == json.loads(raw)  # the caller's record is not mutated
-    both = {**old, "includeMacosIntel": True, "includeTermux": True}
-    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
-    untested = {**old, "skipTests": True}
-    assert validate_claim(untested, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
-        {"docker", "windows", "windows-store", "macos-arm64"})
-    # skipBundles built the image and nothing else a bundle touches, tests included.
-    bundleless = {**old, "skipBundles": True}
-    assert validate_claim(bundleless, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
-        {"docker", "ci", "nix", "docker-tests", "windows-live", "install-e2e", "bootstrap-version", "termux-checks"})
-    # The keys stay exact, never loose: a non-boolean, an unknown key or a mix of shapes is refused.
-    new = {k: v for k, v in old.items() if not k.startswith("skip")}
-    # A lanes claim without a revision was cut when `windows` also meant the Store bundle (rc.2-v0.22.1).
-    assert validate_claim({**new, "lanes": ["docker", "windows"]}, version="0.21.7", attempt=11,
-                          commit=commit)["lanes"] == frozenset({"docker", "windows", "windows-store"})
-    assert validate_claim({**new, "lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION},
-                          version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset({"docker", "windows"})
-    for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True},
-                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["linux"]},
-                  {**new, "lanes": "windows"}, {**old, "lanes": ["docker"]}):
-        with pytest.raises(ValueError, match="metadata is invalid"):
+    assert parsed == {**current, "lanes": frozenset({"docker", "windows"})}
+    assert current == json.loads(raw)  # the caller's record is not mutated
+    identity = {k: v for k, v in current.items() if k not in ("lanes", "lanesRevision")}
+    shape = "Stable claim metadata is invalid: it must record lanes at lanesRevision 2"
+    for wrong, message in (
+            ({**identity, "skipBundles": False, "skipTests": False}, shape),
+            ({**identity, "skipBundles": False, "skipTests": True, "includeMacosIntel": False,
+              "includeTermux": False}, shape),
+            ({**identity, "lanes": ["docker", "windows"]}, shape),
+            ({**current, "skipTests": False}, shape),
+            ({**current, "lanesRevision": 1}, "Stable claim metadata is invalid"),
+            ({**current, "lanes": ["windows", "docker"]}, "Stable claim metadata is invalid"),
+            ({**current, "lanes": ["linux"]}, "Stable claim metadata is invalid"),
+            ({**current, "lanes": "windows"}, "Stable claim metadata is invalid"),
+            ({**current, "claimEpoch": True}, "Stable claim metadata is invalid"),
+            ({**current, "commit": "b" * 40}, "Stable claim metadata is invalid")):
+        with pytest.raises(ValueError) as refused:
             validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
+        assert str(refused.value) == message
 
 
 def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
@@ -757,7 +754,7 @@ def _claim_fixture(tmp_path, *, tag, version, lanes=lane_set.DEFAULT):
     metadata = json.dumps({
         "schema": 1, "version": version, "attempt": attempt, "commit": commit,
         "autopublish": False, "lanes": sorted(lanes),
-        "claimEpoch": epoch,
+        "lanesRevision": lane_set.LANES_REVISION, "claimEpoch": epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
         ["git", "tag", "-a", tag, "-m", metadata], cwd=repo, check=True,

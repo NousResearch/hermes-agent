@@ -454,7 +454,7 @@ class ChannelPublisher:
     def _require_increasing_versions(self, record: dict, request: dict, policy: str | None) -> None:
         from scripts.releases.semver import compare
         from scripts.releases.stable import windows_version
-        from hermes_cli.update_channel import channel_timestamp, published_canary_timestamp
+        from hermes_cli.update_channel import canary_timestamp, channel_timestamp
 
         previous_head = record["head"]
         previous = self.store.get(previous_head["manifestKey"])
@@ -466,7 +466,7 @@ class ChannelPublisher:
             source_increases = compare(request["version"], previous_request["version"]) > 0
         else:
             # Preview source trees may move backwards; native identity is ordered by claim time.
-            timestamp = channel_timestamp if policy is None else published_canary_timestamp
+            timestamp = channel_timestamp if policy is None else canary_timestamp
             current_stamp = timestamp(request["releaseTag"])
             previous_stamp = timestamp(previous_request["releaseTag"])
             source_increases = current_stamp is not None and previous_stamp is not None and current_stamp > previous_stamp

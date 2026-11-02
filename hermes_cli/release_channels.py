@@ -156,14 +156,13 @@ def validate_request(value: object, *, repository: str | None = None,
             raise ChannelError("Channel package version does not match its claim")
     else:
         _match(
-            # The retired v<stable>+canary.<stamp> shape stays readable for records already published.
-            r"(?:canary\.20[0-9]{6}T[0-9]{6}Z-)?v[0-9]+\.[0-9]+\.[0-9]+(?:\+canary\.20[0-9]{6}T[0-9]{6}Z)?",
+            r"(?:canary\.20[0-9]{6}T[0-9]{6}Z-)?v[0-9]+\.[0-9]+\.[0-9]+",
             request.get("releaseTag"),
             "release tag",
         )
-        from hermes_cli.update_channel import published_release_version
+        from hermes_cli.update_channel import release_version
 
-        if request.get("version") != published_release_version(request["releaseTag"]):
+        if request.get("version") != release_version(request["releaseTag"]):
             raise ChannelError("Release package version mismatch")
         archive_ref = request.get("archiveRef")
         if archive_ref is not None:

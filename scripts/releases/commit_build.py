@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import subprocess
-import tomllib
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
@@ -34,18 +33,25 @@ def require_pushed(commit: str, remote: str, repo: Path | None = None, *, run=ou
 
 
 def version_at(repo: Path | None, commit: str, *, run=output) -> str:
+    """The version a commit or channel build of COMMIT carries: the newest stable release tag
+    ``vX.Y.Z`` that is an ancestor of it (or tags it). The checkout's pyproject version is always
+    0.0.0, and claim, rc., canary., abandoned-rc. and other tags never count."""
+    from hermes_cli.update_channel import STABLE_TAG_RE, release_version
+
     require_commit(commit)
-    document = tomllib.loads(run(["git", "show", f"{commit}:pyproject.toml"], repo))
-    version = document["project"]["version"]
-    if not isinstance(version, str) or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
-        raise ValueError("Commit packaging requires project.version=X.Y.Z")
-    return version
+    tags = run(["git", "tag", "--merged", commit, "--list", "v*"], repo).splitlines()
+    versions = [release_version(tag) for tag in tags if STABLE_TAG_RE.fullmatch(tag)]
+    if not versions:
+        raise ValueError(f"No stable release tag vX.Y.Z is an ancestor of {commit}; "
+                         "fetch the remote's tags or build a commit that descends from a release")
+    return max(versions, key=lambda version: tuple(map(int, version.split("."))))
 
 
 def resolve_revision(rev: str, remote: str, repo: Path) -> str:
     if not isinstance(rev, str) or not rev or rev.startswith("-"):
         raise ValueError("Commit builds require a Git revision")
-    output(["git", "fetch", "--quiet", remote], repo)
+    # --tags: version_at names the build after the newest stable tag behind it.
+    output(["git", "fetch", "--quiet", "--tags", remote], repo)
     commit = require_commit(output(["git", "rev-parse", "--verify", "--end-of-options", f"{rev}^{{commit}}"], repo))
     require_pushed(commit, remote, repo)
     return commit
@@ -107,7 +113,7 @@ def cmd_build_commit(args) -> None:
     """--build-commit REV [--channel NAME]: claim a commit or channel build and run the Stable
     Release pipeline on it.
 
-    The claim is an annotated ``commit.<UTC stamp>-v<pyproject version at REV>`` tag on REV (or
+    The claim is an annotated ``commit.<UTC stamp>-v<newest stable release behind REV>`` tag on REV (or
     ``channel.…`` with --channel) whose message records the lanes (--only/--with/--without,
     starting from the stable default minus what the kind can never run), whether a red suite holds
     its publication (--[no-]require-green), the bundle defaults (--bundle-env/--bundle-unset) and,

@@ -81,7 +81,8 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from scripts.termux.deb_version import release_version_for_tag
 # A release tag names its version (X.Y.Z, X.Y.Z+canary.<stamp> or X.Y.Z+commit.<stamp>); never
-# strip the leading v, canary and commit tags start with their kind. A tagless build reads the checkout.
+# strip the leading v, canary and commit tags start with their kind. A tagless build is named after the
+# newest stable vX.Y.Z tag behind its commit (commit_build.version_at).
 if sys.argv[4]:
     version = release_version_for_tag(sys.argv[4])
 else:

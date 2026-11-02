@@ -148,7 +148,7 @@ def main() -> None:
                         help="Release tag (vX.Y.Z / canary), exclusive with --commit/--channel-request")
     parser.add_argument("--commit", dest="commit_build", default=None,
                         help="Commit-only build: exact full 40-char SHA the checkout is at; "
-                             "version comes from the target pyproject, no tag is referenced")
+                             "version is the newest stable vX.Y.Z tag behind it, no tag is referenced")
     parser.add_argument("--release-commit", help="Admitted commit for a stable tag not created until green")
     parser.add_argument("--channel-request", type=Path, help="Immutable admitted channel request JSON")
     parser.add_argument("--variant", choices=["bundled", "store", "light"])

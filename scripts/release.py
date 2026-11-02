@@ -135,9 +135,6 @@ def remote_github_repo(remote: str) -> str | None:
 # canary.<full UTC stamp>-v<exact stable core>, the same claim shape as rc.N-vX.Y.Z).
 # Second precision allows several canaries per day; the fixed-width UTC stamp
 # sorts chronologically.
-# The retired vX.Y.Z+canary.<stamp> shape: only --prune-canaries still reads it, to age old
-# canaries out.
-_LEGACY_CANARY_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z$")
 
 
 def get_last_canary_tag():
@@ -545,15 +542,6 @@ def cmd_canary(args) -> None:
     changelog_file.unlink(missing_ok=True)
 
 
-def _canary_date(tag: str) -> str | None:
-    """The YYYYMMDD build date of a canary tag, current or retired shape."""
-    stamp = canary_timestamp(tag)
-    if stamp is not None:
-        return stamp[:8]
-    legacy = _LEGACY_CANARY_TAG_RE.fullmatch(tag)
-    return legacy[1] if legacy else None
-
-
 def prune_old_canaries(args) -> None:
     """--prune-canaries: delete canary releases+tags older than 14 days.
 
@@ -565,11 +553,11 @@ def prune_old_canaries(args) -> None:
     gh_repo = remote_github_repo(push_remote)
     cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
-    tags = git("tag", "--list", "canary.*", "v*+canary.*", "--sort=-creatordate")
+    tags = git("tag", "--list", "canary.*", "--sort=-creatordate")
     doomed = []
     for tag in (tags.split("\n") if tags else []):
-        date = _canary_date(tag)
-        if date is not None and date < cutoff:
+        stamp = canary_timestamp(tag)
+        if stamp is not None and stamp[:8] < cutoff:
             doomed.append(tag)
     _prune_old_commit_claims(args, push_remote)
     _prune_old_channel_claims(args, push_remote)

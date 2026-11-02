@@ -157,10 +157,8 @@ def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, ca
         "canary.20260801T235959Z-v0.27.1",
         "canary.20260804T000000Z-v0.27.1",
         "canary.20260804T235959Z-v0.27.1",
-        # The retired suffix shape ages out through the same window.
+        # The retired suffix shape is no canary: prune never touches it.
         "v0.27.0+canary.20260801T120000Z",
-        "v0.27.0+canary.20260805T120000Z",
-        "v0.27.1+canary.invalid",
         "v0.27.1",
         "v2026.7.20",
     ]
@@ -179,7 +177,7 @@ def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, ca
         for line in capsys.readouterr().out.splitlines()
         if line.startswith("Would delete ")
     }
-    assert deleted == {*tags[:2], "v0.27.0+canary.20260801T120000Z"}
+    assert deleted == set(tags[:2])
     assert calls == []
     assert set(git("tag", "--list").splitlines()) == set(tags)
 

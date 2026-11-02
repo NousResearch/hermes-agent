@@ -225,9 +225,36 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
     return message
 
 
+def _claim_lanes(claim: dict, claim_tag: str, *, version: str, attempt: int, commit: str,
+                 finished: bool) -> frozenset[str] | None:
+    """The lanes of a claim whose identity already checked out.
+
+    An unfinished attempt (no receipt tag, no abandon marker) is the one the pipeline still acts on,
+    so its claim must be the current shape (stable.validate_claim). A finished attempt is history:
+    a claim cut before the current lane shape is not refused, and its record carries ``lanes: None``
+    (nothing ever advances a channel or resubmits the Store from it).
+    """
+    from scripts.releases.stable import validate_claim
+
+    try:
+        return validate_claim(claim, version=version, attempt=attempt, commit=commit)["lanes"]
+    except ValueError as error:
+        if finished:
+            return None
+        raise ValueError(f"{claim_tag} metadata is invalid: {error}") from error
+
+
+def _require_lanes(record: dict) -> dict:
+    """A record the pass is about to publish or advance needs its lanes (finished history may not)."""
+    if record["lanes"] is None:
+        raise ValueError(f"{record['claim_tag']} records no lanes at lanesRevision "
+                         f"{lane_set.LANES_REVISION}; its release cannot be published or advance a channel")
+    return record
+
+
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
-    from scripts.releases.stable import claim_run_title, tagger_epoch, validate_claim, validate_final
+    from scripts.releases.stable import claim_identity, claim_run_title, tagger_epoch, validate_final
 
     log("Fetching stable receipt tags, attempt refs and abandon markers from origin")
     run([
@@ -264,13 +291,14 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            # Normalized: a claim cut before lanes existed reads as the lane set it gated.
-            claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
+            claim_identity(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
         claim_epoch = claim["claimEpoch"]
         if tagger_epoch(claim_ref["object"], run) != claim_epoch:
             raise ValueError(f"{claim_tag} epoch differs from its annotated tagger timestamp")
+        claim = {**claim, "lanes": _claim_lanes(claim, claim_tag, version=version, attempt=attempt, commit=commit,
+                                                finished=marker_ref(version, attempt) in refs or tag in refs)}
 
         family_releases = [row for row in releases if row.get("tag_name") in {claim_tag, tag}]
         if len(family_releases) > 1:
@@ -328,7 +356,7 @@ def discover(repository: str, run=output) -> list[dict]:
 
         log(f"  {claim_tag} @ {commit[:10]}: {state.upper()} — {why}"
             + (" [autopublish]" if claim["autopublish"] else "")
-            + f" [{lane_set.describe(claim['lanes'])}]")
+            + f" [{'lanes not recorded' if claim['lanes'] is None else lane_set.describe(claim['lanes'])}]")
         records.append({
             "version": version,
             "attempt": attempt,
@@ -364,7 +392,7 @@ def channel_head(desktop_head: str | None, records: list[dict],
     versions = [desktop_head] if desktop_head is not None else []
     versions += [record["version"] for record in records
                  if record["state"] == "published"
-                 and (not lane_set.moves_channels(record["lanes"])
+                 and ((record["lanes"] is not None and not lane_set.moves_channels(record["lanes"]))
                       or (stable_alias_digest is not None
                           and record["docker_manifest_digest"] == stable_alias_digest))]
     return max(versions, key=_key, default=None)
@@ -375,7 +403,7 @@ def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
 
     # Channels are already durable; Store recovery must not depend on advancing them again.
     for record in sorted(records, key=lambda row: _key(row["version"]), reverse=True):
-        if record["state"] != "published" or "windows-store" not in record["lanes"]:
+        if record["state"] != "published" or record["lanes"] is None or "windows-store" not in record["lanes"]:
             continue
         log(f"Reconciling the Microsoft Store submission for {record['tag']}")
         try:
@@ -461,6 +489,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     production = advance_head is None
     if production:
         def production_advance(record: dict) -> None:
+            _require_lanes(record)
             if lane_set.advances_desktop(record["lanes"]):
                 log(f"Advancing the protected desktop channel to {record['version']} from "
                     f"releases/tag/{record['claim_tag']}/ "
@@ -483,7 +512,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
 
     for number, step in enumerate(steps, start=1):
         if "flip" in step:
-            record = by_version[step["flip"]]
+            record = _require_lanes(by_version[step["flip"]])
             with group(f"[{number}/{len(steps)}] Publish {record['version']}: write {record['tag']}, "
                        f"retarget release {record['release_id']} from {record['claim_tag']}, make it public"):
                 # discover() ran before the receipt tag existed, so the record has no

@@ -202,7 +202,8 @@ Without `--publish`, it prints the proposed claim tag, lanes, downloads-page URL
 and dispatch command without creating tags or releases. Add `--publish` to
 create and push an annotated `commit.<YYYYMMDDTHHMMSSZ>-v<version>` claim on that
 commit, then dispatch `stable-release.yml` from the repository's default branch.
-The version comes from `pyproject.toml` at `REV`; no GitHub release is created.
+The version is the newest stable `vX.Y.Z` tag that is an ancestor of `REV`; no GitHub
+release is created.
 `desktop-bundled-release.yml` is a reusable leg, not a direct dispatch entrypoint.
 
 Commit claims start from the stable default lanes minus `upgrade`, `install-e2e`

@@ -184,8 +184,9 @@ _GLM_PROVIDERS = frozenset({"zai", "glm", "z-ai", "z.ai", "zhipu"})
 _OLLAMA_CLOUD_PROVIDERS = frozenset({"ollama-cloud", "ollama_cloud"})
 _META_AI_PROVIDERS = frozenset({"meta-ai", "meta", "muse", "muse-spark", "model-api", "msl"})
 _ACTUAL_PROVIDERS = frozenset({"actual", "actual-computer", "actualcomputer", "aci"})
-_XAI_PROVIDERS = frozenset({"xai", "x-ai", "x.ai", "grok"})
-_GEMINI_PROVIDERS = frozenset({"gemini", "google", "google-genai", "vertex"})
+# xai-oauth (SuperGrok / Premium+) rides the same xAI Responses wire and clamp as the API-key route.
+_XAI_PROVIDERS = frozenset({"xai", "x-ai", "x.ai", "grok", "xai-oauth", "grok-oauth", "x-ai-oauth", "xai-grok-oauth"})
+_GEMINI_PROVIDERS = frozenset({"gemini", "google", "google-genai", "vertex", "google-gemini", "google-ai-studio"})
 _OPENCODE_PROVIDERS = frozenset({"opencode-zen", "opencode", "opencode_zen", "zen"})
 _GLM53_SLUG_TOKENS = ("glm-5.3", "glm-5-3", "glm-5p3")
 

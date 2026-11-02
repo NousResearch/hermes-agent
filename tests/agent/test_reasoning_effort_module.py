@@ -205,6 +205,10 @@ class TestRouteEffortClampTarget:
         ("xai", "grok-4.6", "max", "xhigh"),
         ("xai", "grok-4", "xhigh", "high"),
         ("gemini", "gemini-4-argon", "xhigh", "high"),
+        ("xai-oauth", "grok-4.6", "max", "xhigh"),  # same xAI Responses wire as xai
+        ("xai-oauth", "grok-4", "xhigh", "high"),
+        ("google-gemini", "gemini-4-argon", "xhigh", "high"),  # gemini profile aliases
+        ("google-ai-studio", "gemini-4-argon", "xhigh", "high"),
         ("opencode-zen", "x-preview-f-free", "medium", "low"),
         ("opencode-zen", "x-preview-f-free", "xhigh", "max"),
         ("openrouter", "anthropic/claude-sonnet-4", "xhigh", "xhigh"),
@@ -213,6 +217,13 @@ class TestRouteEffortClampTarget:
     def test_sends(self, provider, model, effort, sent):
         from agent.reasoning_effort import route_effort_clamp_target
         assert clamp_effort(effort, *route_effort_clamp_target(provider, model)) == sent
+
+    def test_every_registered_xai_id_gets_the_xai_wire(self):
+        """Any provider id the registry resolves to an xAI route (API key or OAuth) clamps like xAI."""
+        from agent.reasoning_effort import XAI_GROK46_EFFORTS, route_wire_efforts
+        from hermes_cli.providers import ALIASES
+        ids = {"xai", "xai-oauth"} | {alias for alias, canon in ALIASES.items() if canon in ("xai", "xai-oauth")}
+        assert {pid: route_wire_efforts(pid, "grok-4.6") for pid in ids} == dict.fromkeys(ids, XAI_GROK46_EFFORTS)
 
     def test_entry_clamp_set_is_unchanged(self):
         """route_supported_efforts stays the ENTRY clamp (session info / TUI wire field still use it)."""

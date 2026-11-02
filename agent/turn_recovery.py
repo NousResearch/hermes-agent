@@ -25,7 +25,8 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
+    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_echo_requirement,
+    record_reasoning_field_rejection,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
@@ -304,6 +305,12 @@ def recover_before_classification(
     _sent = api_kwargs.get("messages") if isinstance(api_kwargs, dict) else None
     if _status_ok and (_new := record_reasoning_field_rejection(agent, _err_body, _sent or api_messages)):
         _vlines(agent, f"⚠️  {agent.model} rejected replayed {', '.join(sorted(_new))} — retrying without it for this model.")
+        return True, active_system_prompt
+
+    # The opposite: a route outside the must-echo rules (a self-hosted proxy to api.deepseek.com) 400s on a
+    # tool-call turn without reasoning_content. Record it per (provider, host, model) and retry once padded.
+    if _status_ok and record_reasoning_echo_requirement(agent, _err_body):
+        _vlines(agent, f"⚠️  {agent.model} requires reasoning_content on tool-call turns — padding them for this model.")
         return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before

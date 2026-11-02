@@ -472,9 +472,10 @@ __all__ = [
     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
+    "deterministic_call_id", "learned_reasoning_echo", "matches_reasoning_echo_family", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "reasoning_replay_route", "record_reasoning_echo_requirement", "record_reasoning_field_rejection",
+    "rejected_reasoning_carriers",
     "route_reasoning_carriers",
     "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
     "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
@@ -692,15 +693,27 @@ class ReasoningReplayRoute(NamedTuple):
 
 def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
     """True when (provider, model, base_url) matches one echo-back family (families can overlap;
-    membership is tested independently). Raises KeyError for an unknown family."""
+    membership is tested independently). Raises KeyError for an unknown family.
+
+    A model-name match never counts on a self-hosted endpoint (``is_local_endpoint``). vLLM, SGLang,
+    llama.cpp, LM Studio and the like render the model's own chat template and do not 400 on a missing
+    ``reasoning_content``, while the template renders the pad into the prompt: DeepSeek-V4.1's turns a
+    reasoning-less tool call the model wrote as ``<think></think>`` into ``<think> </think>``, so every
+    padded turn broke the server's prefix cache at that turn. Provider and host matches still count, and a
+    self-hosted proxy to a must-echo API is learned from its first 400 (``record_reasoning_echo_requirement``)
+    or set with ``model.reasoning_echo``."""
     from utils import base_url_host_matches
 
     _, raw_providers, lowered_providers, model_subs, hosts = _REASONING_ECHO_RULE_BY_FAMILY[family]
+    if (provider in raw_providers or (provider or "").lower() in lowered_providers
+            or any(base_url_host_matches(base_url, host) for host in hosts)):
+        return True
     model_lower = (model or "").lower()
-    return (
-        provider in raw_providers or (provider or "").lower() in lowered_providers
-        or any(sub in model_lower for sub in model_subs) or any(base_url_host_matches(base_url, host) for host in hosts)
-    )
+    if not any(sub in model_lower for sub in model_subs):
+        return False
+    from agent.model_metadata import is_local_endpoint
+
+    return not (base_url and is_local_endpoint(str(base_url)))
 
 
 def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> str | None:
@@ -1008,6 +1021,53 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
     if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
         patcher(agent.session_id, {_REJECTION_MODEL_CONFIG_KEY: [[*key, sorted(v)] for key, v in sorted(routes.items())]})
     return frozenset(new)
+
+
+# The opposite lesson: a route that REQUIRES the must-echo pad without matching a family rule, such as a
+# self-hosted proxy (LiteLLM, one-api) in front of api.deepseek.com, which the model-name match no longer pads.
+# It says so in its 400 ("The `reasoning_content` in the thinking mode must be passed back to the API.",
+# #15250 / #17341), and from then on that (provider, host, model) pads like the family it fronts.
+_ECHO_REQUIRED_RE = re.compile(r"reasoning[\s_`]*content\W.{0,80}?must be passed back", re.IGNORECASE | re.DOTALL)
+_ECHO_REQUIRED_MODEL_CONFIG_KEY = "reasoning_echo_required_routes"
+
+
+def learned_reasoning_echo(agent: Any) -> bool:
+    """True when the active (provider, host, model) answered this session with a must-echo 400.
+
+    Persisted in the session's ``model_config`` like a rejection, so a resumed process pads from its first
+    request instead of paying the 400 again. Loaded once per ``session_id``."""
+    routes = agent.__dict__.setdefault("_reasoning_echo_required_routes", set())
+    session_id = getattr(agent, "session_id", None)
+    if session_id and getattr(agent, "_reasoning_echo_required_loaded_for", None) != session_id:
+        agent._reasoning_echo_required_loaded_for = session_id
+        getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
+        stored = getter(session_id, _ECHO_REQUIRED_MODEL_CONFIG_KEY, []) if callable(getter) else []
+        for entry in stored if isinstance(stored, list) else ():
+            if isinstance(entry, list) and len(entry) == 3 and all(isinstance(part, str) for part in entry):
+                routes.add(tuple(entry))
+    return reasoning_route_key(agent) in routes
+
+
+def record_reasoning_echo_requirement(agent: Any, error_body: Any) -> bool:
+    """Learn that the active route requires the must-echo pad; True = newly learned (retry once).
+
+    Only a body saying ``reasoning_content`` must be passed back counts, only on chat_completions, and only
+    when the route did not pad already: a padding route that still gets it has a value complaint, and a
+    retry would loop. The retry re-enters ``build_api_request``, whose ``reapply_reasoning_echo`` pads."""
+    if getattr(agent, "api_mode", "chat_completions") != "chat_completions":
+        return False
+    if not _ECHO_REQUIRED_RE.search(str(error_body or "")):
+        return False
+    provider, model, base_url = (getattr(agent, k, "") for k in ("provider", "model", "base_url"))
+    if (getattr(agent, "_reasoning_echo_flag", False) or learned_reasoning_echo(agent)
+            or needs_reasoning_echo(provider, model, base_url)):
+        return False
+    routes = agent._reasoning_echo_required_routes
+    routes.add(reasoning_route_key(agent))
+    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
+    if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
+        patcher(agent.session_id, {_ECHO_REQUIRED_MODEL_CONFIG_KEY: [list(key) for key in sorted(routes)]})
+    return True
 
 
 # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is

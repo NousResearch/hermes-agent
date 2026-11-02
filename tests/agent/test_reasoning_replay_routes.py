@@ -149,3 +149,90 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+# A model name alone never makes a self-hosted server must-echo: vLLM / SGLang / llama.cpp render the
+# model's chat template, which turns the " " pad into prompt text (DeepSeek-V4.1: ``<think> </think>``
+# where the model wrote ``<think></think>``), and that breaks the server's prefix cache at the turn.
+_STORED_PAD = {"role": "assistant", "content": "", "reasoning_content": " ",
+               "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
+
+
+@pytest.mark.parametrize("provider,base_url,model", [
+    ("custom", "http://127.0.0.1:8888/v1", "deepseek-v4.1-flash"),
+    ("custom", "http://192.168.1.20:8000/v1", "DeepSeek-V4-Flash"),
+    ("custom", "http://vllm:8000/v1", "deepseek-v4-flash"),
+    ("lmstudio", "http://localhost:1234/v1", "deepseek-r2-distill"),
+    ("custom", "http://100.101.102.103:8080/v1", "MiMo-V2-Flash"),
+])
+def test_self_hosted_server_gets_what_the_model_wrote(provider, base_url, model):
+    route = reasoning_replay_route("chat_completions", provider, model, base_url)
+    assert route.pad is False
+    turn, bare = _wire(provider, base_url, model)
+    assert turn["reasoning_content"] == "thought"  # real reasoning is still replayed
+    assert "reasoning_content" not in bare  # a reasoning-less tool call stays reasoning-less
+    # A pad stored by an older build (or under a must-echo fallback) is not replayed to it either.
+    stored = deepcopy(_STORED_PAD)
+    apply_reasoning_content_policy(_STORED_PAD, stored, route.pad, route.carriers)
+    assert "reasoning_content" not in stored
+
+
+@pytest.mark.parametrize("provider,base_url,model", [
+    ("deepseek", "http://127.0.0.1:4000/v1", "deepseek-v4-pro"),  # the provider says DeepSeek: pad anywhere
+    ("openrouter", "https://openrouter.ai/api/v1", "deepseek/deepseek-v4-flash"),
+    ("custom", "https://api.deepseek.com/v1", "deepseek-v4-flash"),
+])
+def test_hosted_deepseek_routes_still_pad(provider, base_url, model):
+    _, bare = _wire(provider, base_url, model)
+    assert bare["reasoning_content"] == " "
+
+
+_MUST_ECHO_400 = ("Error code: 400 - {'error': {'message': 'The `reasoning_content` in the thinking mode must be "
+                  "passed back to the API.', 'type': 'invalid_request_error'}}")
+
+
+def _proxy_agent(model, db=None, base_url="http://127.0.0.1:4000/v1"):
+    """A LiteLLM-style proxy on localhost in front of api.deepseek.com: no family rule matches it."""
+    agent = _agent(model, db)
+    agent.provider, agent.base_url = "custom", base_url
+    return agent
+
+
+def test_self_hosted_proxy_to_a_must_echo_api_is_learned_once(tmp_path):
+    from hermes_state import SessionDB
+    from agent.message_sanitization import learned_reasoning_echo
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="deepseek-v4-pro")
+    proxy = _proxy_agent("deepseek-v4-pro", db)
+    sent = [{"role": "user", "content": "hi"}, deepcopy(_BARE), {"role": "tool", "tool_call_id": "c2", "content": "ok"}]
+    assert reasoning_replay_route("chat_completions", "custom", proxy.model, proxy.base_url).pad is False
+    assert _recover(proxy, "Provider returned error", sent) is False  # not the must-echo wording
+    assert learned_reasoning_echo(proxy) is False
+
+    assert _recover(proxy, _MUST_ECHO_400, sent) is True
+    assert learned_reasoning_echo(proxy) is True
+    # The retry re-shapes the same api_messages for the now must-echo route: the tool-call turn is padded.
+    route = reasoning_replay_route("chat_completions", "custom", proxy.model, proxy.base_url, echo_opt_in=True)
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[1]["reasoning_content"] == " "
+    # The same 400 again (the route pads now: a value complaint) -> normal error path, no loop.
+    assert _recover(proxy, _MUST_ECHO_400, sent) is False
+    # A resumed process (fresh agent, same session) pads from its first request.
+    assert learned_reasoning_echo(_proxy_agent("deepseek-v4-pro", db)) is True
+    # A sibling model behind the same proxy is not affected.
+    assert learned_reasoning_echo(_proxy_agent("qwen3-coder", db)) is False
+
+
+def test_a_route_that_already_pads_never_learns_from_the_value_complaint():
+    from agent.message_sanitization import learned_reasoning_echo, record_reasoning_echo_requirement
+
+    hosted = _proxy_agent("deepseek-v4-flash", base_url="https://api.deepseek.com/v1")
+    assert record_reasoning_echo_requirement(hosted, _MUST_ECHO_400) is False
+    opted_in = _proxy_agent("deepseek-v4-pro")
+    opted_in._reasoning_echo_flag = True  # model.reasoning_echo: true
+    assert record_reasoning_echo_requirement(opted_in, _MUST_ECHO_400) is False
+    responses = _proxy_agent("deepseek-v4-pro")
+    responses.api_mode = "codex_responses"
+    assert record_reasoning_echo_requirement(responses, _MUST_ECHO_400) is False
+    assert not learned_reasoning_echo(hosted) and not learned_reasoning_echo(responses)

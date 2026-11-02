@@ -39,6 +39,10 @@ with New session, pinned chats, and agents with their remaining chats nested und
 and retain the existing status indicators. Agents are grouped by gateway; clicking
 an agent opens its settings. New session keeps its existing behavior.
 
+| Original sidebar | Simplified agent sidebar |
+| --- | --- |
+| ![Original sidebar with sample chats](/img/desktop/classic-sidebar.png) | ![Simplified sidebar with chats nested under agents](/img/desktop/simplified-agent-sidebar.png) |
+
 The new sidebar hides the Bots tab and the old gateway/profile selectors. It does not migrate or
 delete profiles or conversations. Choose **No, keep current sidebar** to retain the original UI,
 or change **Settings → Appearance → Window layout → Simplified agent mode** at any time. Existing

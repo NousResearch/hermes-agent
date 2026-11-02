@@ -157,14 +157,14 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
               {...shared}
               contentClassName="flex min-h-0 flex-1 flex-col"
               emptyState={null}
-              hideHeader
-              label=""
               onToggle={() => {}}
               onTogglePin={pinSession}
               open
               pinned={false}
               rootClassName={
-                agentSessions.length >= VIRTUALIZE_THRESHOLD ? 'ml-3 h-64 min-h-0 overflow-hidden p-0' : 'ml-3 p-0'
+                agentSessions.length >= VIRTUALIZE_THRESHOLD
+                  ? 'h-64 min-h-0 overflow-hidden py-0 pr-0 pl-3'
+                  : 'py-0 pr-0 pl-3'
               }
               sessions={agentSessions}
             />

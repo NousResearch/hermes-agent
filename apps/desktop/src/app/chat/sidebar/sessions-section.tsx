@@ -51,7 +51,7 @@ import { VirtualSessionList } from './virtual-session-list'
 export const VIRTUALIZE_THRESHOLD = 25
 
 interface SidebarSectionHeaderProps {
-  label: string
+  label?: string
   open: boolean
   onToggle: () => void
   action?: React.ReactNode
@@ -72,6 +72,10 @@ function SidebarSectionHeader({
   icon,
   collapsible = true
 }: SidebarSectionHeaderProps) {
+  if (label === undefined) {
+    return null
+  }
+
   const labelBody = (
     <>
       {icon}
@@ -105,7 +109,7 @@ function SidebarSectionHeader({
 }
 
 interface SidebarSessionsSectionProps {
-  label: string
+  label?: string
   open: boolean
   onToggle: () => void
   sessions: SessionInfo[]
@@ -124,7 +128,6 @@ interface SidebarSessionsSectionProps {
   contentClassName?: string
   emptyState: React.ReactNode
   forceEmptyState?: boolean
-  hideHeader?: boolean
   headerAction?: React.ReactNode
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
@@ -216,7 +219,6 @@ export function SidebarSessionsSection({
   emptyState,
   forceEmptyState = false,
   headerAction,
-  hideHeader = false,
   footer,
   groups,
   embeddedGroups = false,
@@ -628,17 +630,15 @@ export function SidebarSessionsSection({
 
   return (
     <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>
-      {!hideHeader && (
-        <SidebarSectionHeader
-          action={headerAction}
-          collapsible={collapsible}
-          icon={labelIcon}
-          label={label}
-          meta={labelMeta}
-          onToggle={onToggle}
-          open={sectionOpen}
-        />
-      )}
+      <SidebarSectionHeader
+        action={headerAction}
+        collapsible={collapsible}
+        icon={labelIcon}
+        label={label}
+        meta={labelMeta}
+        onToggle={onToggle}
+        open={sectionOpen}
+      />
       {sectionOpen && (
         <SidebarGroupContent className={resolvedContentClassName}>
           {inner}

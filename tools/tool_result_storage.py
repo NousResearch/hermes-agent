@@ -13,7 +13,6 @@ import os
 import re
 import shlex
 import sqlite3
-import tempfile
 import threading
 import time
 
@@ -22,7 +21,11 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
+# Where an oversized result is written INSIDE the terminal environment when that environment names
+# no temp dir of its own: a path for the environment's POSIX shell, BaseEnvironment.get_temp_dir()'s
+# own default, never the host's tempfile.gettempdir() (on Windows that is a backslash path the
+# sandbox's shell cannot use, and shlex.quote wraps it in quotes).
+STORAGE_DIR = "/tmp/hermes-results"  # no-tmp: ok — sandbox-side default, same as BaseEnvironment.get_temp_dir
 SPILLOVER_SUBDIR = "cache/spillover"
 # Fallback spillover age only (unreadable config); the real default is the session
 # retention window — see _spillover_retention_hours().

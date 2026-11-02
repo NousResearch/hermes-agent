@@ -6,12 +6,15 @@ const { request } = vi.hoisted(() => ({ request: vi.fn(async () => undefined) })
 vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
-  // display-toggles routes config.set by the viewed profile (#125969 class); the
+  // display-toggles routes config.set to the active route (#125969 class); the
   // assertions below read the (method, params) tail of that call.
   return {
     $gateway: atom<unknown>(null),
     activeGateway: () => ({ request }),
+    activeGatewayConnectionId: () => null,
     activeGatewayProfileKey: () => 'default',
+    requestGatewayForAgent: (_connection: unknown, _profile: string, ...call: unknown[]) =>
+      (request as (...args: unknown[]) => unknown)(...call),
     requestGatewayForProfile: (_profile: string, ...call: unknown[]) =>
       (request as (...args: unknown[]) => unknown)(...call)
   }

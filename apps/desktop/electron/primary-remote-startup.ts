@@ -60,6 +60,8 @@ interface PrimaryRemoteStartupOptions<State extends object> {
   advanceBootProgress: (phase: string, message: string, progress: number) => Promise<void>
   waitForRemote: (remote: ResolvedPrimaryRemote) => Promise<void>
   readProfiles: (remote: ResolvedPrimaryRemote) => Promise<unknown>
+  /** `/api/status`, for the gateway's served set; absent or failed reads as unknown. */
+  readStatus?: (remote: ResolvedPrimaryRemote) => Promise<unknown>
   onProfileRestored: (profile: string) => void
   updateBootProgress: (update: {
     phase: string
@@ -74,29 +76,51 @@ interface PrimaryRemoteStartupOptions<State extends object> {
 
 /**
  * The served profile a primary should boot as when the inherited one is not
- * served: null keeps `active`. Same ladder as the renderer's
- * startupProfileForConnection, so main and the window land on one profile.
+ * served: null keeps `active`. Same ladder and served predicate as the
+ * renderer's startupProfileForConnection, so main and the window land on one
+ * profile.
  */
 export function servedStartupProfile(
   active: string,
   remembered: null | string | undefined,
-  profiles: Array<{ name: string }>
+  profiles: Array<{ name: string }>,
+  served: null | ReadonlySet<string> = null
 ): null | string {
-  const names = new Set(profiles.map(profile => profile.name))
+  const names = profiles.map(profile => profile.name).filter(name => served === null || served.has(name))
+  const servable = new Set(names)
 
-  if (names.has(active)) {
+  if (servable.has(active)) {
     return null
   }
 
-  if (remembered && names.has(remembered)) {
+  if (remembered && servable.has(remembered)) {
     return remembered
   }
 
-  return names.has('default') ? 'default' : (profiles[0]?.name ?? null)
+  return servable.has('default') ? 'default' : (names[0] ?? null)
+}
+
+/**
+ * The profiles this gateway serves, from `/api/status`: `/api/profiles` lists
+ * every INSTALLED profile, parked and standalone ones included, while a
+ * gateway-hosted listener refuses those with `profile_mismatch`.
+ * `gateway_shared_with` is the multiplexer's served set; [] means a
+ * single-profile gateway that serves only the host's own `default`. Null
+ * (no gateway running, an older backend, a failed read) is unknown, and every
+ * installed profile counts as served, as before the set was read.
+ */
+export function servedProfileSet(status: unknown): null | Set<string> {
+  const shared = (status as { gateway_shared_with?: unknown } | null)?.gateway_shared_with
+
+  if (!Array.isArray(shared)) {
+    return null
+  }
+
+  return new Set(['default', ...shared.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))])
 }
 
 /** A complete profile listing, or null: a failed or partial read proves nothing. */
-function servedProfiles(listing: unknown): Array<{ name: string }> | null {
+function installedProfiles(listing: unknown): Array<{ name: string }> | null {
   const profiles = (listing as { profiles?: unknown } | null)?.profiles
 
   if (!Array.isArray(profiles) || profiles.length === 0) {
@@ -130,21 +154,23 @@ export async function connectPrimaryRemote<State extends object>(
     ['settings', 'env', 'registry'].includes(remote.source || '') &&
     !remote.ssh?.remoteProfile
   ) {
-    let listing: unknown
-
-    try {
-      listing = await options.readProfiles(remote)
-    } catch {
-      listing = null
-    }
+    const [listing, status] = await Promise.all([
+      options.readProfiles(remote).catch(() => null),
+      options.readStatus?.(remote).catch(() => null) ?? null
+    ])
 
     options.signal?.throwIfAborted()
     options.assertCurrentAttempt()
-    const profiles = servedProfiles(listing)
+    const profiles = installedProfiles(listing)
 
     const target =
       profiles &&
-      servedStartupProfile(options.profile, options.connectionProfile?.(remote.connectionId), profiles)
+      servedStartupProfile(
+        options.profile,
+        options.connectionProfile?.(remote.connectionId),
+        profiles,
+        servedProfileSet(status)
+      )
 
     if (target && options.restoreRememberedProfile()) {
       restoredProfile = target

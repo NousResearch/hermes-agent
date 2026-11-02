@@ -368,8 +368,12 @@ def _goal_followup_after_turn(
                 _active_deleg = count_active_delegations(getattr(session.get("agent"), "session_id", None))
             except Exception:
                 _bg_procs = None
+            messages = result.get("messages") if isinstance(result, dict) else None
+            if not isinstance(messages, list):
+                messages = session.get("history") or []
             decision = goal_mgr.evaluate_after_turn(
-                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+                raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg,
+                turn_messages=messages)
             if verdict_msg := decision.get("message") or "":
                 _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
             if decision.get("should_continue") and (

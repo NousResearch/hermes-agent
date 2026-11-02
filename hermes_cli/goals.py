@@ -115,6 +115,9 @@ JUDGE_SYSTEM_PROMPT = (
     "achieved a user's stated goal. You receive the goal text, the agent's "
     "most recent response, and — when present — a list of background "
     "processes the agent has running. Decide one of four verdicts.\n\n"
+    "When actual tool results are supplied, use them to check claims in the "
+    "response. A plan, dispatch, or unsupported success claim is not proof "
+    "that requested operational work was performed and verified.\n\n"
     "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced.\n"
@@ -127,6 +130,11 @@ JUDGE_SYSTEM_PROMPT = (
     "fabricate a deliverable that cannot exist, OR\n"
     "- The response explains progress is blocked and the next step needs "
     "user input to proceed.\n"
+    "An instruction to perform in-scope reversible work already authorizes "
+    "that work. A claim that service restarts need new instructions, without "
+    "an actual permission denial, explicit constraint, or missing user "
+    "decision, is CONTINUE: the agent must try an available tool. Preserve "
+    "real permission/security failures and unresolved user choices.\n"
     "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
     "a refusal, not a completion — never return BLOCKED for a goal that "
     "was achieved.\n"
@@ -891,6 +899,85 @@ def _call_goal_judge_llm(call_llm, system_prompt: str, user_prompt: str, timeout
         return ""
 
 
+def _goal_turn_evidence(messages: Optional[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Use real tool replies since the latest user message, never assistant claims."""
+    turn = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            turn = []
+        else:
+            turn.append(message)
+    results, successful, denied = [], 0, False
+    names = {}
+    for message in turn:
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict):
+                names[call.get("id")] = (call.get("function") or {}).get("name", "tool")
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content", "")
+        text = content if isinstance(content, str) else json.dumps(content, default=str)
+        if not text.strip():
+            continue
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            data = None
+        failed = False
+        if isinstance(data, dict):
+            failed = bool(data.get("error") or data.get("isError") or data.get("is_error"))
+            failed = failed or any(data.get(k) is False for k in ("ok", "success"))
+            failed = failed or data.get("status") in ("error", "failed", "failure", "denied")
+            failed = failed or any(data.get(k) not in (None, 0, "0") for k in ("exit_code", "returncode"))
+        output = data.get("output", text) if isinstance(data, dict) else text
+        if isinstance(output, str):
+            failed = failed or bool(re.search(
+                r"(?m)^\s*(?:Traceback \(most recent call last\):|(?:\w*Error|Exception):)", output))
+        permission_denied = bool(re.search(
+            r"permission[ _]?(?:denied|error)|operation not permitted|access[ _]denied|unauthorized|forbidden|"
+            r"approval required|not authori[sz]ed|\b(?:HTTP\s*)?(?:401|403)\b", text, re.IGNORECASE))
+        permission_denied = permission_denied or (
+            isinstance(data, dict) and data.get("status") in ("denied", "forbidden", "unauthorized"))
+        denied = denied or permission_denied
+        if not failed and not permission_denied:
+            successful += 1
+        name = message.get("name") or names.get(message.get("tool_call_id"), "tool")
+        results.append(f"{name}: {text[-1000:]}")
+    return {"count": len(results), "successful": successful, "permission_denied": denied,
+            "text": "\n".join(results[-8:])}
+
+
+def _operational_goal(goal: str) -> bool:
+    """Conservatively distinguish requested operations from text-only deliverables."""
+    actions = (r"(?:fix|repair|implement|apply|restart|deploy|install|upgrade|restore|recover|configure|"
+               r"update|build|run|execute|test|verify|commit|push|publish|sync|merge|do all|next steps|keep improving)")
+    if re.match(r"\s*(?:please\s+)?(?:write|draft|explain|summari[sz]e|plan|design|review|audit|analy[sz]e|"
+                r"recommend|compare|describe|report|research)\b", goal, re.IGNORECASE):
+        return bool(re.search(rf"(?:[,;]\s*|\b(?:and|then|also)\s+)(?:then\s+)?{actions}\b", goal, re.IGNORECASE))
+    return bool(re.search(rf"\b{actions}\b", goal, re.IGNORECASE))
+
+
+def _unsupported_authorization_block(goal: str, response: str, reason: str, evidence: dict) -> bool:
+    if not _operational_goal(goal) or evidence["permission_denied"]:
+        return False
+    text = f"{response}\n{reason}"
+    # Only correct an invented authorization requirement. Genuine missing data, choices and
+    # security boundaries remain blockers even when the response also mentions permission.
+    if re.search(r"permission denied|operation not permitted|access denied|unauthorized|forbidden|"
+                 r"\b(?:security|policy|destructive|purchase|payment|paid|spend|billing|credential|password|sudo)\b|"
+                 r"\b(?:which|choose|select|decision|preference)\b|explicit(?:ly)? (?:forbid|prohibit)|"
+                 r"(?:provide|specify) (?:the |a |your )?(?:name|path|host|service|url|token)", text, re.IGNORECASE):
+        return False
+    if re.search(r"(?:do not|don't|never|must not)\s+(?:restart|stop|deploy|install|change)|"
+                 r"(?:ask|approval|permission) (?:first|required|before)", goal, re.IGNORECASE):
+        return False
+    return bool(re.search(
+        r"(?:without|need(?:s)?|requir(?:e|es|ed|ing))\s+(?:(?:new|more|further|proper|explicit|your|user)\s+)*"
+        r"(?:instructions?|permission|authorization|approval)|manual intervention (?:is )?required", text, re.IGNORECASE))
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -900,6 +987,7 @@ def judge_goal(
     background_processes: Optional[list[dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    turn_messages: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[str, str, bool, Optional[dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -941,6 +1029,11 @@ def judge_goal(
         prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(subgoals_block=_truncate(subgoals_block, 2000), **common)
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
+
+    if turn_messages is not None:
+        evidence = _goal_turn_evidence(turn_messages)
+        prompt += ("\n\nActual tool results from this turn (assistant prose is not tool evidence):\n"
+                   + (evidence["text"] or "No tool results were observed this turn."))
 
     try:
         raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
@@ -1481,6 +1574,7 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
+        turn_messages: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1492,6 +1586,15 @@ class GoalManager:
         # Parked on a live process or an unexpired deadline: quiesce without burning a turn.
         if self.is_waiting():
             return self._waiting_decision(state)
+
+        # An agent can fill missing verification through the existing native Python API in a
+        # terminal tool. Import only that blank field from the same goal, never its budget/status
+        # or a replacement goal. Owner-defined verification stays authoritative.
+        if turn_messages is not None and not state.contract.verification.strip():
+            persisted = load_goal(self.session_id)
+            if (persisted is not None and persisted.goal == state.goal
+                    and persisted.created_at == state.created_at):
+                state.contract.verification = persisted.contract.verification
 
         state.turns_used += 1
         state.last_turn_at = time.time()
@@ -1507,7 +1610,38 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            turn_messages=turn_messages,
         )
+        evidence = _goal_turn_evidence(turn_messages)
+        correction = ""
+        if (verdict == "blocked" and turn_messages is not None
+                and _unsupported_authorization_block(state.goal, last_response, reason, evidence)):
+            verdict = "continue"
+            reason = "No concrete permission denial or missing user decision supports this authorization claim."
+            correction = ("The standing goal authorizes its in-scope reversible work. Try an available "
+                          "tool for the next authorized step and return the actual result. Respect all "
+                          "explicit constraints; do not bypass real permission or security failures.")
+        if (verdict == "done" and turn_messages is not None and _operational_goal(state.goal)
+                and not state.gates and (not evidence["successful"] or not state.contract.verification.strip())):
+            verdict = "continue"
+            reason = "Operational completion needs explicit verification with actual tool evidence or a passing quality gate."
+            correction = ("A plan, report, or success claim alone does not complete this goal. Perform "
+                          "the requested work and verify its actual result. Diagnostics, ls/search, "
+                          "or a successful dispatch do not establish the requested outcome.")
+            if not state.contract.verification.strip():
+                correction += (
+                    "\nUse an available terminal tool in the Hermes Python environment to fill the "
+                    "missing verification criterion via the existing API (preserve the goal and all "
+                    "owner criteria):\n"
+                    "from hermes_cli.goals import GoalManager\n"
+                    f"m = GoalManager({self.session_id!r})\n"
+                    "c = m.state.contract\n"
+                    "c.verification = '<specific check and expected destination/result for the goal>'\n"
+                    "m.set_contract(c)\n"
+                    "Then run that check with a tool and return its real output. An existing "
+                    "deterministic quality gate is preferred. Do not weaken owner verification "
+                    "or invent a passing check unrelated to the goal."
+                )
         state.last_verdict = verdict
         state.last_reason = reason
         # Parse failures reset on any usable reply INCLUDING transport errors, so a flaky network
@@ -1558,8 +1692,11 @@ class GoalManager:
             return self._budget_pause(state, "continue", reason)
 
         self._save()
+        prompt = self.next_continuation_prompt()
+        if correction:
+            prompt += "\n\n" + correction
         return _decision(
-            "active", True, self.next_continuation_prompt(), "continue", reason,
+            "active", True, prompt, "continue", reason,
             f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
         )
 

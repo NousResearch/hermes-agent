@@ -52,6 +52,9 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
     offered = {row['id'] for row in adoptable_sessions(db.db_path)}
     assert {'phone-mobile', 'phone-ios'} <= offered and not offered & {'webui-row', 'teams-row', 'curator-row'}
     for i, sid in enumerate(('phone-mobile', 'phone-ios')):
+        if sid == 'phone-mobile':
+            # A metadata read first opens a read-only view; the resume then adopts it in place.
+            await desktop.dispatch({'id': 50, 'method': 'session.info', 'params': {'session_id': sid}})
         resumed = await desktop.dispatch({'id': i, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert resumed.get('result', {}).get('session_id') == sid, resumed
         assert [m['content'] for m in resumed['result']['messages']] == ['hi from ' + sid]

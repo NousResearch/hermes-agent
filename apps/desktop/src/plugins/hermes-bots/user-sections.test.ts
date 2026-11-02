@@ -124,7 +124,9 @@ describe('user sections', () => {
       [UNASSIGNED_SECTION_KEY, 2]
     ])
     expect(blocks.flatMap(b => b.rows)).toHaveLength(rows.length)
-    expect(groupRowsBySection(rows, [], meta)).toEqual([{ id: null, key: UNASSIGNED_SECTION_KEY, name: '', rows }])
+    expect(groupRowsBySection(rows, [], meta)).toEqual([
+      { depth: 0, id: null, key: UNASSIGNED_SECTION_KEY, name: '', parentId: null, rows, total: rows.length }
+    ])
   })
 
   it('deleting a section returns its bots to Unassigned, and undo refiles them', async () => {

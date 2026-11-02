@@ -84,7 +84,11 @@ export function renderRosterDialogs({
           if (sectionDialog?.mode === 'rename') {
             renameBotSection(sectionDialog.id, name, roster)
           } else {
-            const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
+            const section = createBotSection(
+              name,
+              sectionDialog?.bot ? [sectionDialog.bot] : [],
+              sectionDialog?.parentId
+            )
 
             if (section && sectionDialog?.group) {
               moveGroupChatsToSection([sectionDialog.group], section.id)

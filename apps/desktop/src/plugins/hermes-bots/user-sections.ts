@@ -32,17 +32,27 @@ import type { BotMeta, GroupChat, RosterRow } from './types'
 /** The one section-name dialog's state: New section (optionally filing the
  *  bot or group whose menu opened it) or Rename. */
 export type SectionDialogState =
-  null | { bot?: RosterRow; group?: string; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  | null
+  | { bot?: RosterRow; group?: string; mode: 'create'; parentId?: string }
+  | { id: string; mode: 'rename'; name: string }
 
 export const UNASSIGNED_SECTION_KEY = 'section:unassigned'
 export const BOT_SECTIONS_KEY = 'bot-sections-v1'
 
+/**
+ * A folder, optionally nested under another (`parentId`). The hierarchy is
+ * this desktop's own layout, like order and empty sections: members carry
+ * only their own folder's id + name, so a desktop that rebuilds a section
+ * from member meta files it at the top level. Records written before nesting
+ * existed have no `parentId` and stay top-level.
+ */
 export interface BotSection {
   id: string
   name: string
+  parentId?: string
 }
 
-/** `[{ id, name }]`, in display order. */
+/** `[{ id, name, parentId? }]`, siblings in display order. */
 export const $botSections = atom<BotSection[]>([])
 
 /** Sections whose delete is still clearing its members. A delete clears them
@@ -56,9 +66,17 @@ export const $botSections = atom<BotSection[]>([])
  *  clear from expiring a later delete of the same id. */
 const pendingSectionDeletes = new Map<string, symbol>()
 
+/** Where each deleted section sent its contents (its parent at delete time,
+ *  `null` for top level). A child's delete still clearing members when its
+ *  parent is deleted follows this chain, so stragglers land where the
+ *  parent's own contents went rather than somewhere stale. Undo removes the
+ *  entry. */
+const deletedSectionParents = new Map<string, null | string>()
+
 /** Test seam. */
 export function resetBotSectionDeletes(): void {
   pendingSectionDeletes.clear()
+  deletedSectionParents.clear()
 }
 
 /** Roster key of the bot in flight during a drag. Session-only, and cleared
@@ -77,16 +95,69 @@ export function normalizeBotSections(value: unknown): BotSection[] {
   for (const entry of value) {
     const id = String((entry as BotSection)?.id || '').trim()
     const name = String((entry as BotSection)?.name || '').trim()
+    const rawParent = (entry as BotSection)?.parentId
+    const parentId = typeof rawParent === 'string' ? rawParent.trim() : ''
 
     if (!id || !name || seen.has(id)) {
       continue
     }
 
     seen.add(id)
-    out.push({ id, name })
+    out.push(parentId ? { id, name, parentId } : { id, name })
+  }
+
+  // Persisted input is untrusted: a parent that does not exist, or a chain
+  // that loops back on itself, would hide a folder forever. Either lifts the
+  // folder to the top level — the first entry found closing a loop is lifted,
+  // which breaks the loop for every other member of it.
+  const byId = new Map(out.map(section => [section.id, section]))
+
+  for (const section of out) {
+    if (section.parentId && (!byId.has(section.parentId) || isSectionWithin(section.parentId, section.id, byId))) {
+      delete section.parentId
+    }
   }
 
   return out
+}
+
+/** Whether `id` is `ancestorId` or sits anywhere below it. Bounded by the map
+ *  size, so a loop in unvalidated input cannot spin. */
+function isSectionWithin(id: string, ancestorId: string, byId: Map<string, BotSection>): boolean {
+  let cursor: string | undefined = id
+
+  for (let hops = 0; cursor && hops <= byId.size; hops++) {
+    if (cursor === ancestorId) {
+      return true
+    }
+
+    cursor = byId.get(cursor)?.parentId
+  }
+
+  return false
+}
+
+/** "Studio › Team" — a folder's name with its ancestors, for menus that list
+ *  every folder flat. */
+export function botSectionPath(id: string, sections: BotSection[]): string {
+  const byId = new Map(sections.map(section => [section.id, section]))
+  const names: string[] = []
+  let cursor = byId.get(id)
+
+  while (cursor && names.length <= byId.size) {
+    names.unshift(cursor.name)
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
+  }
+
+  return names.join(' › ')
+}
+
+/** Folders `id` may move under: any folder except itself and its own
+ *  descendants (that would make a loop). */
+export function botSectionParentOptions(id: string, sections: BotSection[]): BotSection[] {
+  const byId = new Map(sections.map(section => [section.id, section]))
+
+  return sections.filter(section => !isSectionWithin(section.id, id, byId))
 }
 
 function persistBotSections(next: BotSection[]): void {
@@ -113,16 +184,20 @@ function newSectionId(): string {
   return `sec-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-/** Create a section and file `bots` into it. Returns the new section, or
- *  null when the name is blank. */
-export function createBotSection(name: string, bots: RosterRow[] = []): BotSection | null {
+/** Create a section (under `parentId` when it names a known folder) and file
+ *  `bots` into it. Returns the new section, or null when the name is blank. */
+export function createBotSection(name: string, bots: RosterRow[] = [], parentId?: string): BotSection | null {
   const clean = String(name || '').trim()
 
   if (!clean) {
     return null
   }
 
-  const section: BotSection = { id: newSectionId(), name: clean }
+  const parent = parentId && $botSections.get().some(s => s.id === parentId) ? parentId : null
+
+  const section: BotSection = parent
+    ? { id: newSectionId(), name: clean, parentId: parent }
+    : { id: newSectionId(), name: clean }
 
   persistBotSections([...$botSections.get(), section])
   void moveBotsToSection(bots, section.id)
@@ -220,60 +295,194 @@ export function backfillBotSectionNames(roster: RosterRow[], metaByName: Record<
   return [...bySection.values()].flat()
 }
 
+/** What a delete took apart, so Undo can put it back. */
+interface DeletedSection {
+  children: string[]
+  groups: string[]
+  index: number
+  members: RosterRow[]
+  parentId: null | string
+  section: BotSection
+}
+
 /**
- * Delete the section only. Its members are not deleted and not hidden — they
- * fall back to Unassigned, which is the whole reason membership lives on the
- * bot rather than on the section. Returns an undo that puts the section back
- * in its slot and refiles the same bots, so the delete needs no confirmation.
+ * Delete the section only. Nothing under it is deleted or hidden: its bots,
+ * group chats and subsections move up one level — into the parent folder, or
+ * Unassigned / top level for a top-level section. That is the whole reason
+ * membership lives on the item rather than on the section. Returns how many
+ * items moved and an undo that puts the section back in its slot and refiles
+ * the same bots, groups and subsections, so the delete needs no confirmation.
  */
-export function deleteBotSection(id: string, roster: RosterRow[] = []): { members: RosterRow[]; undo: () => void } {
+export function deleteBotSection(
+  id: string,
+  roster: RosterRow[] = []
+): { members: RosterRow[]; moved: number; parent: BotSection | null; undo: () => void } {
   const list = $botSections.get()
   const index = list.findIndex(s => s.id === id)
   const section = list[index]
-  const members = (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id)
 
+  // Already gone (a second delete of the same id): nothing to take apart, and
+  // re-arming the shield would send a clear still in flight the wrong way.
+  if (!section) {
+    return { members: [], moved: 0, parent: null, undo: () => {} }
+  }
+
+  const parentId = section.parentId ?? null
+  const members = (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id)
+  const groups = Object.keys($groupChats.get()).filter(name => groupChatSectionId(name, $groupChats.get()) === id)
+  const children = list.filter(s => s.parentId === id).map(s => s.id)
   const token = Symbol(id)
 
   pendingSectionDeletes.set(id, token)
-  persistBotSections(list.filter(s => s.id !== id))
-  void moveBotsToSection(members, null).finally(() => {
-    if (pendingSectionDeletes.get(id) === token) {
-      pendingSectionDeletes.delete(id)
-    }
-  })
+  deletedSectionParents.set(id, parentId)
+  persistBotSections(list.filter(s => s.id !== id).map(s => (s.parentId === id ? withParent(s, parentId) : s)))
+  moveGroupChatsToSection(groups, parentId)
+  void clearDeletedSection(id, token, members)
 
   return {
     members,
-    undo: () => {
-      if (!section) {
+    moved: members.length + groups.length + children.length,
+    parent: list.find(s => s.id === parentId) || null,
+    undo: () => restoreDeletedSection({ children, groups, index, members, parentId, section })
+  }
+}
+
+/** The live folder a deleted section's contents belong in now: its parent
+ *  at delete time, following any parent deleted since to where that one sent
+ *  its own contents; `null` = top level / Unassigned. */
+function liveDestination(id: string): null | string {
+  let target = deletedSectionParents.get(id) ?? null
+
+  for (let hops = 0; target && hops <= deletedSectionParents.size; hops++) {
+    if ($botSections.get().some(s => s.id === target)) {
+      return target
+    }
+
+    target = deletedSectionParents.get(target) ?? null
+  }
+
+  return null
+}
+
+/**
+ * Move a deleted section's bots into its live destination, and only then lift
+ * the delete's shield against re-adoption. That destination can itself be
+ * deleted mid-walk (the walk then stops early), so re-aim until no member
+ * still carries the id — otherwise a member left behind would rebuild the
+ * deleted section. Each re-aim follows one more deleted parent, so the passes
+ * are bounded. Undo (or a later delete of the same id) retires the token and
+ * ends the walk.
+ */
+async function clearDeletedSection(id: string, token: symbol, members: RosterRow[]) {
+  const current = () => pendingSectionDeletes.get(id) === token
+
+  try {
+    for (let attempt = 0; attempt <= deletedSectionParents.size && current(); attempt++) {
+      const stuck = members.filter(bot => botSectionId(bot, $botMeta.get()) === id)
+
+      if (!stuck.length) {
         return
       }
 
+      await moveBotsToSection(stuck, liveDestination(id), current)
+    }
+  } finally {
+    if (current()) {
       pendingSectionDeletes.delete(id)
-      const current = $botSections.get().filter(s => s.id !== id)
-
-      current.splice(Math.min(index, current.length), 0, section)
-      persistBotSections(current)
-      void moveBotsToSection(members, id)
     }
   }
 }
 
+function restoreDeletedSection({ children, groups, index, members, parentId, section }: DeletedSection): void {
+  pendingSectionDeletes.delete(section.id)
+  deletedSectionParents.delete(section.id)
+
+  const current = $botSections
+    .get()
+    .filter(s => s.id !== section.id)
+    // Only subsections still where the delete put them: one the user moved
+    // during the toast stays where they moved it.
+    .map(s => (children.includes(s.id) && (s.parentId ?? null) === parentId ? withParent(s, section.id) : s))
+
+  current.splice(Math.min(index, current.length), 0, section)
+  persistBotSections(normalizeBotSections(current))
+  moveGroupChatsToSection(groups, section.id)
+  void moveBotsToSection(members, section.id)
+}
+
+function withParent(section: BotSection, parentId: null | string): BotSection {
+  return parentId ? { ...section, parentId } : { id: section.id, name: section.name }
+}
+
+/** Reorder a section among its siblings (same parent). */
 export function moveBotSection(id: string, delta: number): void {
   const list = $botSections.get()
-  const from = list.findIndex(s => s.id === id)
+  const parentId = list.find(s => s.id === id)?.parentId ?? null
+  const siblings = list.filter(s => (s.parentId ?? null) === parentId).map(s => s.id)
+  const from = siblings.indexOf(id)
   const to = from + delta
 
-  if (from < 0 || to < 0 || to >= list.length) {
+  if (from < 0 || to < 0 || to >= siblings.length) {
     return
   }
 
-  const next = list.slice()
-  const [moved] = next.splice(from, 1)
+  // Swap the two siblings' slots in the flat list; everything else stays put.
+  const a = list.findIndex(s => s.id === id)
+  const b = list.findIndex(s => s.id === siblings[to])
 
-  next.splice(to, 0, moved!)
+  const next = list.slice()
+
+  ;[next[a], next[b]] = [next[b]!, next[a]!]
   persistBotSections(next)
 }
+
+/**
+ * Nest a section under another folder (`null` = top level). Refused, and
+ * returns false, when the target is unknown, the section itself, or one of
+ * its own descendants — any of those would make a loop. The section keeps its
+ * members and subsections; it lands last among its new siblings.
+ */
+export function moveBotSectionToParent(id: string, parentId: null | string): boolean {
+  const list = $botSections.get()
+  const section = list.find(s => s.id === id)
+
+  if (!section || (parentId && !botSectionParentOptions(id, list).some(s => s.id === parentId))) {
+    return false
+  }
+
+  persistBotSections([...list.filter(s => s.id !== id), withParent(section, parentId)])
+
+  return true
+}
+
+/**
+ * Drag-and-drop sorting: put section `id` directly before `targetId`, as its
+ * sibling (so a drop can also change level). Refused, returning false, when
+ * either is unknown or the target sits inside the dragged section's subtree.
+ */
+export function placeBotSectionBefore(id: string, targetId: string): boolean {
+  const list = $botSections.get()
+  const section = list.find(s => s.id === id)
+  const target = list.find(s => s.id === targetId)
+
+  if (!section || !target || !botSectionParentOptions(id, list).some(s => s.id === targetId)) {
+    return false
+  }
+
+  const rest = list.filter(s => s.id !== id)
+
+  rest.splice(
+    rest.findIndex(s => s.id === targetId),
+    0,
+    withParent(section, target.parentId ?? null)
+  )
+  persistBotSections(rest)
+
+  return true
+}
+
+/** The drag payload prefix that marks an in-flight SECTION heading. */
+export const SECTION_DRAG_PREFIX = 'section:'
 
 /**
  * `null` clears the assignment (back to Unassigned). One `saveBotMeta` per
@@ -282,8 +491,14 @@ export function moveBotSection(id: string, delta: number): void {
  * shared local snapshot is never committed by two saves at once. The section's
  * NAME rides along: the record itself is local to the desktop that made it,
  * and the name is what lets another desktop rebuild it (adoptBotSectionsFromMeta).
+ * `stillWanted` lets a caller abandon the rest of the walk (a delete's clear
+ * that Undo has overtaken).
  */
-export async function moveBotsToSection(bots: RosterRow[], sectionId: null | string): Promise<void> {
+export async function moveBotsToSection(
+  bots: RosterRow[],
+  sectionId: null | string,
+  stillWanted: () => boolean = () => true
+): Promise<void> {
   const sectionName = (sectionId && $botSections.get().find(s => s.id === sectionId)?.name) || null
 
   for (const bot of bots || []) {
@@ -294,7 +509,7 @@ export async function moveBotsToSection(bots: RosterRow[], sectionId: null | str
     // Deleted while this loop was still walking its members (a rename's
     // re-stamp stuck behind a slow write): filing the rest would put them back
     // into a section that no longer exists.
-    if (sectionId && !$botSections.get().some(s => s.id === sectionId)) {
+    if ((sectionId && !$botSections.get().some(s => s.id === sectionId)) || !stillWanted()) {
       return
     }
 
@@ -359,15 +574,20 @@ export function moveGroupChatsToSection(groups: string[], sectionId: null | stri
 }
 
 export interface SectionBlock<TRow> {
+  /** Nesting level: 0 for a top-level section and for Unassigned. */
+  depth: number
   id: null | string
   key: string
   name: string
+  parentId: null | string
   rows: TRow[]
+  /** Rows in this block and every block nested under it. */
+  total: number
 }
 
 /**
- * Split roster rows into section blocks, in section order, with Unassigned
- * last. Pure, and returns EVERY row exactly once: a row whose `sectionId`
+ * Split roster rows into section blocks, depth-first (each section followed
+ * by its subsections, siblings in section order), with Unassigned last. Pure, and returns EVERY row exactly once: a row whose `sectionId`
  * names a section that no longer exists lands in Unassigned rather than
  * vanishing, which is what makes deleting a section safe. Group rows seat per
  * their room record's `sectionId` (`rooms`); a group with no room yet is
@@ -398,16 +618,83 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
     }
   }
 
-  const blocks: SectionBlock<TRow>[] = list.map(section => ({
-    id: section.id,
-    key: `section:${section.id}`,
-    name: section.name,
-    rows: byId.get(section.id) || []
-  }))
+  const blocks: SectionBlock<TRow>[] = []
 
-  blocks.push({ id: null, key: UNASSIGNED_SECTION_KEY, name: '', rows: loose })
+  const visit = (parentId: null | string, depth: number): number => {
+    let sum = 0
+
+    for (const section of list.filter(s => (s.parentId ?? null) === parentId)) {
+      const rows = byId.get(section.id) || []
+
+      const block = {
+        depth,
+        id: section.id,
+        key: `section:${section.id}`,
+        name: section.name,
+        parentId,
+        rows,
+        total: 0
+      }
+
+      blocks.push(block)
+      block.total = rows.length + visit(section.id, depth + 1)
+      sum += block.total
+    }
+
+    return sum
+  }
+
+  visit(null, 0)
+  blocks.push({
+    depth: 0,
+    id: null,
+    key: UNASSIGNED_SECTION_KEY,
+    name: '',
+    parentId: null,
+    rows: loose,
+    total: loose.length
+  })
 
   return blocks
+}
+
+export interface VisibleBlocksOptions {
+  /** Whether the block with this section id is folded. */
+  collapsed: (id: string) => boolean
+  /** The roster drag key in flight, if any. */
+  dragging: null | string
+  /** Drawn inside a gateway bucket. */
+  nested: boolean
+}
+
+/**
+ * Which of `groupRowsBySection`'s blocks the roster draws. An empty
+ * Unassigned is not worth a heading — except while a FOLDER is dragged, when
+ * it is the "end of the top level" drop target. An empty NAMED section is,
+ * because it is somewhere the user made and is about to drop into; inside a
+ * gateway bucket the same empty section would repeat under every connection,
+ * so there it only appears while a drag is in flight. A folder counts as
+ * non-empty when anything below it is. Blocks arrive depth-first, so a
+ * collapsed (or hidden) folder hides its subtree by hiding every block whose
+ * parent is hidden or collapsed.
+ */
+export function visibleSectionBlocks<TRow>(
+  blocks: SectionBlock<TRow>[],
+  { collapsed, dragging, nested }: VisibleBlocksOptions
+): SectionBlock<TRow>[] {
+  const hidden = new Set<string>()
+  const sorting = Boolean(dragging?.startsWith(SECTION_DRAG_PREFIX))
+
+  return blocks.filter(block => {
+    const wanted = block.id ? !nested || Boolean(dragging) : sorting
+    const visible = !(block.parentId && hidden.has(block.parentId)) && Boolean(block.total || wanted)
+
+    if (block.id && (!visible || collapsed(block.id))) {
+      hidden.add(block.id)
+    }
+
+    return visible
+  })
 }
 
 // ── drag and drop ────────────────────────────────────────────────────────────

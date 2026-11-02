@@ -22,7 +22,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property, wraps
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -60,6 +60,7 @@ from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_idle_tasks import PluginIdleTaskCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_cli.plugins_load_guard import ignore_registrars_after_abandoned_load
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
@@ -1021,29 +1022,8 @@ for _row in _SCOPED_PROVIDER_REGISTRARS:
 del _row
 
 
-def _ignore_after_abandoned_load(method):
-    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
-    still be executing register(), and a late registration would land in registries that the failure
-    path already swept (#108139)."""
-    @wraps(method)
-    def wrapped(self, *args, **kwargs):
-        if getattr(self, "_load_abandoned", False):
-            logger.warning(
-                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
-                method.__name__,
-            )
-            return None
-        return method(self, *args, **kwargs)
-
-    return wrapped
-
-
-# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
-# guard cannot drift from the surface as registrars are added.
-for _name, _method in list(vars(PluginContext).items()):
-    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
-        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
-del _name, _method
+# Every mutating entry point plugins reach through ``ctx`` during register(), mixins included.
+ignore_registrars_after_abandoned_load(PluginContext)
 
 
 def _resolve_hook_callback_timeout() -> float:

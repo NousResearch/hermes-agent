@@ -82,3 +82,33 @@ def test_named_profile_route_heals_from_row_columns_under_multiplex(tmp_path):
     assert origin is not None and origin.profile == 'work' and origin.thread_id == '600'
     db.close()
 
+
+def test_boot_heal_never_lets_a_stale_mirror_overwrite_newer_routing_state(tmp_path, topic):
+    """Routing read fails at boot, sessions.json holds an older null-origin copy, then the DB comes
+    back: the newer DB entry (``suspended``) must survive recovery and the next full save, healed."""
+    db, _source, entry = topic
+    key = entry.session_key
+    stale = entry.to_dict()
+    stale['origin'] = None
+    (tmp_path / 'sessions' / 'sessions.json').write_text(json.dumps({key: stale}))
+    durable = dict(entry.to_dict(), suspended=True, origin=None)  # the DB copy needs the heal too
+    db.save_gateway_routing_entry(key, json.dumps(durable), scope=_store(tmp_path, db)._routing_scope())
+
+    real_load = db.load_gateway_routing_entries
+    calls = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('database is locked')
+        return real_load(*args, **kwargs)
+
+    db.load_gateway_routing_entries = flaky
+    store = _store(tmp_path, db)
+    store.lookup_by_session_key(key)  # boot: routing read fails, the mirror is imported
+    recovered = store.lookup_by_session_key(key)  # DB is back: recovery merges its rows
+    assert len(calls) == 2
+    assert recovered.suspended is True and recovered.origin is not None
+    with store._lock:
+        store._save()
+    assert json.loads(real_load(scope=store._routing_scope())[key])['suspended'] is True

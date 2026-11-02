@@ -301,7 +301,7 @@ class GatewayGoalsMixin:
             from hermes_cli.goals import _get_session_db
             # The turn is persisted before this hook, including streamed replies. Use this
             # session's real tool replies; a final-response string cannot prove an operation.
-            messages = None
+            messages = []
             with suppress(Exception):
                 db = _get_session_db()
                 if db is not None:

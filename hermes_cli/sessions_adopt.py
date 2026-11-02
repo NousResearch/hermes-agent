@@ -25,16 +25,17 @@ def adoptable_sessions(path) -> list[dict]:
     offered again, which makes a second run a no-op."""
     from hermes_state import SessionDB
     from hermes_state_local import POLICY_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX, validate_legacy_row
+    from hermes_state_local_migration import LEGACY_PREFIX, validate_legacy_row
     from hermes_state_runtime import RuntimeStoreError
 
     db = SessionDB(db_path=path, read_only=True)
     try:
-        sources = tuple(sorted(LEGACY_LOCAL_SOURCES))
         with db._read_ctx() as conn:
+            # Every routeless row: validate_legacy_row judges the label (local surfaces and phone apps'
+            # own labels adopt; automation and foreign-writer rows do not).
             ids = [row[0] for row in conn.execute(
-                f"SELECT id FROM sessions WHERE source IN ({','.join('?' * len(sources))}) ORDER BY started_at, id",
-                sources)]
+                "SELECT id FROM sessions WHERE ifnull(session_key,'')='' AND ifnull(chat_id,'')=''"
+                " AND ifnull(origin_json,'')='' ORDER BY started_at, id")]
             bound = {row[0] for row in conn.execute(
                 'SELECT key FROM state_meta WHERE key LIKE ? OR key LIKE ?', (POLICY_PREFIX + '%', LEGACY_PREFIX + '%'))}
         found, seen = [], set()

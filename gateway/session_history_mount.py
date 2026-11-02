@@ -6,8 +6,9 @@ from ``state.db``. Nothing can run them (no frozen policy, no lane, and adopting
 writable would legitimise its second writer), so the owner mounts them for reading only. The mount
 is keyed by no lane's route, so nothing route-keyed acts through it, and every capability but
 ``session:read`` is refused by name. Archive, pin and delete still work as for any read-only mount
-(gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows are not mounted
-here: resume adopts them as writable conversations (gateway/session_local_migration.py).
+(gateway/session_mutations.py), but only a leaf row deletes. Old local CLI/TUI/Desktop rows and the rows phone
+apps stored under their own label (``mobile``, ``ios``) are not mounted here: resume adopts them as writable
+conversations (gateway/session_local_migration.py).
 """
 
 from hermes_state_runtime import RuntimeStoreError
@@ -31,9 +32,9 @@ def _reader(authority, actor, sid):
 def mount_history(authority, actor, sid):
     """Mount *sid* read-only for its owner; False when another loader owns it or the actor may not."""
     from hermes_state_local import API_BINDING_PREFIX
-    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    from hermes_state_local_migration import legacy_history_row
     row = authority.db.get_session(sid)
-    if (row['source'] in LEGACY_LOCAL_SOURCES | {'local'}
+    if (row['source'] == 'local' or legacy_history_row(row)
             or row.get('profile_name') not in (None, '', authority.db._own_profile_name() or 'default')
             or not _reader(authority, actor, sid)):
         return False

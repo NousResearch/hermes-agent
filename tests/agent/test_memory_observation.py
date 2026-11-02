@@ -1186,14 +1186,14 @@ def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
     _stub_direct_prefetch(monkeypatch)
     raw = MemoryPrefetchResult(
         context="hosted provider context",
-        observations=tuple(
-            _observation({"text": "x" * 3910})
-            for _ in range(MAX_MEMORY_OBSERVATIONS)
+        observations=(_observation({"ok": True}),) + tuple(
+            MemoryObservation("", "fixture.context", 1, {"text": "x" * 3910})
+            for _ in range(100)
         ),
     )
     hosted = decode(encode(raw))
     assert hosted._wire_truncated is True
-    hosted_prefix_size = len(hosted.observations)
+    hosted_prefix_size = 1
     manager = MemoryManager()
     manager.add_provider(
         StructuredMemoryProvider(name="builtin", result=hosted)

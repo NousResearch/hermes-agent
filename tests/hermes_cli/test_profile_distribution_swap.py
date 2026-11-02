@@ -8,10 +8,15 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.profile_distribution import install_distribution
-from tests.hermes_cli.test_profile_distribution import _make_staging_dir, profile_env
+from tests.hermes_cli import test_profile_distribution as _base
+
+_make_staging_dir = _base._make_staging_dir
+profile_env = _base.profile_env
 
 
-def test_force_install_preserves_existing_dir_when_new_copy_fails(profile_env, monkeypatch):
+def test_force_install_preserves_existing_dir_when_new_copy_fails(
+    profile_env, monkeypatch
+):
     staged = _make_staging_dir(profile_env, "src")
     plan = install_distribution(str(staged), name="target")
     skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
@@ -21,12 +26,16 @@ def test_force_install_preserves_existing_dir_when_new_copy_fails(profile_env, m
 
     def fail_skill_root_copy(src, dst, *args, **kwargs):
         if Path(src).name == "demo":
-            Path(dst).mkdir(parents=True, exist_ok=True)  # a partial copy, then the lock bites
+            Path(dst).mkdir(
+                parents=True, exist_ok=True
+            )  # a partial copy, then the lock bites
             (Path(dst) / "SKILL.md").write_text("partial\n")
             raise OSError("[WinError 145] The directory is not empty")
         return original_copytree(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr("hermes_cli.profile_distribution.shutil.copytree", fail_skill_root_copy)
+    monkeypatch.setattr(
+        "hermes_cli.profile_distribution.shutil.copytree", fail_skill_root_copy
+    )
 
     with pytest.raises(OSError, match="WinError 145"):
         install_distribution(str(staged), name="target", force=True)
@@ -35,7 +44,9 @@ def test_force_install_preserves_existing_dir_when_new_copy_fails(profile_env, m
     assert not list((plan.target_dir / "skills").glob(".*hermes-dist*"))
 
 
-def test_force_install_restores_existing_dir_when_staged_swap_fails(profile_env, monkeypatch):
+def test_force_install_restores_existing_dir_when_staged_swap_fails(
+    profile_env, monkeypatch
+):
     staged = _make_staging_dir(profile_env, "src")
     plan = install_distribution(str(staged), name="target")
     skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
@@ -77,9 +88,13 @@ def test_force_install_locked_old_tree_is_not_discovered(profile_env, monkeypatc
 
     install_distribution(str(staged), name="target", force=True)
 
-    assert "old skill\n" in [p.read_text() for p in skills.rglob("SKILL.md")]  # the leftover is on disk
+    assert "old skill\n" in [
+        p.read_text() for p in skills.rglob("SKILL.md")
+    ]  # the leftover is on disk
     walked = [p.read_text() for p in iter_skill_index_files(skills, "SKILL.md")]
-    globbed = [p.read_text() for p in skills.rglob("SKILL.md") if not is_excluded_skill_path(p)]
+    globbed = [
+        p.read_text() for p in skills.rglob("SKILL.md") if not is_excluded_skill_path(p)
+    ]
     for found in (walked, globbed):
         assert "new skill\n" in found
         assert "old skill\n" not in found

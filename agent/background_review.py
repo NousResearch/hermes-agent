@@ -159,7 +159,7 @@ def _await_background_work(agent: Any, ends_wait: Callable[[], bool]) -> None:
     :data:`_BACKGROUND_WORK_WAIT_SECONDS` in all. A deferred fork is not waited for (it waits for
     machine idle, which no turn brings). The wait ends early once the session agent is interrupted
     (a person stopped or overtook the turn) or ``ends_wait()`` is true (a person's input is queued
-    behind the turn, the gateway drains)."""
+    behind the turn or steered or redirected into it, the gateway drains)."""
     from agent.plugin_session_fork import launched_fork_runs
 
     with _optional_lock(agent, "_background_review_lock"):

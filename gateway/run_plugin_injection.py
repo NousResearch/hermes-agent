@@ -42,8 +42,9 @@ def admission_turn_scope(authority, ref, live, row):
     running background review and plugin forks instead of superseding them
     (:func:`agent.background_review.turn_waits_for_background_work`); every other admission, a
     person's above all, runs unscoped and supersedes them at once. A person's input queued behind
-    the plugin's message (already, or arriving while it waits: :func:`wake_background_wait`) and a
-    gateway drain or profile retirement end that wait at once, so neither inherits it."""
+    the plugin's message (already, or arriving while it waits) or steered or redirected into it
+    (:func:`wake_background_wait`) and a gateway drain or profile retirement end that wait at once,
+    so neither inherits it."""
     if not _plugin_admission(row):
         return contextlib.nullcontext()
     return _waiting_turn(authority, ref, live)
@@ -66,18 +67,36 @@ def _waiting_turn(authority, ref, live):
             live.background_wait = None
 
 
-def wake_background_wait(authority, ref):
-    """From ``SessionAuthority._schedule`` (every admission's arrival signal): a plugin turn of
-    *ref* waiting for background work stops waiting once a person's input is queued behind it."""
+def wake_background_wait(authority, ref, *, person_input=False):
+    """A plugin turn of *ref* waiting for background work stops waiting once a person's input is
+    queued behind it (from ``SessionAuthority._schedule``, every admission's arrival signal) or,
+    with ``person_input``, has landed inside the running turn (:func:`person_input_joined_turn`)."""
     live = authority.sessions.get(ref.session_id)
     wait = getattr(live, "background_wait", None)
     if wait is None or wait.is_set():
         return
-    from gateway.session_unattended_unknown import is_unattended
-    from hermes_state_runtime import list_session_admissions
-    if any(row["status"] == "queued" and not is_unattended(row)
-           for row in list_session_admissions(authority.db, session_id=ref.session_id)):
-        wait.set()
+    if not person_input:
+        from gateway.session_unattended_unknown import is_unattended
+        from hermes_state_runtime import list_session_admissions
+        if not any(row["status"] == "queued" and not is_unattended(row)
+                   for row in list_session_admissions(authority.db, session_id=ref.session_id)):
+            return
+    wait.set()
+
+
+def person_input_joined_turn(runner, session_key):
+    """From ``_fold_into_running_turn`` (every accepted steer and active-turn redirect, whichever
+    path accepted it): the person's text went into the running turn and is never queued, so no
+    arrival signal reports it."""
+    from gateway.session_authorities import active_authority
+    from gateway.session_contract import SessionRef
+    authority = active_authority(runner)
+    if authority is None:
+        return
+    session_id = runner.session_store.peek_session_id(session_key)
+    if session_id:
+        wake_background_wait(authority, SessionRef(authority.profile_id, authority.logical_owner(session_id)),
+                             person_input=True)
 
 
 class GatewayPluginInjectionMixin:

@@ -761,12 +761,17 @@ when nothing was started.
   waits up to 120 seconds for the session's running background review
   and running forks to finish, then cancels whatever is still running,
   so do not rely on an injected turn to cancel background work. A person
-  never waits behind that grace: input a person sends to the session
-  while the injected turn waits ends the wait at once, the background
-  work is cancelled as for any person's turn, and the injected turn and
-  then the person's run in the order they arrived. A gateway shutdown,
-  restart or profile retirement ends the wait the same way, inside the
-  shutdown's drain budget. The
+  never waits behind that grace: a message a person sends to the session
+  while the injected turn waits ends the wait at once, whatever
+  `display.busy_input_mode` makes of it, and the background work is
+  cancelled as for any person's turn. A message that is queued (queue
+  mode, an interrupt, any message before the injected turn has an agent)
+  runs as its own turn after the injected one, in the order they
+  arrived; a steer (steer mode or `/steer`) or an interrupt-mode
+  correction that redirects the turn goes into the injected turn itself.
+  Another plugin's injected message does not end the wait. A gateway
+  shutdown, restart or profile retirement ends the wait the same way,
+  inside the shutdown's drain budget. The
   injected turn starts from the gateway's own context: its tool calls
   carry no `turn_origin`, even when the fork injected it. `timeout`
   (seconds, at most 1800) adds a wall clock. Both are cooperative:

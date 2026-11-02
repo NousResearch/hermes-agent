@@ -801,7 +801,10 @@ class GatewayBusySessionMixin:
     def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
         the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
-        turn already owns the slot."""
+        turn already owns the slot. A plugin turn waiting for the session's background work stops
+        waiting, as for a person's queued input."""
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None

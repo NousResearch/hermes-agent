@@ -1,8 +1,8 @@
 name: mock-review
 title: Mock Review
 repo: https://github.com/apelabs-dev/hermes-mock-review
-sha: "cdccb2e378e98f0507c8267f009437e708ce2556"
-version: "1.1.4"
+sha: "7581bdfd6fc8749afa3ff7782573819a378a3aa6"
+version: "1.1.5"
 description: >-
   Review boards for UI mockups. The agent builds a board from a decisions.json file and
   your prototype pages; you open it on desktop or phone, mark each decision approve,
@@ -31,9 +31,9 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/apelabs-dev/hermes-mock-review#readme
-image: https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/cdccb2e378e98f0507c8267f009437e708ce2556/docs/img/catalog-banner.jpg
+image: https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/7581bdfd6fc8749afa3ff7782573819a378a3aa6/docs/img/catalog-banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/cdccb2e378e98f0507c8267f009437e708ce2556/docs/img/showcase.jpg
+  - https://raw.githubusercontent.com/apelabs-dev/hermes-mock-review/7581bdfd6fc8749afa3ff7782573819a378a3aa6/docs/img/showcase.jpg
 platforms: []
 known_issues:
   - "here.now hosting needs the official here-now skill in the active profile (`hermes skills install official/productivity/here-now`) and a HERENOW_API_KEY; local and tailnet hosting need neither."

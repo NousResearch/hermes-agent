@@ -8,6 +8,7 @@ interface RemoteProbeOptions {
   enabled: boolean
   url: string
   revision: number
+  sshTunnel?: { host: string } | null
   onResult: (result: DesktopConnectionProbeResult) => void
   onReset: () => void
 }
@@ -20,7 +21,7 @@ interface RemoteProbe {
   acceptProbe: (result: DesktopConnectionProbeResult) => void
 }
 
-export function useRemoteProbe({ enabled, url, revision, onResult, onReset }: RemoteProbeOptions): RemoteProbe {
+export function useRemoteProbe({ enabled, url, revision, sshTunnel, onResult, onReset }: RemoteProbeOptions): RemoteProbe {
   const [probe, setProbe] = useState<DesktopConnectionProbeResult | null>(null)
   const [probeStatus, setProbeStatus] = useState<ProbeStatus>('idle')
   const targetSeq = useRef<number>(0)
@@ -63,8 +64,11 @@ export function useRemoteProbe({ enabled, url, revision, onResult, onReset }: Re
 
     setProbeStatus('probing')
     timer = window.setTimeout(() => {
-      void window.hermesDesktop
-        .probeConnectionConfig(url)
+      const request = sshTunnel
+        ? window.hermesDesktop.probeConnectionConfig(url, { sshTunnel })
+        : window.hermesDesktop.probeConnectionConfig(url)
+
+      void request
         .then(result => {
           if (seq === targetSeq.current) {
             acceptProbeRef.current(result)
@@ -78,7 +82,7 @@ export function useRemoteProbe({ enabled, url, revision, onResult, onReset }: Re
     }, 500)
 
     return cancel
-  }, [enabled, revision, url])
+  }, [enabled, revision, sshTunnel, url])
 
   return { probe, probeStatus, targetSeq, invalidateProbe, acceptProbe }
 }

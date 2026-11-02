@@ -9,6 +9,7 @@ import type { RemoteSetupHost } from './use-remote-setup'
 interface RemoteOAuthOptions {
   host: RemoteSetupHost
   url: string
+  payload: DesktopConnectionConfigInput
   providerLabel: string
   targetSeq: RefObject<number>
   beforeOAuthLogin: (payload: DesktopConnectionConfigInput) => Promise<void> | undefined
@@ -48,6 +49,7 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
   const {
     host,
     url,
+    payload,
     providerLabel,
     targetSeq,
     beforeOAuthLogin,
@@ -83,7 +85,7 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
     setSigningIn(true)
 
     try {
-      await beforeOAuthLogin({ mode: 'remote', remoteAuthMode: 'oauth', remoteUrl: url })
+      await beforeOAuthLogin({ ...payload, remoteAuthMode: 'oauth' })
 
       if (!current()) {
         return
@@ -92,10 +94,12 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
       // Absent identity (first-run/settings hosts) keeps the legacy single-arg
       // call; the registry host always supplies one for its draft.
       const identity = oauthLoginIdentity?.()
-
+      const transport = payload.sshTunnel !== undefined ? { sshTunnel: payload.sshTunnel } : undefined
       const result = identity
-        ? await window.hermesDesktop.oauthLoginConnectionConfig(url, identity)
-        : await window.hermesDesktop.oauthLoginConnectionConfig(url)
+        ? await window.hermesDesktop.oauthLoginConnectionConfig(url, { ...identity, ...transport })
+        : transport
+          ? await window.hermesDesktop.oauthLoginConnectionConfig(url, transport)
+          : await window.hermesDesktop.oauthLoginConnectionConfig(url)
 
       if (!current()) {
         return

@@ -246,6 +246,28 @@ describe('BootFailureOverlay', () => {
     }
   })
 
+  it('probes and reauthenticates a failed tunneled v1 Remote gateway through its tunnel', async () => {
+    const gatewayUrl = 'http://127.0.0.1:9119'
+    const tunnel = { sshTunnel: { host: 'alice@gw-host' } }
+    const login = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const logout = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const probe = vi.fn().mockResolvedValue({ providers: [{ id: 'basic', type: 'password' }] })
+
+    const restore = stubDesktop(
+      { ...remoteToken, remoteAuthMode: 'oauth', remoteTokenSet: false, remoteUrl: gatewayUrl, ...tunnel },
+      { oauthLoginConnectionConfig: login, oauthLogoutConnectionConfig: logout, probeConnectionConfig: probe }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      await waitFor(() => expect(probe).toHaveBeenCalledWith(gatewayUrl, tunnel))
+      fireEvent.click(await screen.findByRole('button', { name: /sign out & sign in/i }))
+      await waitFor(() => expect(login).toHaveBeenCalledWith(gatewayUrl, tunnel))
+    } finally {
+      restore()
+    }
+  })
+
   it('recovers a cloud connection through the portal cascade instead of native OAuth', async () => {
     const gatewayUrl = 'https://agent-1.agents.nousresearch.com'
     const logout = vi.fn().mockResolvedValue({ ok: true, connected: false })

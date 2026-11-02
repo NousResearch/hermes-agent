@@ -177,6 +177,7 @@ import {
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useGatewayProjectTree,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
@@ -776,11 +777,11 @@ export function ChatSidebar({
     }
   }, [agentOrderIds, agentOrderManual, unpinnedAgentSessions])
 
-  // Recents render in recency order. The hand-picked order is layered on per
-  // date group inside the section (orderRowsWithinGroups) rather than baked
-  // into the list here, so a drag ranks a row among its own day's chats
-  // instead of flattening the whole sidebar into an undated manual mode.
+  // Recents render in recency order. The hand-picked order is layered on per date group inside the
+  // section (orderRowsWithinGroups) rather than baked into the list here, so a drag ranks a row
+  // among its own day's chats instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
+  const gatewayProjectTree = useGatewayProjectTree(projectTree, agentSessions)
 
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
@@ -984,10 +985,10 @@ export function ChatSidebar({
   // `projects.tree` already unifies explicit projects + auto repos and folds
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
-  // overview sort. Membership is the backend tree's — never re-derived here.
+  // overview sort. Membership is the backend tree's (plus other gateways' rows), never re-derived.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      filterToSessionBearingProjects(filterVisibleProjects(gatewayProjectTree, dismissedAutoProjects))
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -1006,11 +1007,7 @@ export function ChatSidebar({
       activeProjectId
     )
 
-    // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
-    // keep their sorted position rather than jumping the hand-picked list.
-    // Deduplicate by id — safety net for backend merge edge cases
-    // (e.g. Windows path-casing differences across profiles).
+    // Manual drag-order over the sorted list; dedupe by id (Windows path casing across profiles).
     const seen = new Set<string>()
 
     const deduped = sorted.filter(project => {
@@ -1025,7 +1022,7 @@ export function ChatSidebar({
 
     return orderProjectsByIds(deduped, projectOrderIds)
   }, [
-    projectTree,
+    gatewayProjectTree,
     dismissedAutoProjects,
     orderRepos,
     activeProjectId,

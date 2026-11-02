@@ -22,6 +22,7 @@ import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
+import { esQueueFair } from './es_queue_fair'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
@@ -3708,6 +3709,7 @@ export const esOverrides = {
     markAllRead: 'Marcar todo como leído'
   },
   composer: {
+    queueFair: esQueueFair,
     message: 'Mensaje',
     wakingProfile: profile => `Despertando ${profile}…`,
     placeholderStarting: 'Iniciando Hermes...',

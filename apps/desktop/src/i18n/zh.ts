@@ -22,6 +22,7 @@ import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
 import { zhPluginUpdate } from './zh_plugin_update'
 import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
+import { zhQueueFair } from './zh_queue_fair'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
@@ -3176,6 +3177,7 @@ export const zhOverrides = {
   },
 
   composer: {
+    queueFair: zhQueueFair,
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
     placeholderStarting: '正在启动 Hermes…',

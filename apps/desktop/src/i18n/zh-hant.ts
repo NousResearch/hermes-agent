@@ -11,6 +11,7 @@ import { zhHantCommon } from './zh-hant_common'
 import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
+import { zhHantQueueFair } from './zh-hant_queue_fair'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
@@ -165,6 +166,7 @@ export const zhHantOverrides = {
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
   composer: {
+    queueFair: zhHantQueueFair,
     ...zhHantChat.composer,
     redirect: '重新導向目前的執行',
     queueLostNote: '重新啟動期間該回合已遺失',

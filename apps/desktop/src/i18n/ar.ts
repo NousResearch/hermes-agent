@@ -9,6 +9,7 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
+import { arQueueFair } from './ar_queue_fair'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
@@ -114,6 +115,7 @@ export const arOverrides = {
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
   composer: {
+    queueFair: arQueueFair,
     ...arChat.composer,
     redirect: 'إعادة توجيه التشغيل الحالي',
     queueLostNote: 'فُقد الدور أثناء إعادة التشغيل',

@@ -221,8 +221,28 @@ def cancel(cli, store, admission: str) -> str:
     return "started"  # it already ran to its end: nothing was stopped
 
 
+def hold_reasons(cli, store) -> dict[str, str]:
+    """``{admission_id: hold_reason}`` from the owner's last published list: why each queued row waits."""
+    return {row["admission_id"]: str(row["hold_reason"]) for row in _state(cli, store).pending or ()
+            if isinstance(row, dict) and row.get("status") == "queued" and row.get("hold_reason")
+            and row.get("admission_id")}
+
+
+def reorderable(cli, store) -> list[str]:
+    """The queued admissions the owner lets move, in run order (``prompt.reorder_queued`` places)."""
+    return [row["admission_id"] for row in _state(cli, store).pending or ()
+            if isinstance(row, dict) and row.get("status") == "queued" and row.get("reorderable") is True]
+
+
+def move(cli, store, admission: str, position: int) -> list[str]:
+    """``prompt.reorder_queued``: the admission runs at ``position`` (0-based) among the reorderable rows."""
+    receipt = store.call("prompt.reorder_queued", session_id=cli.session_id, admission_id=admission,
+                         position=position)
+    return list((receipt or {}).get("order") or ())
+
+
 def replace(cli, store, admission: str, text: str) -> str | None:
-    """``prompt.replace_queued``: the edited prompt is a new admission at the back of the FIFO."""
+    """``prompt.replace_queued``: the edited prompt is a new admission in the replaced one's FIFO place."""
     receipt = store.call("prompt.replace_queued", session_id=cli.session_id, admission_id=admission,
                          submission_id=uuid.uuid4().hex, text=text)
     state = _state(cli, store)

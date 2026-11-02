@@ -29,17 +29,14 @@ from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 from gateway.session_transcript import TranscriptReadError
 
-
 @pytest.fixture
 def store(tmp_path):
     return SessionStore(sessions_dir=tmp_path / "gw", config=GatewayConfig())
-
 
 # --------------------------------------------------------------------------
 # A. read failure != empty transcript (landed on main via #100910; kept as
 #    the contract the slash-command handlers below rely on)
 # --------------------------------------------------------------------------
-
 
 class TestLoadTranscriptReadFailure:
     def test_read_failure_raises_instead_of_returning_empty(self, store, monkeypatch):
@@ -74,13 +71,11 @@ class TestLoadTranscriptReadFailure:
         store._db = None
         assert store.load_transcript("nope") == []
 
-
 # --------------------------------------------------------------------------
 # B. slash-command handlers surface the failure instead of dying silently.
 #    Before: the handler raised, base.py's dispatch wrapper logged
 #    "Command '/x' dispatch failed" and the user got NO reply at all.
 # --------------------------------------------------------------------------
-
 
 class TestSlashCommandsOnUnreadableTranscript:
 
@@ -91,7 +86,7 @@ class TestSlashCommandsOnUnreadableTranscript:
         so this path raised NameError (#102117 follow-up)."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from gateway.slash_commands_status import HISTORY_UNREADABLE
+        from gateway.slash_commands_status import history_unreadable
         from tests.gateway.test_background_command import _make_event, _make_runner
 
         runner = _make_runner()
@@ -102,5 +97,4 @@ class TestSlashCommandsOnUnreadableTranscript:
         runner._async_session_store = store
 
         result = await runner._handle_btw_command(_make_event(text="/btw what?"))
-        assert result == HISTORY_UNREADABLE
-
+        assert result == history_unreadable()

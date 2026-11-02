@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from hermes_constants import get_hermes_home
-from hermes_cli.plugins_manifest import _portable_skill_namespace
+from hermes_cli.plugins_manifest import _portable_data_namespace
 
 _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
 _PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
-_PLUGIN_STATE_LOCKS: Dict[str, threading.RLock] = {}
+_PLUGIN_STATE_LOCKS: dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
 
 
@@ -90,15 +90,15 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
         config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
 
 
-def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
+def _plugin_data_namespace(plugin_id: str, data_namespace: str) -> str:
     """Return one Windows-safe directory component for plugin-owned data. Portable Agent Plugins already
     receive this exact PLUGIN_DATA path; otherwise the fixed prefix avoids Windows reserved device names and
     the digest prevents fold collisions."""
-    candidate = skill_namespace or plugin_id
-    portable = skill_namespace and candidate.startswith("agent-plugin-")
+    candidate = data_namespace or plugin_id
+    portable = data_namespace and candidate.startswith("agent-plugin-")
     if portable and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,191}", candidate):
         return candidate
-    return _portable_skill_namespace(candidate)
+    return _portable_data_namespace(candidate)
 
 
 @contextmanager
@@ -134,8 +134,8 @@ def _locked_plugin_state(path: Path):
 class PluginState:
     """Atomic, quota-bounded JSON key/value state owned by one plugin."""
 
-    def __init__(self, plugin_id: str, skill_namespace: str = "") -> None:
-        self._data_namespace = _plugin_data_namespace(plugin_id, skill_namespace)
+    def __init__(self, plugin_id: str, data_namespace: str = "") -> None:
+        self._data_namespace = _plugin_data_namespace(plugin_id, data_namespace)
 
     @property
     def data_dir(self) -> Path:
@@ -160,7 +160,7 @@ class PluginState:
 
     def _read_unlocked(self) -> dict[str, Any]:
         try:
-            with open(self.path, encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8-sig") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
             return {}

@@ -49,7 +49,14 @@ def _whatsapp_user_chat_ids_match(platform: str, left: Optional[str], right: Opt
 
 
 class ProfileRouteRejected(RuntimeError):
-    """An explicit route matched a profile this gateway does not serve."""
+    """An explicit route matched a profile this gateway does not serve (``profile``, when known)."""
+
+    @property
+    def profile(self):
+        return self.args[1] if len(self.args) > 1 else None
+
+    def __str__(self):
+        return str(self.args[0]) if self.args else ''
 
 
 @dataclass(frozen=True)
@@ -110,7 +117,7 @@ def _bot_profile_key(name: Optional[str]) -> Optional[str]:
 def _coerce_route_id(value: Any) -> Optional[str]:
     """Normalize a route discriminator to str for strict equality matching.
 
-    PyYAML loads unquoted numeric IDs as ``int`` while ``SessionSource`` fields are ``str``. Only
+    YAML loads unquoted numeric IDs as ``int`` while ``SessionSource`` fields are ``str``. Only
     ``int`` (not ``bool``) is coerced; floats stringify to something (``"123.0"``) that can never
     match, so they get a load-time warning instead.
 
@@ -130,11 +137,11 @@ def _coerce_route_id(value: Any) -> Optional[str]:
     return str(value)
 
 
-def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
+def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRoute]:
     """Parse profile_routes from config.yaml, sorted most-specific-first."""
     if not raw:
         return []
-    routes: List[ProfileRoute] = []
+    routes: list[ProfileRoute] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -172,7 +179,7 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 
 
 def match_profile_route(
-    routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
+    routes: list[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
     adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:

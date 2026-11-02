@@ -1,0 +1,18 @@
+name: stacktree
+repo: https://github.com/stevysmith/stacktree-skill
+sha: 139fe05f2a03db602b6e29a4816d30ffddf99816
+subdir: agent-plugin
+description: "Publish what Hermes builds (reports, dashboards, briefs, proposals) to a private link that opens in any browser with no account for the viewer, set a passcode or limit it to a company's email addresses, update it in place, and see who opened it and what they commented. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure — hosted-only connector with no local code; every tool call goes to Stacktree's remote MCP server at api.stacktr.ee (OAuth 2.1 with dynamic client registration, token kept by Hermes); the HTML the model passes to publish_html or update_site is stored in the user's Stacktree account and served at the returned link (unlisted by default, public when a public_slug is set); page titles, open counts and third-party reader comments from that account are read into the session; the remote tools that publish, update, gate, delete pages or email approval requests run without a Hermes approval prompt; the required sign-in step `hermes mcp add stacktree --url https://api.stacktr.ee/mcp --auth oauth` writes a config.yaml server entry that replaces the package's own."
+maintainer: Stacktree
+tier: community
+category: tools
+version: "1.2.0"
+docs_url: https://stacktr.ee/agents
+platforms: []
+known_issues:
+  - "Sign in once after installing: hermes mcp add stacktree --url https://api.stacktr.ee/mcp --auth oauth"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

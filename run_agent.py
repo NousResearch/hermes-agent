@@ -8,9 +8,10 @@
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
-    import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+    import hermes_bootstrap
+except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
 
@@ -35,6 +36,7 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 
+from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
 
 
@@ -52,34 +54,6 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
-# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
-# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
-# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
-# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
-# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
-_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
-
-# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
-# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
-ONESHOT_SOURCE = "oneshot"
-CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
-
-
-def _session_source_for_agent(platform: Optional[str]) -> str:
-    try:
-        from gateway.session_context import get_session_env
-    except Exception:
-        get_session_env = os.environ.get
-    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
-    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
-    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
-        source = ""
-    if single_query and not source and (platform or "cli") == "cli":
-        return ONESHOT_SOURCE
-    return source or platform or "cli"
-
-
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
@@ -90,7 +64,7 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     user_id = getattr(agent, "_user_id", None)
     if not (chat_id or session_key or user_id):
         return None
-    origin: Dict[str, Any] = {
+    origin: dict[str, Any] = {
         "platform": getattr(agent, "platform", None) or "", "chat_id": chat_id,
         "chat_name": getattr(agent, "_chat_name", None), "chat_type": getattr(agent, "_chat_type", None) or "dm",
         "user_id": user_id, "user_name": getattr(agent, "_user_name", None), "thread_id": getattr(agent, "_thread_id", None),
@@ -129,7 +103,7 @@ if not _loaded_env_paths:
 from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool_lifecycle import cleanup_browser
+from tools.browser_session_lifecycle import cleanup_browser
 from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
@@ -137,7 +111,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
+from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -161,6 +135,7 @@ from agent.codex_responses_adapter import (
     _summarize_user_message_for_log,
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
 
@@ -194,7 +169,7 @@ def _positive_int(value: Any) -> Optional[int]:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-def _review_should_defer(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool:
+def _review_should_defer(agent: Any, task_cfg: Optional[dict[str, Any]]) -> bool:
     """True when an automatic background review targets the managed local runtime under ``defer: auto``."""
     from agent.review_idle_queue import defer_mode, review_targets_managed_local
     return defer_mode(task_cfg) == "auto" and review_targets_managed_local(agent, task_cfg)
@@ -233,7 +208,7 @@ class _StreamErrorEvent(Exception):
         super().__init__(message)
         self.message, self.code, self.param, self.status_code = message, code, param, status_code
         # OpenAI SDK-shaped body so _extract_api_error_context / _summarize_api_error / classify_api_error pick it up.
-        self.body: Dict[str, Any] = {"error": {"message": message, "code": code, "param": param, "type": "error"}}
+        self.body: dict[str, Any] = {"error": {"message": message, "code": code, "param": param, "type": "error"}}
 
 
 class AIAgent(
@@ -260,45 +235,49 @@ class AIAgent(
 
     def __init__(
         self,
-        base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
-        acp_command: str = None, acp_args: list[str] | None = None, command: str = None, args: list[str] | None = None,
+        base_url: str | None = None, api_key: str | None = None, provider: str | None = None, api_mode: str | None = None,
+        acp_command: str | None = None, acp_args: list[str] | None = None, command: str | None = None, args: list[str] | None = None,
         model: str = "",
         max_iterations: int = sys.maxsize,  # unlimited tool-calling iterations by default (shared with subagents)
-        tool_delay: float = None,  # deprecated: accepted for compatibility, ignored
-        enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
+        tool_delay: float | None = None,  # deprecated: accepted for compatibility, ignored
+        enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
         save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
-        tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
+        tool_progress_mode: str = "all", ephemeral_system_prompt: str | None = None,
         log_prefix_chars: int = 100, log_prefix: str = "",
-        providers_allowed: List[str] = None, providers_ignored: List[str] = None, providers_order: List[str] = None,
-        provider_sort: str = None, provider_require_parameters: bool = False, provider_data_collection: str = None,
+        providers_allowed: list[str] | None = None, providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
+        provider_sort: str | None = None, provider_require_parameters: bool = False, provider_data_collection: str | None = None,
         openrouter_min_coding_score: Optional[float] = None,
-        session_id: str = None,
-        tool_progress_callback: callable = None, tool_start_callback: callable = None,
-        tool_complete_callback: callable = None, thinking_callback: callable = None,
-        reasoning_callback: callable = None, clarify_callback: callable = None,
-        read_terminal_callback: callable = None, read_preview_callback: callable = None,
-        drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
-        stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
-        tool_gen_callback: callable = None, status_callback: callable = None,
-        notice_callback: callable = None, notice_clear_callback: callable = None,
+        session_id: str | None = None,
+        tool_progress_callback: Callable[..., Any] | None = None, tool_start_callback: Callable[..., Any] | None = None,
+        tool_complete_callback: Callable[..., Any] | None = None, thinking_callback: Callable[..., Any] | None = None,
+        reasoning_callback: Callable[..., Any] | None = None, clarify_callback: Callable[..., Any] | None = None,
+        read_terminal_callback: Callable[..., Any] | None = None, read_preview_callback: Callable[..., Any] | None = None,
+        drive_preview_callback: Callable[..., Any] | None = None, read_window_below_callback: Callable[..., Any] | None = None,
+        connection_callback: Callable[..., Any] | None = None, tour_callback: Callable[..., Any] | None = None,
+        theme_callback: Callable[..., Any] | None = None,
+        setup_beat_callback: Callable[..., Any] | None = None,
+        step_callback: Callable[..., Any] | None = None,
+        stream_delta_callback: Callable[..., Any] | None = None, interim_assistant_callback: Callable[..., Any] | None = None,
+        tool_gen_callback: Callable[..., Any] | None = None, status_callback: Callable[..., Any] | None = None,
+        notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
-        max_tokens: int = None, reasoning_config: Dict[str, Any] = None, service_tier: str = None,
-        request_overrides: Dict[str, Any] = None, prefill_messages: List[Dict[str, Any]] = None,
-        platform: str = None, user_id: str = None, user_id_alt: str = None, user_name: str = None,
-        chat_id: str = None, chat_name: str = None, chat_type: str = None, thread_id: str = None,
-        gateway_session_key: str = None,
+        max_tokens: int | None = None, reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
+        request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
+        platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,
+        chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
+        gateway_session_key: str | None = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
-        session_db=None, parent_session_id: str = None,
-        iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
-        fallback_model: Dict[str, Any] = None, credential_pool=None,
+        session_db=None, parent_session_id: str | None = None,
+        iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
+        fallback_model: dict[str, Any] | None = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
-        pass_session_id: bool = False, requested_provider: str = None,
-        capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
+        pass_session_id: bool = False, requested_provider: str | None = None,
+        capabilities: dict[str, bool] | None = None, cwd: str | None = None,
         side_agent: bool = False, memory_manager=None,
+        tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -328,26 +307,16 @@ class AIAgent(
             return None
 
     def _session_row_model_config(self) -> Any:
-        """``model_config`` for the session row: the init config plus the live YOLO bypass.
-
-        The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
-        /yolo toggle for ``hermes --resume``.
-        """
-        model_config = self._session_init_model_config
-        try:
-            from tools.approval import is_session_yolo_enabled
-            if is_session_yolo_enabled(self.session_id):
-                model_config = dict(model_config or {})
-                model_config["yolo_mode"] = True
-        except Exception:
-            pass
-        return model_config
+        """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
+        before the first turn (``hermes --resume`` restores it)."""
+        from tools.approval_yolo import with_session_yolo
+        return with_session_yolo(self._session_init_model_config, self.session_id)
 
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
             return
-        source = _session_source_for_agent(self.platform)
+        source = session_source_for(self.platform)
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
@@ -398,7 +367,7 @@ class AIAgent(
         if should_start and target_session_id and hasattr(engine, "on_session_start"):
             start_context = {
                 "old_session_id": old_session_id, "carry_over_context": carry_over_context,
-                "platform": _session_source_for_agent(getattr(self, "platform", None)),
+                "platform": session_source_for(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""), "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None), **extra_context,
             }
@@ -437,7 +406,9 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
-        # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
+        # Provider hooks that failed in the old session (agent.provider_route_hooks) are asked again.
+        self._provider_hook_failures = set()
+        # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
         self._is_user_initiated_turn = False
 
         self._transition_context_engine_session(
@@ -493,9 +464,12 @@ class AIAgent(
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
-    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
-        """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
-        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}`` counts."""
+    def _disable_codex_reasoning_replay(
+        self, messages: Optional[list[dict[str, Any]]] = None, *, keep_replay: bool = False,
+    ) -> dict[str, int]:
+        """On HTTP 400 ``invalid_encrypted_content``: pop ``codex_reasoning_items`` from every assistant
+        message and, unless ``keep_replay``, disable Responses reasoning replay. Returns
+        ``{"messages", "items"}`` counts."""
         stripped_messages = stripped_items = 0
         for msg in (messages if isinstance(messages, list) else []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -504,7 +478,8 @@ class AIAgent(
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
-        self._codex_reasoning_replay_enabled = False
+        if not keep_replay:
+            self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
@@ -514,9 +489,7 @@ class AIAgent(
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
-        return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
-                and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
+        return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -532,7 +505,7 @@ class AIAgent(
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
+    def _current_main_runtime(self) -> dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
             key: getattr(self, key, "") or ""
@@ -548,19 +521,14 @@ class AIAgent(
             return base_url_hostname(base_url)
         return getattr(self, "_base_url_hostname", "") or base_url_hostname(getattr(self, "_base_url_lower", ""))
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+    def _is_direct_openai_url(self, base_url: str | None = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         return self._hostname_for(base_url) == "api.openai.com"
 
-    def _is_azure_openai_url(self, base_url: str = None) -> bool:
+    def _is_azure_openai_url(self, base_url: str | None = None) -> bool:
         """True when a base URL targets Azure OpenAI (standard client, but NO Responses API support)."""
         url = str(base_url).lower() if base_url is not None else (getattr(self, "_base_url_lower", "") or "")
         return base_url_host_matches(url, "openai.azure.com")
-
-    def _is_github_copilot_url(self, base_url: str = None) -> bool:
-        """Return True when a base URL targets GitHub Copilot's OpenAI-compatible API."""
-        hostname = self._hostname_for(base_url)
-        return bool(hostname) and (hostname == "api.githubcopilot.com" or hostname.endswith(".githubcopilot.com"))
 
     def _resolved_api_call_timeout(self) -> float:
         """Per-call request timeout: per-model ``timeout_seconds`` > provider ``request_timeout_seconds`` >
@@ -597,7 +565,8 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
+        from agent.gemini_long_decode import long_decode_stale_multiplier
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
         explicit = self._stale_timeout_is_explicit()
@@ -605,13 +574,12 @@ class AIAgent(
         # cap below, so the floor can never outlive the run budget.
         if self.api_mode == "codex_responses" and not explicit:
             timeout = max(timeout, _high_effort_silence_floor(self))
+        if not explicit:
+            timeout *= long_decode_stale_multiplier(api_payload)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
-        run_budget = getattr(self, "run_budget_seconds", None)
-        started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not explicit:
-            remaining = float(run_budget) - (time.time() - started)
-            timeout = min(timeout, max(60.0, remaining * 0.5))
+        if not explicit:
+            timeout = cap_to_run_budget(self, timeout)
         return timeout
 
     def _stale_timeout_is_explicit(self) -> bool:
@@ -648,15 +616,6 @@ class AIAgent(
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
-    def _is_copilot_url(self) -> bool:
-        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
-        return any(base_url_host_matches(self._base_url_lower, h) for h in ("api.githubcopilot.com", "models.github.ai"))
-
-    def _is_copilot_provider(self) -> bool:
-        """True when the active provider is GitHub Copilot under any alias (``copilot`` / ``github-copilot`` /
-        ``github``) or by base URL; a bare equality check would silently skip credential recovery."""
-        return (self.provider or "").strip().lower() in {"copilot", "github-copilot", "github"} or self._is_copilot_url()
-
     def _is_codex_backend(self) -> bool:
         """Return True for the ChatGPT OAuth Codex Responses backend."""
         return (getattr(self, "api_mode", None) == "codex_responses"
@@ -688,19 +647,26 @@ class AIAgent(
         from hermes_cli.runtime_provider_backends import _is_external_process_provider
         if _is_external_process_provider(normalized_provider):
             return False
-        if normalized_provider == "copilot":
-            try:
-                from hermes_cli.models import _should_use_copilot_responses_api
-                return _should_use_copilot_responses_api(model)
-            except Exception:
-                pass  # fall back to the generic GPT-5 rule
+        # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized_provider) if normalized_provider else None
+        from agent.provider_route_hooks import model_api_mode
+        derived = model_api_mode(profile, model) if profile is not None else None
+        if derived is not None:
+            return derived == "codex_responses"
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
-        """``max_completion_tokens`` for newer OpenAI families (and Azure / Copilot serving them), else
-        ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
-        if (self._is_direct_openai_url() or self._is_azure_openai_url() or self._is_github_copilot_url()
-                or model_forces_max_completion_tokens(self.model)):
+        """``max_completion_tokens`` for newer OpenAI families (and Azure / provider routes declaring it),
+        else ``max_tokens``. URL-first, then model-name fallback for third-party endpoints fronting those models."""
+        if self._is_direct_openai_url() or self._is_azure_openai_url():
+            return {"max_completion_tokens": value}
+        from agent.provider_route_hooks import route_answer
+        declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
+                                base_url=getattr(self, "base_url", "") or "", model=self.model or "")
+        if declared:
+            return {declared: value}
+        if model_forces_max_completion_tokens(self.model):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -783,19 +749,20 @@ class AIAgent(
     from agent.background_review import _MEMORY_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT, _COMBINED_REVIEW_PROMPT
     _summarize_background_review_actions = _forward_static("agent.background_review", "summarize_background_review_actions")
 
-    def _spawn_background_review(self, messages_snapshot: List[Dict], review_memory: bool = False,
+    def _spawn_background_review(self, messages_snapshot: list[dict], review_memory: bool = False,
                                  review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> None:
         """Post-turn review entry point: decide WHEN, then spawn.
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
-        (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+        (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
+        ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
-        # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
+        if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        if focus is None:
+        if not explicit and focus is None:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
@@ -815,9 +782,9 @@ class AIAgent(
             return
         self._spawn_background_review_now(**kwargs)
 
-    def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
+    def _spawn_background_review_now(self, messages_snapshot: list[dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
-                                     task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0,
+                                     task_cfg: Optional[dict[str, Any]] = None, _requeue_attempts: int = 0,
                                      explicit: bool = False) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -865,7 +832,7 @@ class AIAgent(
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None or kwargs.get("explicit"):
                 return
             if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
@@ -875,7 +842,7 @@ class AIAgent(
             from agent.review_idle_queue import QUEUE
             # kwargs carries the incremented _requeue_attempts through the queue so the cap survives.
             QUEUE.enqueue(self, _review_queue_key(self), dict(kwargs))
-        except Exception:  # noqa: BLE001 — requeue is best-effort
+        except Exception:
             logger.debug("Preempted-review requeue failed", exc_info=True)
 
     _build_memory_write_metadata = _forward("agent.background_review", "build_memory_write_metadata")
@@ -897,13 +864,13 @@ class AIAgent(
             },
         )
 
-    def shutdown_memory_provider(self, messages: list = None) -> None:
+    def shutdown_memory_provider(self, messages: list | None = None) -> None:
         """Shut down the memory provider and context engine at session end (idempotent: gateway cleanup and
         ``close()`` may both call it)."""
         if getattr(self, "_memory_provider_shutdown", False):
             return
         self._memory_provider_shutdown = True
-        if self._memory_manager:
+        if self._memory_manager and self._memory_manager.claim_teardown(session_end=True):
             try:
                 self._memory_manager.on_session_end(messages or [])
             except Exception as e:
@@ -911,7 +878,7 @@ class AIAgent(
             _quietly(lambda: self._memory_manager.shutdown_all())
         _notify_context_engine_session_end(self, messages)
 
-    def commit_memory_session(self, messages: list = None) -> None:
+    def commit_memory_session(self, messages: list | None = None) -> None:
         """Flush end-of-session extraction on session_id rotation (/new, compression) without tearing providers
         down."""
         if self._memory_manager:
@@ -952,9 +919,9 @@ class AIAgent(
             pass
 
     def release_clients(self) -> None:
-        """Release LLM clients and child agents WITHOUT tearing down session tool state (gateway cache
-        eviction: the session may resume on the same task_id, so processes, sandbox, browser, computer-use and
-        memory provider are kept). Idempotent; distinct from ``close()``."""
+        """Release LLM clients, child agents and memory providers WITHOUT tearing down session tool state (gateway
+        cache eviction: the session may resume on the same task_id, so processes, sandbox, browser and computer-use
+        are kept). Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
@@ -963,16 +930,20 @@ class AIAgent(
         # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
         # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
         _quietly(self._close_codex_session)
+        if getattr(self, "_memory_manager", None) is not None:
+            _quietly(self._memory_manager.release_soft)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
         blocks the rest."""
-        # close() is the hard owner boundary; shutdown_memory_provider() is idempotent so gateway pre-calls
-        # never double-extract.
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
+        from agent.prepared_compaction import release_for_agent
+        _quietly(release_for_agent, self)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
@@ -982,6 +953,14 @@ class AIAgent(
         self._session_messages = []
         self._db_flush_scan_prefix = None
         self._streamed_assistant_text_parts = []
+        if isinstance(session_messages, list):
+            # The token-estimate memo pins message strings; a closed conversation's can never hit again. The
+            # system prompt reaches the memo only through api_messages, never through the history, and a
+            # prompt-caching request splits it into the static prefix + a per-request suffix slice: the
+            # prefix's pin evicts that split entry.
+            from agent.model_metadata_token_memo import forget_message_token_memo
+            _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
+                                                 getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
         _quietly(self._finalize_owned_session_row)
 
@@ -1031,7 +1010,7 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Return freed heap pages to the OS on glibc; safe no-op elsewhere."""
+        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
         from hermes_cli.mem_trim import trim_memory
         trim_memory(force=True, reason="agent close")
 
@@ -1051,9 +1030,9 @@ class AIAgent(
             from hermes_state_registry import release_or_close
             release_or_close(session_db)
 
-    def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
+    def _hydrate_todo_store(self, history: list[dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
-        results paired with an earlier assistant ``todo`` call count — a forged bare ``role: tool`` message
+        results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
         must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
         found = self._latest_todo_response(history)
         if found is not None:
@@ -1070,7 +1049,7 @@ class AIAgent(
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
 
-    def _latest_todo_response(self, history: List[Dict[str, Any]]) -> Optional[tuple]:
+    def _latest_todo_response(self, history: list[dict[str, Any]]) -> Optional[tuple]:
         """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
@@ -1094,9 +1073,10 @@ class AIAgent(
         return None
 
     @classmethod
-    def _tool_response_matches_todo_call(cls, history: List[Dict[str, Any]], tool_index: int) -> bool:
-        """True when the nearest prior assistant message issued a ``todo`` call with this ``tool_call_id``; a
-        ``user``/``system`` boundary or missing id means unpaired → must not hydrate."""
+    def _tool_response_matches_todo_call(cls, history: list[dict[str, Any]], tool_index: int) -> bool:
+        """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
+        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
+        missing id means unpaired → must not hydrate."""
         tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
         if not tool_call_id:
             return False
@@ -1109,12 +1089,13 @@ class AIAgent(
         return False
 
     @classmethod
-    def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+    def _assistant_has_todo_tool_call(cls, assistant_msg: dict[str, Any], tool_call_id: str) -> bool:
+        """True when the paired call resolves to the registered Todo tool."""
+        from tools.todo_tool import is_todo_tool_call
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
-            for tc in tool_calls
+            cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls
         )
 
     @property
@@ -1139,7 +1120,7 @@ class AIAgent(
     _sanitize_api_messages = _forward_static("agent.agent_runtime_helpers", "sanitize_api_messages")
 
     @staticmethod
-    def _is_thinking_only_assistant(msg: Dict[str, Any], *, drop_codex_reasoning_items: bool = True) -> bool:
+    def _is_thinking_only_assistant(msg: dict[str, Any], *, drop_codex_reasoning_items: bool = True) -> bool:
         """True if ``msg`` is an assistant turn whose only payload is reasoning (no text, no tool_calls).
 
         Providers converting reasoning to thinking blocks reject it (400 "final block cannot be thinking"), so
@@ -1269,6 +1250,8 @@ class AIAgent(
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
+        if decision.should_halt:
+            record_guardrail_decision(self, decision.action, decision.code)
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
@@ -1284,14 +1267,14 @@ class AIAgent(
         decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.
-        stall_notice = result_stub = None
+        stall_notice = result_stub = stall_kind = None
         if self._stall_guards_enabled():
             try:
                 observation = self._tool_guardrails.observe_call(
                     tool_name, function_args, function_result if isinstance(function_result, str) else None,
                     tool_call_id=tool_call_id, failed=failed,
                 )
-                stall_notice, result_stub = observation.notice, observation.stub
+                stall_notice, result_stub, stall_kind = observation.notice, observation.stub, observation.kind
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
         # Result-reference stubbing: a 2nd+ identical call with a byte-identical FRESH result enters
@@ -1300,6 +1283,7 @@ class AIAgent(
             function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
+        record_guardrail_warnings(self, decision, stall_kind if stall_notice else None)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
@@ -1359,9 +1343,10 @@ class AIAgent(
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
-        # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
-        # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and
-        # owns no gateway session. The schema-level `background` param is intentionally ignored.
+        # Top-level MODEL delegations run in the background (handle returned, results re-enter as messages),
+        # unless the session's delegate_task is the joined variant (one-shot, delegation.gateway_mode inline).
+        # An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and owns no gateway
+        # session. The schema-level `background` param is intentionally ignored.
         return _delegate_task(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
@@ -1472,7 +1457,7 @@ def _print_tool_listing() -> None:
     print(_LIST_TOOLS_USAGE)
 
 
-def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[List[str]]:
+def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[list[str]]:
     """Comma-separated toolset CLI arg → list (echoed), or None when absent."""
     if not raw:
         return None
@@ -1481,7 +1466,7 @@ def _parse_toolset_arg(raw: Optional[str], label: str) -> Optional[List[str]]:
     return names
 
 
-def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, model: str) -> None:
+def _save_sample_trajectory(agent: AIAgent, result: dict, user_query: str, model: str) -> None:
     """``--save_sample``: write one trajectory (same format as batch_runner) to a UUID-named JSON file."""
     sample_filename = f"sample_{str(uuid.uuid4())[:8]}.json"
     entry = {
@@ -1497,8 +1482,8 @@ def _save_sample_trajectory(agent: "AIAgent", result: dict, user_query: str, mod
 
 
 def main(
-    query: str = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
-    enabled_toolsets: str = None, disabled_toolsets: str = None, list_tools: bool = False,
+    query: str | None = None, model: str = "", api_key: str | None = None, base_url: str = "", max_turns: int = 10,
+    enabled_toolsets: str | None = None, disabled_toolsets: str | None = None, list_tools: bool = False,
     save_trajectories: bool = False, save_sample: bool = False, verbose: bool = False, log_prefix_chars: int = 20,
 ):
     """
@@ -1531,6 +1516,14 @@ def main(
     print("=" * 50)
     if list_tools:
         return _print_tool_listing()
+
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # The `hermes` CLI does this in hermes_cli.main; this console script
+    # bypasses it. Never raises.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
 
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
@@ -1569,54 +1562,3 @@ if __name__ == "__main__":
     from agent.legacy_cli import main as _legacy_cli_main
 
     raise SystemExit(_legacy_cli_main(run=main))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from types import SimpleNamespace  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSED_SUMMARY_METADATA_KEY': ('agent.context_compressor', 'COMPRESSED_SUMMARY_METADATA_KEY'),
-    'ContextCompressor': ('agent.context_compressor', 'ContextCompressor'),
-    'DEFAULT_AGENT_IDENTITY': ('agent.prompt_builder', 'DEFAULT_AGENT_IDENTITY'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'OpenAI': ('agent.process_bootstrap', 'OpenAI'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'build_context_files_prompt': ('agent.prompt_builder', 'build_context_files_prompt'),
-    'build_environment_hints': ('agent.prompt_builder', 'build_environment_hints'),
-    'build_skills_system_prompt': ('agent.prompt_builder', 'build_skills_system_prompt'),
-    'check_toolset_requirements': ('model_tools', 'check_toolset_requirements'),
-    'convert_scratchpad_to_think': ('agent.trajectory', 'convert_scratchpad_to_think'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'file_mutation_result_landed': ('agent.tool_result_classification', 'file_mutation_result_landed'),
-    'flatten_message_text': ('agent.message_content', 'flatten_message_text'),
-    'get_tool_definitions': ('model_tools', 'get_tool_definitions'),
-    'handle_function_call': ('model_tools', 'handle_function_call'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'load_soul_md': ('agent.prompt_builder', 'load_soul_md'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-    'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
-    'user_originated_turn_view': ('agent.context_compressor', 'user_originated_turn_view'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

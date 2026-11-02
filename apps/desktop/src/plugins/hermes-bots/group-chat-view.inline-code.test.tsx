@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 
@@ -31,7 +31,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: () => null,
     CopyButton: () => null,
-    Switch: () => null,
+    ToggleRow: () => null,
     ConfirmDialog: () => null,
     Dialog: () => null,
     DialogContent: () => null,
@@ -79,6 +79,8 @@ it('themes inline code in room message bodies with the chat inline-code tokens',
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
 
   const { getByTestId } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)
+  // The room paints once the canonical `groups.capabilities` gate resolves.
+  await waitFor(() => expect(getByTestId('renderer-code')).toBeTruthy())
   const style = getComputedStyle(getByTestId('renderer-code'))
 
   expect(style.color).toBe('var(--ui-inline-code-foreground)')

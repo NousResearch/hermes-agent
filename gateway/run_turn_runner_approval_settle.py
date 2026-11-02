@@ -12,9 +12,13 @@ Best-effort by design: a failed notice is logged at debug — the approval alrea
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Optional
 
-from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_timed_out_notice
+from agent.i18n import t
+from gateway.platforms.base import fit_prefix
+from gateway.platforms.base_exec_approval import (
+    approval_timeout_seconds, ea_default_reason_text, ea_reason_label_text, format_approval_timed_out_notice)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,10 @@ def register_timeout_notice(
     session_key = runner._ctx.session_key or ""
     if not request_id or not session_key:
         return
-    timeout_s = approval_timeout_seconds()
+    timeout_s = approval_data.get("timeout_s")
+    if timeout_s is None:
+        timeout_s = approval_timeout_seconds()
+    flagged = approval_data.get("description") or ea_default_reason_text()
 
     def settle(reason: str) -> None:
         if reason != "timeout":
@@ -47,13 +54,14 @@ def register_timeout_notice(
         if callable(still_current) and not still_current():
             return
         runner._schedule(
-            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s),
+            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s, flagged),
             "Approval timeout notice scheduling error")
 
     register_gateway_settle(session_key, request_id, settle)
 
 
-async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str], timeout_s: int) -> None:
+async def _post_timeout_notice(
+        ctx, command: str, card_message_id: Optional[str], timeout_s: int, reason: str = "") -> None:
     from gateway.run import _interim_metadata
 
     adapter = ctx._status_adapter
@@ -61,20 +69,38 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
     metadata = _interim_metadata(ctx._status_thread_metadata)
     try:
         # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
+        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, notice, command, reason):
             return
         await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
     except Exception:
         logger.debug("Approval timeout notice failed", exc_info=True)
 
 
-async def _edit_card(adapter, chat_id: str, message_id: str, content: str) -> bool:
-    """Edit the card in place (drops the buttons on platforms whose edit replaces the markup)."""
+def _timed_out_card_body(adapter, chat_id: str, notice: str, command: str, reason: str = "") -> str:
+    """The notice plus the reason and command, which are now the card's only record of the request. It must fit one
+    message in the platform's own units (Telegram counts UTF-16), or the edit is truncated in
+    place behind a dangling "(1/N)" and keeps streaming-preview state. A run of backticks in the
+    command would close the card's fence and let the platform's formatter rewrite, and grow,
+    the rest, so it is split with zero-width spaces (which also ride along in a copy)."""
+    command, reason = (re.sub(r"`{3,}", lambda run: "\u200b".join(run.group()), s) for s in (command, reason))
+    measure, suffix = adapter.message_len_fn_for_chat(chat_id), "..."
+    if reason:  # capped like the card's own reason, so the command keeps most of the budget
+        notice = f"{notice}\n{ea_reason_label_text()}: {fit_prefix(reason, 500, measure, suffix)}"
+    frame = measure(t("gateway.exec_approval.timed_out_card_body", notice=notice, command=""))
+    budget = adapter.max_message_length_for_chat(chat_id) - frame - measure(suffix)
+    return t("gateway.exec_approval.timed_out_card_body", notice=notice,
+             command=fit_prefix(command, max(0, budget), measure, suffix))
+
+
+async def _edit_card(adapter, chat_id: str, message_id: str, notice: str, command: str, reason: str = "") -> bool:
+    """Edit the card in place to the timed-out body; False sends the notice as a new message.
+    Platforms whose edit replaces the markup drop the buttons here; Discord's edit keeps them,
+    and its card's settle observer removes them."""
     edit: Optional[Callable[..., Any]] = getattr(adapter, "edit_message", None)
     if edit is None:
         return False
     try:
-        result = await edit(chat_id, message_id, content)
+        result = await edit(chat_id, message_id, _timed_out_card_body(adapter, chat_id, notice, command, reason))
     except Exception:
         logger.debug("Approval card edit failed; sending the notice as a new message", exc_info=True)
         return False

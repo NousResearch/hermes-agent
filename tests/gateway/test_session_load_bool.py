@@ -12,7 +12,6 @@ from pathlib import Path
 
 from gateway.session import SessionStore
 
-
 class TestSessionLoadBoolCorruption:
     """Verify that non-dict entries in sessions.json are skipped, not fatal."""
 
@@ -66,6 +65,3 @@ class TestSessionLoadBoolCorruption:
         assert store._entries["valid_key"].session_id == "20260101_120000_abc12345"
         # The corrupted entry must NOT be loaded
         assert "corrupted_key" not in store._entries
-
-
-

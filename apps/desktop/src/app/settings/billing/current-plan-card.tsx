@@ -1,6 +1,9 @@
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/icons'
+import { cn } from '@/lib/utils'
+
+import { LIST_ROW_COLUMNS } from '../primitives'
 
 import { BillingRefusalInline } from './inline-feedback'
 import { openExternal } from './open-external'
@@ -15,7 +18,7 @@ export function CurrentPlanCard({ onViewPlans, plan }: { onViewPlans: () => void
 
   return (
     <div className="@container">
-      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center">
+      <div className={cn('grid gap-3 py-3 @2xl:items-center', LIST_ROW_COLUMNS)}>
         <div className="flex min-w-0 items-center gap-3">
           <TierArt name={plan.tierName} />
           <div className="min-w-0">

@@ -6,14 +6,18 @@ description: "Overview of Hermes Agent's tools — what's available, how toolset
 
 # Tools & Toolsets
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Tools are functions that extend the agent's capabilities. They're organized into logical **toolsets** that can be enabled or disabled per platform.
 
 ## Available Tools
 
-Hermes ships with a broad built-in tool registry covering web search, browser automation, terminal execution, file editing, memory, delegation, scheduled tasks, Home Assistant, and more.
+Hermes ships with a broad built-in tool registry covering web search, browser automation, terminal execution, file editing, memory, delegation, scheduled tasks, and more. Plugins add more tools — for example Home Assistant device control comes from the `homeassistant` catalog plugin.
 
 :::note
-**Honcho cross-session memory** is available as a memory provider plugin (`plugins/memory/honcho/`), not as a built-in toolset. See [Plugins](./plugins.md) for installation.
+**Honcho cross-session memory** is available as a memory provider plugin from the plugin catalog (`hermes plugins install honcho`), not as a built-in toolset. See [Memory Providers](./memory-providers.md#honcho).
 :::
 
 High-level categories:
@@ -23,12 +27,12 @@ High-level categories:
 | **Web** | `web_search`, `web_extract` | Search the web and extract page content. |
 | **X Search** | `x_search` | Search X (Twitter) posts and threads via xAI's built-in `x_search` Responses tool — gated on xAI credentials (SuperGrok OAuth or `XAI_API_KEY`); off by default, opt in via `hermes tools` → 🐦 X (Twitter) Search. |
 | **Terminal & Files** | `terminal`, `process`, `read_file`, `patch` | Execute commands and manipulate files. |
-| **Browser** | `browser_navigate`, `browser_snapshot`, `browser_vision` | Interactive browser automation with text and vision support. |
+| **Browser** | `browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault` | Browser automation: `browser_exec` drives Chromium with Python over CDP (screenshots included). The Camofox browser is a separate catalog plugin (`hermes plugins install camofox`). |
 | **Media** | `vision_analyze`, `image_generate`, `text_to_speech` | Multimodal analysis and generation. |
 | **Agent orchestration** | `todo`, `clarify`, `execute_code`, `delegate_task` | Planning, clarification, code execution, and subagent delegation. |
 | **Memory & recall** | `memory`, `session_search` | Persistent memory and session search. |
 | **Automation** | `cronjob` | Scheduled tasks with create/list/update/pause/resume/run/remove actions. Outbound delivery is handled by cron's own delivery, the `hermes send` CLI, and the gateway notifier — not by an agent-callable tool. |
-| **Integrations** | `ha_*`, MCP server tools | Home Assistant, MCP, and other integrations. |
+| **Integrations** | MCP server tools, plugin tools | MCP and plugin integrations, e.g. Home Assistant (`ha_*`, from the [`homeassistant` catalog plugin](../messaging/homeassistant.md)). |
 
 For the authoritative code-derived registry, see [Built-in Tools Reference](../../reference/tools-reference.md) and [Toolsets Reference](../../reference/toolsets-reference.md).
 
@@ -49,7 +53,7 @@ hermes tools
 hermes tools
 ```
 
-Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `homeassistant`, `messaging`, `spotify`, `discord`, `discord_admin`, `debugging`, and `safe`.
+Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`, `image_gen`, `skills`, `tts`, `todo`, `memory`, `session_search`, `cronjob`, `code_execution`, `delegation`, `clarify`, `messaging`, `discord`, `discord_admin`, `debugging`, and `safe`.
 
 See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
@@ -69,7 +73,7 @@ The terminal tool can execute commands in different environments:
 | `local` | Run on your machine (default) | Development, trusted tasks |
 | `docker` | Isolated containers | Security, reproducibility |
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
-| `singularity` | HPC containers | Cluster computing, rootless |
+| `singularity` (plugin) | HPC containers | Cluster computing, rootless |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
@@ -79,7 +83,7 @@ The terminal tool can execute commands in different environments:
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, modal, daytona, vercel_sandbox, or a plugin backend (singularity)
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -139,7 +143,11 @@ TERMINAL_SSH_KEY=~/.ssh/id_rsa
 
 ### Singularity/Apptainer
 
+An official plugin ([`singularity`](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity)), formerly built in; `hermes update` installs it for profiles that already use it.
+
 ```bash
+hermes plugins install singularity
+
 # Pre-build SIF for parallel workers
 apptainer build ~/python.sif docker://python:3.11-slim
 
@@ -151,7 +159,7 @@ hermes config set terminal.singularity_image ~/python.sif
 ### Modal (Serverless Cloud)
 
 ```bash
-uv pip install modal
+python -c "import pm; pm.sync_venv(['modal'], explicit=True)"
 modal setup
 hermes config set terminal.backend modal
 ```
@@ -159,12 +167,12 @@ hermes config set terminal.backend modal
 ### Vercel Sandbox
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 hermes config set terminal.backend vercel_sandbox
-hermes config set terminal.vercel_runtime node24
+hermes config set terminal.vercel_image vercel/sandbox/universal:latest
 ```
 
-Authenticate with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This access-token setup is the supported path for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts. Supported runtimes are `node24`, `node22`, and `python3.13`; Hermes defaults to `/vercel/sandbox` as the remote workspace root.
+Authenticate with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This access-token setup is the supported path for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts. Fresh sandboxes start from `terminal.vercel_image` (default `vercel/sandbox/universal:latest`; the legacy `vercel_runtime` presets are deprecated by Vercel); Hermes defaults to `/vercel/sandbox` as the remote workspace root.
 
 For one-off local development, Hermes also accepts short-lived Vercel OIDC tokens:
 
@@ -190,7 +198,7 @@ Configure CPU, memory, disk, and persistence for all container backends:
 
 ```yaml
 terminal:
-  backend: docker  # or singularity, modal, daytona, vercel_sandbox
+  backend: docker  # or modal, daytona, vercel_sandbox, singularity (plugin)
   container_cpu: 1              # CPU cores (default: 1)
   container_memory: 5120        # Memory in MB (default: 5GB)
   container_disk: 51200         # Disk in MB (default: 50GB)
@@ -230,6 +238,39 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 ```
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
+
+A foreground command whose only backgrounding is a trailing `&` (for example
+`python3 -m http.server 8765 &` or `cd app && npm start > app.log 2>&1 &`) runs
+as `background=true` with the `&` removed, and the result carries an
+`auto_backgrounded` note with the `session_id`. It goes through the same
+approval checks as any background command. Shapes that mix in other commands
+(`server & curl ...`, `a; b &`, multi-line scripts), `nohup`/`disown`/`setsid`
+wrappers, command substitutions (`$(...)`, backticks, `<(...)`) and commands
+whose approval category would change without the `&` are still refused with
+guidance, because Hermes cannot safely tell which part should keep running.
+
+### Repeated waits on a quiet process
+
+When the agent calls `process(action="wait")` or `process(action="poll")` twice in a row on a
+process that is still running and has printed nothing new, Hermes turns on `notify_on_complete`
+for that process and the result tells the agent to stop checking: the exit (code and final output)
+arrives later as its own message, so the agent can do other work or end its turn instead of
+spending a model call on every unchanged check. New output, the process exiting, or any other
+action on that process resets the count.
+
+This applies where a completion can reach the agent: the interactive CLI (including interactive
+`hermes chat -q`), the TUI and desktop app, and messaging chats. Non-interactive `hermes chat -q`,
+one-shot `hermes -z`, cron jobs, Kanban workers, stateless API requests and delegated subagents keep the
+previous behaviour because they cannot receive a later completion, as does any profile with
+`display.background_process_notifications: off` (completions never start an agent turn there). Checking
+a process whose completion goes to someone else (another session's process, or a subagent's process
+that was not handed off) also stays plain polling. Admin-managed settings and `${VAR}` values count.
+To keep plain polling everywhere, set:
+
+```yaml
+terminal:
+  process_wait_auto_notify: false
+```
 
 Completed background commands retain their exit status and captured output in the
 active profile. Resume the conversation that launched the command (or its

@@ -14,9 +14,7 @@ asserts the two gaps that were genuinely open plus the relevant regression
 guards.
 """
 
-
 from tools.approval import detect_dangerous_command
-
 
 class TestChownRecursiveLongOptionAbbreviation:
     """chown --recur* abbreviations targeting root must be caught.
@@ -32,12 +30,10 @@ class TestChownRecursiveLongOptionAbbreviation:
         assert dangerous is True
         assert "chown" in desc.lower() or "root" in desc.lower()
 
-
     def test_chown_recur_non_root_not_flagged(self):
         """--recur* chown to a non-root user must not be flagged."""
         dangerous, _, _ = detect_dangerous_command("chown --recur nobody /opt/app")
         assert dangerous is False
-
 
 class TestGitPushForceLongOptionAbbreviation:
     """git push --forc* abbreviations must be caught.
@@ -51,17 +47,13 @@ class TestGitPushForceLongOptionAbbreviation:
         assert dangerous is True
         assert "force" in desc.lower()
 
-
     def test_git_push_short_f_still_detected(self):
         """Existing -f pattern must not regress."""
         dangerous, _, _ = detect_dangerous_command("git push -f origin main")
         assert dangerous is True
-
 
     def test_git_push_set_upstream_not_flagged(self):
         dangerous, _, _ = detect_dangerous_command(
             "git push --set-upstream origin feature"
         )
         assert dangerous is False
-
-

@@ -11,7 +11,7 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * The checkout's test environment (via scripts/run-in-hermes-env when needed)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -38,64 +38,87 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate python ───────────────────────────────────────────────────────────
-# Probe local venvs first; fall back to the Nix devShell's editable venv
-# (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
-# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
+# The suite runs under the checkout's isolated test environment (pm.testenv),
+# and only there: unless the inherited environment is current for this
+# checkout, this script re-executes itself under scripts/run-in-hermes-env,
+# which syncs and applies it. That holds however the script is launched
+# (`scripts/run_tests.sh`, `bash scripts/run_tests.sh`, from CI or a shell), so
+# a branch switch or lock edit never runs the suite against the previous
+# dependency set.
 #
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
-VENV=""
-VENV_PYTHON=""
-SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/bin/python"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-  # Native Windows venv layout: python.exe and activate live under
-  # Scripts/, and there is no bin/. Anyone running this script from
-  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
-  # this branch — without it the canonical runner refuses to start.
-  if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/Scripts/python.exe"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-done
+# Without an activation, an explicit HERMES_PYTHON that has pytest is honored:
+# the Nix devShell's editable venv and CI's minimal installer lanes provide
+# one on purpose. The import check matters: a wrapped `hermes` binary exports
+# HERMES_PYTHON pointing at a release venv without pytest.
+_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/null; }
+# shellcheck source=scripts/_activation.sh
+. "$SCRIPT_DIR/_activation.sh"
 
-if [ -n "$SKIPPED_VENVS" ]; then
-  for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
-  done
+# A test run under a faked HOME (worktree lanes, probe homes) provisions its
+# test environment from the OS account's tool store instead of downloading
+# ~1 GB of tools into every temporary home, but only while that store already
+# records this checkout's pins (_store_has_pins). The check runs unlocked
+# before `pm install` takes the store's install lock, so it keeps runs that
+# START on different pins apart; it does not cover the window in between, where
+# the account's own `hermes update` (or a run on other pins) can re-point
+# facts.json and this run's `pm install` then re-stages its pins over them.
+# Only this runner's own provisioning gets HERMES_RUNTIME_DIR: the pytest
+# children below start from `env -i` without it, so tests that exercise setup,
+# install or update resolve their own stores. Their PATH still holds the
+# account store's tool dirs, so a test writing through a PATH tool
+# (`pip install`, `npm -g`) would write into the account store. An explicit
+# HERMES_RUNTIME_DIR, a custom HERMES_HOME, a home that already holds a store,
+# or an account without a usable store keep today's per-home layout.
+# Prints the account home, then the pinned Python minor.
+_account_tool_store() {
+  local account py_minor
+  [ -z "${HERMES_RUNTIME_DIR:-}" ] || return 1
+  case "${HERMES_HOME:-}" in "" | "$HOME/.hermes" | "$HOME/.hermes/"*) ;; *) return 1 ;; esac
+  [ ! -f "$HOME/.hermes/tools/facts.json" ] || return 1
+  account="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  [ -n "$account" ] || account="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: *//p')"
+  [ -n "$account" ] && [ -d "$account" ] && [ ! "$account" -ef "$HOME" ] || return 1
+  [ -f "$account/.hermes/tools/facts.json" ] && [ -w "$account/.hermes/tools" ] || return 1
+  py_minor="$(_store_has_pins "$account/.hermes/tools")" || return 1
+  printf '%s\n%s\n' "$account" "$py_minor"
+}
+# Read-only check that the store already records this checkout's pins
+# (scripts/tool_store_pins.py says why and what counts); prints the Python minor.
+_store_has_pins() {
+  local python
+  python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
+  PYTHONHOME= "$python" -I -B "$REPO_ROOT/scripts/tool_store_pins.py" "$REPO_ROOT" "$1" 2>/dev/null
+}
+if _shared="$(_account_tool_store)"; then
+  _account="${_shared%%$'\n'*}"
+  export HERMES_RUNTIME_DIR="$_account/.hermes/tools"
+  # setup-hermes.sh's uv-managed bootstrap interpreter is the same kind of
+  # cache, but only reused: a missing pinned minor would download into it.
+  if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ] && [ -w "$_account/.local/share/uv/python" ] \
+      && compgen -G "$_account/.local/share/uv/python/cpython-${_shared#*$'\n'}[.-]*" >/dev/null; then
+    export UV_PYTHON_INSTALL_DIR="$_account/.local/share/uv/python"
+  fi
+  echo "▶ faked HOME: using the account's tool store $HERMES_RUNTIME_DIR"
 fi
-
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV_PYTHON"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
+unset _account _shared
+if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
-  if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+  if ! hermes_activation_current "$REPO_ROOT"; then
+    if [ -n "${__HERMES_TESTS_REEXEC:-}" ]; then
+      echo "error: run-in-hermes-env did not produce a current environment for $REPO_ROOT" >&2
+      exit 1
+    fi
+    echo "▶ environment missing or stale for $REPO_ROOT — re-running under run-in-hermes-env" >&2
+    export __HERMES_TESTS_REEXEC=1
+    exec "$SCRIPT_DIR/run-in-hermes-env" "$BASH" "${BASH_SOURCE[0]}" "$@"
   fi
-  exit 1
+  PYTHON="${__HERMES_TEST_PYTHON:-}"
+  if ! _has_pytest "$PYTHON"; then
+    echo "error: activation provided no test interpreter with pytest (__HERMES_TEST_PYTHON=${PYTHON:-unset})" >&2
+    exit 1
+  fi
 fi
 
 
@@ -113,15 +136,38 @@ fi
 # resolves Path.home() from USERPROFILE (or HOMEDRIVE+HOMEPATH), stdlib
 # platform paths come from LOCALAPPDATA/APPDATA, ssl/sockets need SYSTEMROOT,
 # and tempfile needs TEMP/TMP. Dropping them breaks collection on native
-# Windows (issues #67385, #70813). These are location variables, not
+# Windows (issues #67385, #70813). PATHEXT is also required: without .EXE,
+# PowerShell opens a native child as a document without waiting for its exit.
+# These are location variables, not
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
 WIN_ENV=()
-for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP; do
+for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP \
+    ComSpec PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
   if [ -n "${!_win_var:-}" ]; then
     WIN_ENV+=("$_win_var=${!_win_var}")
   fi
 done
+# Native build toolchain (Windows arm64 has no wheels for every pinned C extension, so
+# `uv sync` inside a PM test compiles ruamel-yaml-clib and friends). The MSVC developer
+# environment is exported by scripts/build/windows-deps.ps1 into the job env; without
+# INCLUDE/LIB/VSINSTALLDIR the build backend reports "Visual C++ 14.0 or greater is
+# required". These describe compiler locations, not credentials.
+for _tool_var in INCLUDE LIB LIBPATH VSINSTALLDIR VCINSTALLDIR VCToolsInstallDir VCToolsVersion \
+    VCToolsRedistDir WindowsSdkDir WindowsSDKVersion WindowsSdkBinPath WindowsSdkVerBinPath \
+    WindowsLibPath UCRTVersion UniversalCRTSdkDir VSCMD_ARG_HOST_ARCH VSCMD_ARG_TGT_ARCH VSCMD_VER \
+    DevEnvDir ExtensionSdkDir Platform CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN \
+    CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER CC_aarch64_pc_windows_msvc CC CXX AR \
+    VCPKG_ROOT OPENSSL_DIR OPENSSL_STATIC OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR; do
+  if [ -n "${!_tool_var:-}" ]; then
+    WIN_ENV+=("$_tool_var=${!_tool_var}")
+  fi
+done
+# setuptools locates the compiler through vswhere under "%ProgramFiles(x86)%\Microsoft Visual
+# Studio\Installer"; without that variable a primed INCLUDE/LIB still reads as "Visual C++ 14.0
+# or greater is required". The parenthesised name cannot be read with ${!var}.
+_pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
+[ -z "$_pf86" ] || WIN_ENV+=("ProgramFiles(x86)=$_pf86")
 
 # ── Test-runner knobs (computed before we drop env) ────────────────────────
 # The runner's own documented environment knobs must survive the hermetic
@@ -140,16 +186,33 @@ done
 #     tests/e2e/core/terminal instead of a skip (set by the e2e CI job).
 #   * CI / GITHUB_ACTIONS tell suites they run on a disposable runner (e.g.
 #     tests/e2e/core/upgrade runs the real updater unsandboxed only there).
+#   * HERMES_E2E_WINDOWS_INSTALL opts tests/e2e/core/windows_update into running
+#     the real install.ps1 (it writes HKCU PATH); HERMES_E2E_MACHINE_ROOT,
+#     HERMES_E2E_PROFILES_ROOT and HERMES_E2E_ARTIFACTS place its fake machines,
+#     their user profiles and the transcripts CI uploads.
+#   * HERMES_E2E_STRICT_ACCEPTANCE makes tests/e2e/core/_pending_fixes.py's
+#     known gaps hard failures in an acceptance run (workflow dispatch input).
+#   * HERMES_TEST_SSH_HOST / _USER / _PORT / _KEY and HERMES_TEST_DOCKER_IMAGE
+#     arm the real-backend tests (tests/tools/test_ssh_environment.py,
+#     tests/tools/test_docker_backend_real.py); remote-backends.yml points them at
+#     a throwaway sshd container and a small public image. The key is a
+#     per-run throwaway, never a credential.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
 # HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
 # forwarded below.
+# SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
+# OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
+# downloads, channel reads) need the host's pointer to verify TLS.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
-  HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS; do
+  SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
+  HERMES_E2E_WINDOWS_INSTALL HERMES_E2E_MACHINE_ROOT HERMES_E2E_PROFILES_ROOT HERMES_E2E_ARTIFACTS \
+  HERMES_E2E_STRICT_ACCEPTANCE HERMES_TEST_SSH_HOST HERMES_TEST_SSH_USER HERMES_TEST_SSH_PORT \
+  HERMES_TEST_SSH_KEY HERMES_TEST_DOCKER_IMAGE; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
@@ -158,6 +221,8 @@ done
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+# Never forward HERMES_RUNTIME_DIR or UV_PYTHON_INSTALL_DIR: under a faked HOME
+# they point at the account's shared stores (see _account_tool_store).
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 

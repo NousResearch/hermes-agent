@@ -41,9 +41,11 @@ def _close_rpc_stdin_on_exec() -> None:
     close-on-exec, so a dependency that launches a child without ``stdin=``
     could otherwise consume a request before this process reads it.
 
-    Windows does not provide the POSIX FD_CLOEXEC contract used here; retain
-    its existing descriptor behavior rather than changing its launch paths.
+    Windows has no close-on-exec for it: see ``_private_rpc_stdin_windows``.
     """
+    if os.name == "nt":
+        _private_rpc_stdin_windows()
+        return
     if os.name != "posix":
         return
     try:
@@ -52,6 +54,34 @@ def _close_rpc_stdin_on_exec() -> None:
         # Embedded launchers can supply a stream without an inheritable file
         # descriptor. Keep gateway startup available when no guard is possible.
         logger.debug("could not mark TUI RPC stdin close-on-exec", exc_info=True)
+
+
+def _private_rpc_stdin_windows() -> None:
+    """Read RPC from a private handle and give the process a NUL standard input.
+
+    ``subprocess`` hands a child launched without ``stdin=`` an inheritable
+    duplicate of ``STD_INPUT_HANDLE`` (``Popen._get_handles``), so marking fd 0
+    non-inheritable keeps nothing out. That duplicate is the RPC pipe: such a
+    child can read requests meant for us, and a ``git`` child started while the
+    main loop holds its synchronous ``readline`` on the pipe never returned (the
+    version probe in ``_session_info``, past its 3 s timeout), so the session's
+    agent build never finished and no turn ran.
+    """
+    import ctypes
+    import msvcrt
+
+    try:
+        stdin = sys.stdin
+        rpc = os.fdopen(os.dup(stdin.fileno()), "r", encoding=stdin.encoding,
+                        errors=stdin.errors, newline=None)  # os.dup: non-inheritable
+        null_fd = os.open(os.devnull, os.O_RDONLY)
+    except (OSError, ValueError, AttributeError):
+        logger.debug("could not give the TUI gateway a private RPC stdin", exc_info=True)
+        return
+    os.dup2(null_fd, 0)
+    os.close(null_fd)
+    ctypes.windll.kernel32.SetStdHandle(-10, msvcrt.get_osfhandle(0))  # type: ignore[attr-defined]  # STD_INPUT_HANDLE
+    sys.stdin = rpc
 
 
 def _install_sidecar_publisher() -> None:
@@ -104,6 +134,9 @@ def _hard_exit() -> None:
     """The grace timer's ``os._exit``. The flush runs first and the graceful foreground kill
     (TERM, wait, KILL) after it, so a SIGTERM-ignoring command is usually still alive here:
     SIGKILL its tree now or it outlives us, reparented to init."""
+    with suppress(Exception):  # only armed by a termination signal (a requested stop); os._exit skips atexit
+        from hermes_cli.observability.shared_metrics_process import stamp_exit
+        stamp_exit("clean")
     with suppress(Exception):
         from tools.environments.base import kill_live_foreground_processes
         kill_live_foreground_processes(now=True)
@@ -172,7 +205,7 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
-def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
+def wait_for_mcp_discovery(timeout: float | None = None) -> None:
     """Block until background MCP discovery finishes, up to the resolved bound (config
     ``mcp_discovery_timeout``; ``timeout`` overrides). The agent snapshots its tool list ONCE
     at build time, so this bounded join lets already-spawning servers land."""
@@ -267,11 +300,59 @@ def _write_or_exit(payload: dict, reason: str) -> None:
         sys.exit(0)
 
 
+def _claim_launch_home():
+    """Reserve the launch home exactly as the gateway does, or None when it is already owned.
+
+    No product surface launches this standalone stdio server any more: Ink and Desktop attach to
+    the profile's gateway over WS (``ui-tui/scripts/gateway_bootstrap.py``). Dev harnesses still
+    run it against a sandbox home (``apps/desktop/e2e/real-session-builder.ts``), and it opens that
+    home's ``state.db`` as a writer, so it must be the home's only owner: the gateway's
+    ``gateway.lock`` reservation refuses it beside a live gateway (or a second entry), and holding
+    that lock keeps a gateway from starting on the home while this process writes."""
+    from gateway.runtime_ownership import OwnershipConflict, process_ownership
+    home = server._launch_home()
+    try:
+        process_ownership.reserve([home])
+    except OwnershipConflict:
+        return None
+    return home
+
+
 def main():
+    home = _claim_launch_home()
+    if home is None:
+        _log_exit(f"refused: {server._launch_home()} is owned by a running gateway; attach to it instead")
+        sys.exit(1)
+    try:
+        _serve()
+    finally:
+        from gateway.runtime_ownership import process_ownership
+        process_ownership.release(home)
+
+
+def _serve():
     # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
     server._stdio_is_rpc_channel = True
+    try:
+        server.install_tui_message_injector()
+    except Exception:
+        logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+    from hermes_cli.observability.shared_metrics_process import begin_process
+
+    begin_process("tui")
+    from hermes_cli.observability.shared_metrics_disabled import set_process_surface
+    set_process_surface("tui_gateway")
+
+    # One TLS authority: trust the OS store process-wide before any
+    # outbound call resolves a CA bundle (see agent/ssl_verify.py).
+    try:
+        from agent.ssl_verify import install_truststore
+
+        install_truststore()
+    except Exception:
+        logger.debug("truststore install skipped", exc_info=True)
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
     # so it must start BEFORE the sweep.

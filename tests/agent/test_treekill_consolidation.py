@@ -7,7 +7,6 @@ termination through :func:`agent.deadline.kill_process_tree`:
 * ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
   by ``agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
-* ``tools.browser_tool_lifecycle._kill_process_tree(proc)`` — same pattern.
 * ``tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
   SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
 
@@ -44,17 +43,12 @@ class _FakeProc:
 
 
 # ---------------------------------------------------------------------------
-# (2) tools.browser_tool_lifecycle._kill_process_tree
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# (3) tools.code_execution_tool._kill_process_group
+# (2) tools.code_execution_tool._kill_process_group
 # ---------------------------------------------------------------------------
 
 class TestCodeExecutionDelegation:
 
+    @pytest.mark.platforms("linux")
     def test_escalate_waits_then_sigkills_tree(self, monkeypatch):
         import signal as _signal
 
@@ -102,7 +96,7 @@ class TestCodeExecutionDelegation:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX session semantics")
+@pytest.mark.platforms("posix")  # POSIX session semantics
 def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
     """The delegating wrapper must reach descendants that setsid'd out of the
     child's process group — the exact capability the shared primitive adds
@@ -141,7 +135,7 @@ def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
         kill_process_tree(proc)
 
         proc.wait(timeout=5)
-        gone, alive = psutil.wait_procs(descendants, timeout=5)
+        _gone, alive = psutil.wait_procs(descendants, timeout=5)
         assert not alive, f"survivors after tree kill: {alive}"
         time.sleep(1.0)
         assert not marker.exists()

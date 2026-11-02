@@ -100,7 +100,7 @@ def _mcp_loop_exception_handler(loop, context):
         loop.default_exception_handler(context)
 
 
-def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
+def _wrap_with_home_override(coro: Coroutine) -> Coroutine:
     """Carry the caller's context-local HERMES_HOME override into ``coro`` (task-local on the MCP
     loop, so concurrent scopes don't interfere)."""
     try:

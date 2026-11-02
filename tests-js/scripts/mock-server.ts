@@ -27,6 +27,10 @@ import os from 'node:os'
 import nodePath from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { z } from 'zod'
+
+import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
+
 /** A canned assistant reply used for every chat completion request. */
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
@@ -51,6 +55,20 @@ verificationWritePath?: string
  * handle's `path` to let the test decide when the process exits.
  */
 backgroundReleasePath?: string
+/**
+ * Spawn the E2E_SIDEBAR_CROSS background process without `notify_on_complete`
+ * (default: notify). A silent process sends no completion event, so the only
+ * thing that can clear its sidebar state is a backend read.
+ */
+backgroundSilent?: boolean
+
+/**
+ * Port to bind (default: any free port). An install/update journey runs its
+ * phases in separate CI steps, and each step's mock dies with that step while
+ * the detached gateway survives with the provider URL it read at boot; the
+ * next step rebinds the same port so that URL keeps answering.
+ */
+port?: number
 }
 
 export interface MockServer {
@@ -232,7 +250,7 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   ].join(' && ')
 }
 
-function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
+function sidebarCrossScript(releasePath?: string, silent = false): ScriptedTurn[] {
   return [
     {
       text: 'Starting a long background task and delegating work.',
@@ -242,7 +260,7 @@ function sidebarCrossScript(releasePath?: string): ScriptedTurn[] {
           args: {
             command: sidebarCrossBgCommand(releasePath),
             background: true,
-            notify_on_complete: true,
+            notify_on_complete: !silent,
           },
         },
         {
@@ -265,7 +283,7 @@ const SIDEBAR_CROSS_SCRIPT: ScriptedTurn[] = sidebarCrossScript()
 const QUEUE_STOP_SCRIPT: ScriptedTurn[] = [
   {
     text: 'Starting a task that will keep this turn active.',
-    toolCalls: [{ name: 'clarify', args: { question: 'Keep working?', choices: ['Yes', 'No'] } }],
+    toolCalls: [{ name: 'clarify', args: { questions: [{ question: 'Keep working?', choices: ['Yes', 'No'] }] } }],
   },
   { text: 'The paused task completed.' },
 ]
@@ -375,7 +393,7 @@ const TOOL_THEN_FAILURE_TURN: ScriptedTurn = {
 
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
-  toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+  toolCalls: [{ name: 'clarify', args: { questions: [{ question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] }] } }],
 }
 
 /**
@@ -396,6 +414,22 @@ const BATCH_CLARIFY_TURN: ScriptedTurn = {
   toolCalls: [{ name: 'clarify', args: { questions: BATCH_CLARIFY_QUESTIONS } }],
 }
 
+/**
+ * A marker that makes the mock emit a ONE-ENTRY batch clarify — the exact
+ * payload shape every single question takes since the `questions[]`-only
+ * schema (#95907). Coverage gap called out in #98645: nothing exercised
+ * `questions:[{question, choices}]` before this.
+ */
+export const SINGLE_BATCH_CLARIFY_TRIGGER = 'E2E_SINGLE_BATCH_CLARIFY_TRIGGER'
+export const SINGLE_BATCH_CLARIFY_QUESTIONS = [
+  { question: 'Pick a single-batch drink?', choices: ['Espresso', 'Latte'] },
+]
+
+const SINGLE_BATCH_CLARIFY_TURN: ScriptedTurn = {
+  text: '',
+  toolCalls: [{ name: 'clarify', args: { questions: SINGLE_BATCH_CLARIFY_QUESTIONS } }],
+}
+
 function includesBatchClarifyTrigger(value: unknown): boolean {
   if (typeof value === 'string') {
     return value.includes(BATCH_CLARIFY_TRIGGER)
@@ -407,6 +441,22 @@ function includesBatchClarifyTrigger(value: unknown): boolean {
 
   if (value && typeof value === 'object') {
     return Object.values(value).some(includesBatchClarifyTrigger)
+  }
+
+  return false
+}
+
+function includesSingleBatchClarifyTrigger(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.includes(SINGLE_BATCH_CLARIFY_TRIGGER)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(includesSingleBatchClarifyTrigger)
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(includesSingleBatchClarifyTrigger)
   }
 
   return false
@@ -526,6 +576,37 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 }
 
 /**
+ * The prompt text this mock records as the witness for a chat completion, or
+ * `null` when the body carries a shape it does not recognize. Only two shapes
+ * are recorded (`lastUserMessage.content` as a string, or content parts with
+ * `type === 'text'`); anything else makes the witness empty and the desktop
+ * smoke's `GET /__e2e__/prompts` poll time out with no clue as to why.
+ */
+function promptTextFromLastUserMessage(lastUserMessage: any): string | null {
+  if (typeof lastUserMessage?.content === 'string') {
+    return lastUserMessage.content
+  }
+
+  if (Array.isArray(lastUserMessage?.content)) {
+    const parts = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(lastUserMessage.content)
+
+    return parts.filter((part): boolean => part.type === 'text')
+      .map((part): string => part.text ?? '').join('\n')
+  }
+
+  return null
+}
+
+/** Compact a value for a single log line, truncated so a full transcript cannot flood mock.log. */
+function describeForLog(value: unknown): string {
+  // `JSON.stringify(undefined)` is `undefined`, not a string — an absent
+  // lastUserMessage is a shape this must still describe.
+  const text = (typeof value === 'string' ? value : JSON.stringify(value)) ?? String(value)
+
+  return text.length > 1000 ? `${text.slice(0, 1000)}…[${text.length} chars]` : text
+}
+
+/**
  * Start the mock server on an ephemeral port.
  *
  * @returns a handle with `port`, `url`, received user prompts, and `close()`.
@@ -553,9 +634,22 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       res.setHeader('Access-Control-Allow-Headers', '*')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
 
+      // One line per request. The driver collects this server's stdout as
+      // mock.log; without it a request that never arrived and a request to an
+      // endpoint this mock does not serve are indistinguishable after the fact
+      // (which is exactly how "the app sends nothing" got mistaken for evidence).
+      console.log(`[mock-server] ${req.method} ${req.url ?? '/'}`)
+
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
         res.end()
+
+        return
+      }
+
+      if (req.method === 'GET' && req.url === '/__e2e__/prompts') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify({ receivedPrompts }))
 
         return
       }
@@ -599,8 +693,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             .reverse()
             .find((message: { role?: unknown }) => message?.role === 'user')
 
-          if (typeof lastUserMessage?.content === 'string') {
-            receivedPrompts.push(lastUserMessage.content)
+          const recordedPrompt = promptTextFromLastUserMessage(lastUserMessage)
+
+          if (recordedPrompt === null) {
+            // The desktop smoke asserts this witness holds its checkpoint
+            // prompt; a POST that records nothing is exactly the 90 s
+            // predicate timeout it reports, with the body's shape as the
+            // only clue. Log that shape here.
+            console.log(
+              `[mock-server] POST /v1/chat/completions recorded NO prompt; ` +
+              `lastUserMessage=${describeForLog(lastUserMessage)} body=${describeForLog(body)}`,
+            )
+          } else {
+            receivedPrompts.push(recordedPrompt)
+            console.log(`[mock-server] recorded prompt: ${describeForLog(recordedPrompt)}`)
           }
 
           const stream = parsed.stream === true
@@ -703,6 +809,27 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             }
           }
 
+          if (includesSingleBatchClarifyTrigger(parsed.messages)) {
+            // Unlike the 2-question trigger (fresh conversation), this one
+            // shares history with it, so "any tool result" would false-positive
+            // — match only THIS turn's answered result by its question text.
+            const hasOwnToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some(
+                (message: { role?: string }) =>
+                  message?.role === 'tool' && JSON.stringify(message).includes('single-batch'),
+              )
+
+            if (!hasOwnToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, SINGLE_BATCH_CLARIFY_TURN)
+              }
+
+              return
+            }
+          }
+
           if (includesBlockingClarifyTrigger(parsed.messages)) {
             if (stream) {
               streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
@@ -771,7 +898,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           }
 
           if (isSidebarCrossTrigger) {
-            const script = sidebarCrossScript(options.backgroundReleasePath)
+            const script = sidebarCrossScript(options.backgroundReleasePath, options.backgroundSilent)
             const turn = script[_sidebarCrossIndex] ?? script[script.length - 1]
             _sidebarCrossIndex++
 
@@ -874,13 +1001,14 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       }
 
       // Fallback — 404 for anything else
+      console.log(`[mock-server] NOT IMPLEMENTED ${req.method} ${req.url ?? '/'} → 404`)
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     })
 
     server.on('error', reject)
 
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(options.port ?? 0, '127.0.0.1', () => {
       const addr = server.address()
 
       if (addr === null || typeof addr === 'string') {
@@ -1262,29 +1390,6 @@ function createDevSandbox(): DevSandbox {
   }
 }
 
-/** Write a config.yaml + .env that pre-configure the mock provider. */
-function writeMockConfig(hermesHome: string, mockUrl: string): void {
-  fs.writeFileSync(
-    nodePath.join(hermesHome, 'config.yaml'),
-    `# Auto-generated by dev-mock
-model:
-  default: mock-model
-  provider: mock
-providers:
-  mock:
-    api: ${mockUrl}/v1
-    name: Mock
-    api_mode: chat_completions
-    key_env: MOCK_API_KEY
-    models:
-      mock-model: {}
-    context_length: 64000
-`,
-    'utf8',
-  )
-  fs.writeFileSync(nodePath.join(hermesHome, '.env'), 'MOCK_API_KEY=e2e-mock-key\n', 'utf8')
-}
-
 /** Resolve the Electron binary: the repo's own install, then PATH. */
 function findElectron(repoRoot: string): string {
   const local = nodePath.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron')
@@ -1321,7 +1426,8 @@ async function runDevLaunch(): Promise<void> {
   console.log(`  Mock server: ${mock.url}`)
 
   const sandbox = createDevSandbox()
-  writeMockConfig(sandbox.hermesHome, mock.url)
+  writeMockProviderConfig(sandbox.hermesHome, mock.url)
+  writeEnvFile(sandbox.hermesHome)
   console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
 
   const electronBin = findElectron(repoRoot)

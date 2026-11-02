@@ -8,7 +8,7 @@ These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
-import yaml
+import hermes_yaml as yaml
 import gateway.status as _gw_status
 
 
@@ -67,6 +67,123 @@ def _env_field(platform, key):
     return next(f for f in platform["env_vars"] if f["key"] == key)
 
 
+def _on(platform_id, **block):
+    return {"platforms": {platform_id: {"enabled": True, **block}}}
+
+
+@pytest.fixture
+def no_platform_env(monkeypatch):
+    """The token-free tables below assume none of these leak in from the host (a hosted container
+    stamps GATEWAY_RELAY_URL, which disables direct platforms)."""
+    for name in ("GATEWAY_RELAY_URL", "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "WHATSAPP_ENABLED", "WEBHOOK_ENABLED",
+                 "API_SERVER_ENABLED", "API_SERVER_KEY", "MSGRAPH_WEBHOOK_ENABLED", "MSGRAPH_WEBHOOK_CLIENT_STATE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.parametrize("platform_id, config, env, enabled, configured", [
+    # Dashboard QR onboarding writes both; ``hermes whatsapp`` writes only the env flag.
+    pytest.param("whatsapp", _on("whatsapp"), "WHATSAPP_ENABLED=true\n", True, True, id="whatsapp-paired"),
+    pytest.param("whatsapp", {}, "WHATSAPP_ENABLED=true\n", True, True, id="whatsapp-env-flag-only"),
+    # Declared but never paired: the gateway would not start the bridge.
+    pytest.param("whatsapp", _on("whatsapp"), "", True, False, id="whatsapp-unpaired"),
+    # The flag off wins over an enabled block (the explicit enable stops the plugin's re-enable pass).
+    pytest.param("whatsapp", _on("whatsapp", extra={"mode": "bot"}), "WHATSAPP_ENABLED=false\n",
+                 False, False, id="whatsapp-flag-off"),
+    # The dashboard's disable writes only ``enabled: false``; the leftover env flag must not re-enable it.
+    pytest.param("whatsapp", {"platforms": {"whatsapp": {"enabled": False}}}, "WHATSAPP_ENABLED=true\n",
+                 False, True, id="whatsapp-disabled-flag-on"),
+    pytest.param("webhook", _on("webhook"), "", True, True, id="webhook"),
+    # Settings without ``enabled``: the gateway leaves it off, so the card must not say enabled.
+    pytest.param("webhook", {"platforms": {"webhook": {"extra": {"port": 8123}}}}, "", False, True, id="webhook-not-enabled"),
+    pytest.param("api_server", {}, "", False, False, id="api-server-absent"),
+    # The API server refuses to start without a usable key.
+    pytest.param("api_server", _on("api_server"), "", True, False, id="api-server-no-key"),
+    pytest.param("api_server", _on("api_server", extra={"key": "k" * 24}), "", True, True, id="api-server-key"),
+    pytest.param("api_server", {"platforms": {"api_server": {"enabled": False}}}, "API_SERVER_KEY=" + "k" * 32 + "\n",
+                 False, True, id="api-server-disabled-env-key"),
+    # A top-level block is the gateway's too, explicit disable included.
+    pytest.param("whatsapp", {"whatsapp": {"enabled": False}}, "WHATSAPP_ENABLED=true\n", False, True,
+                 id="whatsapp-toplevel-disabled-flag-on"),
+    pytest.param("msgraph_webhook", _on("msgraph_webhook"), "", True, False, id="msgraph-no-client-state"),
+    pytest.param("msgraph_webhook", _on("msgraph_webhook", extra={"client_state": "state"}), "", True, True,
+                 id="msgraph-client-state"),
+    pytest.param("msgraph_webhook", {"platforms": {"msgraph_webhook": {"enabled": False}}},
+                 "MSGRAPH_WEBHOOK_ENABLED=true\nMSGRAPH_WEBHOOK_CLIENT_STATE=state\n", False, True,
+                 id="msgraph-disabled-env-on"),
+    pytest.param("relay", _on("relay"), "", True, False, id="relay-no-url"),
+])
+def test_scoped_token_free_platform_status_matches_the_gateway(
+    client, isolated_profiles, no_platform_env, platform_id, config, env, enabled, configured
+):
+    """Token-free built-ins show exactly what the profile's gateway decides for them."""
+    worker_home = isolated_profiles["worker_alpha"]
+    (worker_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    (worker_home / ".env").write_text(env, encoding="utf-8")
+
+    resp = client.get("/api/messaging/platforms", params={"profile": "worker_alpha"})
+
+    assert resp.status_code == 200
+    platform = next((p for p in resp.json()["platforms"] if p["id"] == platform_id), None)
+    assert platform is not None, platform_id
+    assert (platform["enabled"], platform["configured"]) == (enabled, configured)
+
+
+_MSGRAPH = {"msgraph_webhook": {"enabled": True, "extra": {"client_state": "state"}}}
+
+
+@pytest.mark.parametrize("config, direct_enabled", [
+    pytest.param({"platforms": {**_MSGRAPH, "relay": {"enabled": True}}}, False, id="relay-owns-connections"),
+    pytest.param({"platforms": {**_MSGRAPH, "relay": {"enabled": False}}}, True, id="relay-opted-out"),
+    pytest.param({"platforms": _MSGRAPH, "relay": {"enabled": False}}, True, id="relay-opted-out-toplevel"),
+])
+def test_scoped_status_follows_the_profiles_relay_block(
+    client, isolated_profiles, no_platform_env, monkeypatch, config, direct_enabled
+):
+    """A container's relay URL disables direct platforms unless the profile's relay is turned off."""
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://relay.example.test")
+    worker_home = isolated_profiles["worker_alpha"]
+    (worker_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    platforms = client.get("/api/messaging/platforms", params={"profile": "worker_alpha"}).json()["platforms"]
+
+    msgraph = next(p for p in platforms if p["id"] == "msgraph_webhook")
+    assert (msgraph["enabled"], msgraph["configured"]) == (direct_enabled, True)
+
+
+@pytest.mark.parametrize("source_enabled, token, counts", [
+    pytest.param(True, "1" * 9 + ":" + "a" * 35, True, id="enabled"),
+    pytest.param(False, "1" * 9 + ":" + "a" * 35, False, id="disabled"),
+    pytest.param(True, "", False, id="enabled-empty-value"),
+    pytest.param(True, "  ", False, id="enabled-blank-value"),
+])
+def test_scoped_onepassword_credential_counts_only_when_the_source_is_enabled(
+    client, isolated_profiles, monkeypatch, source_enabled, token, counts
+):
+    """A 1Password-mapped token is set/configured only when the profile's source is on and resolves it
+    to a value."""
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.onepassword import OnePasswordSource
+
+    fetched = []
+
+    def fake_fetch(self, cfg, home_path):
+        fetched.append(home_path)
+        return FetchResult(secrets={"TELEGRAM_BOT_TOKEN": token})
+
+    monkeypatch.setattr(OnePasswordSource, "fetch", fake_fetch)
+    worker_home = isolated_profiles["worker_alpha"]
+    (worker_home / "config.yaml").write_text(yaml.safe_dump({
+        "secrets": {"onepassword": {"enabled": source_enabled,
+                                    "env": {"TELEGRAM_BOT_TOKEN": "op://vault/item/credential"}}},
+    }), encoding="utf-8")
+
+    telegram = _telegram(client.get("/api/messaging/platforms", params={"profile": "worker_alpha"}).json())
+
+    assert telegram["configured"] is counts
+    assert _env_field(telegram, "TELEGRAM_BOT_TOKEN")["is_set"] is counts
+    assert bool(fetched) is source_enabled
+
+
 class TestProfileScopedMessagingReads:
     def test_scoped_read_does_not_show_root_credentials(
         self, client, isolated_profiles
@@ -81,6 +198,23 @@ class TestProfileScopedMessagingReads:
         assert token["is_set"] is False
         assert telegram["configured"] is False
 
+    def test_allowlist_value_is_readable_but_secrets_stay_redacted(
+        self, client, isolated_profiles
+    ):
+        """Clients edit an allowlist one ID per entry, so they need its saved value;
+        the bot token next to it must still only ever leave as a redacted preview."""
+        (isolated_profiles["worker_alpha"] / ".env").write_text(
+            f"TELEGRAM_BOT_TOKEN={_VALID_WORKER_BOT_TOKEN}\nTELEGRAM_ALLOWED_USERS=111,222\n",
+            encoding="utf-8",
+        )
+        telegram = _telegram(
+            client.get("/api/messaging/platforms", params={"profile": "worker_alpha"}).json()
+        )
+        allowlist = _env_field(telegram, "TELEGRAM_ALLOWED_USERS")
+        token = _env_field(telegram, "TELEGRAM_BOT_TOKEN")
+        assert (allowlist["is_list"], allowlist["value"]) == (True, "111,222")
+        assert (token["is_list"], token["value"]) == (False, None)
+        assert _VALID_WORKER_BOT_TOKEN not in str(token)
 
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
@@ -91,7 +225,7 @@ class TestProfileScopedMessagingReads:
     def test_scoped_read_returns_profile_path_command_and_startup_failure(
         self, client, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         worker_home = isolated_profiles["worker_alpha"]
         (worker_home / ".env").write_text(

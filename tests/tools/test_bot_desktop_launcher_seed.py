@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "launcher.sh"
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "", profile_dir: str = "") -> Path:
@@ -21,9 +21,13 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "", profile_
         exe = bindir / name
         exe.write_text("#!/bin/sh\n", encoding="utf-8")
         exe.chmod(0o755)
+    # The launcher only needs xauth to accept the generated cookie; the test host need not ship X11 tools.
+    xauth = bindir / "xauth"
+    xauth.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    xauth.chmod(0o755)
     # The script's own tooling (mkdir, sed, cat, awk...) symlinked in, so PATH need not contain the
     # host's /usr/bin where a real chrome/thunar would leak into the dock under test.
-    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "xauth", "od", "tr", "awk"):
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "xauth", "od", "tr", "awk", "grep"):
         real = shutil.which(tool)
         if real and not (bindir / tool).exists():
             (bindir / tool).symlink_to(real)
@@ -49,7 +53,7 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
     execs = sorted(
         line.split("=", 1)[1]
         for pid in launcher_ids
-        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8").splitlines()
+        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8-sig").splitlines()
         if line.startswith("Exec=")
     )
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
@@ -62,15 +66,15 @@ def test_browser_launcher_follows_the_profile_without_reseeding_the_panel(tmp_pa
     chrome = tmp_path / "bin" / "chrome"
     cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/old name/bp")
     panel_xml = cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
-    layout_before = panel_xml.read_text(encoding="utf-8")
+    layout_before = panel_xml.read_text(encoding="utf-8-sig")
     shutil.rmtree(tmp_path / "bin")
     _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/new name/bp")
     execs = [
         line for d in (cfg / "xfce4/panel").glob("launcher-*/hermes.desktop")
-        for line in d.read_text(encoding="utf-8").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
+        for line in d.read_text(encoding="utf-8-sig").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
     ]
     assert execs == [f"Exec={chrome} --user-data-dir=/new name/bp"]
-    assert panel_xml.read_text(encoding="utf-8") == layout_before
+    assert panel_xml.read_text(encoding="utf-8-sig") == layout_before
 
 
 def test_browser_launcher_seeded_before_the_marker_still_follows_a_rename(tmp_path):
@@ -84,15 +88,15 @@ def test_browser_launcher_seeded_before_the_marker_still_follows_a_rename(tmp_pa
     _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/new name/bp")
     execs = [
         line for d in (cfg / "xfce4/panel").glob("launcher-*/hermes.desktop")
-        for line in d.read_text(encoding="utf-8").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
+        for line in d.read_text(encoding="utf-8-sig").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
     ]
     assert execs == [f"Exec={chrome} --user-data-dir=/new name/bp"]
 
 
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):
     cfg = _seed(tmp_path, ["xfce4-terminal"])
-    desktop = (cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml").read_text(encoding="utf-8")
-    xsettings = (cfg / "xfce4/xfconf/xfce-perchannel-xml/xsettings.xml").read_text(encoding="utf-8")
+    desktop = (cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml").read_text(encoding="utf-8-sig")
+    xsettings = (cfg / "xfce4/xfconf/xfce-perchannel-xml/xsettings.xml").read_text(encoding="utf-8-sig")
     assert str(LAUNCHER.with_name("wallpaper.png")) in desktop
     assert "PLACEHOLDER" not in desktop + xsettings
     assert os.path.isfile(LAUNCHER.with_name("wallpaper.png"))

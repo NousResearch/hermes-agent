@@ -311,7 +311,7 @@ def test_rollback_fails_closed_when_safety_capture_fails(ledger_env, monkeypatch
         )
     )
     assert patched["success"] is True
-    entry = [r for r in skill_ledger.list_entries("my-skill") if r["action"] == "patch"][0]
+    entry = next(r for r in skill_ledger.list_entries("my-skill") if r["action"] == "patch")
     current = skill_md.read_bytes()
 
     monkeypatch.setattr(skill_ledger, "append_entry", lambda *a, **k: None)
@@ -338,7 +338,7 @@ def test_rollback_removes_files_created_by_the_mutation(ledger_env):
     extra = ledger_env["skills"] / "my-skill" / "references" / "extra.md"
     assert extra.exists()
 
-    entry = [r for r in skill_ledger.list_entries("my-skill") if r["action"] == "write_file"][0]
+    entry = next(r for r in skill_ledger.list_entries("my-skill") if r["action"] == "write_file")
     ok, msg = skill_ledger.rollback_entry(entry["id"])
     assert ok is True, msg
     assert not extra.exists()  # created by the mutation → removed on rollback
@@ -469,10 +469,10 @@ def test_delete_after_rehome_ledgers_full_package_from_backup(ledger_env):
     deleted = json.loads(skill_manage(action="delete", name="my-skill"))
     assert deleted["success"] is True
 
-    delete_entry = [
+    delete_entry = next(
         r for r in skill_ledger.list_entries(skill="my-skill")
         if r["action"] == "delete"
-    ][0]
+    )
     before_names = {Path(i["path"]).name for i in delete_entry["before"]}
     assert "SKILL.md" in before_names
     assert "extra.md" in before_names, (
@@ -536,10 +536,10 @@ def test_delete_rollback_without_backup_still_works(ledger_env):
 
     deleted = json.loads(skill_manage(action="delete", name="my-skill"))
     assert deleted["success"] is True
-    delete_entry = [
+    delete_entry = next(
         r for r in skill_ledger.list_entries(skill="my-skill")
         if r["action"] == "delete"
-    ][0]
+    )
     assert {Path(i["path"]).name for i in delete_entry["before"]} == {"SKILL.md"}
 
     ok, msg = skill_ledger.rollback_entry(delete_entry["id"])
@@ -556,7 +556,7 @@ def test_backup_fill_does_not_clobber_disk_hash(ledger_env):
     skill_dir.mkdir()
     skill_md = skill_dir / "SKILL.md"
     live = VALID_SKILL_CONTENT.replace("Original body.", "Live body.")
-    skill_md.write_text(live, encoding="utf-8")
+    skill_md.write_text(live, encoding="utf-8", newline="\n")
     _write_skills_tarball(
         ledger_env["home"],
         {
@@ -598,14 +598,11 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     captured = skill_ledger.snapshot_paths(skill_dir, complete_package=True)
     paths = [i["path"] for i in captured]
     # The legitimate missing file WAS filled — proof the fill is live.
-    assert any(p.endswith("references/legit.md") for p in paths), (
+    assert any(Path(p).as_posix().endswith("references/legit.md") for p in paths), (
         "package fill did not restore the missing support file"
     )
     # Malicious members are not.
     assert not any(p.endswith("evil.md") or p.endswith("outside.md") for p in paths)
-
-
-from pathlib import Path
 
 import pytest
 

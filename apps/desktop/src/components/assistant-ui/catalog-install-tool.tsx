@@ -4,11 +4,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { CatalogAdvancedDialog } from '@/components/assistant-ui/catalog-advanced-dialog'
-import {
-  connectionRequestOwnsPart,
-  CONNECTOR_CARD_PHASES,
-  useConnectorFocusHandoff
-} from '@/components/assistant-ui/connector-tool'
+import { connectionRequestOwnsPart, useConnectorFocusHandoff } from '@/components/assistant-ui/connector-tool'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
@@ -16,14 +12,18 @@ import { Progress } from '@/components/ui/progress'
 import { useI18n } from '@/i18n'
 import { Book, Loader2, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { type AgentPluginInstallResult, installAgentPlugin } from '@/store/agent-plugins'
 import {
   type CatalogEntry,
+  connectionOpOf,
+  connectionOwnerFor,
   type ConnectionRequest,
   type ConnectionTarget,
   continueConnectionRequest,
   respondToConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { profileLabel } from '@/store/profile'
 
@@ -36,10 +36,48 @@ const PILL = 'inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.62rem]
 
 const KIND_GLYPH = { plugin: Plug, skill: Book } as const
 
-const PLATFORM_NAMES: Record<string, string> = { darwin: 'macOS', linux: 'Linux', macos: 'macOS', windows: 'Windows' }
-const platformName = (platform: string) => PLATFORM_NAMES[platform.toLowerCase()] ?? platform
+function platformName(platform: string): string {
+  switch (platform.toLowerCase()) {
+    case 'darwin':
+
+    case 'macos':
+      return 'macOS'
+
+    case 'linux':
+      return 'Linux'
+
+    case 'windows':
+      return 'Windows'
+
+    default:
+      return platform
+  }
+}
 
 const isCatalogTarget = (target: ConnectionTarget): target is CatalogTarget => Boolean(target.catalog)
+
+/** The row a successful settled Try again draws: the backend's install result for that retry, in the
+ *  fields the runner's installed row carries (`tools/connectors/catalog.py::_installed_row`). */
+function retriedRow(target: CatalogTarget, result: AgentPluginInstallResult): CatalogTarget {
+  const servers = result.live.mcpServers
+
+  return {
+    ...target,
+    catalog: {
+      ...target.catalog,
+      alreadyInstalled: false,
+      enabled: result.enabled ?? null,
+      missingEnv: result.missingEnv ?? [],
+      serverErrors: servers
+        .filter(server => !server.connected)
+        .map(({ error, name }) => ({ error: error ?? '', name })),
+      skill: result.skillIds?.[0] ?? null
+    },
+    detail: '',
+    state: 'connected',
+    tools: servers.filter(server => server.connected).flatMap(server => server.tools)
+  }
+}
 
 /** `manage_catalog`: the host's catalog-install card. The model named ids; every word on a row is the
  *  host's resolution of that id. The card lives on the tool row that opened the operation only. */
@@ -47,10 +85,19 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+  // Only an install opens an operation; a search row that reuses an install's call id draws no card.
+  const opens = opId !== null || props.args.action === 'install'
+
+  const $request = useMemo(
+    () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, runtimeId]
+  )
+
   const request = useStore($request)
 
-  if (request && connectionRequestOwnsPart(props, request)) {
+  if (opens && request && connectionRequestOwnsPart(props, request)) {
     return <CatalogInstallCard request={request} />
   }
 
@@ -71,8 +118,8 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
   const { t } = useI18n()
   const cardRef = useRef<HTMLDivElement | null>(null)
   const rows = request.targets.filter(isCatalogTarget)
-  const unresolved = rows.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
-  const profile = rows[0]?.catalog.targetProfile ?? 'default'
+  const unresolved = rows.some(target => !target.catalog.resolved)
+  const profile = rows[0]?.catalog.targetProfile
 
   useConnectorFocusHandoff(request.targets, cardRef)
 
@@ -87,9 +134,11 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
             {t.common.continue}
           </Button>
         ) : null}
-        <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>
-          {t.assistant.catalogInstall.targetProfile(profileLabel({ name: profile }))}
-        </span>
+        {profile ? (
+          <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>
+            {t.assistant.catalogInstall.targetProfile(profileLabel({ name: profile }))}
+          </span>
+        ) : null}
       </div>
     </div>
   )
@@ -106,26 +155,68 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   const copy = t.assistant.catalogInstall
   const { catalog } = target
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  // The operation's seq when an answer was sent; the verbs stay held until a newer frame answers it,
-  // so a second click cannot send the answer twice.
-  const [sentAtSeq, setSentAtSeq] = useState<null | number>(null)
-  const sending = sentAtSeq !== null && request.seq <= sentAtSeq
+  // The operation and seq an answer was sent at; the verbs stay held until a newer frame of that
+  // operation answers it, so a second click cannot send the answer twice. Keyed by op so a seq from
+  // another operation can never hold this row.
+  const [sentAt, setSentAt] = useState<null | { opId: string; seq: number }>(null)
+  // Try again on a failed plugin row after the operation settled: a fresh host install (which enables a
+  // plugin already on disk). The settled operation is frozen, so the row draws that install's result.
+  const [retry, setRetry] = useState<null | { row: CatalogTarget; status: 'done' } | { status: 'running' }>(null)
+  const sending = (sentAt?.opId === request.opId && request.seq <= sentAt.seq) || retry?.status === 'running'
   const Glyph = KIND_GLYPH[target.kind]
 
   const answer = async (status: 'approved' | 'skipped', env: Record<string, string> | null = null) => {
-    setSentAtSeq(request.seq)
+    setSentAt({ opId: request.opId, seq: request.seq })
 
     try {
       const sent = await respondToConnectionRequest(request, { targets: [{ env, name: target.name, status }] })
 
       if (!sent) {
-        setSentAtSeq(null)
+        setSentAt(null)
       }
     } catch (error) {
       notifyError(error, copy.sendFailed)
-      setSentAtSeq(null)
+      setSentAt(null)
     }
   }
+
+  const retrySettled = async () => {
+    setRetry({ status: 'running' })
+    const owner = request.sessionId ? await connectionOwnerFor(request.sessionId, 'plugins.manage') : null
+
+    if (!owner) {
+      setRetry({ row: { ...target, detail: copy.sendFailed }, status: 'done' })
+
+      return
+    }
+
+    // The choices the user approved on this row, so the retry installs what they asked for.
+    const approved = catalog.approved
+
+    const result = await installAgentPlugin(
+      (method, params, timeoutMs) =>
+        requestGatewayForAgent(owner.connectionId, owner.profile, method, params, timeoutMs),
+      {
+        catalogName: target.name,
+        enable: approved?.enable,
+        force: approved?.force,
+        identifier: '',
+        profile: catalog.targetProfile,
+        ref: approved?.ref ?? undefined
+      }
+    )
+
+    const row = result.ok ? retriedRow(target, result) : { ...target, detail: result.error || target.detail }
+    setRetry({ row, status: 'done' })
+  }
+
+  const shown = retry?.status === 'done' ? retry.row : target
+
+  const onRetry = !request.settled
+    ? () => void answer('approved')
+    : target.kind === 'plugin'
+      ? () => void retrySettled()
+      : undefined
 
   return (
     <div className={cn(SHELL_CLASS, 'grid min-w-0 gap-1.5')} data-connector-row={target.name} tabIndex={-1}>
@@ -162,12 +253,13 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
           copy={copy}
           onAdvanced={() => setAdvancedOpen(true)}
           onInstall={() => void answer('approved')}
+          onRetry={onRetry}
           onSkip={() => void answer('skipped')}
           retryLabel={t.connectors.retry}
           sending={sending}
           settled={request.settled}
           skippedLabel={t.connectors.skipped}
-          target={target}
+          target={shown}
           toolCount={t.assistant.mcpSetup.toolCount}
         />
       </div>
@@ -191,6 +283,8 @@ interface RowOutcomeProps {
   copy: CatalogCopy
   onAdvanced: () => void
   onInstall: () => void
+  /** Try again on a failed row; absent when nothing can run it again. */
+  onRetry?: () => void
   onSkip: () => void
   retryLabel: string
   sending: boolean
@@ -200,11 +294,22 @@ interface RowOutcomeProps {
   toolCount: (count: number) => string
 }
 
+/** What an installed row still needs, worded from the backend's facts. */
+function installedNotes(catalog: CatalogEntry, copy: CatalogCopy): string[] {
+  return [
+    ...catalog.serverErrors.map(({ error, name }) => copy.serverNotConnected(name, error)),
+    ...(catalog.enabled === false ? [copy.notEnabled] : []),
+    ...(catalog.missingEnv.length > 0 ? [copy.missingEnv(catalog.missingEnv.join(', '))] : []),
+    ...(catalog.alreadyInstalled ? [copy.alreadyInstalled] : [])
+  ]
+}
+
 /** The third line: the verbs while the row waits on the user, else what happened to it. */
 function RowOutcome({
   copy,
   onAdvanced,
   onInstall,
+  onRetry,
   onSkip,
   retryLabel,
   sending,
@@ -217,6 +322,7 @@ function RowOutcome({
 
   if (target.state === 'connected') {
     const { skill } = target.catalog
+    const notes = installedNotes(target.catalog, copy)
 
     const parts = [
       copy.installed,
@@ -242,6 +348,9 @@ function RowOutcome({
             </>
           ) : null}
         </p>
+        {notes.length > 0 ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>{notes.join(' · ')}</p>
+        ) : null}
         {namesOpen ? (
           <ul className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 font-mono text-[0.6875rem] leading-4 text-(--ui-text-secondary)">
             {target.tools.map(tool => (
@@ -261,18 +370,18 @@ function RowOutcome({
         <p className={cn(CAPTION, 'min-w-0 text-destructive wrap-anywhere')} role="status">
           {target.detail ? `${copy.failed} · ${target.detail}` : copy.failed}
         </p>
-        {settled ? null : (
+        {onRetry ? (
           <Button
             className="h-6 px-1.5 text-(--ui-text-tertiary)"
             disabled={sending}
             loading={sending}
-            onClick={onInstall}
+            onClick={onRetry}
             size="xs"
             variant="ghost"
           >
             {retryLabel}
           </Button>
-        )}
+        ) : null}
       </div>
     )
   }
@@ -292,10 +401,11 @@ function RowOutcome({
   if (target.state === 'initiated' || sending) {
     return (
       <div className="grid min-w-0 gap-1.5" role="status">
-        <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>
-          {target.state === 'initiated' && target.detail ? target.detail : copy.installing}
-        </p>
+        <p className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.installing}</p>
         <Progress animated aria-label={copy.installing} className="h-0.5 bg-primary/15" indeterminate />
+        {target.state === 'initiated' && target.catalog.phase ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-quaternary)')}>{copy.phase[target.catalog.phase]}</p>
+        ) : null}
       </div>
     )
   }

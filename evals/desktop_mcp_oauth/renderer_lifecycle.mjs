@@ -89,7 +89,9 @@ const server = http.createServer(async (req, res) => {
   )
 })
 await new Promise(r => server.listen(0, '127.0.0.1', r))
+// pm's Chromium: PLAYWRIGHT_BROWSERS_PATH (from `hermes pm env`) is where channel 'chromium' finds it.
 const browser = await chromium.launch({
+  channel: 'chromium',
   headless: true,
   args: ['--no-sandbox'],
   ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {})

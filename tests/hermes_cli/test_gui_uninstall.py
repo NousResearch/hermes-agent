@@ -38,7 +38,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     _make_agent(hermes_home)
     _make_gui_build(hermes_home)
-    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", list)
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
     summary = gu.gui_install_summary(hermes_home)
@@ -51,7 +51,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["platform"] == sys.platform
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
@@ -60,6 +60,10 @@ def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypa
     entry = lde.desktop_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     entry.write_text("x", encoding="utf-8")
+    # The pre-rename entry lives on as a hidden alias of the app-id entry (#124492);
+    # a GUI uninstall must take it with the real one.
+    legacy_alias = entry.with_name(lde.LEGACY_DESKTOP_ENTRY_NAME)
+    legacy_alias.write_text("x", encoding="utf-8")
 
     refreshed: list[Path] = []
     monkeypatch.setattr(
@@ -76,6 +80,7 @@ def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypa
     removed = gu.uninstall_gui(hermes_home)
 
     assert entry in removed and not entry.exists()
+    assert legacy_alias in removed and not legacy_alias.exists()
     assert refreshed == [entry.parent]
     # The icon lives in the checkout. A GUI uninstall must not delete it.
     assert lde.icon_path(hermes_home / "hermes-agent").exists()
@@ -83,7 +88,7 @@ def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypa
     assert (hermes_home / "hermes-agent" / "hermes_cli").is_dir()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+@pytest.mark.platforms("posix")  # POSIX symlink semantics
 def test_remove_path_handles_symlink(tmp_path):
     target = tmp_path / "real"
     target.mkdir()
@@ -97,7 +102,7 @@ def test_remove_path_handles_symlink(tmp_path):
 
 def test_uninstall_args_namespace_mode_mapping():
     """_UninstallArgs maps mode → the gui/full flags run_uninstall reads."""
-    import hermes_cli.uninstall as uninstall
+    from hermes_cli import uninstall
 
     gui = uninstall._UninstallArgs(mode="gui")
     assert gui.gui is True and gui.full is False and gui.yes is True

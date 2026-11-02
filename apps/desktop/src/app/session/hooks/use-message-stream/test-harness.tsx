@@ -1,6 +1,6 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventName } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { vi } from 'vitest'
 
@@ -14,6 +14,8 @@ export interface MessageStreamHarnessOptions extends Partial<Parameters<typeof u
   /** Session-state map to mount with, for tests that seed state up front. */
   states?: Map<string, ClientSessionState>
 }
+
+export type GatewayFrame = [GatewayEventName, Record<string, unknown>]
 
 export interface MessageStreamHarness {
   /** Feed a gateway event into the mounted hook. */
@@ -131,4 +133,16 @@ export function renderMessageStream(
       return part?.type === 'reasoning' ? part.text : ''
     }
   }
+}
+
+/** Mount the hook, play `frames` for one session in order, and return that
+ *  session's visible assistant messages. Callers still own `cleanup()`. */
+export async function playFrames(sessionId: string, frames: GatewayFrame[]) {
+  const stream = renderMessageStream(sessionId)
+
+  for (const [type, payload] of frames) {
+    await act(() => stream.handleEvent({ type, payload, session_id: sessionId }))
+  }
+
+  return stream.state().messages.filter(message => message.role === 'assistant' && !message.hidden)
 }

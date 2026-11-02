@@ -14,19 +14,12 @@ construction site that already knows it is in single-query mode.
 
 from __future__ import annotations
 
-
-
-def test_no_choices_returns_immediate_headless_answer():
+def test_returns_immediate_undelivered_reply():
     from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
 
-    result = _single_query_clarify_callback("Which timezone should I use?")
-    assert result.startswith("[single-query mode: no user available")
-    assert "most reasonable assumption" in result
-
-
-
-
-
-
-
-
+    result = _single_query_clarify_callback([{
+        "qid": "q0", "question": "Which timezone should I use?", "choices": None,
+        "choices_offered": None, "multi_select": False}])
+    assert result["answers"] == {}
+    assert result["outcome"] == "undelivered"
+    assert "no user available" in result["notice"]

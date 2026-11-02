@@ -29,10 +29,11 @@ import pytest
 # must never raise, otherwise the web_server import branch becomes a trap.
 from hermes_cli import win_pty_bridge
 from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
+from tests.waiting import async_wait_until
 
-# ``pytest.mark.windows_only`` rather than a local ``skipif`` alias: the
+# ``pytest.mark.platforms("windows")`` rather than a local ``skipif`` alias: the
 # dedicated Windows CI job selects its files by grepping for the marker name
-# and then filters with ``-m windows_only``. A file-local skipif alias matched
+# and then filters with ``-m platforms("windows")``. A file-local skipif alias matched
 # the grep (so the file was listed) but carried no marker, so every test below
 # was deselected — the lane looked like it covered ConPTY and ran none of it.
 
@@ -52,6 +53,22 @@ def _read_until(bridge: WinPtyBridge, needle: bytes, timeout: float = 10.0) -> b
         if needle in buf:
             return bytes(buf)
     return bytes(buf)
+
+
+class _HealthyProc:
+    """A ConPTY whose input never wedges."""
+
+    pid = 1
+
+    def __init__(self):
+        self.written = []
+        self.terminated = threading.Event()
+
+    def write(self, text):
+        self.written.append(text)
+
+    def terminate(self, force=False):
+        self.terminated.set()
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +210,157 @@ class TestWinPtyBridgeUnavailable:
         proc.release_write.set()
         assert any("thread leaked" in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows only")
+    @pytest.mark.asyncio
+    async def test_waiting_for_the_fence_does_not_count_against_the_write_deadline(self):
+        """Other work holding the fence's profile lease is not a wedged ConPTY: a write that
+        waits longer than the deadline to enter the fence still lands, and the shell survives."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+        lease_free = threading.Event()
+        waiting = threading.Event()
+
+        def fence(write):
+            waiting.set()
+            lease_free.wait(timeout=5.0)
+            return write()
+
+        task = asyncio.create_task(bridge.write(b"keys", timeout=0.05, fence=fence))
+        await async_wait_until(waiting.is_set)
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert not done
+        lease_free.set()
+        assert await task is True
+        assert proc.written == ["keys"]
+        assert not proc.terminated.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_fence_that_raises_propagates_and_keeps_conpty(self):
+        """A lease that gives up is the fence refusing, not ConPTY wedging: what it raises
+        reaches the caller, as on POSIX, and the shell stays up."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+
+        def fence(_write):
+            raise TimeoutError("profile lease busy")
+
+        with pytest.raises(TimeoutError, match="profile lease busy"):
+            await bridge.write(b"keys", fence=fence)
+        assert proc.written == []
+        assert not proc.terminated.is_set()
+        assert bridge._closed is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_wedged_inside_the_fence_terminates_conpty_and_frees_the_fence(self):
+        """The deadline still bounds how long a wedged ConPTY can hold the fence."""
+        class _WedgedProc:
+            pid = 1
+
+            def __init__(self):
+                self.release_write = threading.Event()
+                self.terminated = threading.Event()
+
+            def write(self, _text):
+                self.release_write.wait(timeout=5.0)
+
+            def terminate(self, force=False):
+                self.terminated.set()
+                self.release_write.set()
+
+        proc = _WedgedProc()
+        bridge = WinPtyBridge(proc)
+        lease = threading.Lock()
+
+        def fence(write):
+            with lease:
+                return write()
+
+        assert await bridge.write(b"x", timeout=0.05, fence=fence) is False
+        assert proc.terminated.is_set()
+        assert bridge._closed is True
+        assert not lease.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_write_cancelled_while_waiting_for_the_fence_lands_and_keeps_conpty(self):
+        """A socket leaving while the lease is busy is not a stall: the keystrokes land once
+        the lease frees, and the shell survives."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+        lease_free = threading.Event()
+        waiting = threading.Event()
+
+        def fence(write):
+            waiting.set()
+            lease_free.wait(timeout=5.0)
+            return write()
+
+        with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05):
+            task = asyncio.create_task(bridge.write(b"keys", timeout=0.05, fence=fence))
+            await async_wait_until(waiting.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not proc.terminated.is_set()
+            lease_free.set()
+            await async_wait_until(lambda: proc.written == ["keys"] and not bridge._late_writes)
+        assert not proc.terminated.is_set()
+        assert bridge._closed is False
+
+    @pytest.mark.asyncio
+    async def test_idle_terminals_leave_the_default_executor_free(self):
+        """Every terminal's drain reads in the default executor, which also runs
+        keystrokes, admission and cleanup. An idle shell's read must return on its
+        timeout, or a few quiet terminals hold every worker until one prints."""
+        from concurrent.futures import ThreadPoolExecutor
+        import socket
+
+        from hermes_cli.pty_session import PtySession
+
+        class _IdleShell:
+            """pywinpty 3.0.5's PtyProcess: a reader thread copies ConPTY output to a
+            loopback socket, ``read`` is a blocking recv on it, ``fileno`` exposes it."""
+            pid = 1
+
+            def __init__(self):
+                self.output, self.console = socket.socketpair()
+                self.polled = threading.Event()
+
+            def fileno(self):
+                self.polled.set()  # the bridge's bounded select asks for it on every poll
+                return self.output.fileno()
+
+            def read(self, size):
+                data = self.output.recv(size)
+                if not data:
+                    raise EOFError("Pty is closed")
+                return data.decode("utf-8")
+
+            def isalive(self):
+                return True
+
+            def terminate(self, force=False):
+                self.console.close()
+
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+        shells = [_IdleShell() for _ in range(4)]
+        sessions = [PtySession(f"terminal-{n}", WinPtyBridge(shell), buffer_cap=64, read_timeout=0.05)
+                    for n, shell in enumerate(shells)]
+        try:
+            for session in sessions:
+                await session.start()
+            # Every idle shell's reader has polled it; unbounded reads on the two-worker
+            # default pool would hold both workers and leave two shells never polled.
+            await async_wait_until(lambda: all(shell.polled.is_set() for shell in shells), timeout=3)
+            assert await asyncio.wait_for(asyncio.to_thread(lambda: "ran"), 3) == "ran"
+            shells[1].console.sendall("héllo".encode())
+            await async_wait_until(lambda: sessions[1].buffer.snapshot() == "héllo".encode(), timeout=3)
+        finally:
+            for shell in shells:
+                shell.terminate()
+            for session in sessions:
+                await session.close()
+
+    @pytest.mark.platforms("posix")  # non-Windows only
     def test_spawn_raises_unavailable_off_windows(self):
         with pytest.raises(PtyUnavailableError):
             WinPtyBridge.spawn(["true"])
@@ -204,7 +371,7 @@ class TestWinPtyBridgeUnavailable:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWinPtyBridgeSpawn:
 
     def test_spawn_returns_bridge_with_pid(self):
@@ -221,7 +388,7 @@ class TestWinPtyBridgeSpawn:
             WinPtyBridge.spawn([bogus])
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWinPtyBridgeIO:
 
     @pytest.mark.asyncio
@@ -243,6 +410,39 @@ class TestWinPtyBridgeIO:
             bridge.close()
 
 
+    @pytest.mark.asyncio
+    async def test_paste_to_a_program_that_is_not_reading_lands_at_once(self):
+        """ConPTY buffers input whether or not the child reads it, so a host shell's
+        paste lands at once and the job keeps running; only a wedged ConPTY can miss
+        the write deadline, which is why Windows writes keep one."""
+        script = "import time; time.sleep(1.5); print('SURVI' + 'VED', flush=True)"
+        bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
+        try:
+            paste = b"".join(b"%05d %s\r" % (n, b"x" * 57) for n in range(16384))  # 1 MiB
+            assert await asyncio.wait_for(bridge.write(paste, timeout=None), timeout=2.0) is True
+            output = await asyncio.to_thread(_read_until, bridge, b"SURVIVED", 15.0)
+            assert b"SURVIVED" in output
+        finally:
+            bridge.close()
+
+    def test_idle_read_returns_within_its_timeout(self):
+        """A shell that prints nothing must not hold the reading thread until it
+        next prints: every terminal's drain shares the default executor."""
+        script = "import time; print('REA' + 'DY', flush=True); time.sleep(30)"
+        bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
+        try:
+            assert b"READY" in _read_until(bridge, b"READY")
+            idle, slowest = False, 0.0
+            deadline = time.monotonic() + 5.0
+            while not idle and time.monotonic() < deadline:
+                started = time.monotonic()
+                idle = bridge.read(timeout=0.5) == b""
+                slowest = max(slowest, time.monotonic() - started)
+            assert idle
+            assert slowest < 2.5
+        finally:
+            bridge.close()
+
     def test_read_returns_none_after_child_exits(self):
         bridge = WinPtyBridge.spawn(["cmd.exe", "/c", "echo done"])
         try:
@@ -251,8 +451,11 @@ class TestWinPtyBridgeIO:
             deadline = time.monotonic() + 5.0
             while bridge.is_alive() and time.monotonic() < deadline:
                 bridge.read(timeout=0.1)
+            # ConPTY reports EOF seconds after the child exits, and read() returns b""
+            # at its timeout until then, so poll to a deadline rather than a count.
             got_none = False
-            for _ in range(20):
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
                 if bridge.read(timeout=0.1) is None:
                     got_none = True
                     break
@@ -261,7 +464,7 @@ class TestWinPtyBridgeIO:
             bridge.close()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWinPtyBridgeResize:
     def test_resize_does_not_raise_on_live_child(self):
         # ConPTY exposes no ioctl-equivalent for reading the child's current
@@ -289,7 +492,7 @@ class TestWinPtyBridgeResize:
         bridge.resize(cols=100, rows=40)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestClampDimension:
     """The clamp helper is the load-bearing piece — the dashboard sends
     untrusted winsize values straight from xterm.js, and pywinpty's
@@ -311,7 +514,7 @@ class TestClampDimension:
         assert _clamp(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWinPtyBridgeClose:
 
     def test_close_terminates_long_running_child(self):
@@ -333,7 +536,7 @@ class TestWinPtyBridgeClose:
         )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestWinPtyBridgeEnv:
     def test_cwd_is_respected(self, tmp_path):
         bridge = WinPtyBridge.spawn(

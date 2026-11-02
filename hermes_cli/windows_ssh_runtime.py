@@ -87,17 +87,12 @@ def _sid_str(sid) -> str:
 
 
 def _security_attributes():
-    w = _win32()
-    ntsecuritycon, win32security = w.ntsecuritycon, w.win32security
-    owner = _current_sid()
-    acl = win32security.ACL()
-    for sid in (owner, _system_sid()):
-        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
-    descriptor = win32security.SECURITY_DESCRIPTOR()
-    descriptor.SetSecurityDescriptorOwner(owner, False)
-    descriptor.SetSecurityDescriptorDacl(True, acl, False)
-    # Protect the DACL so inheritable parent ACEs (%LOCALAPPDATA% grants) are not merged in.
-    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
+    win32security = _win32().win32security
+    owner = _sid_str(_current_sid())
+    # D:P blocks inherited grants at creation. SDDL also avoids pywin32 311's
+    # SetSecurityDescriptorControl argument-width bug on ARM64.
+    descriptor = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        f"O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)", win32security.SDDL_REVISION_1)
     attributes = win32security.SECURITY_ATTRIBUTES()
     attributes.SECURITY_DESCRIPTOR = descriptor
     return attributes
@@ -281,12 +276,20 @@ def read_lock(ownership_id: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _lock_record(ownership_id: str, payload: dict[str, Any]) -> bytes:
+    # The backend's owner watchdog only trusts a lock whose logPath ends in /<ownershipId>/<nonce>.log
+    # (dashboard_procs._valid_lockfile_payload); without it a superseded Windows backend never retires.
+    record = {**payload, "logPath": _log_path(ownership_id, str(payload.get("spawnNonce"))).as_posix()}
+    data = json.dumps(record, separators=(",", ":")).encode()
+    if len(data) > _MAX_JSON:
+        raise ValueError("lock payload is too large")
+    return data
+
+
 def write_lock(ownership_id: str, payload: dict[str, Any]) -> None:
     win32file = _win32().win32file
     directory = _ensure_scope(ownership_id)
-    data = json.dumps(payload, separators=(",", ":")).encode()
-    if len(data) > _MAX_JSON:
-        raise ValueError("lock payload is too large")
+    data = _lock_record(ownership_id, payload)
     temporary = directory / f".{os.urandom(8).hex()}.lock.tmp"
     _write_new(temporary, data)
     win32file.MoveFileEx(str(temporary), str(_lock_path(ownership_id)),
@@ -324,14 +327,14 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
-    launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
+    from gateway.status_inline_source import inline_bootstrap_argv
+    logical_argv = inline_bootstrap_argv(argv) or argv
+    launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]
     executable_match = arg0 == expected or (is_python and launches_module)
     try:
-        serve = argv.index("serve")
-        owner = argv.index("--ssh-owner-nonce", serve + 1)
-        owned = executable_match and "--isolated" in argv[serve + 1:] and argv[owner + 1] == spawn_nonce
+        serve = logical_argv.index("serve")
+        owner = logical_argv.index("--ssh-owner-nonce", serve + 1)
+        owned = executable_match and "--isolated" in logical_argv[serve + 1:] and logical_argv[owner + 1] == spawn_nonce
     except (ValueError, IndexError):
         owned = False
     return {"alive": process.is_running(), "owned": owned, "indeterminate": False,
@@ -356,34 +359,25 @@ def terminate_owned(pid: int, creation_time_ns: int, hermes_path: str, spawn_non
     return True
 
 
-def _resolve_direct_interpreter(python_entry: str) -> tuple[str, list[str]]:
-    """Resolve the venv launcher to (base interpreter, sys.path to reproduce).
+def _resolve_direct_command(hermes_path: str) -> list[str]:
+    """Ask the configured installation for its direct, boot-selecting command.
 
-    On Windows a venv Scripts\\python.exe is a stub that spawns the real interpreter as a CHILD
-    (two PIDs); spawning the base interpreter with the launcher's sys.path injected yields ONE
-    process that both owns the port and is the one we lock. hermes_cli's parent is prepended
-    because the launcher finds it via cwd / an editable-install hook a bare PYTHONPATH lacks."""
-    query = (
-        "import sys,json,os,importlib.util as u;"
-        "s=u.find_spec('hermes_cli');"
-        "root=os.path.dirname(os.path.dirname(s.origin)) if s and s.origin else '';"
-        "print(json.dumps({'base':getattr(sys,'_base_executable','') or sys.executable,"
-        "'path':[p for p in sys.path if p],'root':root}))")
-    out = subprocess.run([python_entry, "-c", query], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    The port owner must be the process we lock, not a console-launcher child.
+    No assumption about python.exe beside an external bin launcher is valid.
+    """
+    out = subprocess.run([hermes_path, "--print-runtime-command"], capture_output=True,
+                         text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     if out.returncode != 0:
-        raise ValueError("could not resolve the base Python interpreter")
-    info = json.loads(out.stdout.strip().splitlines()[-1])
-    base = info["base"]
-    if not base or not os.path.isfile(base):
-        raise ValueError("base Python interpreter was not found")
-    # keep only real filesystem entries (drops '__editable__.*' finder markers)
-    py_path = [p for p in info.get("path", []) if os.path.exists(p)]
-    root = info.get("root") or ""
-    if not root or not os.path.isdir(root):
-        raise ValueError("could not locate the hermes_cli package")
-    if root not in py_path:
-        py_path.insert(0, root)
-    return base, py_path
+        raise ValueError("could not resolve Hermes runtime; refresh this installation's launcher")
+    try:
+        command = json.loads(out.stdout)
+    except ValueError as exc:
+        raise ValueError("Hermes launcher did not report a runtime command") from exc
+    if (not isinstance(command, list) or not command
+            or not all(isinstance(part, str) and "\x00" not in part for part in command)
+            or not os.path.isabs(command[0]) or not os.path.isfile(command[0])):
+        raise ValueError("Hermes launcher reported an invalid runtime command")
+    return command
 
 
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
@@ -397,24 +391,13 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     profile = str(payload.get("profile") or "")
     if len(profile) > 256 or any(ch in profile for ch in "\x00\r\n"):
         raise ValueError("invalid profile")
-    venv_dir = os.path.dirname(hermes_path)
-    python_entry = os.path.join(venv_dir, "python.exe")
-    if not os.path.isfile(python_entry):
-        raise ValueError("Hermes Python runtime was not found")
-    base_python, sys_path = _resolve_direct_interpreter(python_entry)
-    # Seed sys.path IN-PROCESS via -c rather than PYTHONPATH, which every subprocess the backend
-    # spawns (terminal tool, user scripts) would inherit, shadowing their imports.
-    bootstrap = (
-        "import sys,runpy;"
-        f"sys.path[:0]={sys_path!r};"
-        "runpy.run_module('hermes_cli.main',run_name='__main__',alter_sys=True)")
-    args = [base_python, "-c", bootstrap]
+    args = _resolve_direct_command(hermes_path)
     if profile:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
     env = dict(os.environ)
-    env["VIRTUAL_ENV"] = os.path.dirname(venv_dir)
+    env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONPATH", None)
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)
@@ -437,18 +420,27 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     path = os.path.abspath(hermes_path)
     if not os.path.isabs(hermes_path) or not os.path.isfile(path):
         raise ValueError("Hermes path is not an executable file")
-    version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
+    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
     help_text = help_result.stdout + help_result.stderr
     return {
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
+        "runtimeBootstrapOwnership": 1,
         "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
 
 
 def _probe(*_: str) -> dict[str, Any]:
     import platform
     return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_default_hermes_root()), "python": sys.executable}
+
+
+def _inventory(*_: str) -> dict[str, Any]:
+    """Desktop's read-only roster: the canonical root and profile predicate; never mints an identity."""
+    from hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
+    from hermes_cli.profiles import _iter_named_profile_dirs
+    install_id, _ = _read_existing(get_default_hermes_root() / _INSTALL_ID_FILENAME)
+    return {"profiles": ["default", *[p.name for p in _iter_named_profile_dirs()]], "installId": install_id}
 
 
 def _read_log(ownership_id: str, spawn_nonce: str) -> dict[str, Any]:
@@ -466,6 +458,7 @@ def _write_lock_op(ownership_id: str) -> dict[str, Any]:
 # operation -> (argument count or None for "any", handler(*args)).
 _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "probe": (None, _probe),
+    "inventory": (None, _inventory),
     "upload-token": (2, lambda o, n: upload_token(o, n, sys.stdin.buffer.read(65))),
     "read-lock": (1, read_lock),
     "write-lock": (1, _write_lock_op),

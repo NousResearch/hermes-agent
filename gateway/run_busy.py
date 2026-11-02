@@ -815,7 +815,10 @@ class GatewayBusySessionMixin:
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
         the bot, a bare silence marker must not end the turn, and once another sender's input joins
         it the turn has no single actor (approvals raised after it fail closed). Returns the turn,
-        or None when a newer turn already owns the slot."""
+        or None when a newer turn already owns the slot. A plugin turn waiting for the session's
+        background work stops waiting, as for a person's queued input."""
+        from gateway.run_plugin_injection import person_input_joined_turn
+        person_input_joined_turn(self, session_key)
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None

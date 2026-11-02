@@ -2527,3 +2527,10 @@ polling fallback. Otherwise verify the backend exposes the matching
 
 **Colors look wrong after a theme switch.** You hardcoded a color. Replace it with
 a `var(--ui-*)` theme variable.
+
+### Simplified agent navigation
+
+`host.simplifiedAgentMode` is a read-only boolean nanostore. A plugin that contributes alternate
+sidebar navigation can subscribe and dispose that pane while the simplified sidebar is enabled,
+then register it again when disabled. Feature-detect this property on older hosts. This preference
+controls presentation only; it must not delete or migrate agent data.

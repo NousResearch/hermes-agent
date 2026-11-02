@@ -4,7 +4,7 @@ import { memo } from 'react'
 import type * as React from 'react'
 
 import { PrTag } from '@/app/chat/pr-tag'
-import { ProfileTag } from '@/app/chat/profile-tag'
+import { ProfileTag, useHasProfileTag } from '@/app/chat/profile-tag'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
@@ -27,7 +27,6 @@ import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
-import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
@@ -173,7 +172,7 @@ function SidebarSessionRowImpl({
   const pinnedAge = rowMeta.includes('updated')
   // The default profile has no mark worth spending a row slot on — a chip on
   // every row that says "the normal one" is noise. Named profiles only.
-  const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
+  const hasProfileTag = useHasProfileTag(session.profile)
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on

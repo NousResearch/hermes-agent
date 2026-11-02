@@ -17,7 +17,6 @@
  *    and the future seam for per-plugin capability grants.
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
-
 import { computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
@@ -102,6 +101,7 @@ import {
   focusWorkspaceOwnerSessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
@@ -556,6 +556,8 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /** Read-only sidebar preference; plugins can hide alternate navigation while it is enabled. */
+  simplifiedAgentMode: readonlyAtom<boolean>($simplifiedAgentMode),
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

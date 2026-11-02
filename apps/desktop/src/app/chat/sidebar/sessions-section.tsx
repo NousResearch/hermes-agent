@@ -124,6 +124,7 @@ interface SidebarSessionsSectionProps {
   contentClassName?: string
   emptyState: React.ReactNode
   forceEmptyState?: boolean
+  hideHeader?: boolean
   headerAction?: React.ReactNode
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
@@ -215,6 +216,7 @@ export function SidebarSessionsSection({
   emptyState,
   forceEmptyState = false,
   headerAction,
+  hideHeader = false,
   footer,
   groups,
   embeddedGroups = false,
@@ -626,15 +628,17 @@ export function SidebarSessionsSection({
 
   return (
     <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>
-      <SidebarSectionHeader
-        action={headerAction}
-        collapsible={collapsible}
-        icon={labelIcon}
-        label={label}
-        meta={labelMeta}
-        onToggle={onToggle}
-        open={sectionOpen}
-      />
+      {!hideHeader && (
+        <SidebarSectionHeader
+          action={headerAction}
+          collapsible={collapsible}
+          icon={labelIcon}
+          label={label}
+          meta={labelMeta}
+          onToggle={onToggle}
+          open={sectionOpen}
+        />
+      )}
       {sectionOpen && (
         <SidebarGroupContent className={resolvedContentClassName}>
           {inner}

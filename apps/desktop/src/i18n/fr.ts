@@ -26,8 +26,10 @@ import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const frOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['fr'],
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,

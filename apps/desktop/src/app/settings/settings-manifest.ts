@@ -78,6 +78,11 @@ export const SETTINGS_MANIFEST = {
       ['font', 'monospace', 'nerd font', 'glyphs', 'shell'],
       'terminalFont'
     ),
+    simplifiedAgents: {
+      subpage: 'window-layout',
+      keywords: ['agents', 'sidebar', 'simple', 'bots'],
+      copy: t => ({ label: t.simplifiedAgents.title, description: t.simplifiedAgents.description })
+    },
     interfaceMode: {
       subpage: 'window-layout',
       keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus'],

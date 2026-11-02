@@ -24,8 +24,10 @@ import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const ruOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['ru'],
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,

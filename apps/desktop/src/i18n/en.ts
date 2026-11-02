@@ -31,9 +31,11 @@ import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  simplifiedAgents: simplifiedAgentsCopy['en'],
   externalOpenFailed: enExternalOpenFailed,
   sharedMetrics: enSharedMetrics,
   appTour: enAppTour,

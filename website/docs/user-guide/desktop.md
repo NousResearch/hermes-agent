@@ -32,6 +32,18 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Simplified agent sidebar (opt-in)
+
+After startup, Hermes offers **Simplified agent mode** once. Choose **Yes, try it** for a sidebar
+with New session, pinned chats, and agents with their remaining chats nested underneath. Chat rows show their profile name on the right
+and retain the existing status indicators. Agents are grouped by gateway; clicking
+an agent opens its settings. New session keeps its existing behavior.
+
+The new sidebar hides the Bots tab and the old gateway/profile selectors. It does not migrate or
+delete profiles or conversations. Choose **No, keep current sidebar** to retain the original UI,
+or change **Settings → Appearance → Window layout → Simplified agent mode** at any time. Existing
+Bot Mode conversations remain available by switching back to the original sidebar.
+
 ## Use the Desktop workspace from a browser
 
 The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,

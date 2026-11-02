@@ -67,6 +67,7 @@ import {
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -158,6 +159,7 @@ export function useStatusbarItems({
   const terminalShowing = useStore($paneVisible('terminal'))
   const sessionsShowing = useStore($paneVisible('sessions'))
   const profileRailVisible = useStore($profileRailVisible)
+  const simplifiedAgents = useStore($simplifiedAgentMode)
   const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
@@ -496,6 +498,8 @@ export function useStatusbarItems({
     copy
   ])
 
+  const showLegacySelectors = sessionsShowing && !simplifiedAgents
+
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
@@ -511,7 +515,7 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: !sessionsShowing,
+        hidden: !showLegacySelectors,
         id: 'gateway-switcher',
         lockedVisible: true,
         render: () => <StatusbarGatewaySwitcher />
@@ -519,7 +523,7 @@ export function useStatusbarItems({
       {
         // The rail's stand-in: the profile picker moves down here while the
         // colored strip is hidden, so switching profiles always has a door.
-        hidden: !sessionsShowing || profileRailVisible,
+        hidden: !showLegacySelectors || profileRailVisible,
         id: 'profile-switcher',
         lockedVisible: true,
         render: () => <ProfileSwitcher compact />
@@ -678,8 +682,8 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       profileRailVisible,
+      showLegacySelectors,
       projectName,
-      sessionsShowing,
       subagentsFailed,
       subagentsRunning,
       toggleCommandCenter

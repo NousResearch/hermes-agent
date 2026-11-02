@@ -440,48 +440,67 @@ export default {
       area: SIDEBAR_PROFILE_GROUP_HEADER_AREA,
       data: { render: (route: ProfileGroupRoute) => <ProfileGroupScreenPortal route={route} /> }
     })
-    ctx.register({
-      id: 'pane',
-      area: 'panes',
-      // `title` is sampled at register (module import, before the locale has
-      // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
-      title: translateNow('common.bots'),
-      // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
-      // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
-      // two cramped panes down the column. Center is safe now: insertAtGroup
-      // pins the zone's header explicitly shown on a center gain (and it
-      // stays shown once the zone has stacked), so the sessions pane can
-      // never vanish behind a stripless Bots tab — the lone-pane auto-hide
-      // trap this dock used to work around with a 'bottom' split.
-      // enforce: standing invariant, not a one-shot migration — the pane
-      // re-homes into the sessions strip at EVERY boot it isn't already
-      // there, whatever tokens or user placement an older install persisted.
-      // The one-time heal ('sessions-tab-v1') burned its token even when its
-      // guards skipped the move, so exactly the users who had fought the old
-      // stacked layout (dragged panes → $userPlacedPanes) stayed stacked
-      // forever. Owner's order: SESSIONS | BOTS is always a tab strip.
-      // An intra-session drag still sticks until the next launch (the
-      // invariant runs at adoption time only — see enforceDockedPanes in the
-      // tree store).
-      // collapsible: the pane lives in the sessions zone, so it must LEAVE
-      // the grid with that zone below the sidebar-collapse breakpoint. The
-      // sessions pane collapses alone without this flag. The zone then keeps
-      // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
-      // zone's tab strip, so the pane stays reachable while collapsed.
-      data: {
-        placement: 'left',
-        width: '260px',
-        collapsible: true,
-        hideOnly: true,
-        tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
-        tabTitleText: () => translateNow('common.bots'),
-        dock: {
-          pane: 'sessions',
-          pos: 'center',
-          enforce: true
-        }
-      },
-      render: () => <BotsPane />
+
+    const registerBotsPane = () =>
+      ctx.register({
+        id: 'pane',
+        area: 'panes',
+        // `title` is sampled at register (module import, before the locale has
+        // loaded) — the tab renders `tabTitle` below so BOTS follows the locale.
+        title: translateNow('common.bots'),
+        // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
+        // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
+        // two cramped panes down the column. Center is safe now: insertAtGroup
+        // pins the zone's header explicitly shown on a center gain (and it
+        // stays shown once the zone has stacked), so the sessions pane can
+        // never vanish behind a stripless Bots tab — the lone-pane auto-hide
+        // trap this dock used to work around with a 'bottom' split.
+        // enforce: standing invariant, not a one-shot migration — the pane
+        // re-homes into the sessions strip at EVERY boot it isn't already
+        // there, whatever tokens or user placement an older install persisted.
+        // The one-time heal ('sessions-tab-v1') burned its token even when its
+        // guards skipped the move, so exactly the users who had fought the old
+        // stacked layout (dragged panes → $userPlacedPanes) stayed stacked
+        // forever. Owner's order: SESSIONS | BOTS is always a tab strip.
+        // An intra-session drag still sticks until the next launch (the
+        // invariant runs at adoption time only — see enforceDockedPanes in the
+        // tree store).
+        // collapsible: the pane lives in the sessions zone, so it must LEAVE
+        // the grid with that zone below the sidebar-collapse breakpoint. The
+        // sessions pane collapses alone without this flag. The zone then keeps
+        // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
+        // zone's tab strip, so the pane stays reachable while collapsed.
+        data: {
+          placement: 'left',
+          width: '260px',
+          collapsible: true,
+          hideOnly: true,
+          tabTitle: () => <LocalizedTabTitle select={t => t.common.bots} />,
+          tabTitleText: () => translateNow('common.bots'),
+          dock: {
+            pane: 'sessions',
+            pos: 'center',
+            enforce: true
+          }
+        },
+        render: () => <BotsPane />
+      })
+
+    let disposeBotsPane: (() => void) | undefined
+
+    const stopSidebarMode = host.simplifiedAgentMode?.subscribe(simple => {
+      if (simple) {
+        disposeBotsPane?.()
+        disposeBotsPane = undefined
+      } else if (!disposeBotsPane) {
+        disposeBotsPane = registerBotsPane()
+      }
+    })
+
+    if (!host.simplifiedAgentMode) {disposeBotsPane = registerBotsPane()}
+    ctx.onDispose?.(() => {
+      stopSidebarMode?.()
+      disposeBotsPane?.()
     })
 
     // Routines — its OWN tiling pane splitting the workspace's right edge

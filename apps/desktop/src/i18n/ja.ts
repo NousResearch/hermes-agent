@@ -26,8 +26,10 @@ import { jaProjects } from './ja_projects'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const jaOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['ja'],
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

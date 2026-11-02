@@ -110,13 +110,7 @@ import {
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { bootstrapSnapshot } from './bootstrap-state'
-import {
-  BROWSER_WINDOW_HEIGHT,
-  BROWSER_WINDOW_MIN_HEIGHT,
-  BROWSER_WINDOW_MIN_WIDTH,
-  BROWSER_WINDOW_WIDTH,
-  buildBrowserWindowUrl
-} from './browser-windows'
+import { BROWSER_WINDOW_SIZE, buildBrowserWindowUrl, type PopoutWindowOptions } from './browser-windows'
 import { createBundleSkewChecker } from './bundle-skew'
 import {
   BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS,
@@ -124,15 +118,7 @@ import {
   readBundleSwapStamp,
   relaunchIntoSwappedBundle
 } from './bundle-swap'
-import {
-  buildCanvasWindowUrl,
-  CANVAS_WINDOW_HEIGHT,
-  CANVAS_WINDOW_MIN_HEIGHT,
-  CANVAS_WINDOW_MIN_WIDTH,
-  CANVAS_WINDOW_WIDTH,
-  type CanvasWindowTab,
-  isCanvasWindowTab
-} from './canvas-windows'
+import { buildCanvasWindowUrl, CANVAS_WINDOW_SIZE, wireCanvasWindows } from './canvas-windows'
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { provisionCliLinks } from './cli-provision'
@@ -12368,17 +12354,7 @@ function broadcastToRenderers(channel: string, payload: unknown) {
   }
 }
 
-function spawnPopoutWindow({
-  kind,
-  size,
-  url,
-  onClosed
-}: {
-  kind: string
-  size: { width: number; height: number; minWidth: number; minHeight: number }
-  url: string
-  onClosed: () => void
-}) {
+function spawnPopoutWindow({ kind, size, url, onClosed }: PopoutWindowOptions) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -12411,9 +12387,7 @@ function spawnPopoutWindow({
     kind,
     callbacks: {
       log: rememberLog,
-      reload: () => {
-        win.webContents.reload()
-      }
+      reload: () => win.webContents.reload()
     },
     isIntentionalTeardown: rendererTeardownInProgress,
     reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
@@ -12436,66 +12410,15 @@ function spawnPopoutWindow({
 
 const browserWindows = createSessionWindowRegistry()
 
-function spawnBrowserWindow(tabId) {
-  return spawnPopoutWindow({
-    kind: 'browser',
-    size: {
-      width: BROWSER_WINDOW_WIDTH,
-      height: BROWSER_WINDOW_HEIGHT,
-      minWidth: BROWSER_WINDOW_MIN_WIDTH,
-      minHeight: BROWSER_WINDOW_MIN_HEIGHT
-    },
-    url: buildBrowserWindowUrl(tabId, {
-      devServer: DEV_SERVER,
-      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-    }),
-    onClosed: () => broadcastToRenderers('hermes:browser-popout:closed', tabId)
-  })
-}
-
 function createBrowserWindow(tabId) {
-  return browserWindows.openOrFocus(tabId, () => spawnBrowserWindow(tabId))
-}
-
-// One canvas window per provider. Re-opening while it is up focuses it and
-// hands it the tab (the live document can change under a popped canvas — an
-// agent opens another .pen, the user switches chats), so the window follows
-// instead of a second guest appearing in the docked tree.
-const canvasWindows = createSessionWindowRegistry()
-
-function createCanvasWindow(tab: CanvasWindowTab) {
-  const existing = canvasWindows.get(tab.provider)
-
-  const win = canvasWindows.openOrFocus(tab.provider, () =>
+  return browserWindows.openOrFocus(tabId, () =>
     spawnPopoutWindow({
-      kind: 'canvas',
-      size: {
-        width: CANVAS_WINDOW_WIDTH,
-        height: CANVAS_WINDOW_HEIGHT,
-        minWidth: CANVAS_WINDOW_MIN_WIDTH,
-        minHeight: CANVAS_WINDOW_MIN_HEIGHT
-      },
-      url: buildCanvasWindowUrl(tab, {
-        devServer: DEV_SERVER,
-        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
-      }),
-      onClosed: () => broadcastToRenderers('hermes:canvas-popout:closed', tab.provider)
+      kind: 'browser',
+      size: BROWSER_WINDOW_SIZE,
+      url: buildBrowserWindowUrl(tabId, { devServer: DEV_SERVER, rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex() }),
+      onClosed: () => broadcastToRenderers('hermes:browser-popout:closed', tabId)
     })
   )
-
-  if (win && win === existing && !win.isDestroyed()) {
-    win.webContents.send('hermes:canvas-popout:tab', tab)
-  }
-
-  return win
-}
-
-function closeCanvasWindow(provider: string) {
-  const win = canvasWindows.get(provider)
-
-  if (win && !win.isDestroyed()) {
-    win.close()
-  }
 }
 
 // Additional full "instance" windows — peers of the primary that render the
@@ -14293,19 +14216,15 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openCanvas', async (_event, tab) => {
-  if (!isCanvasWindowTab(tab)) {
-    return { ok: false, error: 'invalid-canvas-tab' }
-  }
-
-  createCanvasWindow(tab)
-
-  return { ok: true }
-})
-ipcMain.handle('hermes:window:closeCanvas', async (_event, provider) => {
-  if (typeof provider === 'string' && provider.trim()) {
-    closeCanvasWindow(provider.trim())
-  }
+wireCanvasWindows({
+  ipcMain,
+  registry: createSessionWindowRegistry(),
+  spawn: tab => spawnPopoutWindow({
+    kind: 'canvas',
+    size: CANVAS_WINDOW_SIZE,
+    url: buildCanvasWindowUrl(tab, { devServer: DEV_SERVER, rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex() }),
+    onClosed: () => broadcastToRenderers('hermes:canvas-popout:closed', tab.provider)
+  })
 })
 
 // Cross-window renderer relay. The Browser pop-out, the primary window, and
@@ -18202,8 +18121,7 @@ app.on('before-quit', event => {
   // already quitting (#91668).
   sshBootstrapCoordinator.shutdown()
 
-  // Drop the embed-bridge port so a relaunch doesn't meet a stale handshake.
-  shutdownPenHost()
+  shutdownPenHost() // drop the embed-bridge port so a relaunch doesn't meet a stale handshake
 
   const backendNeedsWait = backendQuitNeedsWait({
     connectionPending: backendConnectionState.getPendingPromise() !== null || localBackendLifecycle.hasPending(),

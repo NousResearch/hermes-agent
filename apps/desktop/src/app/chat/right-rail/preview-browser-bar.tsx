@@ -268,13 +268,7 @@ export function PreviewBrowserBar({
           {copy.addComments(commentCount)}
         </button>
       ) : null}
-      {onToggleImport ? (
-        <PenImportGlyph
-          onImport={onImport}
-          onTogglePick={onToggleImport}
-          state={importState}
-        />
-      ) : null}
+      <PenImportGlyph onImport={onImport} onTogglePick={onToggleImport} state={importState} />
       {onPopIn ? (
         <PaneStripGlyph
           icon={<Codicon name="screen-normal" size="0.8125rem" />}
@@ -315,7 +309,7 @@ export function PreviewBrowserBar({
     </div>
   )
 
-  if (!importState || (!importState.picking && importState.progress === null)) {
+  if (!importRowVisible(importState)) {
     return bar
   }
 
@@ -344,12 +338,17 @@ function PenImportGlyph({
   state
 }: {
   onImport?: (mode: 'page' | 'selection') => void
-  onTogglePick: () => void
+  /** Absent when this pane has no import (no pen); the glyph then renders nothing. */
+  onTogglePick?: () => void
   state?: PenImportStripState
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const busy = state?.progress !== null && state?.progress !== undefined
+
+  if (!onTogglePick) {
+    return null
+  }
 
   if (state?.picking) {
     return (
@@ -523,6 +522,11 @@ function PenImportRow({
       )}
     </div>
   )
+}
+
+/** The import row shows only while the crosshair is armed or a capture is in flight. */
+function importRowVisible(state: PenImportStripState | undefined): state is PenImportStripState {
+  return Boolean(state && (state.picking || state.progress !== null))
 }
 
 /** Fade the crumb strip's hidden edge(s); none when everything fits. */

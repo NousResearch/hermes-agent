@@ -5,10 +5,9 @@
 
 import { pathToFileURL } from 'node:url'
 
-export const CANVAS_WINDOW_WIDTH = 1200
-export const CANVAS_WINDOW_HEIGHT = 800
-export const CANVAS_WINDOW_MIN_WIDTH = 640
-export const CANVAS_WINDOW_MIN_HEIGHT = 480
+import type { BrowserWindow, IpcMain } from 'electron'
+
+export const CANVAS_WINDOW_SIZE = { width: 1200, height: 800, minWidth: 640, minHeight: 480 }
 
 /** The docked tab, verbatim — the window is just another host for it. */
 export interface CanvasWindowTab {
@@ -60,4 +59,49 @@ export function buildCanvasWindowUrl(
   }
 
   return `${pathToFileURL(rendererIndexPath!).toString()}${query}#/`
+}
+
+interface CanvasWindowRegistry {
+  get: (key: string) => BrowserWindow | null | undefined
+  openOrFocus: (key: string, spawn: () => BrowserWindow) => BrowserWindow | null | undefined
+}
+
+/**
+ * One canvas window per provider. Re-opening while it is up focuses it and
+ * hands it the tab (the live document can change under a popped canvas — an
+ * agent opens another .pen, the user switches chats), so the window follows
+ * instead of a second guest appearing in the docked tree. `spawn` builds the
+ * window (main owns window chrome); this owns the registry and the IPC doors.
+ */
+export function wireCanvasWindows({
+  ipcMain,
+  registry,
+  spawn
+}: {
+  ipcMain: IpcMain
+  registry: CanvasWindowRegistry
+  spawn: (tab: CanvasWindowTab) => BrowserWindow
+}): void {
+  ipcMain.handle('hermes:window:openCanvas', async (_event, tab) => {
+    if (!isCanvasWindowTab(tab)) {
+      return { ok: false, error: 'invalid-canvas-tab' }
+    }
+
+    const existing = registry.get(tab.provider)
+    const win = registry.openOrFocus(tab.provider, () => spawn(tab))
+
+    if (win && win === existing && !win.isDestroyed()) {
+      win.webContents.send('hermes:canvas-popout:tab', tab)
+    }
+
+    return { ok: true }
+  })
+
+  ipcMain.handle('hermes:window:closeCanvas', async (_event, provider) => {
+    const win = typeof provider === 'string' && provider.trim() ? registry.get(provider.trim()) : null
+
+    if (win && !win.isDestroyed()) {
+      win.close()
+    }
+  })
 }

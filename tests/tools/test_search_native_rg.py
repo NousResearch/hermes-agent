@@ -125,3 +125,75 @@ def test_limit_hit_keeps_drained_matches_when_group_kill_is_refused(tree, ops_fa
     monkeypatch.setattr(os, "killpg", lambda pgid, sig: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted")))
     result = ops.search(pattern="needle", path=str(tree), limit=2)
     assert not result.error and len(result.matches) == 2, result.to_dict()
+
+
+@pytest.mark.parametrize("pattern,limit,expected_count", [
+    ("needle", 2, 2),
+    ("needle", 50, 4),
+    ("absent-token", 50, 0),
+    ("[", 50, None),
+])
+def test_exited_rg_cleanup_preserves_search_outcome(tree, ops_factory, monkeypatch,
+                                                    pattern, limit, expected_count):
+    """OBL-5929: exit between poll and getpgid must not replace real rg results."""
+    import os
+    import subprocess
+
+    from tools import file_tools
+    from tools.registry import registry
+
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "1")
+    ops = ops_factory(tree, [])
+    executable = ops._resolve_command("rg")
+    assert executable, "this regression requires real ripgrep"
+    monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id: ops)
+    real_popen = subprocess.Popen
+    raced = []
+
+    def popen_with_exit_at_poll(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        if os.path.basename(args[0][0]) == "rg":
+            real_poll = proc.poll
+
+            def exit_after_poll():
+                # Report the live observation, then schedule rg's exit/reap before
+                # the caller reaches getpgid. No fake rg output or kill helper.
+                proc.poll = real_poll
+                proc.wait(timeout=5)
+                raced.append(proc.pid)
+                return None
+
+            proc.poll = exit_after_poll
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", popen_with_exit_at_poll)
+    result = json.loads(registry.dispatch("search_files", {
+        "pattern": pattern, "path": str(tree), "limit": limit,
+    }, task_id="exited-rg-regression"))
+    assert raced
+    if expected_count is None:
+        assert "Search failed" in result.get("error", ""), result
+    else:
+        assert not result.get("error"), result
+        assert len(result.get("matches", [])) == expected_count, result
+        assert all("needle" in match["content"] for match in result.get("matches", []))
+
+
+@pytest.mark.parametrize("failure", [PermissionError(1, "cleanup denied"), OSError(5, "cleanup I/O failure")])
+def test_native_cleanup_does_not_hide_other_os_errors(tree, ops_factory, monkeypatch, failure):
+    """Only an already-gone process is an idempotent cleanup outcome."""
+    from tools.environments import local
+
+    ops = ops_factory(tree, [])
+    real_kill = local._kill_process_group_posix
+
+    def fail_cleanup(proc):
+        real_kill(proc)
+        proc.wait()
+        proc.stdout.close()
+        raise failure
+
+    monkeypatch.setattr(local, "_kill_process_group_posix", fail_cleanup)
+    with pytest.raises(type(failure)) as caught:
+        ops._run_rg_native(["sh", "-c", "'printf \"needle\\n\"; sleep 30'"], 1, timeout=5)
+    assert caught.value is failure

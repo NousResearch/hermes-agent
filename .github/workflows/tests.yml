@@ -113,6 +113,7 @@ jobs:
           scripts/run_tests.sh
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/2
+          HERMES_TEST_FORKSERVER: "1"
           HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs

@@ -845,6 +845,8 @@ gateway:
     restarted: "♻ أُعيد تشغيل البوّابة بنجاح. جلستك مستمرة."
     free_tier_line: "الاستدلال: الطبقة المجانية من Nous (nous/welcome). سجّل الدخول للمزيد: /login"
     online: "♻️ البوّابة متصلة — Hermes عاد وجاهز."
+    watchdog_recovered: "⚠️ توقف Hermes عن الاستجابة فأعاد المراقب تشغيله تلقائيًا. فترة الانقطاع التقديرية: من {start} إلى {end}. ربما لم تُعالَج الطلبات المرسلة خلال تلك الفترة — يُرجى إرسالها مرة أخرى."
+    watchdog_recovered_start_unknown: "⚠️ توقف Hermes عن الاستجابة فأعاد المراقب تشغيله تلقائيًا. رُصد عدم الاستجابة عند {detected} (وقت بدايته غير معروف)، وعاد Hermes للعمل منذ {end}. ربما لم تُعالَج الطلبات المرسلة قبل {end} ولم تتلقَّ ردًا — يُرجى إرسالها مرة أخرى."
     db_corrupt: "⚠️ رُصد تلف في قاعدة بيانات الجلسات. قد لا تُحفظ الرسائل. خيارات الاستعادة:\n1. شغّل `hermes {profile_arg}doctor --fix`\n2. أوقف البوّابة، ثم استعد بـ:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (إذا أفاد بإمكانية الاستعادة) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — تأخذ الاستعادة لقطة من الملف المتضرر أولًا؛ لا تشغّل `sqlite3 ... \".recover\"` على state.db الحي، فقد يزيد sqlite3 CLI المعرّض للثغرات من تلفه\n3. استعد من نسخة احتياطية في {backups_dir}/\nشغّل `hermes {profile_arg}doctor` للحصول على تشخيصات منقّحة."
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
     db_then_restart: "{action} ثم `hermes {profile_arg}gateway restart`."

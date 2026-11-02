@@ -397,8 +397,13 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
-    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
+def _build_gateway_vbs_script(
+    python_path: str, working_dir: str, hermes_home: str, profile_arg: str, *,
+    command: list[str] | None = None, wait: bool = False,
+) -> str:
+    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated). ``command`` replaces the
+    arguments after the interpreter (the watchdog launcher) and ``wait`` keeps wscript alive until
+    python exits, so the task's ``IgnoreNew`` policy sees the run.
 
     Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
     groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
@@ -416,7 +421,8 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
+    argv = [python_exe_path, *command] if command else _gateway_run_argv(python_exe_path, profile_arg)
+    command_line = subprocess.list2cmdline(argv)
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string
     lines = [
@@ -439,8 +445,8 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async.
-        f"sh.Run {q(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn False = detached/async (the gateway), True = wait (the watchdog).
+        f"sh.Run {q(command_line)}, 0, {'True' if wait else 'False'}",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -567,9 +573,10 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
 """
 
 
-def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
+def _install_scheduled_task(task_name: str, script_path: Path, task_xml: str | None = None) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail). Always delete+create, never
-    ``/Change``: it preserves stale repeat/restart settings that relaunch the gateway every minute."""
+    ``/Change``: it preserves stale repeat/restart settings that relaunch the gateway every minute.
+    ``task_xml`` registers another definition (the watchdog task) through the same path."""
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
     if "cannot find" in delete_detail.lower():
@@ -580,7 +587,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     user = _resolve_task_user()
     launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
     xml_path = launcher_path.with_suffix(".task.xml")
-    xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
+    xml_path.write_text(task_xml or _build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = [[*base, "/RU", user, "/NP", "/IT"], base] if user else [base]
@@ -888,6 +895,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
         entry = _install_startup_entry(script_path)
         print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
+    print("ℹ The Startup fallback adds no gateway hang watchdog: that needs the Scheduled Task path.")
 
     # Re-running install must be safe: the fallback only installs login persistence; starting is
     # controlled by the pre-UAC start_now answer so every user decision precedes elevation.
@@ -922,6 +930,13 @@ def _offer_elevated_install(headline: str, force: bool, start_now: bool, start_o
     else:
         print("  Skipped elevation. Falling back to Startup folder.")
     return False
+
+
+def _install_watchdog_task() -> None:
+    """Register the out-of-process hang watchdog beside the gateway task (CORP-836)."""
+    from hermes_cli import gateway_windows_watchdog
+    ok, detail = gateway_windows_watchdog.install_task()
+    print(f"{'✓' if ok else '⚠'} Gateway hang watchdog: {detail}")
 
 
 def install(
@@ -978,6 +993,7 @@ def install(
             print(f"✓ {message}")
         for message in warnings:
             print(f"⚠ {message}")
+        _install_watchdog_task()
         if start_now:
             _start_or_report_running()
         else:
@@ -1359,6 +1375,10 @@ def uninstall() -> None:
             print(f"✓ Removed {label}: {path}")
         except FileNotFoundError:
             pass
+
+    from hermes_cli import gateway_windows_watchdog
+    for message in gateway_windows_watchdog.uninstall_task():
+        print(message)
 
     from hermes_cli.gateway_windows_legacy import remove_legacy_launchers
     remove_legacy_launchers()
@@ -1790,10 +1810,19 @@ def stop() -> None:
     ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
     ``schtasks /End``, then a bounded hard-kill of known PIDs."""
     _assert_windows()
-    from gateway.status import get_running_pid
 
     # A user-initiated stop is a planned death: don't later report it as a silent crash.
     _clear_start_attestation()
+    # The hang watchdog must never bring it back: the stop intent is persisted first, then the sweep
+    # runs inside the watchdog's spawn section, so a start in flight is either never made or swept.
+    from hermes_cli import gateway_windows_watchdog
+    if not gateway_windows_watchdog.operator_stop(_hermes_home(), _stop_sweep):
+        print("⚠ Could not synchronise with the gateway hang watchdog; stopped every gateway visible now")
+
+
+def _stop_sweep() -> None:
+    """Drain, ``schtasks /End`` and bounded hard-kill of this profile's gateway PIDs (``stop()``)."""
+    from gateway.status import get_running_pid
 
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)

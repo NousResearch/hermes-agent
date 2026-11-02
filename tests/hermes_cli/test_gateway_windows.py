@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli import gateway
 from hermes_cli import gateway_windows
+from hermes_cli import gateway_windows_watchdog
 from hermes_cli import setup
 
 
@@ -473,6 +474,9 @@ def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, t
     monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    # The hang watchdog task is the real schtasks seam here; never register or query it from a test.
+    monkeypatch.setattr(gateway_windows_watchdog, "install_task", lambda: (True, "created"))
+    monkeypatch.setattr(gateway_windows_watchdog, "uninstall_task", list)
 
     staging.write_text("stale", encoding="utf-8")
     gateway_windows.uninstall()
@@ -512,6 +516,7 @@ def test_scheduled_task_install_removes_startup_entries_that_would_double_launch
     monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
     monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda name, path: (True, "created"))
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+    monkeypatch.setattr(gateway_windows_watchdog, "install_task", lambda: (True, "created"))
 
     gateway_windows.install()
 

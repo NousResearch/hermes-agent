@@ -962,6 +962,12 @@ class GatewayNotificationsMixin:
             try:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
+                # A restart by the Windows hang watchdog carries its outage window: this boot is the
+                # recovery, stamped once so every replay and later process states the same end.
+                from gateway.watchdog_outage import outage_notice, stamp_recovered_at
+                stamp_recovered_at(data, time.time())
+                notice = outage_notice(data)
+                message = t(notice[0], **notice[1]) if notice else None
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
                 owed = {
@@ -970,7 +976,8 @@ class GatewayNotificationsMixin:
                     for profile, platform, cfg in self._served_home_channel_configs()
                     if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
                 }
-                delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
+                delivered |= await self._send_home_channel_startup_notifications(
+                    skip_targets=delivered, message=message)
                 if owed <= delivered:
                     path.unlink(missing_ok=True)
                     return
@@ -980,7 +987,8 @@ class GatewayNotificationsMixin:
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
 
     async def _send_home_channel_startup_notifications(
-        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        message: Optional[str] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify EVERY served profile's configured home channels that the gateway is back online.
 
@@ -992,7 +1000,7 @@ class GatewayNotificationsMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = t("gateway.startup.online")
+        message = message or t("gateway.startup.online")
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"

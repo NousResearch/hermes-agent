@@ -61,4 +61,8 @@ def remove_windows_task() -> bool:
             continue
         removed = True
         print(f"✓ Removed Windows login item: {path}")
+    from hermes_cli import gateway_windows_watchdog
+    for message in gateway_windows_watchdog.uninstall_task():
+        removed = removed or message.startswith("✓")
+        print(message)
     return removed

@@ -1213,6 +1213,10 @@ def _refresh_windows_gateway_launchers() -> None:
             if gateway_windows.is_task_registered():
                 # A task registered by an older build never picks up template hardening otherwise (#113670).
                 gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
+            # Refresh only: enabling the hang watchdog is `hermes gateway install`, never an update side effect.
+            from hermes_cli import gateway_windows_watchdog
+            for message in gateway_windows_watchdog.refresh_if_installed():
+                print(f"  {message}")
 
 
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:

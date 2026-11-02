@@ -2144,15 +2144,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
         if self._restart_requested and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
-                atomic_json_write(
-                    _planned_restart_notification_path(),
-                    {
-                        "requested_at": time.time(),
-                        "via_service": bool(self._restart_via_service),
-                        "detached": bool(self._restart_detached),
-                    },
-                    indent=None,
-                )
+                # A pending hang-watchdog outage record survives the rewrite: its resend notice is still owed.
+                from gateway.watchdog_outage import carry_pending_outage
+                path = _planned_restart_notification_path()
+                marker = {"requested_at": time.time(), "via_service": bool(self._restart_via_service),
+                          "detached": bool(self._restart_detached)}
+                atomic_json_write(path, carry_pending_outage(path, marker), indent=None)
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
             self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

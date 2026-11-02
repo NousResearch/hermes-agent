@@ -130,13 +130,14 @@ Most list endpoints support:
 ## Rate Limits
 
 - Authenticated: 5,000 requests/hour
-- Check remaining: `curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/rate_limit`
+- Check remaining: `gh api rate_limit`
 
 ## Common curl Patterns
 
 ```bash
 # GET
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
+GH_AUTH="Authorization: token $GITHUB_TOKEN"
+curl -s -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO
 
 # POST with JSON body
@@ -157,5 +158,6 @@ curl -s -X DELETE \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues/42/labels/bug
 
 # Parse JSON response with python3
-curl -s ... | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['field'])"
+curl -s ... -o response.json
+python3 -c "import json; data=json.load(open('response.json')); print(data['field'])"
 ```

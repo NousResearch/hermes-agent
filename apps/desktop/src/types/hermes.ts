@@ -1859,43 +1859,6 @@ export interface McpServerTestResponse {
   tools: { name: string; description: string }[]
 }
 
-/** One Nous-approved MCP catalog entry from `GET /api/mcp/catalog`. */
-export interface McpCatalogEntry {
-  name: string
-  description: string
-  connector_slug?: string | null
-  source: string
-  transport: string
-  auth_type: string
-  required_env: { name: string; prompt: string; required: boolean }[]
-  command: string | null
-  args: string[]
-  url: string | null
-  install_url: string | null
-  install_ref: string | null
-  bootstrap: string[]
-  default_enabled: string[] | null
-  post_install: string
-  /** Composer-suggestion triggers (present when the manifest declares a
-   *  `suggest` block; null/absent on entries without one and on older
-   *  backends that predate the field). */
-  suggest?: {
-    keywords: string[]
-    hosts: string[]
-    applications?: string[]
-    examples?: string[]
-    requires_app?: boolean
-  } | null
-  needs_install: boolean
-  installed: boolean
-  enabled: boolean
-}
-
-export interface McpCatalogResponse {
-  entries: McpCatalogEntry[]
-  diagnostics: { name: string; kind: string; message: string }[]
-}
-
 export type MemoryProviderStatus = 'missing' | 'needs_config' | 'ready' | 'unavailable'
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

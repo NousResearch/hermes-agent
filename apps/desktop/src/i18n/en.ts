@@ -70,7 +70,6 @@ export const en: Translations = {
 
     card: {
       kindManaged: 'Managed',
-      kindCatalog: 'MCP · Catalog',
       kindCustom: 'MCP · Custom',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'In the Hermes catalog',
@@ -104,7 +103,6 @@ export const en: Translations = {
       verb: {
         authenticate: 'Authenticate',
         connect: 'Connect',
-        install: 'Install',
         openLogs: 'Open logs',
         reconnect: 'Reconnect',
         stopWaiting: 'Stop waiting',
@@ -1529,9 +1527,6 @@ export const en: Translations = {
       serverJson: 'Server JSON',
       remove: 'Remove',
       test: 'Test connection',
-      catalogLoading: 'Loading MCP catalog...',
-      catalogInstallFailed: name => `Failed to install ${name}`,
-      catalogEnvRequired: 'Fill in the required values before installing.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} tools`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} resources`] : [])].join(', ')} enabled`,
       costTokens: tokens => `~${tokens} tok/call`,

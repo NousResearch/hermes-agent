@@ -13,7 +13,6 @@ import { cn } from '@/lib/utils'
 
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
-import { type InstallField, LocalInstall } from './local-server-control'
 import type { ConnectorCardModel, ConnectorState, ConnectorVerb, ConnectorWayHosted, ConnectorWayLocal } from './types'
 import { type WayChoice, WaysSection } from './ways-section'
 
@@ -48,15 +47,12 @@ export interface ConnectorDialogProps {
   card: ConnectorCardModel
   connectElement?: ReactNode
   cost?: { tokensPerCall?: string; usesPerMonth?: string }
-  installFields?: readonly InstallField[]
-  installing?: boolean
   menu?: ReactNode
   onAuthenticate?: () => void
   onConnect?: () => void
   onDisconnect?: () => void
   /** Escape inside the dialog; return true when it cancelled something, so the dialog stays open. */
   onEscape?: () => boolean
-  onInstall?: (env: Record<string, string>) => void
   onOpenAdmin?: () => void
   onOpenChange: (open: boolean) => void
   onReconnect?: () => void
@@ -107,7 +103,7 @@ export function ConnectorDialog({
         <Header card={card} titleRef={titleRef} {...rest} />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {card.ways.hosted ? <HostedLead card={card} {...rest} /> : <LocalLead card={card} {...rest} />}
+          {card.ways.hosted ? <HostedLead card={card} {...rest} /> : null}
 
           {accounts}
 
@@ -164,11 +160,8 @@ function Header({ card, titleRef, ...rest }: PartProps & { titleRef: RefObject<H
 function HeaderActions({
   card,
   connectElement,
-  installFields,
-  installing,
   menu,
   onAuthenticate,
-  onInstall,
   onServerToggle,
   onToggleForMe,
   onVerb,
@@ -186,12 +179,12 @@ function HeaderActions({
     ? localWay
       ? undefined
       : leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
-    : localAction({ installFields, installing, onAuthenticate, onInstall, way: localWay })
+    : localAction({ onAuthenticate, way: localWay })
 
   return (
     <div className="flex shrink-0 items-center gap-2">
       {action ? (
-        <Button disabled={action.busy} onClick={action.run} size="xs">
+        <Button onClick={action.run} size="xs">
           {copy.verb[action.verb]}
         </Button>
       ) : null}
@@ -227,32 +220,19 @@ function HeaderActions({
 }
 
 interface LeadVerb {
-  busy?: boolean
   run: () => void
   verb: ConnectorVerb
 }
 
 function localAction({
-  installFields,
-  installing = false,
   onAuthenticate,
-  onInstall,
   way
 }: {
-  installFields?: readonly InstallField[]
-  installing?: boolean
   onAuthenticate?: () => void
-  onInstall?: (env: Record<string, string>) => void
   way: ConnectorWayLocal | null
 }): LeadVerb | undefined {
   if (!way) {
     return undefined
-  }
-
-  if (way.installed === false) {
-    return onInstall && (installFields ?? []).length === 0
-      ? { busy: installing, run: () => onInstall({}), verb: 'install' }
-      : undefined
   }
 
   return way.verb === 'authenticate' && onAuthenticate ? { run: onAuthenticate, verb: 'authenticate' } : undefined
@@ -287,11 +267,8 @@ function leadVerb({
 function HostedLead({
   card,
   connectElement,
-  installFields,
-  installing,
   onAuthenticate,
   onConnect,
-  onInstall,
   onOpenAdmin,
   onReconnect,
   onServerToggle,
@@ -331,12 +308,9 @@ function HostedLead({
       {onWayChange ? (
         <WaysSection
           card={card}
-          installFields={installFields}
-          installing={installing}
           onAuthenticate={onAuthenticate}
           onChange={onWayChange}
           onConnect={onConnect}
-          onInstall={onInstall}
           onReconnect={onReconnect}
           onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
           onToggleForMe={onToggleForMe}
@@ -351,21 +325,6 @@ function HostedFoot({ card }: PartProps) {
   const { t } = useI18n()
 
   return card.ways.hosted ? <FootLine>{t.connectorsPage.dialog.nousLine}</FootLine> : null
-}
-
-function LocalLead({ card, installFields = [], installing, onInstall }: PartProps) {
-  const local = card.ways.local
-  const install = local?.installed === false && installFields.length > 0 ? onInstall : undefined
-
-  if (!install) {
-    return null
-  }
-
-  return (
-    <div className="shrink-0 border-b border-(--ui-stroke-tertiary) px-3.5 py-2.5">
-      <LocalInstall installFields={installFields} installing={installing} onInstall={install} />
-    </div>
-  )
 }
 
 function LocalFoot({ advanced, cost }: PartProps) {

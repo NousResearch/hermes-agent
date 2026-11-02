@@ -6,7 +6,6 @@ import { getOfficialSkills, getSkillHubSources } from './api/skills'
 import { getTerminalBackends, getToolsetConfig, selectTerminalBackend } from './api/toolsets'
 import {
   getHermesConfigRecord,
-  getMcpCatalog,
   getSkillContent,
   getSkills,
   getToolsets,
@@ -59,7 +58,7 @@ describe('capability helpers are connection-scoped', () => {
     void getSkills()
     void getToolsets()
     void getHermesConfigRecord()
-    void getMcpCatalog()
+    void saveMcpServers({})
     void getUsageAnalytics(30)
 
     for (const call of api.mock.calls) {

@@ -1081,8 +1081,8 @@ test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with
 
 test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
   // /api/actions/{name}/status must land on the SAME backend as the endpoints
-  // that spawn actions (skills hub install/uninstall/update, mcp catalog
-  // install): _spawn_hermes_action registers the dynamic action name only in
+  // that spawn actions (skills hub install/uninstall/update):
+  // _spawn_hermes_action registers the dynamic action name only in
   // the spawning process. Splitting the pair 404s the poll with
   // "Unknown action: skills-install-<slug>-<hash>".
   assert.deepEqual(
@@ -1100,13 +1100,6 @@ test('resolveProfileApiRequest routes action-status polls with the action-spawni
       requestMethod: 'POST'
     }),
     { backendProfile: null, requestPath: '/api/skills/hub/install?profile=iris' }
-  )
-  // MCP catalog installs spawn background actions too — same pairing rule.
-  assert.deepEqual(
-    resolveProfileApiRequest('iris', '/api/mcp/catalog/install', {
-      requestMethod: 'POST'
-    }),
-    { backendProfile: null, requestPath: '/api/mcp/catalog/install?profile=iris' }
   )
 })
 

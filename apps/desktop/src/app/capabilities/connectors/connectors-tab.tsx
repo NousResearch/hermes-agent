@@ -7,9 +7,7 @@ import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $freeTierStatus } from '@/store/free-tier'
 import { $freeTierSignIn, $openAppWindows } from '@/store/free-tier-sign-in'
-import { notifyError } from '@/store/notifications'
 
-import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
 
 import { AddServerDialog } from './add-dialog'
@@ -17,7 +15,7 @@ import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
 import { useHostedActions } from './data/hosted-actions'
-import { joinBundledEntries, joinLocalServers } from './data/join'
+import { joinLocalServers } from './data/join'
 import { invalidateConnectors } from './data/keys'
 import { useRenameAccount } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
@@ -70,21 +68,17 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const [disconnecting, setDisconnecting] = useState<Disconnecting | null>(null)
   const [pendingRename, setPendingRename] = useState<null | PendingRename>(null)
   const renameOpened = useCallback(() => setPendingRename(null), [])
-  const [installing, setInstalling] = useState<null | string>(null)
 
   const local = useMemo(
     () =>
       joinLocalServers({
-        catalog: mcp.catalog,
         servers: mcp.servers,
         status: mcp.statuses,
         toolCounts: mcp.toolCounts,
         usage: mcp.usageByServer
       }),
-    [mcp.catalog, mcp.servers, mcp.statuses, mcp.toolCounts, mcp.usageByServer]
+    [mcp.servers, mcp.statuses, mcp.toolCounts, mcp.usageByServer]
   )
-
-  const bundled = useMemo(() => joinBundledEntries(mcp.availableCatalog), [mcp.availableCatalog])
 
   const lastKnownServers = useMemo(() => seedLocalServers(profile), [profile])
   const pluginServers = usePluginServers(profile)
@@ -103,12 +97,11 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const cards = useMemo(
     () =>
       deriveCards({
-        bundled,
         hosted: forgetAbandoned(hosted.rows, new Set(abandoned)),
         local: servers,
         titles: hosted.titles
       }),
-    [abandoned, bundled, hosted.rows, hosted.titles, servers]
+    [abandoned, hosted.rows, hosted.titles, servers]
   )
 
   useEffect(startConnectorPersistence, [])
@@ -126,58 +119,22 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   useOpenFromRoute(cards, profile, setOpenKey, setPendingRename)
 
-  const bundledEntry = (card: ConnectorCardModel) =>
-    mcp.availableCatalog.find(candidate => candidate.name === card.ways.local?.entryName) ?? null
-
-  const startInstall = async (card: ConnectorCardModel, env: Record<string, string>) => {
-    const entry = bundledEntry(card)
-
-    if (!entry) {
-      return
-    }
-
-    setInstalling(cardKey(card))
-
-    try {
-      await installBundledEntry(entry, env, profile)
-      await mcp.onCatalogInstalled()
-      setOpenKey(cardKey(card))
-    } catch (error) {
-      notifyError(error, t.settings.mcp.catalogInstallFailed(card.name))
-    } finally {
-      setInstalling(null)
-    }
-  }
-
   const runVerb = (card: ConnectorCardModel) => {
     if (hostedActions.runHostedVerb(card)) {
       return
     }
 
-    switch (card.verb) {
-      case 'authenticate':
-        void mcp.authenticate(localServerName(card))
+    if (card.verb === 'authenticate') {
+      void mcp.authenticate(localServerName(card))
 
-        return
-
-      case 'install':
-        if (card.ways.local?.entryName && card.ways.local.needsEnv !== true) {
-          void startInstall(card, {})
-
-          return
-        }
-
-        break
-
-      default:
-        break
+      return
     }
 
     setOpenKey(cardKey(card))
   }
 
   const busySlug = hostedActions.busySlug
-  const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
+  const busyKey = busySlug === null ? null : hostedCardKey(busySlug)
 
   return (
     <div className="capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2">
@@ -191,7 +148,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         cards={cards}
         filter={filter}
         hostedFailed={hosted.phase === 'failed'}
-        loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
+        loading={(hosted.phase === 'loading' || mcp.configLoading) && cards.length === 0}
         notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
         onFilterChange={setFilter}
         onOpen={card => setOpenKey(cardKey(card))}
@@ -210,11 +167,8 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         <LocalConnectorDialog
           card={openCard}
           controller={mcp}
-          installFields={bundledEntry(openCard)?.required_env}
-          installing={installing === cardKey(openCard)}
           onClose={() => setOpenKey(null)}
           onConnect={() => void startConnect(openCard, false)}
-          onInstall={env => void startInstall(openCard, env)}
           onReconnect={() => void startConnect(openCard, true)}
           onRemoveServer={() => setRemoveServer(openCard)}
           profile={profile}
@@ -240,8 +194,6 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           card={openCard}
           controller={mcp}
           hosted={hosted}
-          installFields={bundledEntry(openCard)?.required_env}
-          installing={installing === cardKey(openCard)}
           onClose={() => {
             setOpenKey(null)
             setPendingRename(null)
@@ -249,7 +201,6 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           onConnect={() => void startConnect(openCard, false)}
           onDisconnect={() => setDisconnecting({ card: openCard })}
           onGiveUp={opId => void write(connector.giveUp(opId))}
-          onInstall={env => void startInstall(openCard, env)}
           onReconnect={() => void startConnect(openCard, true)}
           onRemoveServer={() => setRemoveServer(openCard)}
           onToggleForMe={next => void write(switcher.setEnabled(openCard.slug, next))}

@@ -71,8 +71,6 @@ export type {
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
-  McpCatalogEntry,
-  McpCatalogResponse,
   McpServerSummary,
   McpServerTestResponse,
   MemoryProviderConfig,

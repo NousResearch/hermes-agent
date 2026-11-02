@@ -1,17 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import {
-  getMcpCatalog,
-  type HermesGateway,
-  type McpCatalogEntry,
-  type McpCatalogResponse,
-  type McpTestResult,
-  type ProfileScope,
-  profileScopeKey,
-  saveMcpServers
-} from '@/hermes'
+import { type HermesGateway, type McpTestResult, type ProfileScope, profileScopeKey, saveMcpServers } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { probeCache, probeKey } from '@/lib/mcp-probe-cache'
@@ -26,10 +16,9 @@ import type { HermesConfigRecord } from '@/types/hermes'
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
 import { useOnProfileSwitch } from '../../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../../hooks/use-profile-switch-latch'
-import { seedOptions } from '../connectors/data/persist'
 
 import { parseServersDoc, withEnabled } from './mcp-doc'
-import { MCP_CATALOG_KEY, type ServerStatus, statusOf } from './mcp-status'
+import { type ServerStatus, statusOf } from './mcp-status'
 import { type McpDraft, useMcpDraft } from './use-mcp-draft'
 import { type McpProbes, useMcpProbes } from './use-mcp-probes'
 
@@ -39,16 +28,11 @@ export interface McpServersController extends McpDraft, PublishedProbes {
   addServerEntry: (name: string, entry: McpServerEntry) => Promise<boolean>
   authing: null | string
   authenticate: (name: string) => Promise<void>
-  availableCatalog: McpCatalogEntry[]
-  catalog: McpCatalogEntry[]
-  catalogLoading: boolean
   config: HermesConfigRecord | null
   configError: unknown
   configFailed: boolean
   configLoading: boolean
-  descriptionFor: (name: string, entry: McpServerEntry) => null | string
   names: string[]
-  onCatalogInstalled: () => Promise<void>
   profilePending: boolean
   refetchConfig: () => void
   removeServer: (name: string) => Promise<boolean>
@@ -99,33 +83,6 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
   const names = useMemo(() => Object.keys(servers), [servers])
 
   const draft = useMcpDraft({ config, names, profilePending, servers, writable: !profilePending })
-
-  const catalogQuery = useQuery({
-    ...seedOptions<McpCatalogResponse>(scopeProfileKey, 'bundled'),
-    queryKey: [...MCP_CATALOG_KEY, scopeProfileKey],
-    queryFn: () => getMcpCatalog(profile ?? undefined),
-    staleTime: 5 * 60_000
-  })
-
-  const catalog = useMemo(() => catalogQuery.data?.entries ?? [], [catalogQuery.data])
-
-  const availableCatalog = useMemo(
-    () => catalog.filter((entry: McpCatalogEntry) => !entry.installed && !(entry.name in servers)),
-    [catalog, servers]
-  )
-
-  const descriptionFor = (serverName: string, server: McpServerEntry): null | string => {
-    const lower = serverName.toLowerCase()
-
-    const match = catalog.find(
-      entry =>
-        entry.name.toLowerCase() === lower ||
-        (entry.url && entry.url === server.url) ||
-        (entry.command && entry.command === server.command)
-    )
-
-    return match?.description ?? null
-  }
 
   const profileEpoch = useRef(0)
 
@@ -247,16 +204,6 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     }
   }
 
-  const onCatalogInstalled = async () => {
-    void catalogQuery.refetch()
-    const { data } = await refetchConfigQuery()
-    const nextServers = getServers(data ?? null)
-
-    mirror(nextServers, doc => ({ ...nextServers, ...doc }))
-
-    void silentReload()
-  }
-
   const writeEntry = async (
     serverName: string,
     transform: (entry: McpServerEntry) => McpServerEntry
@@ -349,7 +296,6 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
       })
 
       draft.setCursor(0)
-      void catalogQuery.refetch()
 
       return true
     } catch (err) {
@@ -400,17 +346,12 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     addServerEntry,
     authenticate,
     authing,
-    availableCatalog,
-    catalog,
-    catalogLoading: catalogQuery.isLoading,
     config: config ?? null,
     configError,
     configFailed,
     configLoading,
     costFor: fleet.costFor,
-    descriptionFor,
     names,
-    onCatalogInstalled,
     probes: fleet.probes,
     profilePending,
     refetchConfig: () => void refetchConfigQuery(),

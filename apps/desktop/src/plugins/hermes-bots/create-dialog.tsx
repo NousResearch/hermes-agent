@@ -70,14 +70,8 @@ import {
 } from './group-membership'
 import { useBots } from './i18n'
 import { botProfileIdentity, displayName } from './labels'
-import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
-import type {
-  CapabilityEntry,
-  McpCatalogResponse,
-  ProfileConfigurePayload,
-  ProfileDescribeResponse
-} from './profile-config'
+import type { CapabilityEntry, ProfileConfigurePayload, ProfileDescribeResponse } from './profile-config'
 import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from './profile-config'
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
@@ -246,8 +240,8 @@ function slugTaken(roster: RosterRow[], slug: string, target: string, draft: nul
   )
 }
 
-/** Draft-profile ledger for the New Agent dialog. Opening Capabilities (or MCP
- *  setup) materializes a DRAFT profile so the live config surfaces have a
+/** Draft-profile ledger for the New Agent dialog. Opening Capabilities
+ *  materializes a DRAFT profile so the live config surfaces have a
  *  backend; discarding deletes it on the machine it was CREATED on
  *  (`draftTargetRef`, recorded with it): the "Create on" picker may point
  *  elsewhere by then, and a same-named bot there is not the draft. Each discard,
@@ -286,11 +280,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const [name, setName] = useState('')
   // Create mode: the profile is created LAZILY. Capability toggles are staged in
   // component state; the profile is materialized either on Create (submit) or on
-  // the first MCP credential setup (ensureAgentCreated), whichever comes first —
-  // so OAuth / API-key setup works DURING creation, not only after in Edit.
+  // opening the live Capabilities tab (ensureAgentCreated), whichever comes first.
   const createdRef = useRef<null | string>(null)
   // In-flight profiles.create shared across concurrent triggers (Create
-  // button + MCP setup buttons). Distinct from createdRef on purpose:
+  // button + Capabilities tab). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
   const { discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
@@ -373,7 +366,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
-  // Once the draft profile is materialized (Capabilities tab / MCP setup) it
+  // Once the draft profile is materialized (Capabilities tab) it
   // shows up in the roster — its OWN slug must not read as "taken".
   // A remote-target create is gated by the TARGET machine's roster: a local
   // name clash is fine there, and the remote's own duplicate check rejects
@@ -433,34 +426,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return
     }
 
-    Promise.all([
-      requestForTarget<ProfileDescribeResponse>('profiles.describe', {
-        name: capSource
-      }),
-      requestForTarget<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
-    ])
-      .then(([res, cat]) => {
-        // Full MCP menu = the profile's configured servers + the bundled
-        // catalog (installable). Configured entries win on name clash.
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+    requestForTarget<ProfileDescribeResponse>('profiles.describe', {
+      name: capSource
+    })
+      .then(res => {
         setCaps({
           source: capSource,
           skills: res.skills || [],
           toolsets: res.toolsets || [],
-          mcp: [
-            ...configured,
-            ...catalog.map(s => ({
-              name: s.name,
-              enabled: false,
-              fromCatalog: true,
-              installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ]
+          mcp: res.mcp_servers || []
         })
       })
       .catch(() => setCapsFailed(true))
@@ -489,9 +463,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   }
 
   // Materialize the profile exactly once. createdRef stores the finished slug
-  // (its consumers — the taken check, draft discard on cancel, the MCP setup
-  // button's profile param — all read a string); flightRef shares the
-  // in-flight creation promise so simultaneous MCP setup / Create clicks fire
+  // (the taken check and draft discard on cancel read a string); flightRef
+  // shares the in-flight creation promise so simultaneous Capabilities / Create clicks fire
   // ONE profiles.create. A failed flight clears its slot so a retry can run.
   const ensureAgentCreated = (): Promise<null | string> => {
     // Renamed since the draft materialized? The old draft is orphaned —
@@ -1050,66 +1023,22 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                     }}
                   >
                     <div className="grid gap-1">
-                      {caps.mcp.map(m => {
-                        const needsSetup =
-                          m.fromCatalog &&
-                          !m.installed &&
-                          ((m.requires || []).length > 0 || (m.auth || '').toLowerCase() === 'oauth')
-
-                        return (
-                          <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
-                            <Checkbox
-                              checked={!!m.enabled}
-                              disabled={needsSetup}
-                              onCheckedChange={value => toggleCap('mcp', m.name, Boolean(value))}
-                            />
-                            <span className="min-w-0">
-                              <span>{m.name}</span>
-                              {m.fromCatalog && !needsSetup ? (
-                                <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                                  {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
-                                </span>
-                              ) : null}
-                              {needsSetup ? (
-                                <McpSetupButton
-                                  ensureProfile={ensureAgentCreated}
-                                  entry={m}
-                                  onDone={() => {
-                                    // Setup done: mark installed so the row's
-                                    // checkbox un-disables, and enable it.
-                                    setCaps(prev =>
-                                      prev
-                                        ? {
-                                            ...prev,
-                                            mcp: prev.mcp.map(x =>
-                                              x.name === m.name
-                                                ? {
-                                                    ...x,
-                                                    installed: true,
-                                                    enabled: true
-                                                  }
-                                                : x
-                                            )
-                                          }
-                                        : prev
-                                    )
-                                    setDirtyCaps(prev => ({
-                                      ...prev,
-                                      mcp: true
-                                    }))
-                                  }}
-                                  profile={createdRef.current}
-                                />
-                              ) : null}
-                              {m.description ? (
-                                <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-                                  {m.description}
-                                </div>
-                              ) : null}
-                            </span>
-                          </label>
-                        )
-                      })}
+                      {caps.mcp.map(m => (
+                        <label className="flex items-start gap-2 text-xs text-(--ui-text-secondary)" key={m.name}>
+                          <Checkbox
+                            checked={!!m.enabled}
+                            onCheckedChange={value => toggleCap('mcp', m.name, Boolean(value))}
+                          />
+                          <span className="min-w-0">
+                            <span>{m.name}</span>
+                            {m.description ? (
+                              <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
+                                {m.description}
+                              </div>
+                            ) : null}
+                          </span>
+                        </label>
+                      ))}
                     </div>
                   </div>
                   <div className="text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{b.editor.mcpHint}</div>

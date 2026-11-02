@@ -682,10 +682,6 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/hub/sources',
   'POST /api/skills/hub/uninstall',
   'POST /api/skills/hub/update',
-  // Spawns a background action polled via /api/actions/{name}/status — must
-  // live on the SAME backend as that poll family (below), or the poll asks a
-  // backend that never registered the dynamic action name and 404s.
-  'POST /api/mcp/catalog/install',
   // Gateway lifecycle: the handlers take `?profile=` and already decide, per
   // profile, whether X has its own gateway or is served by the default
   // multiplexer (409 / restart the multiplexer). Spawning from the primary keeps

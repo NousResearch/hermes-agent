@@ -1,7 +1,6 @@
 import { connectorTitle } from '@/lib/connector-tools'
 
 import type {
-  BundledEntryInput,
   ConnectorCardModel,
   ConnectorFact,
   ConnectorReason,
@@ -145,7 +144,6 @@ export function localWay(server: LocalServerInput): ConnectorWayLocal {
 
   return {
     fact: localFact(server, phase.state),
-    inCatalog: server.inCatalog,
     installed: true,
     plugin: server.plugin,
     reason: phase.reason ? { key: phase.reason } : undefined,
@@ -155,18 +153,6 @@ export function localWay(server: LocalServerInput): ConnectorWayLocal {
     target: server.target,
     unused: server.unused,
     verb: phase.verb === 'authenticate' && server.canAuthenticate === false ? 'openLogs' : phase.verb
-  }
-}
-
-export function bundledWay(entry: BundledEntryInput): ConnectorWayLocal {
-  return {
-    authType: entry.authType,
-    entryName: entry.name,
-    inCatalog: true,
-    installed: false,
-    needsEnv: entry.needsEnv,
-    state: 'available',
-    verb: 'install'
   }
 }
 
@@ -219,7 +205,7 @@ export function mergeCard({ description, inCatalog, name, slug, ways }: MergeCar
   const base = {
     description,
     fact: speaker.way.fact,
-    inCatalog: inCatalog || ways.local?.inCatalog === true,
+    inCatalog,
     name,
     reason: speaker.way.reason,
     slug,
@@ -281,14 +267,12 @@ export function twinPillOf({ residency, ways }: ConnectorCardModel): ConnectorTw
 }
 
 export interface DeriveCardsInput {
-  bundled?: readonly BundledEntryInput[]
   hosted: readonly HostedConnectorInput[]
   local: readonly LocalServerInput[]
   titles?: Readonly<Record<string, string>>
 }
 
 interface CardParts {
-  bundled?: BundledEntryInput
   hosted?: HostedConnectorInput
   local?: LocalServerInput
 }
@@ -300,10 +284,8 @@ export const localCardKey = (name: string) => `local:${name}`
 export const cardKey = (card: ConnectorCardModel): string =>
   card.ways.hosted === null ? localCardKey(card.slug) : hostedCardKey(card.slug)
 
-const mergeKey = (connectorSlug: string | undefined, name: string) => connectorSlug ?? localCardKey(name)
-
 function waysOf(parts: CardParts): ConnectorWays | null {
-  const local = parts.local ? localWay(parts.local) : parts.bundled ? bundledWay(parts.bundled) : null
+  const local = parts.local ? localWay(parts.local) : null
 
   if (parts.hosted) {
     return { hosted: hostedWay(parts.hosted), local }
@@ -326,19 +308,12 @@ function slotAt(parts: Map<string, CardParts>, key: string): CardParts {
 }
 
 // The slug stays the hosted slug, or the server's config key, so a deep link can still address the card.
-function slugOf({ bundled, hosted, local }: CardParts): string {
-  return hosted?.slug ?? local?.name ?? bundled?.name ?? ''
+function slugOf({ hosted, local }: CardParts): string {
+  return hosted?.slug ?? local?.name ?? ''
 }
 
-function descriptionOf({ bundled, hosted, local }: CardParts): string | undefined {
-  return hosted?.description ?? local?.description ?? bundled?.description
-}
-
-// An install must not rename the app: the bundled entry and the server it becomes read the same way.
-function nameOf({ bundled, hosted, local }: CardParts, titles: Readonly<Record<string, string>>, slug: string): string {
-  const key = hosted?.slug ?? local?.connectorSlug ?? bundled?.connectorSlug ?? slug
-
-  return titles[key] ?? local?.title ?? connectorTitle(local?.name ?? bundled?.name ?? slug)
+function nameOf({ hosted, local }: CardParts, titles: Readonly<Record<string, string>>, slug: string): string {
+  return titles[hosted?.slug ?? slug] ?? local?.title ?? connectorTitle(local?.name ?? slug)
 }
 
 function cardOf(slot: CardParts, titles: Readonly<Record<string, string>>): ConnectorCardModel | null {
@@ -351,7 +326,7 @@ function cardOf(slot: CardParts, titles: Readonly<Record<string, string>>): Conn
   const slug = slugOf(slot)
 
   return mergeCard({
-    description: descriptionOf(slot),
+    description: slot.hosted?.description,
     inCatalog: slot.hosted?.inCatalog ?? false,
     name: nameOf(slot, titles, slug),
     slug,
@@ -359,7 +334,7 @@ function cardOf(slot: CardParts, titles: Readonly<Record<string, string>>): Conn
   })
 }
 
-export function deriveCards({ bundled = [], hosted, local, titles = {} }: DeriveCardsInput): ConnectorCardModel[] {
+export function deriveCards({ hosted, local, titles = {} }: DeriveCardsInput): ConnectorCardModel[] {
   const parts = new Map<string, CardParts>()
 
   for (const row of hosted) {
@@ -367,16 +342,7 @@ export function deriveCards({ bundled = [], hosted, local, titles = {} }: Derive
   }
 
   for (const server of local) {
-    slotAt(parts, mergeKey(server.connectorSlug, server.name)).local = server
-  }
-
-  for (const entry of bundled) {
-    const slot = slotAt(parts, mergeKey(entry.connectorSlug, entry.name))
-
-    // An installed server always beats the bundled entry of the same app.
-    if (!slot.local) {
-      slot.bundled = entry
-    }
+    slotAt(parts, localCardKey(server.name)).local = server
   }
 
   const cards: ConnectorCardModel[] = []

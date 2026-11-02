@@ -54,7 +54,6 @@ export const deOverrides = {
     },
     card: {
       kindManaged: 'Verwaltet',
-      kindCatalog: 'MCP · Katalog',
       kindCustom: 'MCP · Benutzerdefiniert',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'Im Hermes-Katalog',
@@ -88,7 +87,6 @@ export const deOverrides = {
       verb: {
         authenticate: 'Authentifizieren',
         connect: 'Verbinden',
-        install: 'Installieren',
         openLogs: 'Logs öffnen',
         reconnect: 'Neu verbinden',
         stopWaiting: 'Warten beenden',
@@ -1879,9 +1877,6 @@ export const deOverrides = {
       serverJson: 'Server-JSON',
       remove: 'Entfernen',
       test: 'Verbindung testen',
-      catalogLoading: 'MCP-Katalog wird geladen…',
-      catalogInstallFailed: name => `${name} konnte nicht installiert werden`,
-      catalogEnvRequired: 'Füllen Sie die erforderlichen Werte aus, bevor Sie installieren.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} Tools`, ...(prompts ? [`${prompts} Prompts`] : []), ...(resources ? [`${resources} Ressourcen`] : [])].join(', ')} aktiviert`,
       costTokens: tokens => `~${tokens} Tok/Aufruf`,

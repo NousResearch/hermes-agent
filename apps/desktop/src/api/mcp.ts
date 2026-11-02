@@ -1,4 +1,4 @@
-import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
+import type { McpServerSummary } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
@@ -80,26 +80,5 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
     path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }
-  })
-}
-
-export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogResponse> {
-  return window.hermesDesktop.api<McpCatalogResponse>({
-    ...capabilityScoped(profile),
-    path: '/api/mcp/catalog'
-  })
-}
-
-export function installMcpCatalogEntry(
-  name: string,
-  env: Record<string, string> = {},
-  profile?: ProfileScope
-): Promise<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
-    ...capabilityScoped(profile),
-    path: '/api/mcp/catalog/install',
-    method: 'POST',
-    body: { name, env, enable: true },
-    timeoutMs: 60_000
   })
 }

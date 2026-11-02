@@ -125,7 +125,6 @@ export interface Translations extends NoticeTranslations {
     }
     card: {
       kindManaged: string
-      kindCatalog: string
       kindCustom: string
       kindPlugin: (plugin: string) => string
       inCatalog: string
@@ -159,7 +158,6 @@ export interface Translations extends NoticeTranslations {
       verb: {
         authenticate: string
         connect: string
-        install: string
         openLogs: string
         reconnect: string
         stopWaiting: string
@@ -1296,9 +1294,6 @@ export interface Translations extends NoticeTranslations {
       serverJson: string
       remove: string
       test: string
-      catalogLoading: string
-      catalogInstallFailed: (name: string) => string
-      catalogEnvRequired: string
       capabilitySummary: (tools: number, prompts: number, resources: number) => string
       costTokens: (tokens: string) => string
       usage30d: (uses: string) => string

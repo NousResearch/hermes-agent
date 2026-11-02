@@ -11,7 +11,6 @@ import { ConnectorDialog } from './connector-dialog'
 import { invalidatePluginProbe } from './data/keys'
 import { localServerName } from './derive'
 import { ConnectorDialogMenu } from './dialog-menu'
-import type { InstallField } from './local-server-control'
 import { LocalAdvanced } from './local-slots'
 import { PluginToolsPanel } from './plugin-tools-panel'
 import { LocalToolsPanel } from './tools-panel'
@@ -20,11 +19,8 @@ import type { ConnectorCardModel } from './types'
 export interface LocalConnectorDialogProps {
   card: ConnectorCardModel
   controller: McpServersController
-  installFields?: readonly InstallField[]
-  installing?: boolean
   onClose: () => void
   onConnect: () => void
-  onInstall: (env: Record<string, string>) => void
   onReconnect: () => void
   onRemoveServer: () => void
   profile: ProfileScope
@@ -33,11 +29,8 @@ export interface LocalConnectorDialogProps {
 export function LocalConnectorDialog({
   card,
   controller,
-  installFields,
-  installing,
   onClose,
   onConnect,
-  onInstall,
   onReconnect,
   onRemoveServer,
   profile
@@ -62,12 +55,9 @@ export function LocalConnectorDialog({
       advanced={owned ? <LocalAdvanced controller={controller} name={name} onRemove={onRemoveServer} /> : undefined}
       card={card}
       cost={localCost(controller, name)}
-      installFields={installFields}
-      installing={installing}
       menu={<ConnectorDialogMenu onRefreshTools={refreshTools} />}
       onAuthenticate={() => void controller.authenticate(name)}
       onConnect={onConnect}
-      onInstall={onInstall}
       onOpenChange={next => {
         if (!next) {
           onClose()

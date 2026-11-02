@@ -3,7 +3,6 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 
 import { bothWaysOn, hostedStateWord, localWord } from './derive'
-import { type InstallField, LocalInstall } from './local-server-control'
 import type { ConnectorCardModel, ConnectorWayHosted, ConnectorWayLocal, ConnectorWays } from './types'
 
 export type WayChoice = 'hosted' | 'local'
@@ -18,12 +17,9 @@ export function wayInUse({ hosted, local }: ConnectorWays): null | WayChoice {
 
 export interface WaysSectionProps {
   card: ConnectorCardModel
-  installFields?: readonly InstallField[]
-  installing?: boolean
   onAuthenticate?: () => void
   onChange: (way: WayChoice) => void
   onConnect?: () => void
-  onInstall?: (env: Record<string, string>) => void
   onReconnect?: () => void
   onServerToggle?: (next: boolean) => void
   onToggleForMe?: (next: boolean) => void
@@ -85,10 +81,8 @@ export function WaysSection({ card, onChange, value, ...rest }: WaysSectionProps
           onToggleForMe={rest.onToggleForMe}
           way={hosted}
         />
-      ) : local.installed === true || rest.onInstall === undefined ? (
-        <LocalWay onAuthenticate={rest.onAuthenticate} onServerToggle={rest.onServerToggle} way={local} />
       ) : (
-        <LocalInstall installFields={rest.installFields} installing={rest.installing} onInstall={rest.onInstall} />
+        <LocalWay onAuthenticate={rest.onAuthenticate} onServerToggle={rest.onServerToggle} way={local} />
       )}
 
       {bothWaysOn(card.ways) && rest.onServerToggle ? (

@@ -92,9 +92,6 @@ vi.setConfig({ testTimeout: 30_000 })
 
 const roster: RosterRow[] = [{ connectionId: 'local', name: 'default' }]
 
-/** A catalog entry that needs an API key — the only row that renders setup. */
-const catalog = { auth: null, installed: false, name: 'linear', requires: ['LINEAR_API_KEY'] }
-
 function withQueryClient(children: ReactNode) {
   return (
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -148,14 +145,8 @@ beforeEach(() => {
   mocks.requestProfile.mockResolvedValue({})
   mocks.request.mockImplementation(async (method: string) => {
     switch (method) {
-      case 'mcp.catalog':
-        return { servers: [catalog] }
-
-      case 'mcp.servers.test':
-        return { ok: true }
-
       case 'profiles.describe':
-        return { mcp_servers: [], skills: [], toolsets: [] }
+        return { mcp_servers: [{ enabled: true, name: 'linear' }], skills: [], toolsets: [] }
 
       default:
         return {}
@@ -293,24 +284,16 @@ describe('materializing the draft profile', () => {
     )
   })
 
-  it('creates it on the first MCP setup click, then adds the server to it', async () => {
-    // Older builds keep the staged MCP tab, which is where the setup button
-    // lives. There is no "save the agent first" gate: the button is live.
+  it('lists the clone source servers on the staged MCP tab without minting a draft or reading a catalog', async () => {
+    // Older builds keep the staged MCP tab: it shows what the clone source has configured, nothing to install.
     await renderDialog(false)
 
     fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
-    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
 
-    await waitFor(() => expect(createCalls()).toHaveLength(1))
-    expect(createCalls()[0][1]).toMatchObject({ name: 'inbox-triage' })
-    // The add lands on the profile the click just minted, not on `null`.
-    await waitFor(() =>
-      expect(mocks.request).toHaveBeenCalledWith('mcp.servers.add', {
-        name: 'linear',
-        preset: 'linear',
-        profile: 'inbox-triage'
-      })
-    )
+    expect(await screen.findByText('linear')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull()
+    expect(mocks.request.mock.calls.map(([method]) => method)).not.toContain('mcp.catalog')
+    expect(createCalls()).toHaveLength(0)
   })
 })
 
@@ -451,12 +434,10 @@ describe('cancelling New Bot discards its draft profile', () => {
   })
 
   // The draft exists once profiles.create returns, but the flight still awaits
-  // the capability configure. A Cancel (or the dialog going away) in that window
-  // deletes the draft; the flight must not then record bot meta for it.
-  it.each([
-    ['Cancel', () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))],
-    ['unmount', () => cleanup()]
-  ])('writes no bot meta for a draft abandoned (%s) while its configure is pending', async (_label, abandon) => {
+  // the capability configure. The dialog going away in that window deletes the
+  // draft; the flight must not then record bot meta for it. (Cancel is disabled
+  // while Create runs.)
+  it('writes no bot meta for a draft abandoned (unmount) while its configure is pending', async () => {
     const base = mocks.request.getMockImplementation()!
     let finishConfigure!: () => void
     mocks.request.mockImplementation((method: string, params?: unknown) =>
@@ -470,15 +451,14 @@ describe('cancelling New Bot discards its draft profile', () => {
     )
 
     // The staged tabs are where a capability pick (and so a configure) is made
-    // before the profile exists, and where MCP setup mints the draft.
+    // before the profile exists; Create mints the draft.
     await renderDialog(false)
     fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: 'arxiv' }))
-    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
-    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
     await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('profiles.configure', expect.anything()))
 
-    abandon()
+    cleanup()
     finishConfigure()
     await new Promise(resolve => setTimeout(resolve, 50))
 

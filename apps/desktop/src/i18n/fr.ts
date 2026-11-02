@@ -54,7 +54,6 @@ export const frOverrides = {
     },
     card: {
       kindManaged: 'Géré',
-      kindCatalog: 'MCP · Catalogue',
       kindCustom: 'MCP · Personnalisé',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'Dans le catalogue Hermes',
@@ -88,7 +87,6 @@ export const frOverrides = {
       verb: {
         authenticate: "S'authentifier",
         connect: 'Connecter',
-        install: 'Installer',
         openLogs: 'Ouvrir les journaux',
         reconnect: 'Reconnecter',
         stopWaiting: "Arrêter l'attente",
@@ -1885,9 +1883,6 @@ export const frOverrides = {
       serverJson: 'JSON du serveur',
       remove: 'Supprimer',
       test: 'Tester la connexion',
-      catalogLoading: 'Chargement du catalogue MCP...',
-      catalogInstallFailed: name => `Échec de l'installation de ${name}`,
-      catalogEnvRequired: "Remplissez les valeurs requises avant d'installer.",
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} outils`, ...(prompts ? [`${prompts} invites`] : []), ...(resources ? [`${resources} ressources`] : [])].join(', ')} activés`,
       costTokens: tokens => `~${tokens} jetons/appel`,

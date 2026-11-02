@@ -1191,24 +1191,6 @@ export const api = {
         body: JSON.stringify({ enabled }),
       },
     ),
-  getMcpCatalog: () =>
-    fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
-      "/api/mcp/catalog",
-    ),
-  installMcpCatalogEntry: (
-    name: string,
-    env: Record<string, string> = {},
-    enable = true,
-  ) =>
-    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
-      "/api/mcp/catalog/install",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, env, enable }),
-      },
-    ),
-
   // ── Admin: Pairing ──────────────────────────────────────────────────
   // The mutating endpoints read the profile off the BODY, so the query-param
   // rewrite in withManagementProfile doesn't reach them — send it explicitly
@@ -1611,36 +1593,6 @@ export interface McpServer {
   enabled: boolean;
   tools: string[] | null;
 }
-
-export interface McpCatalogEntry {
-  name: string;
-  description: string;
-  source: string;
-  transport: "http" | "stdio";
-  auth_type: "api_key" | "oauth" | "none";
-  required_env: Array<{ name: string; prompt: string; required: boolean }>;
-  // Transport details — what actually connects (http) or runs (stdio).
-  command: string | null;
-  args: string[];
-  url: string | null;
-  // Git bootstrap (only set for entries that clone + build locally).
-  install_url: string | null;
-  install_ref: string | null;
-  bootstrap: string[];
-  // Default tool pre-selection (null = all tools pre-checked) + guidance text.
-  default_enabled: string[] | null;
-  post_install: string;
-  needs_install: boolean;
-  installed: boolean;
-  enabled: boolean;
-}
-
-export interface McpCatalogDiagnostic {
-  name: string;
-  kind: string;
-  message: string;
-}
-
 
 export type McpHttpAuth = "none" | "header" | "oauth";
 

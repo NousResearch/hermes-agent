@@ -25,7 +25,6 @@ import { type HostedConnectorsView, useConnectorTools } from './data/queries'
 import { localServerName } from './derive'
 import { ConnectorDialogMenu } from './dialog-menu'
 import { localCost } from './local-dialog'
-import type { InstallField } from './local-server-control'
 import { LocalAdvanced } from './local-slots'
 import { HostedToolsPanel, LocalToolsPanel, orgDisabledCount } from './tools-panel'
 import type { AccountRow, ConnectorCardModel } from './types'
@@ -36,13 +35,10 @@ export interface HostedConnectorDialogProps {
   card: ConnectorCardModel
   controller: McpServersController
   hosted: HostedConnectorsView
-  installFields?: readonly InstallField[]
-  installing?: boolean
   onClose: () => void
   onConnect: () => void
   onDisconnect: () => void
   onGiveUp: (opId: string) => void
-  onInstall: (env: Record<string, string>) => void
   onReconnect: () => void
   onRemoveServer: () => void
   onToggleForMe: (next: boolean) => void
@@ -90,13 +86,10 @@ export function HostedConnectorDialog({
   card,
   controller,
   hosted,
-  installFields,
-  installing,
   onClose,
   onConnect,
   onDisconnect,
   onGiveUp,
-  onInstall,
   onReconnect,
   onRemoveServer,
   onToggleForMe,
@@ -162,8 +155,6 @@ export function HostedConnectorDialog({
       card={card}
       connectElement={element}
       cost={installed ? localCost(controller, serverName) : undefined}
-      installFields={installFields}
-      installing={installing}
       menu={
         <ConnectorDialogMenu
           onDisconnect={card.ways.hosted?.connected === true && accounts.length === 0 ? onDisconnect : undefined}
@@ -175,7 +166,6 @@ export function HostedConnectorDialog({
       onConnect={onConnect}
       onDisconnect={onDisconnect}
       onEscape={accountList.cancelEdit}
-      onInstall={onInstall}
       onOpenAdmin={() => void openConnectorsAdmin()}
       onOpenChange={next => {
         if (!next) {

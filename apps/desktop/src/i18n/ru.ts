@@ -1238,9 +1238,6 @@ export const ruOverrides = {
       serverJson: 'JSON сервера',
       remove: 'Удалить',
       test: 'Проверить соединение',
-      catalogLoading: 'Загрузка каталога MCP…',
-      catalogInstallFailed: name => `Не удалось установить ${name}`,
-      catalogEnvRequired: 'Заполните обязательные значения перед установкой.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} ${RU_NOUN(tools, 'инструмент', 'инструмента', 'инструментов')}`, ...(prompts ? [`${prompts} ${RU_NOUN(prompts, 'промпт', 'промпта', 'промптов')}`] : []), ...(resources ? [`${resources} ${RU_NOUN(resources, 'ресурс', 'ресурса', 'ресурсов')}`] : [])].join(', ')} включено`,
       costTokens: tokens => `~${tokens} ток/вызов`,

@@ -12,13 +12,15 @@ import { clearAllSessionStates, publishSessionState } from '@/store/session-stat
 // openGatewayForProfile was dialed.
 const warmMocks = vi.hoisted(() => ({
   openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
-  openGatewayForProfile: vi.fn(async (_profile: string) => undefined)
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined),
+  requestGatewayForAgent: vi.fn(async () => ({ ok: true }))
 }))
 
 vi.mock('@/store/gateway', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
   openGatewayForAgent: warmMocks.openGatewayForAgent,
-  openGatewayForProfile: warmMocks.openGatewayForProfile
+  openGatewayForProfile: warmMocks.openGatewayForProfile,
+  requestGatewayForAgent: warmMocks.requestGatewayForAgent
 }))
 
 describe('host.warmProfile routing contract', () => {
@@ -37,6 +39,22 @@ describe('host.warmProfile routing contract', () => {
     host.warmProfile('   ')
 
     expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+})
+
+describe('host.completeMcpOAuth', () => {
+  it('ignores a catalog preset instead of adding the server from the retired MCP catalog', async () => {
+    warmMocks.requestGatewayForAgent.mockClear()
+
+    await expect(
+      host.completeMcpOAuth({
+        catalogPreset: 'linear',
+        profile: { connectionId: 'studio', profile: 'p' },
+        serverName: 'linear'
+      })
+    ).rejects.toThrow()
+
+    expect(warmMocks.requestGatewayForAgent).not.toHaveBeenCalled()
   })
 })
 

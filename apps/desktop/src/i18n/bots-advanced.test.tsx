@@ -9,7 +9,6 @@ import type { I18nContextValue } from '@/i18n'
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 import { BOTS_LOCALES } from '@/plugins/hermes-bots/i18n'
 import { translateBotsIn } from '@/plugins/hermes-bots/i18n-test-helper'
-import { McpSetupButton } from '@/plugins/hermes-bots/mcp-setup'
 import { AdvancedProfileConfig, applyAdvancedConfig, emptyAdvancedState } from '@/plugins/hermes-bots/profile-config'
 
 const mocks = vi.hoisted(() => ({
@@ -111,20 +110,4 @@ it('localizes the advanced editor and hub without translating capability IDs or 
   await waitFor(() =>
     expect(mocks.request).toHaveBeenCalledWith('profiles.configure', { name: 'writer', disabled_skills: ['my-skill'] })
   )
-})
-it('localizes MCP setup actions while retaining the profile, preset and environment identifiers', async () => {
-  mount(
-    <McpSetupButton entry={{ name: 'my-server', requires: ['MY_SERVER_TOKEN'], fromCatalog: true }} profile="writer" />
-  )
-  const zh = translateBotsIn('zh')
-  fireEvent.click(await screen.findByRole('button', { name: zh('tools.setUp') }))
-  expect(await screen.findByPlaceholderText('MY_SERVER_TOKEN')).toBeTruthy()
-  await act(() => i18n.setLocale('zh-hant'))
-  expect(screen.getByRole('button', { name: translateBotsIn('zh-hant')('tools.saveTest') })).toBeTruthy()
-  expect(mocks.request).toHaveBeenCalledWith('mcp.servers.add', {
-    profile: 'writer',
-    name: 'my-server',
-    preset: 'my-server'
-  })
-  expect(mocks.request.mock.calls.some(([method]) => method === 'mcp.servers.set_api_key')).toBe(false)
 })

@@ -30,10 +30,21 @@ function persistentGatewayIds(registry: DesktopConnectionsRegistry | null, prima
   return (registry?.connections ?? []).filter(connection => !servedByPrimary(connection, primary)).map(c => c.id)
 }
 
+/** A published route names the gateway the primary socket serves. Until one is
+ *  published (boot, or a primary teardown), the primary's own gateway looks
+ *  unserved and would get a duplicate socket. */
+function primaryPublished(primary: PrimaryGatewayRoute): boolean {
+  return Boolean(primary.connectionId || primary.mode)
+}
+
 /** Dialing This device where Hermes is not installed would start the installer
  *  unseen; only a confirmed click may do that. */
-async function dial(connectionId: string, localInstalled: () => Promise<boolean>): Promise<void> {
-  if (connectionId === LOCAL_CONNECTION_ID && !(await localInstalled())) {
+async function dial(
+  connectionId: string,
+  localInstalled: () => Promise<boolean>,
+  stillWanted: () => boolean
+): Promise<void> {
+  if (connectionId === LOCAL_CONNECTION_ID && !((await localInstalled()) && stillWanted())) {
     return
   }
 
@@ -46,26 +57,25 @@ async function dial(connectionId: string, localInstalled: () => Promise<boolean>
 export function startPersistentGateways(): () => void {
   const pins = new Map<string, () => void>()
 
-  // This device's install verdict. Each probe re-resolves the backend in the
-  // main process, so not installed is re-checked only when the registry or the
-  // primary route changes; installed holds for the window.
+  // This device's install verdict. "Installed" is re-checked before every
+  // dial (an install can go away while the window lives, and dialing it then
+  // would start the installer), while "not installed" is kept until the
+  // registry or the primary route changes, so a missing install is not
+  // re-probed every tick. Concurrent dials share one probe in flight.
   let localProbe: Promise<boolean> | null = null
-  let localSeenInstalled = false
 
   const localInstalled = () => {
     if (!localProbe) {
       const probe: Promise<boolean> = localBootstrapNeeded().then(
         needed => {
-          // A dropped probe answers for its own callers only: its late verdict
-          // must not overwrite the one its replacement already recorded.
-          if (localProbe === probe) {
-            localSeenInstalled = !needed
+          // A dropped probe's answer is for its own callers only.
+          if (!needed && localProbe === probe) {
+            localProbe = null
           }
 
           return !needed
         },
         (error: unknown) => {
-          // A late failure of a dropped probe must not clear its replacement.
           if (localProbe === probe) {
             localProbe = null
           }
@@ -80,12 +90,14 @@ export function startPersistentGateways(): () => void {
     return localProbe
   }
 
+  // The probe takes time: by its answer the keeper may have stopped, released
+  // this route or lost its published primary.
+  const stillWanted = (connectionId: string) => pins.has(connectionId) && primaryPublished($primaryGatewayRoute.get())
+
   const reconcile = () => {
     const primary = $primaryGatewayRoute.get()
 
-    // Until the primary publishes its route (boot, or a primary teardown), the
-    // primary's own gateway looks unserved and would get a duplicate socket.
-    if (!primary.connectionId && !primary.mode) {
+    if (!primaryPublished(primary)) {
       return
     }
 
@@ -106,16 +118,13 @@ export function startPersistentGateways(): () => void {
       // The kept route itself: another profile's open socket on the same
       // gateway does not carry this one.
       if (!gatewayRouteState(connectionId, HOME_PROFILE).open) {
-        void dial(connectionId, localInstalled).catch(() => undefined)
+        void dial(connectionId, localInstalled, () => stillWanted(connectionId)).catch(() => undefined)
       }
     }
   }
 
   const recheckLocalAndReconcile = () => {
-    if (!localSeenInstalled) {
-      localProbe = null
-    }
-
+    localProbe = null
     reconcile()
   }
 

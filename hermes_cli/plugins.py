@@ -167,7 +167,7 @@ VALID_HOOKS: set[str] = {
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
     # Kanban notifier delivery observer (gateway.kanban_watchers_notifier), fired per delivered
     # ping after the durable ping checkpoint, off the delivery result path. Kwargs: task_id, board,
-    # platform, chat_id, thread_id, event_id, event_kind, notifier_profile.
+    # platform, chat_id, thread_id, event_id, event_kind, notifier_profile, message_id, delivery_metadata.
     "kanban_notify_delivered",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:

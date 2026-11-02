@@ -17,6 +17,9 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
+import { toChatMessages } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
+import type { SessionMessage } from '@/types/hermes'
 
 import { Thread } from '.'
 
@@ -187,6 +190,64 @@ const SCRIBE_AGAIN = 'Message from 🤖 Scribe (@scribe): header fix is in too'
 const COMPLETION = '[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nOutput:\n{"reply": "ok"}]'
 
 describe('inter-agent collapse gate: only dispatches made for the human count', () => {
+  it.each<{ name: string; notice: SessionMessage; runtimeRole: string }>([
+    {
+      name: 'a process_complete notice',
+      notice: { role: 'user', content: COMPLETION, display_kind: 'process_complete' },
+      runtimeRole: 'system'
+    },
+    {
+      name: 'a legacy background-process completion',
+      notice: { role: 'user', content: COMPLETION },
+      runtimeRole: 'user'
+    },
+    {
+      name: 'an internal watchdog notification',
+      notice: {
+        role: 'user',
+        content: 'Watchdog: the background job is still running.',
+        display_kind: 'internal_notification'
+      },
+      runtimeRole: 'user'
+    },
+    {
+      name: 'a system watchdog note',
+      notice: { role: 'system', content: 'Watchdog: the background job is still running.' },
+      runtimeRole: 'system'
+    }
+  ])(
+    'keeps the human-requested report expanded with $name between the teammate answer and report',
+    async ({ notice, runtimeRole }) => {
+      // The reported Bot Chat sequence: a real human dispatch, the injected
+      // teammate answer, then a machine notice BEFORE the substantive report.
+      // Hydrate the persisted rows so process_complete uses its real system role.
+      const inbound = {
+        role: 'user' as const,
+        content: DELIVERY,
+        display_kind: 'internal_notification',
+        platform_message_id: 'bot:hermes:reply',
+        timestamp: 3
+      }
+
+      const continuation = toChatMessages([
+        inbound,
+        { ...notice, timestamp: 4 },
+        { role: 'assistant', content: 'here is the price list hermes sent', timestamp: 5 }
+      ]).map(toRuntimeMessage)
+
+      expect(continuation.map(message => message.role)).toEqual(['user', runtimeRole, 'assistant'])
+      render(
+        <Harness messages={[user('u1', 'ask hermes for the price list'), dispatch('a0', '@hermes'), ...continuation]} />
+      )
+
+      const report = await screen.findByText('here is the price list hermes sent')
+
+      expect(report.closest('details')).toBeNull()
+      expect(screen.queryByText(/Replied to/)).toBeNull()
+      expect(screen.queryByText('show reply')).toBeNull()
+    }
+  )
+
   it('collapses the reply when the bot answered the teammate via message_agent, as Bot Mode instructs', async () => {
     // The built-in Bot Mode prompt tells a bot receiving "Message from <name>"
     // to "reply concisely via message_agent to their handle". The human asked

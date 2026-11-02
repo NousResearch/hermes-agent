@@ -20,6 +20,7 @@ from pathlib import Path
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
+from tools.environments.local_windows_msys import find_msys_process_group, kill_msys_process_group
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
 from tools.environments.local_env_policy import (
@@ -1183,7 +1184,15 @@ class LocalEnvironment(BaseEnvironment):
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
         try:
-            (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
+            if _IS_WINDOWS:
+                msys_group = find_msys_process_group(proc)
+                try:
+                    _kill_process_windows(proc)
+                finally:
+                    if msys_group is not None:
+                        kill_msys_process_group(msys_group)
+            else:
+                _kill_process_group_posix(proc)
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()

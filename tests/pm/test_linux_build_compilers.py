@@ -68,3 +68,9 @@ def test_build_failure_without_any_compiler_names_the_install(tmp_path):
     assert "build-essential" in failure.remedy
     other = classify_uv_failure("pip", 1, missing.replace("'clang++'", "'libolm/include/olm.h'"))
     assert "build-essential" not in other.remedy
+    absent = missing.replace("[Errno 2] No such file or directory: 'clang++'",
+                             "command 'clang++' failed: No such file or directory")
+    assert "build-essential" in classify_uv_failure("pip", 1, absent).remedy
+    ran = missing.replace("[Errno 2] No such file or directory: 'clang++'",
+                          "command '/usr/bin/gcc' failed with exit code 1")
+    assert "build-essential" not in classify_uv_failure("pip", 1, ran).remedy

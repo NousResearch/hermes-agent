@@ -163,6 +163,19 @@ async def test_connector_decline_after_upload_is_a_failed_send_with_one_notice(t
     assert "Q3" in stub.sent[-1]["content"]
 
 
+@pytest.mark.asyncio
+async def test_lost_ack_on_send_media_is_not_reported_as_an_undelivered_attachment(tmp_path: Path):
+    """Frame sent, ack lost: the file may be on screen. No "couldn't send" fallback, and no
+    failure the send_message tool or cron would read as "not delivered" and re-send."""
+    adapter, stub, _fake = _adapter()
+    stub.next_media_result = {"success": False, "error": "relay outbound timed out", "ambiguous": True}
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF")
+    result = await adapter.send_document("chat1", str(f), caption="Q3")
+    assert result.success is True and result.raw_response["ambiguous"] is True
+    assert [a["op"] for a in stub.sent] == ["send_media"]
+
+
 # ── inbound localization ─────────────────────────────────────────────────
 
 

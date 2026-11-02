@@ -430,12 +430,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         subject: Any = None,
         platform: Optional[str] = None,
         surface_declines: bool = False,
+        surface_ambiguous: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Emit one best-effort, op-gated frame; None when the caller must fall back.
 
         None covers every unavailability: op not advertised (probe the descriptor
         instead of parsing a connector error), no transport, transport raised, or a
-        structured connector decline (logged at ``decline_level``; None = silent).
+        structured connector decline (logged at ``decline_level``; None = silent);
+        a lost ack too, unless ``surface_ambiguous`` (a fallback there would re-send).
         """
         op = action["op"]
         if self._transport is None or not self.descriptor.supports_op(op):
@@ -448,6 +450,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("relay %s transport failure", op, exc_info=True)
             return None
         if not result.get("success"):
+            if surface_ambiguous and result.get("ambiguous"):  # frame sent, outcome unknown
+                return result
             # P5(b): an AUTHORIZATION decline is not lane unavailability. This
             # helper's `None` means "lane absent — do your fallback", and the
             # fallbacks re-address the SAME chat by another route (media -> a
@@ -1728,12 +1732,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         }
         if filename:
             action["filename"] = filename
-        # A capacity decline (size cap, platform rejection) is logged and the
-        # caller's fallback still delivers the caption/notice; an
-        # AUTHORIZATION decline must NOT degrade that way (surface_declines).
-        result = await self._gated_op(chat_id, action, surface_declines=True)
+        # Capacity decline -> caller's fallback notice; AUTHORIZATION decline never degrades.
+        result = await self._gated_op(chat_id, action, surface_declines=True, surface_ambiguous=True)
         if result is None:
             return _MediaNotDelivered("connector did not deliver the attachment") if source_is_path else None
+        if result.get("ambiguous"):  # ack lost: possibly delivered (as cron's live-send timeout); no notice/re-send
+            logger.warning("relay send_media to %s unconfirmed (ack lost): %s", chat_id, result.get("error"))
+            return SendResult(success=True, raw_response={"ambiguous": True, "error": result.get("error")})
         if not result.get("success"):
             # An AUTHORIZATION refusal, surfaced by _gated_op. Returning None
             # would hand the caller back to its fallback — a DIFFERENT op

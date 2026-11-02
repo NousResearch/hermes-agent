@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { ruCompressionFieldDescriptions, ruCompressionFieldLabels } from './ru_compression'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -770,21 +771,7 @@ export const ruOverrides = {
         userCharLimit: 'Бюджет профиля',
         provider: 'Провайдер памяти'
       },
-      context: {
-        engine: 'Движок контекста'
-      },
-      compression: {
-        enabled: 'Авто-сжатие',
-        threshold: 'Порог сжатия',
-        codexGpt55Autoraise: 'Автоповышение сжатия Codex',
-        targetRatio: 'Целевое сжатие',
-        protectLastN: 'Защищённые недавние сообщения'
-      },
-      auxiliary: {
-        compression: {
-          timeout: 'Таймаут модели сжатия (с)'
-        }
-      },
+      ...ruCompressionFieldLabels,
       delegation: {
         model: 'Модель субагента',
         provider: 'Провайдер субагента',
@@ -843,19 +830,7 @@ export const ruOverrides = {
         memoryEnabled: 'Сохранять долговременные воспоминания, которые могут помочь будущим сеансам.',
         userProfileEnabled: 'Поддерживать компактный профиль предпочтений пользователя.'
       },
-      context: {
-        engine: 'Стратегия управления длинными диалогами у предела контекста.'
-      },
-      compression: {
-        enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.',
-        codexGpt55Autoraise: 'Повышает порог сжатия до 85% для поддерживаемых моделей ChatGPT Codex OAuth.'
-      },
-      auxiliary: {
-        compression: {
-          timeout:
-            'Сколько секунд ждать вспомогательную модель сжатия за один вызов (по умолчанию 120). Увеличьте для медленных локальных моделей.'
-        }
-      },
+      ...ruCompressionFieldDescriptions,
       voice: {
         autoTts: 'Автоматически зачитывать ответы ассистента.'
       },

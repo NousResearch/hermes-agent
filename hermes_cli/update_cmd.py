@@ -908,23 +908,64 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
     abort_error = None
     try:
         abort_result = _git_run(git_cmd, ["merge", "--abort"])
-    except (OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:  # health: an unknown abort failure is not proof of rollback
         abort_error = exc
+
+    # `rev-parse --verify MERGE_HEAD` returning 1 is only meaningful when Git also
+    # proves that the marker file is gone. This is deliberately a two-part probe:
+    # malformed MERGE_HEAD content can make rev-parse return nonzero while the
+    # checkout is still in an unfinished merge. Resolve the git path first because
+    # linked worktrees keep MERGE_HEAD under the common worktree git directory.
+    merge_head_path = None
+    merge_head_path_error = None
+    try:
+        path_result = _git_run(
+            git_cmd, ["rev-parse", "--git-path", "MERGE_HEAD"],
+            cwd=_m().PROJECT_ROOT,
+        )
+        raw_path = (path_result.stdout or "").strip()
+        if path_result.returncode != 0 or not raw_path:
+            merge_head_path_error = RuntimeError(
+                f"git --git-path MERGE_HEAD exited {path_result.returncode}"
+            )
+        else:
+            merge_head_path = Path(raw_path)
+            if not merge_head_path.is_absolute():
+                merge_head_path = Path(_m().PROJECT_ROOT) / merge_head_path
+    except Exception as exc:  # health: an unreadable git path is unverified state
+        merge_head_path_error = exc
+
     probe_result = None
     probe_error = None
     try:
         probe_result = _git_run(
-            git_cmd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]
+            git_cmd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+            cwd=_m().PROJECT_ROOT,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:  # health: an unreadable probe is not proof of rollback
         probe_error = exc
-    # `rev-parse --verify MERGE_HEAD` returns 1 only when MERGE_HEAD is absent.
-    # Any other result is an unreadable or still-active merge state and must fail closed.
-    merge_in_progress = probe_result is not None and probe_result.returncode == 0
+
+    marker_exists = bool(
+        merge_head_path is not None
+        and os.path.lexists(os.fspath(merge_head_path))
+    )
+    merge_in_progress = marker_exists or (
+        probe_result is not None and probe_result.returncode == 0
+    )
+    probe_is_clean_absence = bool(
+        probe_result is not None
+        and probe_result.returncode == 1
+        and not (probe_result.stdout or probe_result.stderr).strip()
+    )
     merge_state_unverified = (
-        probe_error is not None
+        merge_head_path_error is not None
+        or merge_head_path is None
+        or probe_error is not None
         or probe_result is None
         or probe_result.returncode not in (0, 1)
+        or (probe_result.returncode == 1 and not probe_is_clean_absence)
+        or (marker_exists and probe_is_clean_absence)
+        or (probe_result.returncode == 0 and not marker_exists)
     )
     if (
         abort_error is not None
@@ -938,8 +979,12 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             detail = abort_result.stderr or abort_result.stdout
         elif abort_error is not None:
             detail = str(abort_error)
+        elif merge_head_path_error is not None:
+            detail = f"could not resolve MERGE_HEAD path: {merge_head_path_error}"
         elif probe_result is not None and probe_result.returncode not in (0, 1):
             detail = probe_result.stderr or probe_result.stdout
+        elif marker_exists:
+            detail = f"MERGE_HEAD still exists at {merge_head_path}"
         else:
             detail = str(probe_error or "merge state remains active")
         detail = (detail or "").strip()

@@ -10,6 +10,7 @@ paths are covered in ``tests/scripts/install/test_install_diverged_rescue_ref.py
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -120,7 +121,17 @@ def test_hermes_update_stops_on_merge_conflict_and_retains_recovery_ref(
     assert "Recovery ref retained" in out
 
 
-@pytest.mark.parametrize("abort_failure", ["returncode", "exception", "probe_returncode", "probe_exception"])
+@pytest.mark.parametrize(
+    "abort_failure",
+    [
+        "returncode",
+        "exception",
+        "probe_returncode",
+        "probe_exception",
+        "probe_path_exception",
+        "probe_malformed_marker",
+    ],
+)
 def test_hermes_update_stops_when_merge_abort_is_unproven_and_keeps_conflict_state(
         diverged_checkout, monkeypatch, capsys, abort_failure):
     """An abort error or unreadable merge state must not be reported as clean rollback."""
@@ -155,6 +166,14 @@ def test_hermes_update_stops_when_merge_abort_is_unproven_and_keeps_conflict_sta
         if abort_failure == "probe_returncode" and args == ["rev-parse", "-q", "--verify", "MERGE_HEAD"]:
             return subprocess.CompletedProcess(
                 git_cmd + args, 128, stdout="", stderr="fixture merge-state refusal")
+        if abort_failure == "probe_path_exception" and args == ["rev-parse", "--git-path", "MERGE_HEAD"]:
+            raise RuntimeError("fixture git-path refusal")
+        if abort_failure == "probe_malformed_marker" and args == ["merge", "--abort"]:
+            marker = Path(_git(checkout, "rev-parse", "--git-path", "MERGE_HEAD").stdout.strip())
+            if not marker.is_absolute():
+                marker = checkout / marker
+            marker.write_text("not-a-valid-commit\n", encoding="utf-8")
+            return subprocess.CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
         return real_git_run(git_cmd, args, *rest, **kwargs)
 
     monkeypatch.setattr(update_cmd, "_git_run", fail_abort)

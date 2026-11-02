@@ -177,7 +177,9 @@ export function withGatewayProjectRows(
 
 /** The route a new chat in `project` is created on: the owning gateway profile of a project that
  *  exists only on another gateway, else none (the window's own project tree decides). */
-export function projectOwnerRoute(project: SidebarProjectTree): AgentProfileRoute | undefined {
+export function projectOwnerRoute(
+  project: Pick<SidebarProjectTree, 'connectionId' | 'profile'>
+): AgentProfileRoute | undefined {
   return project.connectionId
     ? { connectionId: project.connectionId, profile: project.profile || 'default' }
     : undefined

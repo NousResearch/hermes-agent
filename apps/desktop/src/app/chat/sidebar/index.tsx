@@ -1114,7 +1114,7 @@ export function ChatSidebar({
 
   // git worktree list is a VISUAL-only enhancer (empty lanes); never membership.
   const inEnteredProject = Boolean(enteredProject && !showAllProfiles)
-  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject)
+  const [scopedRepoWorktrees] = useRepoWorktreeMap(scopedRepoPaths, inEnteredProject, enteredProject)
 
   // Re-probe worktree lanes on out-of-band git changes the renderer can't see.
   // A turn can `git worktree add/remove` in the terminal (e.g. you ask Hermes to
@@ -1872,7 +1872,7 @@ export function ChatSidebar({
                     )}
                     {inProject && enteredProject ? (
                       <div className="group/workspace flex shrink-0 items-center gap-0.5">
-                        {enteredProject.path && <StartWorkButton repoPath={enteredProject.path} />}
+                        {enteredProject.path && <StartWorkButton project={enteredProject} />}
                         {/* Home has no folder and no record to rename, theme, or delete. */}
                         {!enteredProject.isNoProject && (
                           <ProjectMenu

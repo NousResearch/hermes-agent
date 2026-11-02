@@ -16,7 +16,7 @@ import { removeWorktreePath } from '@/store/projects'
 
 import { SidebarRowStack } from '../chrome'
 
-import { ownedNewSessionHandlers } from './gateway-project-rows'
+import { ownedNewSessionHandlers, projectOwnerRoute } from './gateway-project-rows'
 import { PROJECT_SESSION_PAGE, useRevealedRows, useWorkspaceNodeOpen } from './model'
 import { SidebarWorkspaceGroup } from './workspace-group'
 import {
@@ -72,6 +72,7 @@ export function EnteredProjectContent({
           liveSessions={liveSessions}
           onNewSession={owned.onNewSession}
           onNewSessionSplit={owned.onNewSessionSplit}
+          owner={projectOwnerRoute(project)}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -111,6 +112,7 @@ function RepoFlatSection({
   onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
+  owner,
   removedSessionIds
 }: {
   repo: SidebarWorkspaceTree
@@ -120,6 +122,8 @@ function RepoFlatSection({
   onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
+  /** Another gateway's project: its worktrees are removed and switched on that gateway. */
+  owner?: AgentProfileRoute
   removedSessionIds?: ReadonlySet<string>
 }) {
   const { t } = useI18n()
@@ -177,7 +181,7 @@ function RepoFlatSection({
     }
 
     try {
-      await removeWorktreePath(repo.path, group.path, { force })
+      await removeWorktreePath(repo.path, group.path, { force }, owner)
       dismissWorktree(group.id, { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
@@ -201,6 +205,7 @@ function RepoFlatSection({
           onNewSession={group.isKanban ? undefined : onNewSession}
           onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
+          owner={owner}
           renderRows={renderRows}
         />
       ))}

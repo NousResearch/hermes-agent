@@ -2,7 +2,7 @@ name: lithermes
 repo: https://github.com/wjgoarxiv/lithermes
 sha: b119ede337cb3ce27bc2a5eec0f68e09ed20f0c6
 subdir: packages/lithermes-installer/assets/lithermes-plugin
-description: Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 40 skills. MIT.
+description: "Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 40 skills. MIT. Disclosure — adds per-turn workflow context and output marks through Hermes hooks and writes its plans, goals, run state and default-on knowledge capture under the workspace's .hermes/lithermes/ (capture opt-out: LITHERMES_WIKIFY_CAPTURE=0); /lit-adhd reads recent Hermes session titles, asks and tool names from ~/.hermes/state.db read-only with the sqlite3 CLI; /lit-hijack downloads the URLs and files you name (web pages, PDFs, X posts via api.fxtwitter.com, git clones of github.com repos and gists) into the workspace; bundled skill runtimes install from their own lockfiles when a skill asks; reads Hermes internals read-only (context compressor, config defaults, model metadata, command registry), which can break on a Hermes release."
 maintainer: wjgoarxiv
 tier: community
 category: automation

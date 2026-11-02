@@ -24,6 +24,7 @@ except ModuleNotFoundError as exc:
 # ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
 # dir, so if IT can't import nothing in hermes_cli can.
 from hermes_cli import _early_recovery as _early_recovery_mod
+from hermes_cli.process_title import set_process_title as _set_process_title
 
 if _early_recovery_mod.restore_interrupted_pull():
     _early_recovery_mod.relaunch_after_restore()
@@ -207,35 +208,6 @@ def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
     )
 
 
-def _set_process_title() -> None:
-    """Cosmetic: show 'hermes' instead of 'python3.xx' in ps/top/htop.
-
-    Order: opt-in ``setproctitle`` dep; ctypes ``prctl(PR_SET_NAME)`` (Linux,
-    15-char limit); ``pthread_setname_np`` (macOS — lldb/top only, not ``ps
-    aux``); no-op on Windows (the .exe is already ``hermes.exe``). Never fatal.
-    """
-    try:
-        import setproctitle  # type: ignore[import-untyped]
-
-        setproctitle.setproctitle("hermes")
-        return
-    except ImportError:
-        pass
-
-    import ctypes
-    import platform
-
-    try:
-        system = platform.system()
-        if system == "Linux":
-            libc = ctypes.CDLL("libc.so.6", use_errno=True)
-            libc.prctl(15, b"hermes", 0, 0, 0)  # PR_SET_NAME = 15
-        elif system == "Darwin":
-            libc = ctypes.CDLL("libc.dylib", use_errno=True)
-            libc.pthread_setname_np(b"hermes")
-    except Exception:
-        pass
-
 
 # Cheap read of `display.interface` for the earliest hot-path decisions
 # (mouse-residue suppression, Termux fast launch) that run before
@@ -245,8 +217,6 @@ def _set_process_title() -> None:
 # sets HERMES_HOME, and a cache keyed on nothing pinned every later caller to
 # the default home's interface for the whole run (#116902).
 _EARLY_INTERFACE_CACHE: tuple[str, str] | None = None
-
-
 def _early_interface_config_path() -> str:
     """config.yaml of the home this process is currently pointed at."""
     home = os.environ.get("HERMES_HOME")
@@ -3542,6 +3512,10 @@ def main():
     if args.command is None:
         _default_to_chat(args)
         return
+
+    from hermes_cli._parser import apply_json_output_default
+
+    apply_json_output_default(args)
 
     # A handler's int return code becomes the exit code (None = success).
     if hasattr(args, "func"):

@@ -274,8 +274,11 @@ def _setup_tts_provider(config: dict):
             voices.insert(0, (current_voice, f"Current voice — {current_voice}"))
         voice_labels = [label for _, label in voices] + ["Other voice (enter voice ID)"]
         current_idx = next(i for i, (voice, _) in enumerate(voices) if voice == current_voice)
-        _setup.print_info("Choose a voice matching the language you want to speak.")
-        voice_idx = _setup.prompt_choice("Select Edge TTS voice:", voice_labels, current_idx)
+        # The curses picker clears the screen, so pass the hint as its description too; the
+        # numbered fallback ignores description and relies on the printed line.
+        hint = "Choose a voice matching the language you want to speak."
+        _setup.print_info(hint)
+        voice_idx = _setup.prompt_choice("Select Edge TTS voice:", voice_labels, current_idx, description=hint)
         if voice_idx == len(voices):
             voice = (_setup.prompt("Edge TTS voice ID", default=current_voice) or "").strip()
             edge_config["voice"] = voice or current_voice

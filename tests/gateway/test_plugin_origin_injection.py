@@ -101,7 +101,8 @@ def gateway(tmp_path, monkeypatch):
         from agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         turns.append(SimpleNamespace(message=message, history=list(history), session_id=session_id,
-                                     home=get_hermes_home(), marker=get_secret("PROBE_MARKER")))
+                                     home=get_hermes_home(), marker=get_secret("PROBE_MARKER"),
+                                     skip_background_review=_kwargs["skip_background_review"]))
         return {"final_response": f"reply-{len(turns)}", "messages": [], "tools": [],
                 "history_offset": len(history), "last_prompt_tokens": 0}
 
@@ -148,6 +149,7 @@ async def test_origin_creates_session_in_own_profile_and_replies_to_origin(gatew
     assert (middle.home, middle.marker) == (gateway.homes["beta"], "beta")
     assert (last.home, last.marker) == (gateway.homes["alpha"], "alpha")
     assert first.message.endswith("Kick off the review") and first.history == []
+    assert [turn.skip_background_review for turn in (first, middle, last)] == [True, True, True]
     assert alpha.sent == [("100", "reply-1"), ("101", "reply-3")]
     assert beta.sent == [("200", "reply-2")]
     # The reply is sent after the handler returns: it must still run in the plugin's profile scope.
@@ -167,6 +169,7 @@ async def test_origin_creates_session_in_own_profile_and_replies_to_origin(gatew
         await alpha.handle_message(MessageEvent(text="thanks", message_type=MessageType.TEXT, source=reply))
     await _settle(runner, alpha)
     assert gateway.turns[-1].session_id == first.session_id
+    assert gateway.turns[-1].skip_background_review is False
     assert alpha.sent[-1] == ("100", "reply-4")
 
 

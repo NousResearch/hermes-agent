@@ -45,7 +45,6 @@ import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { reconnectGateway } from '@/store/gateway-reconnect'
-import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
@@ -91,7 +90,6 @@ import {
 } from '@/store/session'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -145,17 +143,8 @@ import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
-import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
-import {
-  TITLEBAR_CHROME_CHANGED_EVENT,
-  titlebarControlsPosition,
-  titlebarControlsYNudge,
-  titlebarToolsRightCss,
-  titlebarToolsWidthCss,
-  TOUCH_TITLEBAR_HEIGHT
-} from '../shell/titlebar'
+import { titlebarControlsYNudge } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
-import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
@@ -172,8 +161,8 @@ import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { useTitlebarChromeLayout } from './hooks/use-titlebar-chrome-layout'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
-import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
@@ -300,23 +289,6 @@ function useRecoveryRequestToasts(): void {
       navigate(CRON_ROUTE)
     }
   }, [cronReviewRequest, navigate])
-}
-
-// Where the fixed titlebar clusters sit (the same vars AppShell sets). Browser
-// touch chrome pins them flush in its 44px band, at touch-target size.
-function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CSSProperties {
-  const touchTitlebar = useTouchTitlebar()
-
-  return {
-    '--titlebar-controls-left': `${controlsPos.left}px`,
-    '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
-    ...(touchTitlebar
-      ? {
-          '--titlebar-control-size': `${TOUCH_TITLEBAR_HEIGHT}px`,
-          '--titlebar-control-height': `${TOUCH_TITLEBAR_HEIGHT}px`
-        }
-      : {})
-  } as CSSProperties
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -1201,47 +1173,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
-  // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
-  // settings gear) — fixed chrome positioned via the same CSS vars AppShell
-  // sets, computed here from the live connection. Page-registered tools
-  // (preview's monitor/devtools cluster, …) arrive as registry contributions.
-  const leftTitlebarTools = useTitlebarToolContributions('left')
-  const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
-  const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
-  const controlsVars = useTitlebarControlsVars(controlsPos)
-  // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
-  // prefer the live WCO measurement, fall back to the static reservation).
-  const measuredOverlayWidth = useWindowControlsOverlayWidth()
-  const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
-
-  const titlebarChrome = {
-    darwinMajor: connection?.darwinMajor ?? 0,
-    isFullscreen: Boolean(connection?.isFullscreen),
-    windowButtonPosition: connection?.windowButtonPosition
-  }
-
-  const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
-  // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
-  // renderer paints its own min/max/close (main decides via customWindowControls).
-  const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
-  const appActionsSide = useStore($titlebarAppActionsSide)
-  const interfaceMode = useStore($interfaceMode)
-  const shownTool = shownInMode(interfaceMode)
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
-  const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
-
-  const titlebarToolsWidth =
-    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
-
-  const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
-
-  // Native caption reservations can translate chrome without resizing it.
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
-  }, [controlsPos.left, controlsPos.top, titlebarToolsRight])
+  const chrome = useTitlebarChromeLayout()
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1249,12 +1182,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
-            ...controlsVars,
-            '--titlebar-controls-width': leftToolsWidth,
-            '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
-            '--titlebar-tools-right': titlebarToolsRight,
-            '--titlebar-tools-width': titlebarToolsWidth,
-            '--shell-preview-toolbar-gap': systemToolsWidth
+            ...chrome.controlsVars,
+            '--titlebar-controls-width': chrome.leftToolsWidth,
+            '--titlebar-controls-y-nudge': titlebarControlsYNudge(chrome.titlebarChrome),
+            '--titlebar-tools-right': chrome.titlebarToolsRight,
+            '--titlebar-tools-width': chrome.titlebarToolsWidth,
+            '--shell-preview-toolbar-gap': chrome.systemToolsWidth
           } as CSSProperties
         }
       >
@@ -1263,12 +1196,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             surface as orphaned buttons. */}
         {!isHudWindow() && !isBrowserWindow() && (
           <TitlebarControls
-            leftTools={leftTitlebarTools}
+            leftTools={chrome.leftTitlebarTools}
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
-            tools={rightTitlebarTools}
+            tools={chrome.rightTitlebarTools}
           />
         )}
-        {!isHudWindow() && customWindowControls && (
+        {!isHudWindow() && chrome.customWindowControls && (
           <WslgWindowControls
             isFullscreen={Boolean(connection?.isFullscreen)}
             isMaximized={Boolean(connection?.isMaximized)}

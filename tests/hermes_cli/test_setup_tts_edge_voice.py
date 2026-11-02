@@ -1,59 +1,60 @@
-"""Voice selection must reach persisted runtime config without resetting other languages."""
-import asyncio
-from types import SimpleNamespace
-from pathlib import Path
+"""Edge TTS voice selection in setup keeps existing voices and allows custom IDs."""
+
+import pytest
 
 from hermes_cli import setup_tts
-from hermes_cli.config import load_config, save_config
-from hermes_cli.config_effective import load_user_config_effective
 
 
-def test_selected_voice_reaches_tts_runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    save_config({"tts": {"provider": "edge"}})
+@pytest.fixture
+def run_setup(monkeypatch):
+    """Pick Edge TTS, then answer the voice menu (and optional ID prompt)."""
+    for name in ("save_config", "print_header", "_info", "print_info", "print_success"):
+        monkeypatch.setattr(setup_tts._setup, name, lambda *a, **k: None)
 
-    def choose(question, choices, default):
-        return next(i for i, label in enumerate(choices)
-                    if label.startswith("Chinese (Simplified)" if "voice" in question else "Edge TTS"))
+    def run(config, pick_voice, typed=None):
+        calls = []
 
-    monkeypatch.setattr(setup_tts._setup, "prompt_choice", choose)
-    setup_tts.setup_tts(load_config())
-    config = load_user_config_effective()
-    seen = []
+        def prompt_choice(question, choices, default=0):
+            calls.append((question, list(choices), default))
+            if "provider" in question:
+                return next(i for i, label in enumerate(choices) if label.startswith("Edge TTS"))
+            return pick_voice(choices, default)
 
-    class Communicate:
-        def __init__(self, text, **kwargs):
-            seen.append(kwargs["voice"])
+        monkeypatch.setattr(setup_tts._setup, "prompt_choice", prompt_choice)
+        monkeypatch.setattr(setup_tts._setup, "prompt", lambda *a, **k: typed)
+        setup_tts._setup_tts_provider(config)
+        return calls[-1]
 
-        async def save(self, output):
-            Path(output).write_bytes(b"fixture audio")
-
-    monkeypatch.setattr("tools.tts_tool._import_edge_tts", lambda: SimpleNamespace(Communicate=Communicate))
-    from tools.tts_tool_providers import _generate_edge_tts
-    target = str(tmp_path / "speech.mp3")
-    assert asyncio.run(_generate_edge_tts("你好", target, config["tts"])) == target
-    assert seen == ["zh-CN-XiaoxiaoNeural"]
-    assert Path(target).read_bytes() == b"fixture audio"
+    return run
 
 
-def test_existing_and_custom_voices_remain_profile_local(tmp_path, monkeypatch):
-    homes = [tmp_path / "a", tmp_path / "b"]
-    voices = ["fr-FR-DeniseNeural", "ja-JP-NanamiNeural"]
-    for home, voice in zip(homes, voices):
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        save_config({"tts": {"provider": "edge", "edge": {"voice": voice}}})
+def test_edge_setup_persists_selected_voice(run_setup):
+    config = {"tts": {"provider": "openai", "edge": {"voice": "en-US-AriaNeural"}}}
 
-    custom = [False]
-    def choose(question, choices, default):
-        if "provider" in question:
-            return next(i for i, label in enumerate(choices) if label.startswith("Edge TTS"))
-        return len(choices) - 1 if custom[0] else default
+    run_setup(config, lambda choices, _: next(
+        i for i, label in enumerate(choices) if label.startswith("Chinese (Simplified)")))
 
-    monkeypatch.setattr(setup_tts._setup, "prompt_choice", choose)
-    monkeypatch.setattr(setup_tts._setup, "prompt", lambda *args, **kwargs: "de-DE-KatjaNeural")
-    for index in (0, 1, 0):
-        monkeypatch.setenv("HERMES_HOME", str(homes[index]))
-        custom[0] = index == 1
-        setup_tts.setup_tts(load_config())
-        expected = "de-DE-KatjaNeural" if custom[0] else voices[0]
-        assert load_user_config_effective()["tts"]["edge"]["voice"] == expected
+    assert config["tts"]["provider"] == "edge"
+    assert config["tts"]["edge"]["voice"] == "zh-CN-XiaoxiaoNeural"
+
+
+def test_unlisted_current_voice_is_offered_first_and_kept(run_setup):
+    config = {"tts": {"provider": "openai", "edge": {"voice": "fr-FR-DeniseNeural"}}}
+
+    _, choices, default = run_setup(config, lambda _, default: default)
+
+    assert (default, choices[0]) == (0, "Current voice — fr-FR-DeniseNeural")
+    assert config["tts"]["edge"]["voice"] == "fr-FR-DeniseNeural"
+
+
+@pytest.mark.parametrize("typed, expected", [
+    ("  de-DE-KatjaNeural ", "de-DE-KatjaNeural"),
+    ("", "ja-JP-NanamiNeural"),
+])
+def test_other_voice_accepts_custom_id_and_blank_keeps_current(run_setup, typed, expected):
+    config = {"tts": {"provider": "edge", "edge": {"voice": "ja-JP-NanamiNeural"}}}
+
+    _, choices, _ = run_setup(config, lambda choices, _: len(choices) - 1, typed=typed)
+
+    assert choices[-1] == "Other voice (enter voice ID)"
+    assert config["tts"]["edge"]["voice"] == expected

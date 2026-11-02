@@ -14,6 +14,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 from typing import Any, Dict, Optional
 
 from gateway.platforms.base import AudioFormat, StreamingTTSHandle
@@ -48,6 +49,9 @@ class StreamingTTSConsumer:
         self._task: Optional[asyncio.Task] = None  # drain task, created once by start()
         self._completed = self._partial = self._aborted = False
         self._finished = self._dropped = self._suppress_whole_file = False
+        # Monotonic count of PCM chunks written; the drain finaliser reads it to tell an engine
+        # that is still producing audio from one that has gone quiet (#138022).
+        self._progress = 0
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
 
     def _streamer_format(self) -> AudioFormat:
@@ -58,6 +62,7 @@ class StreamingTTSConsumer:
     completed = property(lambda self: self._completed)  # streaming audio fully delivered
     partial = property(lambda self: self._partial)  # some audio audible before a failure/drop
     audible = property(lambda self: bool(self._handle and self._handle.audible))  # PCM written
+    progress = property(lambda self: self._progress)  # chunks written so far; moves while audio flows
     dropped = property(lambda self: self._dropped)  # queue saturation dropped >= 1 clause
     suppress_whole_file = property(lambda self: self._suppress_whole_file)  # skip whole-file TTS
     done = property(lambda self: self._task is not None and self._task.done())  # drain task ended
@@ -204,6 +209,7 @@ class StreamingTTSConsumer:
                 raise _HandleDeclined()
             was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
+            self._progress += 1
             if not was_audible:
                 self._handle.audible = self._suppress_whole_file = True
 
@@ -237,3 +243,27 @@ class StreamingTTSConsumer:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
         return self._completed
+
+
+STREAMING_TTS_DRAIN_IDLE_TIMEOUT = 10.0
+
+
+async def wait_streaming_tts_drain(
+    consumer: StreamingTTSConsumer, *, idle_timeout: float = STREAMING_TTS_DRAIN_IDLE_TIMEOUT
+) -> None:
+    """Wait for the drain task under an inactivity deadline, not a total one: every PCM chunk the
+    consumer still writes restarts the clock, so a slow engine that keeps producing audio is never
+    aborted mid-reply (#138022). Only a stream that goes quiet for ``idle_timeout`` returns with
+    the task still running, leaving the abort decision to the caller."""
+    deadline = time.monotonic() + idle_timeout
+    progress = consumer.progress
+    while not consumer.done:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        await consumer.wait_complete(timeout=remaining)
+        if consumer.done:
+            return
+        if consumer.progress != progress:
+            progress = consumer.progress
+            deadline = time.monotonic() + idle_timeout

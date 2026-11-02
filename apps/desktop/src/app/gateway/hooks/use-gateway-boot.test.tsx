@@ -121,7 +121,6 @@ function fakeDesktop() {
   let bootProgressHandler: ((payload: Record<string, unknown>) => void) | null = null
 
   return {
-    api: vi.fn(async () => ({ profiles: [] })) as ReturnType<typeof vi.fn>,
     getConnection: vi.fn(async (profile?: null | string) => {
       const key = (profile ?? '').trim()
 
@@ -1392,7 +1391,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // nothing deterministically re-pulled /api/profiles on the soft switch,
     // so the rail kept (or, with a stale in-flight response, collapsed to)
     // the previous backend's list.
-    const desktop = fakeDesktop()
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      api: ReturnType<typeof vi.fn>
+    }
 
     desktop.api = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/api/profiles/active') {

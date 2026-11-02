@@ -3,13 +3,7 @@ title: Hermes Agent Squads Hub
 repo: https://github.com/PuntoyComaTech/hermes-agent-squads
 sha: ccefddc3a700cb7a94852cf93bc1ccd1c2090390
 subdir: squads/_plugins/squad-hub
-description: >-
-  One Desktop list for Hermes Agent Squads: bot, project, folder, worktree and chat, several bots open at once
-  without a profile switch; the squad's cron jobs; a bell for what waits on you; live Kanban cards in chat; squad
-  managers ask with clarify buttons; the empty chat names the squad and project. Disclosure — reads other profiles'
-  session lists, projects and cron jobs through Hermes RPC (running backends only) and Kanban boards through its own
-  read-only dashboard route; writes its own desktop_cards setting on manager profiles; no network calls of its own,
-  no telemetry, never reads .env or credentials.
+description: "One Desktop list for Hermes Agent Squads: bot, project, folder, worktree and chat, several bots open at once without a profile switch; the squad's cron jobs; a bell for what waits on you; live Kanban cards in chat; squad managers ask with clarify buttons; the empty chat names the squad and project. Disclosure — reads and manages other profiles' chats (list, start, rename, archive), projects and cron jobs (pause, resume, remove) through Hermes RPC on running backends, and reads Kanban boards through its own read-only dashboard route built on Hermes' internal kanban_db module; adds a system-prompt section telling agents to ask with clarify buttons and appends Kanban card lines to Desktop replies; writes its own desktop_cards setting on manager profiles and applies its Squads theme on every bot by default (switchable in its settings); git worktree create/remove is only copied as a command unless the separate repo-only squad-hub-plus companion handles it; no network calls of its own, no telemetry, never reads .env or credentials."
 maintainer: PuntoyComaTech
 tier: community
 category: desktop

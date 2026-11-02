@@ -64,7 +64,7 @@ def _make_direct_start_agent(
         )
 
 
-def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
+def _make_agent_with_compressor(config_context_length=None, *, tail_mode="lean") -> AIAgent:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
 
@@ -89,6 +89,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
         provider="openrouter",
         quiet_mode=True,
         config_context_length=config_context_length,
+        tail_mode=tail_mode,
     )
     agent.context_compressor = compressor
 
@@ -123,8 +124,9 @@ def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
 
 def test_switch_model_reapplies_checked_auxiliary_compression_limit():
     """A model switch re-probes the auxiliary summariser eagerly: the trigger is clamped to its window
-    before the first compaction on the new model, and un-clamped again when a later switch fits (#114707)."""
-    agent = _make_agent_with_compressor(config_context_length=200_000)
+    before the first compaction on the new model, and un-clamped again when a later switch fits (#114707).
+    Legacy tail: the clamp is the policy under test; lean keeps its window-relative trigger (#136170)."""
+    agent = _make_agent_with_compressor(config_context_length=200_000, tail_mode="legacy")
     agent.compression_enabled = True
     agent._compression_feasibility_checked = False
     agent._aux_compression_context_length_config = None

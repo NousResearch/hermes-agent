@@ -158,8 +158,11 @@ When a skill with config is first loaded, Hermes prompts you for the values. The
 Manage skill config from the CLI:
 
 ```bash
-# Interactive config for a specific skill
-hermes skills config gif-search
+# Prompt for every unset setting your enabled skills declare
+hermes config migrate
+
+# Set one value directly
+hermes config set skills.config.tenor.api_key <your-key>
 
 # View all skill config
 hermes config get skills.config --json

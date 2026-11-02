@@ -995,6 +995,47 @@ def test_a_process_an_earlier_attempt_handed_off_is_on_the_result_when_the_last_
     assert any("proc-low" in note for note in result["process_notes"])
 
 
+def test_an_escalated_attempts_terminated_watcher_and_unread_result_reach_the_retry_and_the_parent(monkeypatch):
+    """An escalated attempt's teardown kills the watcher it left running; a test run it never read exited 7. Both
+    facts are taken before that teardown: the retry is told, and the final result reports them, not the retry's word
+    that all is done."""
+    from tests.waiting import wait_until
+    from tools import process_registry as registry_mod
+    monkeypatch.setattr(registry_mod, "_SYSTEMD_SCOPE_AVAILABLE", False)
+    registry = registry_mod.process_registry
+    spawned = []
+
+    def low(child, task_id, _record):
+        watcher = registry.spawn_local("sleep 30", task_id=task_id, owner_task_id=task_id)
+        tests = registry.spawn_local("printf TEST_FAILED; exit 7", task_id=task_id, owner_task_id=task_id)
+        tests.notify_on_complete = True
+        spawned.extend([watcher, tests])
+        wait_until(lambda: tests.exited and "TEST_FAILED" in tests.output_buffer, what="the test run exited")
+        close = child.close
+
+        def close_like_aiagent():  # AIAgent.close kills the child's background processes
+            for proc in registry.running_owned_by(task_id):
+                registry.kill_process(proc.id, source="agent_close", consume_output=True)
+            close()
+        child.close = close_like_aiagent
+        return M("watcher running")
+
+    try:
+        entry, log, _ = _run_direct(monkeypatch, {"low": low, "medium": D("done")}, effort="low", ceiling="medium")
+        watcher, tests = spawned
+        assert watcher.exited  # the intermediate teardown terminated it
+        assert [p["session_id"] for p in entry["orphaned_processes"]] == [watcher.id]
+        (unread,) = entry["unread_completions"]
+        assert (unread["session_id"], unread["exit_code"]) == (tests.id, 7) and "TEST_FAILED" in unread["output_tail"]
+        handoff = log[1].messages[0]
+        assert watcher.id in handoff and "TERMINATED" in handoff
+        assert tests.id in handoff and "exit code 7" in handoff
+    finally:
+        for proc in spawned:
+            if not proc.exited:
+                registry.kill_process(proc.id, source="test_cleanup", consume_output=True)
+
+
 def test_a_detached_units_retry_is_never_attached_to_the_parent():
     from tools.delegate_tool_child_run import _detach_child
     attached_at_build = []

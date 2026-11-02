@@ -737,10 +737,11 @@ def _next_escalation_effort(child: Any, entry: dict[str, Any], parent_agent: Any
 
 def _escalation_handoff(
     original_goal: str, *, effort: str, next_effort: str, entry: dict[str, Any], transcript_path: Optional[str],
-    working_dir: Optional[str],
+    working_dir: Optional[str], processes: dict[str, list[dict[str, Any]]],
 ) -> str:
     """The retry's goal: the original task, what the stopped attempt left (its summary, or a pointer to the
-    transcript when there is none), the transcript path and the working directory to continue in."""
+    transcript when there is none), the transcript path, the working directory to continue in and the runtime's
+    facts about its background processes (a watcher it left running dies with it; a result it never read)."""
     exit_reason = entry.get("exit_reason")
     stopped = ("hit its iteration limit" if exit_reason == "max_iterations"
                else "timed out (no progress inside its inactivity window)")
@@ -766,6 +767,10 @@ def _escalation_handoff(
     if isinstance(missed, str) and missed.strip():
         lines.append(f"A steer from the parent arrived after the previous attempt stopped and was never delivered: "
                      f"{missed.strip()}")
+    if processes:
+        from tools.process_registry_notifications import _process_accounting_lines
+        lines += ["", "The previous attempt's background processes (runtime facts, not its own claims):",
+                  *_process_accounting_lines(processes)]
     return "\n".join(lines)
 
 
@@ -796,6 +801,9 @@ class _EscalationChain:
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
     modified_parent_paths: set[str] = field(default_factory=set)
+    # ``orphaned_processes`` / ``unread_completions`` of escalated attempts, snapshot before their teardown kills the
+    # processes (and with them the only record that a watcher was still running or a result was never read).
+    process_report: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def record(self, child: Any, exit_reason: Any) -> None:
         self.attempts.append({"effort": _effort_ran(child), "exit_reason": exit_reason})
@@ -1055,9 +1063,10 @@ class _ChildRun:
         effort = _effort_ran(self.child)
         working_dir = self.working_dir()
         transcript = _str_or_none(getattr(self.child, "_live_transcript_path", None))
+        processes = self.background_process_report()  # before teardown kills them
         retry_goal = _escalation_handoff(
             chain.original_goal, effort=effort, next_effort=next_effort, entry=entry, transcript_path=transcript,
-            working_dir=working_dir,
+            working_dir=working_dir, processes=processes,
         )
         chain.record(self.child, entry.get("exit_reason"))  # before the build: a reused child's level changes
         try:
@@ -1089,6 +1098,8 @@ class _ChildRun:
             next_child._handed_off_processes = list(self.child._handed_off_processes)
         chain.working_dir = working_dir
         chain.modified_parent_paths |= self.modified_parent_paths()
+        for key, items in processes.items():
+            chain.process_report.setdefault(key, []).extend(items)
         chain.pending = (next_child, retry_goal)
         return True
 
@@ -1416,25 +1427,38 @@ class _ChildRun:
         else:
             entry["stale_paths"] = mod_paths
 
-    def account_background_processes(self, entry: dict[str, Any]) -> None:
-        """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
-        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
-        terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
-        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
-        if handed:
-            entry["handed_off_processes"] = handed
+    def background_process_report(self) -> dict[str, list[dict[str, Any]]]:
+        """``orphaned_processes`` (still running, about to be terminated with the child) and ``unread_completions``
+        (exited notify processes nobody read) for this attempt's own background processes; empty keys omitted."""
+        report: dict[str, list[dict[str, Any]]] = {}
         with _quiet(None):
             from tools.process_registry import process_registry, _output_tail
             leftover = process_registry.running_owned_by(self.child_task_id)
             if leftover:
-                entry["orphaned_processes"] = [
+                report["orphaned_processes"] = [
                     {"session_id": s.id, "command": redact_child_text(s.command, force=False)[:200], "runtime_seconds": round(time.time() - s.started_at)}
                     for s in leftover]
             unread = process_registry.unread_completions_owned_by(self.child_task_id)
             if unread:
-                entry["unread_completions"] = [
+                report["unread_completions"] = [
                     {"session_id": s.id, "command": redact_child_text(s.command, force=False)[:200], "exit_code": s.exit_code,
                      "output_tail": redact_child_text(_output_tail(s, len(s.output_buffer)), force=False)[-600:]} for s in unread]
+        return report
+
+    def account_background_processes(self, entry: dict[str, Any]) -> None:
+        """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
+        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+        terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running".
+        Earlier attempts of the chain were accounted before their own teardown (``escalate``); they come first."""
+        handed = list(getattr(self.child, "_handed_off_processes", None) or [])
+        if handed:
+            entry["handed_off_processes"] = handed
+        earlier = self.chain.process_report if self.chain is not None else {}
+        current = self.background_process_report()
+        for key in ("orphaned_processes", "unread_completions"):
+            combined = earlier.get(key, []) + current.get(key, [])
+            if combined:
+                entry[key] = combined
 
     def emit_complete(self, result: dict[str, Any], entry: dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,

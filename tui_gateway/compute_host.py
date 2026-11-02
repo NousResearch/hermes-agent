@@ -331,7 +331,6 @@ class ComputeHost:
                     session[key] = str(frame[key])
             if "explicit_cwd" in frame:
                 session["explicit_cwd"] = bool(frame["explicit_cwd"])
-            self._refresh_daybreak(server, session)
         else:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
@@ -342,24 +341,6 @@ class ComputeHost:
         if frame.get("pending_model_switch"):
             session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
-
-    @staticmethod
-    def _refresh_daybreak(server: Any, session: dict) -> None:
-        """``agent.daybreak`` is read when the agent is built, and the parent's live flip only reaches agents in
-        its own process, so a reused child agent re-reads it each turn from its profile's config.yaml."""
-        agent = session.get("agent")
-        if agent is None:
-            return
-        from agent.session_source import DAYBREAK_SOURCES
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        profile_home = str(session.get("profile_home") or "")
-        token = set_hermes_home_override(profile_home) if profile_home else None
-        try:
-            on = (server._load_cfg().get("agent") or {}).get("daybreak") is True
-        finally:
-            if token is not None:
-                reset_hermes_home_override(token)
-        agent.daybreak = on and getattr(agent, "platform", None) in DAYBREAK_SOURCES
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
         """Build the agent under the frame's profile scope and register the session."""

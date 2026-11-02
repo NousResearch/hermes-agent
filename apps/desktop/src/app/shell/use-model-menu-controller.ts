@@ -2,7 +2,7 @@ import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/share
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
@@ -107,8 +107,20 @@ export function useModelMenuController({
   )
 
   const daybreakOn = useStore($daybreakByProfile)[daybreakKey(profile, ownerConnectionId)] ?? false
-  const daybreakRequest = useRef(requestGateway)
-  daybreakRequest.current = requestGateway
+
+  // The primary menu's shared requester follows focus when called, and a queued write (store/daybreak.ts)
+  // can go out after focus moved: bind reads and writes to THIS connection's gateway when the host has one.
+  // A tile's requester is already bound to its owner route.
+  const daybreakRequester = useCallback(
+    (requester: typeof requestGateway) =>
+      gateway
+        ? (method: string, params?: Record<string, unknown>) => gateway.request(method, params)
+        : (method: string, params?: Record<string, unknown>) => requester(method, params),
+    [gateway]
+  )
+
+  const daybreakRequest = useRef(daybreakRequester(requestGateway))
+  daybreakRequest.current = daybreakRequester(requestGateway)
 
   useEffect(() => {
     if (daybreakListed) {
@@ -222,7 +234,7 @@ export function useModelMenuController({
     daybreak: {
       on: daybreakOn,
       set: on => {
-        void setDaybreak(requestGateway, profile, on, ownerConnectionId).then(ok => {
+        void setDaybreak(daybreakRequester(requestGateway), profile, on, ownerConnectionId).then(ok => {
           if (!ok) {
             notify({ id: 'daybreak-update-failed', kind: 'error', message: t.shell.modelOptions.daybreakFailed })
           }

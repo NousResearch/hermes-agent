@@ -510,22 +510,12 @@ def _set_display_toggle(rid, params, key, value, session):
 
 
 def _set_daybreak(rid, params, key, value, session):
-    """``agent.daybreak``: profile-wide like the native owner's (gateway/session_tui_config.py). This
-    profile's live local-surface agents take it at once (agent.session_source.DAYBREAK_SOURCES); requests
-    check eligibility (agent/codex_service_tiers.py)."""
+    """``agent.daybreak``: profile-wide like the native owner's (gateway/session_tui_config.py). Every turn
+    reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (agent/codex_service_tiers.py)."""
     on = _BOOL_WORDS.get(str(value).strip().lower())
     if on is None:
         return _err(rid, 4002, f"{key} takes true or false")
     _write_config_key("agent.daybreak", on)
-    from agent.session_source import DAYBREAK_SOURCES
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home().resolve()
-    with _sessions_lock:
-        live = list(_sessions.values())
-    for live_session in live:
-        agent = live_session.get("agent")
-        if agent is not None and Path(live_session.get("profile_home") or _hermes_home).resolve() == home:
-            agent.daybreak = on and getattr(agent, "platform", None) in DAYBREAK_SOURCES
     return _kv(rid, key, on)
 
 

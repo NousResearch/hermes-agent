@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SidebarProvider } from '@/components/ui/sidebar'
 import type { HermesApiRequest } from '@/global'
+import { $dismissedWorktreeIds, dismissWorktree } from '@/store/layout'
 import { $startWorkSessionRequest, $worktreeDialog } from '@/store/projects'
 
 import { EnteredProjectContent } from './entered-content'
@@ -75,6 +76,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   $worktreeDialog.set(null)
+  $dismissedWorktreeIds.set([])
   $startWorkSessionRequest.set(null)
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
   ;(globalThis as ActGlobal).IS_REACT_ACT_ENVIRONMENT = true
@@ -146,5 +148,39 @@ describe("another gateway's project git", () => {
     ])
     expect(localGit.branchList).not.toHaveBeenCalled()
     expect(localGit.branchSwitch).not.toHaveBeenCalled()
+  })
+  it("hides another gateway's lane apart from a local lane at the same path", async () => {
+    installBridge()
+
+    const feat = { branch: 'feat', detached: false, isMain: false, locked: false, path: '/code/app/.worktrees/feat' }
+    const main = { id: '/code/app::branch::main', isMain: true, label: 'main', path: '/code/app', sessions: [] }
+
+    // This device hid its own checkout at that path.
+    dismissWorktree('/code/app/.worktrees/feat')
+
+    render(
+      <SidebarProvider>
+        <EnteredProjectContent
+          project={{
+            ...studioApp,
+            repos: [{ groups: [main], id: '/code/app', label: 'app', path: '/code/app', sessionCount: 0 }]
+          }}
+          renderRows={() => null}
+          repoWorktrees={{ '/code/app': [feat] }}
+        />
+      </SidebarProvider>
+    )
+
+    expect(screen.getByTitle(/feat/)).toBeTruthy()
+
+    fireEvent.pointerDown(screen.getAllByRole('button', { name: 'Actions' }).at(-1)!, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByText('Remove worktree…'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Hide from sidebar' }))
+
+    await waitFor(() => expect(screen.queryByTitle(/feat/)).toBeNull())
+    expect($dismissedWorktreeIds.get()).toEqual([
+      '/code/app/.worktrees/feat',
+      JSON.stringify(['gateway-lane', 'studio', 'research', '/code/app/.worktrees/feat'])
+    ])
   })
 })

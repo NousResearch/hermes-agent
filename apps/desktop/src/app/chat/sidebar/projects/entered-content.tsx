@@ -9,7 +9,13 @@ import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { $dismissedWorktreeIds, $removedWorktreeIds, dismissWorktree, setWorkspaceNodeOpen } from '@/store/layout'
+import {
+  $dismissedWorktreeIds,
+  $removedWorktreeIds,
+  dismissWorktree,
+  setWorkspaceNodeOpen,
+  worktreeDismissalId
+} from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import type { AgentProfileRoute } from '@/store/profile'
 import { removeWorktreePath } from '@/store/projects'
@@ -162,11 +168,13 @@ function RepoFlatSection({
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
   // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
+  const laneKey = (group: SidebarSessionGroup) => worktreeDismissalId(group.id, owner)
+
   const ordered = overlaidGroups.filter(
     group =>
       group.isMain ||
-      !dismissedWorktrees.includes(group.id) ||
-      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
+      !dismissedWorktrees.includes(laneKey(group)) ||
+      (removedWorktrees.includes(laneKey(group)) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
   // Removal asks how: actually `git worktree remove` it, or just hide the lane
@@ -182,7 +190,7 @@ function RepoFlatSection({
 
     try {
       await removeWorktreePath(repo.path, group.path, { force }, owner)
-      dismissWorktree(group.id, { removed: true })
+      dismissWorktree(laneKey(group), { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.
@@ -237,7 +245,7 @@ function RepoFlatSection({
       open={Boolean(target)}
       secondaryAction={{
         label: s.projects.removeFromSidebar,
-        onClick: () => target && dismissWorktree(target.id)
+        onClick: () => target && dismissWorktree(laneKey(target))
       }}
       title={`${s.projects.removeWorktree} "${target?.label ?? ''}"?`}
     />

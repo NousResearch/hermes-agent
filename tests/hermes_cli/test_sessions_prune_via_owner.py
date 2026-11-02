@@ -135,3 +135,85 @@ async def test_owner_prune_is_local_operator_only(owned_store, grant):
         await connection.close()
     assert refused['error']['message'] == 'permission_denied', refused
     assert owned_store.db.get_session('old-cli') is not None
+
+
+def _never_active_row(db, sid, *, age_days=45, **overrides):
+    """A keyed gateway row that was opened and never used — the shape ``--never-active`` sweeps."""
+    row = {'id': sid, 'source': 'telegram', 'user_id': 'user-1', 'session_key': f'agent:main:telegram:dm:{sid}',
+           'chat_id': 'chat-1', 'chat_type': 'dm', 'started_at': time.time() - age_days * 86400,
+           'message_count': 0, 'tool_call_count': 0, 'api_call_count': 0, 'input_tokens': 0,
+           'output_tokens': 0, 'archived': 0, 'pinned': 0}
+    row.update(overrides)
+    db._execute_write(lambda conn: conn.execute(
+        f"INSERT INTO sessions ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})", list(row.values())))
+
+
+def test_never_active_prune_under_the_live_owner_honours_include_archived(owned_store, monkeypatch, capsys):
+    """``--never-active --include-archived`` travels through ``session.prune``: by default the owner keeps
+    the never-active row ``sessions.auto_archive`` already archived; with the flag it goes, and a pinned
+    row of the same shape survives either way."""
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime
+    from hermes_cli.gateway_client import rpc_error
+    store = owned_store
+    for sid, over in (('plain-junk', {}), ('archived-junk', {'archived': 1}), ('pinned-junk', {'pinned': 1})):
+        _never_active_row(store.db, sid, **over)
+    holder = subprocess.Popen([sys.executable, '-c', _HOLDER, str(store.path)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == 'ready'
+    sent = []
+
+    @asynccontextmanager
+    async def owner_socket(*_args, **_kwargs):
+        connection = _connection(store.authority, operator=True)
+
+        async def rpc(method, _timeout=None, **params):
+            sent.append((method, dict(params)))
+            frame = await connection.dispatch({'id': 1, 'method': method, 'params': params})
+            if 'error' in frame:
+                raise rpc_error(frame['error'])
+            return frame['result']
+        try:
+            yield SimpleNamespace(rpc=rpc)
+        finally:
+            await connection.close()
+
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint',
+                        lambda home, **_: gateway_runtime.GatewayDiscovery('ready', endpoint=object()))
+    monkeypatch.setattr(gateway_client, 'connect_gateway', owner_socket)
+    args = Namespace(sessions_action='prune', dry_run=False, yes=True, force=False, never_active=True,
+                     include_archived=False, include_pinned=False,
+                     **{name: None for name in sessions_cmd._FILTER_ARGS})
+    args.older_than = '30'
+    try:
+        assert sessions_cmd.cmd_sessions(args) in (None, 0)
+        db = store.db
+        assert db.get_session('plain-junk') is None and db.get_session('archived-junk') is not None
+        assert sent == [('session.prune', {'never_active_days': 30.0})]  # default request unchanged on the wire
+
+        args.include_archived = True
+        assert sessions_cmd.cmd_sessions(args) in (None, 0)
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=10)
+    assert db.get_session('archived-junk') is None and db.get_session('pinned-junk') is not None
+    assert sent[-1] == ('session.prune', {'never_active_days': 30.0, 'include_archived': True})
+    out = capsys.readouterr().out
+    assert '(including archived)' in out and out.count('Deleted 1 never-active session(s)') == 2, out
+
+
+@pytest.mark.asyncio
+async def test_owner_prune_include_archived_belongs_to_the_never_active_sweep_only(owned_store):
+    """``include_archived`` with ``filters`` (archived is already a filter there) or with a non-boolean
+    value is the client's bug: ``invalid_params``, nothing deleted."""
+    connection = _connection(owned_store.authority, operator=True)
+    try:
+        frames = [await connection.dispatch({'id': i, 'method': 'session.prune', 'params': params})
+                  for i, params in enumerate((
+                      {'filters': {'older_than_days': 0}, 'include_archived': True},
+                      {'never_active_days': 30, 'include_archived': ['yes']},
+                  ), start=1)]
+    finally:
+        await connection.close()
+    assert [frame['error']['message'] for frame in frames] == ['invalid_params', 'invalid_params'], frames
+    assert owned_store.db.get_session('old-cli') is not None

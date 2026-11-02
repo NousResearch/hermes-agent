@@ -339,11 +339,17 @@ class SessionGatewayMixin:
         rows = self._read_all("SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
         return {r["session_key"]: r["entry_json"] for r in rows}
 
-    def list_never_active_keyed_sessions(self, *, older_than_days: float) -> list[dict[str, Any]]:
+    def list_never_active_keyed_sessions(
+            self, *, older_than_days: float, include_archived: bool = False) -> list[dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
         activity, or title): leaked fixtures or chats routed but never answered. Safe to drop — the gateway
         mints a fresh session on the next message. Needs its own selector because ``bulk prune``/``archive``
         are pinned to ``ended_at IS NOT NULL``. ``pinned``/``archived`` = explicit keep intent.
+
+        ``include_archived`` admits archived rows too (``prune --never-active --include-archived``):
+        ``sessions.auto_archive`` flips every idle row after ``auto_archive_days``, and a never-active row
+        is idle by definition, so without it the sweep only reaches rows younger than that. A pin is
+        still a keep either way.
 
         That is exactly the shape of a leaked test fixture (#82770) — and also of a chat that was routed but
         never answered.
@@ -353,8 +359,9 @@ class SessionGatewayMixin:
                 f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
                 "retention builds a future cutoff that matches every never-active keyed row.")
         cutoff = time.time() - (float(older_than_days) * 86400.0)
+        archived_predicate = "" if include_archived else "AND COALESCE(s.archived, 0) = 0"
         rows = self._read_all(
-            """
+            f"""
             SELECT s.id, s.session_key, s.source, s.chat_id,
                    s.chat_type, s.user_id, s.started_at
               FROM sessions s
@@ -368,7 +375,7 @@ class SessionGatewayMixin:
                AND COALESCE(s.input_tokens, 0) = 0
                AND COALESCE(s.output_tokens, 0) = 0
                AND COALESCE(s.pinned, 0) = 0
-               AND COALESCE(s.archived, 0) = 0
+               {archived_predicate}
                AND s.started_at IS NOT NULL
                AND s.started_at < ?
                AND NOT EXISTS (
@@ -433,7 +440,7 @@ class SessionGatewayMixin:
 
     def prune_never_active_keyed_sessions(
         self, *, older_than_days: float, sessions_dir: Optional[Path] = None,
-        deleted_ids: Optional[list] = None) -> tuple[int, int, int]:
+        deleted_ids: Optional[list] = None, include_archived: bool = False) -> tuple[int, int, int]:
         """Delete never-active keyed rows and the routing entries naming them; returns
         ``(sessions_deleted, routing_entries_deleted, sessions_skipped)``. Deletion goes through
         :meth:`delete_sessions` (one transaction; delegate cascade, FTS, transcripts).
@@ -445,8 +452,10 @@ class SessionGatewayMixin:
         and a stale entry outliving its target would have the gateway resume a
         nonexistent id. The row sweep is one transaction; routing entries are dropped in a
         second write after it commits. ``sessions_skipped`` counts only the guarded rows.
-        ``deleted_ids`` (the owning gateway) receives every candidate id that was not kept."""
-        candidates = self.list_never_active_keyed_sessions(older_than_days=older_than_days)
+        ``deleted_ids`` (the owning gateway) receives every candidate id that was not kept.
+        ``include_archived`` is the selector's: archived never-active rows go too, pinned ones stay."""
+        candidates = self.list_never_active_keyed_sessions(
+            older_than_days=older_than_days, include_archived=include_archived)
         # A fresh local reset tip is its conversation's current target, not a never-active chat:
         # the conversation holds the earlier segments' history and the owner's queued work.
         from hermes_state_local import owned_lineage_ids

@@ -91,6 +91,18 @@ class TestSelector:
         _insert(db, "used", age_days=45, **{field: value})
         assert db.list_never_active_keyed_sessions(older_than_days=30) == []
 
+    def test_include_archived_admits_archived_rows_but_never_pinned_ones(self, db):
+        """``sessions.auto_archive`` flips idle rows after ``auto_archive_days``, and a never-active
+        row is idle by definition — so by default the selector loses them after a few days.
+        ``--include-archived`` opts back in; a pin is still a keep."""
+        _insert(db, "archived-junk", age_days=45, archived=1)
+        _insert(db, "pinned-junk", age_days=45, pinned=1)
+        _insert(db, "pinned-archived-junk", age_days=45, pinned=1, archived=1)
+        _insert(db, "archived-young", age_days=1, archived=1)
+        assert db.list_never_active_keyed_sessions(older_than_days=30) == []
+        found = db.list_never_active_keyed_sessions(older_than_days=30, include_archived=True)
+        assert [r["id"] for r in found] == ["archived-junk"]
+
     def test_row_with_messages_is_protected_even_if_counter_says_zero(self, db):
         """``message_count`` is a denormalised counter — trust the messages."""
         _insert(db, "stale-counter", age_days=45)
@@ -141,6 +153,24 @@ class TestPrune:
             "SELECT session_key FROM gateway_routing"
         ).fetchall()
         assert [r[0] for r in remaining] == ["agent:main:telegram:dm:keeper"]
+
+    def test_include_archived_deletes_archived_rows_and_their_routing_entries(self, db):
+        _insert(db, "archived-junk", age_days=45, archived=1)
+        _insert(db, "plain-junk", age_days=45)
+        db.save_gateway_routing_entry(
+            "agent:main:telegram:dm:archived-junk",
+            json.dumps({"session_id": "archived-junk"}),
+            scope="/tmp/pytest-archived",
+        )
+
+        # Default sweep: the archived row is kept, routing entry and all.
+        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (1, 0, 0)
+        assert db.get_session("plain-junk") is None
+        assert db.get_session("archived-junk") is not None
+
+        assert db.prune_never_active_keyed_sessions(older_than_days=30, include_archived=True) == (1, 1, 0)
+        assert db.get_session("archived-junk") is None
+        assert db._conn.execute("SELECT COUNT(*) FROM gateway_routing").fetchone()[0] == 0
 
     def test_no_candidates_is_a_no_op(self, db):
         _insert(db, "keeper", age_days=1)

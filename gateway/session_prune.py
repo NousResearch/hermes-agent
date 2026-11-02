@@ -30,18 +30,22 @@ async def prune(connection, ref, params):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     never_active = params.get('never_active_days')
+    # ``include_archived`` belongs to the never-active sweep only (``--never-active --include-archived``);
+    # with ``filters`` the archived filter is already inside them.
+    include_archived = params.get('include_archived')
     if ('filters' in params) == (never_active is not None) or (
             never_active is not None and (isinstance(never_active, bool) or not isinstance(never_active, (int, float))
-                                          or never_active < 0)):
+                                          or never_active < 0)) or (
+            include_archived is not None and (not isinstance(include_archived, bool) or never_active is None)):
         raise RuntimeStoreError('invalid_params')
     filters = _filters(params['filters']) if 'filters' in params else None
     authority._require_admission_open()
     from gateway.session_runtime_workers import track_mutation
-    task = track_mutation(authority, _apply(authority, filters, never_active))
+    task = track_mutation(authority, _apply(authority, filters, never_active, bool(include_archived)))
     return await asyncio.shield(task)
 
 
-async def _apply(authority, filters, never_active):
+async def _apply(authority, filters, never_active, include_archived=False):
     from hermes_constants import get_hermes_home
     from gateway.session_mutations import retire_live_sessions
     # Same transcript dir the CLI's local prune unlinks under (dispatch runs in the owner's scope).
@@ -50,7 +54,7 @@ async def _apply(authority, filters, never_active):
     if filters is None:
         deleted, routing, skipped = await asyncio.to_thread(
             authority.db.prune_never_active_keyed_sessions, older_than_days=float(never_active),
-            sessions_dir=sessions_dir, deleted_ids=deleted_ids)
+            sessions_dir=sessions_dir, deleted_ids=deleted_ids, include_archived=include_archived)
         result = {'deleted': deleted, 'routing_deleted': routing, 'skipped': skipped}
     else:
         deleted = await asyncio.to_thread(

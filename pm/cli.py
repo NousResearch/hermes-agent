@@ -290,7 +290,7 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
 
         unknown = _split_without(without)[2]
         if unknown:
-            return (f"--without accepts optional default packages ({', '.join(default_package_names())}) "
+            return (f"--without accepts only optional default packages ({', '.join(default_package_names())}) "
                     f"or extras outside [all] ({', '.join(droppable_extras(repo_root()))}); "
                     f"not {', '.join(unknown)}")
     return None

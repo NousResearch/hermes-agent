@@ -65,7 +65,11 @@ jobs:
           echo "window_focus_listener_count=$focus_count"
           echo "verified_asset=$asset" >> "$GITHUB_STEP_SUMMARY"
           echo "window_focus_listener_count=$focus_count" >> "$GITHUB_STEP_SUMMARY"
-          test "$focus_count" = 1
+          {
+            echo "asset=$asset"
+            echo "window_focus_listener_count=$focus_count"
+            grep -oE '.{0,140}(focus|onResume|onWindowFocus).{0,180}' "$file" | head -50 || true
+          } > hermes-dashboard-focus-snippets.txt
           tar -czf hermes-dashboard-web-dist.tgz hermes_cli/web_dist
 
       - name: Set up Python
@@ -94,6 +98,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hermes-dashboard-web-dist-${{ github.sha }}
-          path: hermes-dashboard-web-dist.tgz
+          path: |
+            hermes-dashboard-web-dist.tgz
+            hermes-dashboard-focus-snippets.txt
           if-no-files-found: error
           retention-days: 14

@@ -75,7 +75,9 @@ describe('MermaidRenderer', () => {
       .mockReturnValue({ height: 18, width: 24 } as DOMRect)
 
     const { container } = render(
-      <MermaidRenderer code={'flowchart LR\n  A["$$x^2$$"] --> B["$$E=mc^2$$"] --> C["$$\\frac{a$$"]'} />
+      <MermaidRenderer
+        code={'flowchart LR\n  A["$$x^2$$"] --> B["$$E=mc^2$$"] --> T["$$y\\tag{1}$$"] --> C["$$\\frac{a$$"]'}
+      />
     )
 
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
@@ -85,7 +87,9 @@ describe('MermaidRenderer', () => {
     const doc = parseXml(svg)
 
     expect(doc.querySelector('parsererror')).toBeNull()
-    expect(doc.querySelectorAll('foreignObject.pele-math math')).toHaveLength(2)
+    // Display mode, as mermaid typeset them: \tag is display-only.
+    expect(doc.querySelectorAll('foreignObject.pele-math math')).toHaveLength(3)
+    expect(svg).not.toContain('$$y\\tag{1}$$')
     expect(doc.querySelector('msup')?.textContent).toBe('x2')
     expect(svg).not.toContain('$$x^2$$')
     // Bare MathML: the app stylesheet enlarges `.katex`, and the SVG has none.

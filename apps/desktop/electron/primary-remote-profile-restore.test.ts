@@ -53,7 +53,12 @@ test('only a successful authoritative roster moves the primary, onto a profile t
 
   for (const row of cases) {
     preferences.remember('work')
-    preferences.rememberConnectionProfiles(row.remembered ? { remote: row.remembered, other: 'work' } : {})
+    preferences.connectionRemoved('remote')
+
+    if (row.remembered) {
+      preferences.rememberConnectionProfile('remote', row.remembered)
+    }
+
     let allow = row.allow !== false
     const pin = new PrimaryProfilePin()
     pin.pin('work')
@@ -100,7 +105,9 @@ test('connection memory is pruned with its connection and ignores invalid names'
   const preferences = createDesktopProfilePreferences(path.join(home, 'active-profile.json'))
   onTestFinished(() => fs.rmSync(home, { recursive: true, force: true }))
 
-  preferences.rememberConnectionProfiles({ lab: 'work', bad: '../etc', other: 'default' })
+  preferences.rememberConnectionProfile('lab', 'work')
+  preferences.rememberConnectionProfile('bad', '../etc')
+  preferences.rememberConnectionProfile('other', 'default')
   assert.equal(preferences.connectionProfile('lab'), 'work')
   assert.equal(preferences.connectionProfile('bad'), null)
   preferences.connectionRemoved('lab')
@@ -145,4 +152,30 @@ test('a superseded or aborted roster probe cannot publish or mutate the primary 
     assert.equal(pin.booted, 'work')
     assert.equal(ready, false)
   }
+})
+
+test('windows change one connection at a time; an older window cannot erase or resurrect entries', ({
+  onTestFinished
+}) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-profile-windows-'))
+  const preferences = createDesktopProfilePreferences(path.join(home, 'active-profile.json'))
+  onTestFinished(() => fs.rmSync(home, { recursive: true, force: true }))
+  const registered = new Set(['lab', 'vps', 'cloud'])
+  const isKnown = (id: string) => registered.has(id)
+
+  // Window A predates the mirror: its record is imported once.
+  preferences.importConnectionProfiles({ lab: 'work', vps: 'ops', gone: 'old' }, isKnown)
+  // Window B picks a newer profile for lab, then the user removes vps.
+  preferences.rememberConnectionProfile('lab', 'marina', isKnown)
+  preferences.connectionRemoved('vps')
+  registered.delete('vps')
+  // Window A, still holding { lab: 'work', vps: 'ops' }, changes only cloud.
+  preferences.importConnectionProfiles({ lab: 'work', vps: 'ops' }, isKnown)
+  preferences.rememberConnectionProfile('cloud', 'default', isKnown)
+  preferences.rememberConnectionProfile('vps', 'ops', isKnown)
+
+  assert.equal(preferences.connectionProfile('lab'), 'marina')
+  assert.equal(preferences.connectionProfile('vps'), null)
+  assert.equal(preferences.connectionProfile('cloud'), 'default')
+  assert.equal(preferences.connectionProfile('gone'), null)
 })

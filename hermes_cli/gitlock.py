@@ -193,17 +193,22 @@ def ref_lock_files(git_dir: Path) -> list[Path]:
     return [git_dir / "packed-refs.lock", *(sorted(refs.rglob("*.lock")) if refs.is_dir() else ())]
 
 
-def release_dead_ref_locks(repo_root: Path) -> list[str]:
-    """Drop the ref locks (:func:`ref_lock_files`) a killed update's git left, whatever their age.
+def release_dead_fetch_locks(repo_root: Path) -> list[str]:
+    """Drop the locks a killed update's fetch left, whatever their age: ``shallow.lock`` and the ref
+    locks (:func:`ref_lock_files`).
 
     The update's ``git fetch`` dies with its tree (``taskkill /T /F``, the Linux parent-death signal),
     so a kill inside its ref transaction strands ``refs/remotes/origin/<branch>.lock``. Git (2.51+)
     then rejects that ref on every later fetch as "fetching ref refs/remotes/origin/main failed:
     reference already exists" (its batched fetch files a lock it cannot create under that reason),
     so no update could fetch again until a user found and deleted the file (the Windows crash cell
-    ``mid_fetch``). The same two proofs as :func:`release_dead_index_lock`; returns the removed paths.
+    ``mid_fetch``). A shallow fetch (installer checkouts are ``--depth 1``) killed in its pack
+    transfer strands ``shallow.lock`` the same way ("File exists"); a live :class:`_ShallowLock`
+    holder keeps it open, so the proofs see it. The same two proofs as
+    :func:`release_dead_index_lock`; returns the removed paths.
     """
-    return _release_killed_update_locks(Path(repo_root), ref_lock_files)
+    return _release_killed_update_locks(Path(repo_root), lambda git_dir: [git_dir / "shallow.lock",
+                                                                        *ref_lock_files(git_dir)])
 
 
 def _release_killed_update_locks(root: Path, candidates: Callable[[Path], Iterable[Path]]) -> list[str]:
@@ -545,7 +550,9 @@ def _shallow_file_path(repo_root: Path) -> Optional[Path]:
 class _ShallowLock:
     """Git's own ``shallow.lock`` protocol, so a concurrent ``git fetch`` that
     writes ``.git/shallow`` between our read and our write is never clobbered:
-    the fetch fails fast on the lock and we re-read before writing."""
+    the fetch fails fast on the lock and we re-read before writing. The lock stays
+    open while held: :func:`release_dead_fetch_locks` runs no git between its git
+    calls, so the open fd (an unlink refusal on Windows) is how it sees this holder."""
 
     def __init__(self, shallow_path: Path):
         self._path = shallow_path
@@ -558,13 +565,12 @@ class _ShallowLock:
             raise RuntimeError(f"shallow lock held: {self._lock_path}")
         except OSError as exc:
             raise RuntimeError(f"cannot create shallow lock: {exc}") from exc
-        try:
-            os.write(fd, b"hermes shallow maintenance\n")
-        finally:
-            os.close(fd)
+        self._fd = fd
+        os.write(fd, b"hermes shallow maintenance\n")
         return self
 
     def __exit__(self, *exc_info) -> None:
+        os.close(self._fd)
         try:
             self._lock_path.unlink()
         except FileNotFoundError:

@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useState } from 'react'
@@ -115,7 +116,7 @@ function useProjectActions({
   // Another gateway's project names its own machine: one on This device opens
   // even from a remote window; one elsewhere stays listed but disabled, as no
   // file manager here can show it.
-  const onThisComputer = project.connectionId ? project.connectionId === 'local' : !isDesktopFsRemoteMode()
+  const onThisComputer = project.connectionId ? project.connectionId === LOCAL_CONNECTION_ID : !isDesktopFsRemoteMode()
 
   const pathItems: ActionItemSpec[] = [
     ...(!project.connectionId && isDesktopFsRemoteMode()

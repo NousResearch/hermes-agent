@@ -226,6 +226,10 @@ export function setGatewayProjectAppearance(
   const run = (writes.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => writeLook(route, path, patch))
 
   writes.set(key, run)
+  void run.then(
+    () => writes.get(key) === run && writes.delete(key),
+    () => writes.get(key) === run && writes.delete(key)
+  )
 
   return run
 }

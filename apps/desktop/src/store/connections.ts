@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles } from '@/api/profiles'
+import { getConnectionServedProfiles, getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { traceIdentityChange } from '@/lib/identity-trace'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
@@ -39,6 +39,8 @@ import {
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
+import { servedProfileSet, startupProfileForConnection } from './startup-profile-restore'
+
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 // Every await of a gateway pick is bounded. A wedged spawn, ticket mint,
@@ -72,6 +74,9 @@ export const $hasMultipleConnections = computed(
 )
 
 const $lastProfileByConnection = atom<Record<string, string>>(storedStringRecord(LAST_PROFILE_STORAGE_KEY))
+// Preserve the per-source preference across the initial Electron descriptor:
+// its legacy global profile can briefly be paired with the wrong connection.
+const startupLastProfileByConnection = { ...$lastProfileByConnection.get() }
 let pendingTarget: null | string = null
 let restoreAttempted = false
 let switchRevision = 0
@@ -240,6 +245,89 @@ function waitForInitialConnection(): Promise<void> {
   })
 }
 
+/** Electron's legacy `profile` preference is global, while the restored primary
+ *  connection can be remote. Validate that inherited name against the selected
+ *  source before treating it as the new session's owner. Callers handle an
+ *  explicit default route first; it must never be second-guessed here. */
+async function reconcileStartupProfile(
+  connectionId: string,
+  kind: string | undefined,
+  freshSessionRequest: number
+): Promise<void> {
+  if (kind === 'local' || $activeSessionId.get() || $selectedStoredSessionId.get()) {
+    return
+  }
+
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+  const revision = switchRevision
+
+  // A failed roster read is not evidence the profile is absent. Do not
+  // mask a subsequent switch failure as a roster failure, though. The status
+  // read names which installed profiles this gateway serves; failed = unknown.
+  const [roster, status] = await Promise.all([
+    Promise.resolve()
+      .then(() => getProfiles({ connectionId }))
+      .catch(() => null),
+    Promise.resolve()
+      .then(() => getConnectionServedProfiles(connectionId))
+      .catch(() => null)
+  ])
+
+  const unchanged =
+    revision === switchRevision &&
+    pendingTarget === null &&
+    $freshSessionRequest.get() === freshSessionRequest &&
+    $activeConnectionId.get() === connectionId &&
+    normalizeProfileKey($activeGatewayProfile.get()) === profile &&
+    !$activeSessionId.get() &&
+    !$selectedStoredSessionId.get()
+
+  if (!roster || !unchanged) {
+    return
+  }
+
+  const served = servedProfileSet(status)
+
+  const target = startupProfileForConnection(
+    profile,
+    startupLastProfileByConnection[connectionId],
+    roster.profiles,
+    served
+  )
+
+  if (target) {
+    await selectConnection(connectionId, { profile: target, restore: true, yieldToOpenedSession: true })
+  } else if (
+    roster.profiles.some(candidate => candidate.name === profile) &&
+    (served === null || served.has(profile))
+  ) {
+    $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [connectionId]: profile })
+  }
+}
+
+/** Boot lands on the preferred source: re-validate the live one's profile, or
+ *  restore onto it. */
+async function restorePreferredConnection(
+  preferredId: string,
+  kind: string | undefined,
+  freshSessionRequest: number
+): Promise<void> {
+  if ($activeConnectionId.get() !== preferredId) {
+    await selectConnection(preferredId, { restore: true })
+
+    return
+  }
+
+  const revision = switchRevision
+  await reconcileStartupProfile(preferredId, kind, freshSessionRequest)
+
+  // The roster read is a window: a pick that landed meanwhile saved its own
+  // source, and the reconcile's own switch already saved this one.
+  if (revision === switchRevision && pendingTarget === null && $activeConnectionId.get() === preferredId) {
+    await rememberConnection(preferredId)
+  }
+}
+
 /**
  * Load the registry once for Sessions and restore the explicit default route,
  * otherwise the last successfully used source. Later registry refreshes stay
@@ -323,11 +411,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return registry
   }
 
-  if ($activeConnectionId.get() === preferredId) {
-    await rememberConnection(preferredId)
-  } else {
-    await selectConnection(preferredId, { restore: true })
-  }
+  await restorePreferredConnection(preferredId, preferred?.kind, freshSessionRequest)
 
   return $connectionsRegistry.get() ?? registry
 }
@@ -360,6 +444,26 @@ export interface SelectConnectionOptions {
    *  source yet, so a second restore pass — the normal case, because main opens
    *  the local backend before the registry settles — read as user-initiated. */
   restore?: boolean
+  /** The startup profile re-home only: it gives way to a conversation opened
+   *  while it dials. Other silent restores keep main's behaviour (the restore
+   *  wins), since a session selected during them may itself be automatic. */
+  yieldToOpenedSession?: boolean
+}
+
+/** The startup re-home never closes a conversation opened while it dialed. */
+function restoreYields(options: SelectConnectionOptions, openedSession: string): boolean {
+  return options.yieldToOpenedSession === true && openSessionKey() !== openedSession
+}
+
+/** The pick in flight loses ownership: its late steps see a newer revision. */
+function abandonPick(): void {
+  switchRevision += 1
+  pendingTarget = null
+  $pendingConnectionId.set(null)
+}
+
+function openSessionKey(): string {
+  return `${$activeSessionId.get() ?? ''}\u0000${$selectedStoredSessionId.get() ?? ''}`
 }
 
 /** The silent boot restore, by its caller's word, or (first pass, before any
@@ -450,6 +554,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // A draft the user starts while this pick is in flight (a gateway group's
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
   const draftIntent = currentNewChatIntent()
+  const openedSession = openSessionKey()
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
@@ -461,6 +566,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // declines here: no draft, no activation, so the user never flips through it.
   const beforeActivate = () => {
     if (revision !== switchRevision) {
+      return false
+    }
+
+    if (restoreYields(options, openedSession)) {
+      abandonPick()
+
       return false
     }
 

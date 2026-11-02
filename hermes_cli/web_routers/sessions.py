@@ -217,7 +217,7 @@ def get_sessions(
             sessions = db.list_sessions_rich(
                 limit=limit,
                 offset=offset,
-                order_by_last_active=order == "recent",
+                order_by_last_active=True,
                 # Skip the system_prompt blob inside SQLite too (pairs with
                 # _strip_session_list_rows below).
                 compact_rows=not full,

@@ -85,7 +85,9 @@ def _count_status_active_sessions() -> int:
         return 0
     db = _open_session_db_for_profile(None, read_only=True)
     try:
-        sessions = db.list_sessions_rich(limit=50, compact_rows=True)
+        sessions = db.list_sessions_rich(
+            limit=50, compact_rows=True, order_by_last_active=True
+        )
         now = time.time()
         return sum(1 for s in sessions if s.get("ended_at") is None
                    and (now - s.get("last_active", s.get("started_at", 0))) < 300)

@@ -67,9 +67,10 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
 # conversation loop's error context and the credential pool's cooldown agree on the same wait.
 _QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s".
+# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s",
+# "try again in 23h 26m" (daily/free-tier quota limits).
 _RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
+    r"(?:resets?|try\s+again)\s+in "
     r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,

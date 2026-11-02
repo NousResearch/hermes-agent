@@ -6,7 +6,7 @@ import html as _html
 import json
 import re
 from collections import deque
-from typing import Iterable, Sequence, Tuple
+from typing import Any, Iterable, Sequence
 
 
 # Replacement events carry HTML twice. Budget escaped JSON, leaving room for event
@@ -14,7 +14,7 @@ from typing import Iterable, Sequence, Tuple
 _ITEMS_JSON_LIMIT = 12_000
 
 
-def matrix_tool_activity_bodies(lines: Sequence[str] | Iterable[str]) -> Tuple[str, str]:
+def matrix_tool_activity_bodies(lines: Sequence[str] | Iterable[str]) -> tuple[str, str]:
     """Build plain body + HTML for Matrix tool progress.
 
     Contract:
@@ -52,3 +52,17 @@ def matrix_tool_activity_bodies(lines: Sequence[str] | Iterable[str]) -> Tuple[s
     html_items = "".join(item for item, _ in items)
     html_body = f"<p><strong>{_html.escape(body)}</strong></p>{recent}<ol>{html_items}</ol>"
     return body, html_body
+
+
+def is_matrix_pane_target(adapter: Any, source: Any) -> bool:
+    """True when this turn answers through Matrix, so tool activity renders as the sticky pane.
+
+    A detached route (a conversation its chat moved past) answers its app viewers through the
+    local adapter even when the session started on Matrix, so it keeps the generic progress path.
+    """
+    from gateway.session_detached import detached_route_of
+
+    if detached_route_of(source) is not None:
+        return False
+    platform = getattr(source, "platform", None)
+    return getattr(adapter, "name", "") == "matrix" or getattr(platform, "value", platform) == "matrix"

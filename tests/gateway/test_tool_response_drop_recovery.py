@@ -29,6 +29,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
 )
+from gateway.platforms.delivery_confirm import confirm_delivery_result
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, build_session_key
 
@@ -342,7 +343,7 @@ class TestIdlessSendIsNotEvidenceOfDelivery:
 
     @staticmethod
     def _confirm(result, text="uma resposta com conteudo real"):
-        return BasePlatformAdapter._confirm_delivery_result(
+        return confirm_delivery_result(
             _DummyAdapter(Platform.TELEGRAM), text, _make_event(Platform.TELEGRAM), result
         )
 

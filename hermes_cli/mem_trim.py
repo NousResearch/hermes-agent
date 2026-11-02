@@ -30,6 +30,9 @@ _DEFAULT_INFO_LOG_MIN_DELTA_MB = 0.0
 _FORCE_FLOOR_SECONDS = 5.0
 _trim_lock = threading.Lock()
 _last_trim_monotonic = 0.0
+# ``_last_trim_monotonic`` stamps collecting trims only, so an allocator-only trim (housekeeping tick, agent
+# close) never pushes a later forced collection (cache-pressure eviction) inside its floor.
+_last_alloc_trim_monotonic = 0.0
 _probe_done = False
 _malloc_trim: Callable[[int], int] | None = None
 _trim_call_count = 0
@@ -161,17 +164,19 @@ def trim_memory(
     if not enabled:
         return False
 
-    global _last_trim_monotonic, _trim_call_count
+    global _last_trim_monotonic, _last_alloc_trim_monotonic, _trim_call_count
     with _trim_lock:
         trim = _probe_glibc_malloc_trim()
         now = time.monotonic()
         cooldown = configured_cooldown if cooldown_seconds is None else _cooldown_seconds(cooldown_seconds)
-        since_last = now - _last_trim_monotonic
-        if _last_trim_monotonic and since_last < (_FORCE_FLOOR_SECONDS if force else cooldown):
+        last = _last_trim_monotonic if collect else max(_last_trim_monotonic, _last_alloc_trim_monotonic)
+        if last and now - last < (_FORCE_FLOOR_SECONDS if force else cooldown):
             return False
         # Record the attempt before calling into libc so repeated failures do not
         # turn every turn boundary into an expensive full collection.
-        _last_trim_monotonic = now
+        _last_alloc_trim_monotonic = now
+        if collect:
+            _last_trim_monotonic = now
         try:
             before = collect_memory_snapshot()
             started = time.perf_counter()

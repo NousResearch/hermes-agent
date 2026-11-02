@@ -10,6 +10,7 @@ from hermes_cli import mem_trim
 @pytest.fixture(autouse=True)
 def _reset_trim_state(monkeypatch):
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
+    monkeypatch.setattr(mem_trim, "_last_alloc_trim_monotonic", 0.0)
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_malloc_trim", None)
     monkeypatch.setattr(mem_trim, "_trim_call_count", 0)
@@ -184,3 +185,17 @@ def test_force_floor_coalesces_burst_closes(monkeypatch):
     monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 106.0)
     assert mem_trim.trim_memory(force=True, reason="agent close") is True
     assert trim.call_count == 2
+
+
+def test_allocator_only_trim_does_not_suppress_a_forced_collection(monkeypatch):
+    """An allocator-only housekeeping trim must not make a forced full collection right after it
+    (agent-cache pressure eviction) return early inside the 5 s force floor."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda pad: 1)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 60.0, 1, 0.0))
+
+    assert mem_trim.trim_memory(reason="housekeeping", collect=False) is True
+    assert mem_trim.trim_memory(force=True, reason="agent_cache_pressure") is True
+    assert calls == ["gc"]

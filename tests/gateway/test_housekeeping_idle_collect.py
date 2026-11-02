@@ -25,6 +25,7 @@ def clock(monkeypatch):
     monkeypatch.setattr(mem_trim, "_malloc_trim", lambda pad: 1)
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
+    monkeypatch.setattr(mem_trim, "_last_alloc_trim_monotonic", 0.0)
     monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 0.0, 1, 0.0))
     monkeypatch.setattr(mem_trim, "_idle_collected_for", None)
     monkeypatch.setattr(mem_trim, "_agent_closed_since_idle_collect", False)

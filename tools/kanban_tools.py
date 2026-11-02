@@ -1227,7 +1227,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
 
 
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
-    """Subscribe the calling session to completion/block events; True iff a row was
+    """Subscribe the calling session to terminal events (``kanban.auto_subscribe_events``); True iff a row was
     written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
     ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
     True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
@@ -1248,6 +1248,14 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
                and (sub["thread_id"] or "") == (target["thread_id"] or "")
                for sub in _kbn.list_notify_subs(conn, task_id)):
             return True
+        try:
+            kinds = _kbn.auto_subscribe_event_kinds(load_config())
+        except Exception:
+            # Unreadable config keeps all kinds, like the gate above; bookkeeping never fails a create.
+            logger.debug("auto_subscribe_events unreadable; subscribing to all kinds", exc_info=True)
+            kinds = None
+        if kinds is not None:
+            target["event_kinds"] = kinds
         _kbn.add_notify_sub(conn, task_id=task_id, **target)
         return True
     except Exception as _exc:

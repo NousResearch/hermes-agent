@@ -1,0 +1,14 @@
+#!/bin/sh
+# mcp-bridge.sh.template — expose the app's local MCP server to a remote agent over SSH stdio.
+#
+# The app's tools live in the app: they talk to a local socket or app process that cannot run on the
+# remote host. JSON-RPC over the ssh stdio pipe needs no other glue — point the remote MCP client at
+# this script instead of at the app's wrapper.
+#
+# Replace:  __REMOTE_HOST__   ssh alias or user@host of the machine running the app
+#           __APP_MCP__       absolute path (may contain spaces) of the app's MCP wrapper script
+#           __BRIDGE_KEY__    a dedicated key: ssh-keygen -f ~/.ssh/__BRIDGE_KEY__
+
+exec ssh -T -o BatchMode=yes -o ConnectTimeout=10 \
+  -i "$HOME/.ssh/__BRIDGE_KEY__" \
+  __REMOTE_HOST__ 'exec "__APP_MCP__"'

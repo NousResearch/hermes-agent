@@ -43,19 +43,19 @@ interface DiagramTheme {
 }
 
 // Resolved through probes, so color-mix() and oklch() tokens arrive as values
-// the isolated SVG document can use. All probes are styled before any is read,
-// so the pass costs one style recalc. A token that does not resolve (unset, or
-// a broken var() chain in a skin) is left out, so Pele's own default applies
-// instead of the probe's inherited color. Serialised: it doubles as the cache
-// key.
+// the isolated SVG document can use. Each token is probed once and all probes
+// are styled before any is read, so the pass costs one style recalc. A token
+// that does not resolve (unset, or a broken var() chain in a skin) is left
+// out, so Pele's own default applies instead of the probe's inherited color.
 const UNRESOLVED = 'rgb(1, 2, 3)'
+const TOKENS = [...new Set(PALETTE.map(([, token]) => token))]
 
-function resolveTheme(): string {
+function resolveTheme(): DiagramTheme {
   const root = getComputedStyle(document.documentElement)
   const host = document.createElement('div')
   host.style.display = 'none'
 
-  const probes = PALETTE.map(([, token]) => {
+  const probes = TOKENS.map(token => {
     const probe = document.createElement('span')
     probe.style.color = `var(${token}, ${UNRESOLVED})`
 
@@ -65,38 +65,34 @@ function resolveTheme(): string {
   host.append(...probes)
   document.body.append(host)
 
-  const vars = PALETTE.flatMap(([pele], i) => {
-    const color = getComputedStyle(probes[i]).color
+  const colors = new Map(TOKENS.map((token, i) => [token, getComputedStyle(probes[i]).color]))
+
+  host.remove()
+
+  const vars = PALETTE.flatMap(([pele, token]) => {
+    const color = colors.get(token)
 
     return !color || color === UNRESOLVED ? [] : [`${pele}:${color}`]
   }).join(';')
 
-  host.remove()
-
-  const theme: DiagramTheme = {
+  return {
     font: root.getPropertyValue('--dt-font-sans').trim() || 'sans-serif',
     fontMono: root.getPropertyValue('--dt-font-mono').trim() || 'monospace',
     vars
   }
-
-  return JSON.stringify(theme)
 }
 
 // One resolved theme shared by every mounted diagram, re-resolved once per
 // theme repaint (mode flip or skin change) rather than once per diagram. The
 // first read mounts the store (nanostores' get() runs onMount), so a diagram
-// never renders without a palette; unmounting clears it, so a later mount
-// re-resolves instead of drawing with a stale one.
-const $diagramTheme = atom('')
+// renders with the resolved palette, and a later mount re-resolves rather
+// than reusing one from before. The initial value is Pele's own defaults.
+const $diagramTheme = atom<DiagramTheme>({ font: 'sans-serif', fontMono: 'monospace', vars: '' })
 
 onMount($diagramTheme, () => {
   $diagramTheme.set(resolveTheme())
-  const stop = onThemeRepaint(() => $diagramTheme.set(resolveTheme()))
 
-  return () => {
-    stop()
-    $diagramTheme.set('')
-  }
+  return onThemeRepaint(() => $diagramTheme.set(resolveTheme()))
 })
 
 // Pele's root always carries a style attribute; the palette goes in front of
@@ -138,11 +134,10 @@ const typesetMath: MathResolver = (tex, size) => {
   return { height: Math.ceil(height), html, width: Math.ceil(width) }
 }
 
-const renderCache = createMermaidRenderCache({
+const renderCache = createMermaidRenderCache<DiagramTheme>({
   maxEntries: 32,
-  render: async (code, themeKey) => {
+  render: async (code, theme) => {
     const pele = await loadPele()
-    const theme = JSON.parse(themeKey) as DiagramTheme
 
     // Links and images off: the diagram is display-only, as under mermaid's
     // strict mode (no click handlers, no remote fetches).
@@ -176,15 +171,16 @@ function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
 }
 
 function svgAccessibleText(svg: string): string {
-  // Pele writes <title>/<desc> only for accTitle/accDescr or a diagram title;
-  // skip the parse for the common diagram that has neither.
+  // Pele writes accTitle/accDescr (or a diagram title) as the root's own
+  // <title>/<desc>; nested ones are tooltips and labels (journey actors, click
+  // tips), not a name for the whole diagram. Skip the parse when there are none.
   if (!svg.includes('<title') && !svg.includes('<desc')) {
     return 'Mermaid diagram'
   }
 
-  const document = new DOMParser().parseFromString(svg, 'image/svg+xml')
+  const root = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement
 
-  const text = [document.querySelector('title')?.textContent, document.querySelector('desc')?.textContent]
+  const text = [root.querySelector(':scope > title')?.textContent, root.querySelector(':scope > desc')?.textContent]
     .map(value => value?.trim())
     .filter((value): value is string => Boolean(value))
 

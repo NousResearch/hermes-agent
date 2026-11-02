@@ -198,7 +198,7 @@ export default defineConfig(({ command }) => ({
             // heavy groups for the same boot-path reason.
             {
               name: 'vendor-util',
-              test: /node_modules[\\/](lodash-es|es-toolkit|uuid|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify|stylis)[\\/]/
+              test: /node_modules[\\/](lodash-es|es-toolkit|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify)[\\/]/
             },
             // One chunk per heavyweight, lazy-only library family.
             // @streamdown/code lives WITH shiki because it statically imports

@@ -1,6 +1,6 @@
 name: taskwatch
 repo: https://github.com/Joclto/hermes-taskwatch
-sha: 3f5e3d1189f121ef741396ee73fb12c87613a292
+sha: d0bb2e52a14579418697ca677544dab657292a52
 title: TaskWatch
 description: >-
   Background-task watchboard for the Hermes Desktop status bar and a side pane:
@@ -15,7 +15,7 @@ description: >-
 maintainer: Joclto
 tier: community
 category: desktop
-version: "0.1.1"
+version: "0.2.1"
 docs_url: https://github.com/Joclto/hermes-taskwatch
 platforms: []
 capabilities:

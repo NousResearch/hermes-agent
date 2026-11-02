@@ -325,6 +325,26 @@ describe('GatewaySettings', () => {
     expect(applyConnectionConfig).not.toHaveBeenCalled()
     registry.value = null
   })
+  it('shows the gateway this window is on, not the primary it booted on', async () => {
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'local' })
+    registry.value = {
+      primary: 'local',
+      connections: [
+        { id: 'local', kind: 'local', label: 'This device' },
+        { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://homelab:9119', authMode: 'token' }
+      ]
+    }
+    activeId.value = 'homelab'
+
+    try {
+      render(<GatewaySettings embedded />)
+
+      expect(await screen.findByDisplayValue('http://homelab:9119')).toBeTruthy()
+    } finally {
+      registry.value = null
+      activeId.value = 'saved-b'
+    }
+  })
   it('authenticates and saves only the chosen discovered instance with its friendly name', async () => {
     registry.value = null
     getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })

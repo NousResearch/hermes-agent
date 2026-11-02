@@ -1582,6 +1582,10 @@ def _upload_flag_owned_by_curl_or_wget(command: str, flag_start: int) -> bool:
             word_start, pos, word = _read_shell_word(command, pos)
             if word_start == pos:
                 break
+            if word_start < flag_start < pos:
+                # The flag sits inside a quoted word that ``eval``, ``ssh host`` or ``sh -c`` may
+                # re-parse as a command, so curl may own it.
+                return True
             if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in ("curl", "wget"):
                 return True
             if _word_is_unresolved_expansion(word):

@@ -129,8 +129,29 @@ def _read_sqlite_application_id(db_path: Path) -> Optional[int]:
 def _stat_sqlite_sidecar_identity(db_path: Path) -> dict[str, tuple]:
     """Snapshot ``(st_dev, st_ino)`` for existing WAL/SHM sidecars."""
     base = os.fspath(db_path)
-    idents = {suffix: _stat_db_file_identity(Path(base + suffix)) for suffix in ("-wal", "-shm")}
+    idents = {suffix: _stable_sidecar_identity(Path(base + suffix)) for suffix in ("-wal", "-shm")}
     return {suffix: ident for suffix, ident in idents.items() if ident is not None}
+
+
+# Inode numbers at or above 2**63 are provisional ids some drivers hand out, never a real inode.
+_PROVISIONAL_INO_FLOOR = 1 << 63
+
+
+def _stable_sidecar_identity(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of a WAL/SHM sidecar, or None while that identity is not stable yet.
+
+    macOS FSKit exFAT (and other cluster-addressed FAT drivers) give a zero-length file a provisional
+    inode number near 2**64 and replace it once the first cluster is allocated, and again on a
+    truncate to zero. SQLite leaves ``-wal`` at 0 bytes after a TRUNCATE checkpoint, so recording
+    that identity at open made the first write after a reopen look like a lost WAL generation.
+    A 0-byte or provisional sidecar counts as unknown, exactly like one that does not exist yet."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if not st.st_dev or not st.st_ino or st.st_size == 0 or st.st_ino >= _PROVISIONAL_INO_FLOOR:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 def _watched_sqlite_sidecar_paths(db_path) -> dict[str, str]:

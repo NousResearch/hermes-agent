@@ -32,6 +32,101 @@ if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
 
 
+# ---------------------------------------------------------------------------
+# Dispatch eligibility (fail-closed gates evaluated BEFORE a claim)
+# ---------------------------------------------------------------------------
+#
+# The factory's budgets (card run cap, provider quota-wall budget, CI-retry
+# budget) used to be enforced only by the WORKER, after it had already
+# started and spent a model call. A quota wall was recorded as a neutral
+# requeue that no failure counter could see, so the card looped. Neither is
+# enforcement: the production decision path never consulted the policy.
+#
+# The gates below run inside ``_dispatch_lane_task`` between the existing
+# respawn guard and the claim, so an ineligible card consumes ZERO runs.
+#
+# The policy itself lives outside this module - in the factory's own repo -
+# so the budgets are reviewable and changeable without patching Hermes core.
+# This loader is the ONLY bridge: it resolves the policy module once per
+# process and degrades to "no policy" (fail closed) if it is absent.
+#
+# When the policy module is unavailable every card is INELIGIBLE. That is
+# deliberate: a factory that cannot read its own budgets must not run. The
+# dispatcher reports the reason (``policy_unreadable``) rather than silently
+# spawning unguarded work.
+
+_ELIGIBILITY_MODULE_NAME = "dispatch_eligibility"
+_ELIGIBILITY_SEARCH_PATHS: tuple[str, ...] = (
+    # The factory repo's scripts/lib/ directory - the canonical home of the
+    # policy module. Mirrors the pattern sanwa-ci-check.py already uses to
+    # reach hermes_cli from outside the checkout.
+    str(Path.home() / "src" / "hermes-factory" / "scripts" / "lib"),
+    # The live scripts directory, for an installed copy of the same module.
+    str(Path.home() / ".hermes" / "scripts" / "lib"),
+)
+_eligibility_module: Any = None
+_eligibility_module_loaded = False
+
+
+def _load_eligibility_module() -> Any:
+    """Resolve the factory's dispatch-eligibility module, or None.
+
+    Resolution order: already-imported module, then the configured search
+    paths. Cached per process: the policy module is read from disk on every
+    tick, but the import itself happens once.
+    """
+    global _eligibility_module, _eligibility_module_loaded
+    if _eligibility_module_loaded:
+        return _eligibility_module
+    _eligibility_module_loaded = True
+    import importlib
+    import importlib.util
+
+    existing = sys.modules.get(_ELIGIBILITY_MODULE_NAME)
+    if existing is not None:
+        _eligibility_module = existing
+        return _eligibility_module
+    for candidate_dir in _ELIGIBILITY_SEARCH_PATHS:
+        candidate = Path(candidate_dir) / f"{_ELIGIBILITY_MODULE_NAME}.py"
+        try:
+            if not candidate.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location(
+                _ELIGIBILITY_MODULE_NAME, candidate
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[_ELIGIBILITY_MODULE_NAME] = module
+            spec.loader.exec_module(module)
+            _eligibility_module = module
+            return _eligibility_module
+        except Exception as exc:  # pragma: no cover - defensive
+            _kb._log.warning(
+                "kanban dispatch: eligibility module at %s failed to load: %s",
+                candidate, exc,
+            )
+            continue
+    _kb._log.warning(
+        "kanban dispatch: dispatch-eligibility module not found in %s; "
+        "every card is INELIGIBLE (fail closed) until it is installed.",
+        list(_ELIGIBILITY_SEARCH_PATHS),
+    )
+    return _eligibility_module
+
+
+def _eligibility_policy() -> Any:
+    """Read the board's eligibility policy (fail-closed on any error)."""
+    module = _load_eligibility_module()
+    if module is None:
+        return None
+    try:
+        return module.load_policy()
+    except Exception as exc:  # pragma: no cover - defensive
+        _kb._log.warning("kanban dispatch: failed to read eligibility policy: %s", exc)
+        return None
+
+
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
@@ -142,6 +237,21 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    ineligible: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` refused by the dispatch-eligibility gates BEFORE
+    the claim: ``"run_cap"`` (card's cumulative builder runs reached the
+    budget), ``"provider_wall"`` (the card's provider is inside its quota
+    cooldown), ``"provider_wall_budget"`` (the provider's wall budget is
+    exhausted), ``"provider_slot"`` (the provider has no free slot),
+    ``"ci_retry_budget"``, ``"provider_unknown"`` or ``"policy_unreadable"``.
+    A card listed here consumed ZERO runs — the refusal happened before the
+    claim."""
+    parked: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, native_park_state, reason)`` cards the gates moved into a
+    native park state (``scheduled`` for a provider wall, ``blocked`` for a
+    terminal budget, ``triage`` for a human decision). The dispatcher does
+    not spawn from ``scheduled``/``blocked``/``triage``, so a parked card
+    cannot re-enter the ready lane on its own."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -2063,6 +2173,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    eligibility_policy: Any = None,
+    eligibility_slots: Any = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2097,6 +2209,142 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # --- Dispatch eligibility (fail closed) --------------------------------
+    # The card's budgets are checked HERE, before the claim, so an ineligible
+    # card consumes zero runs. The worker-side checks are advisory by
+    # construction (they run after the spend), so this is the only place
+    # where "ineligible" can actually mean "no capacity consumed".
+    #
+    # The gate runs BEFORE ``check_respawn_guard`` on purpose. The respawn
+    # guard is a TRANSIENT hold ("a completed run happened recently", "the
+    # quota cooldown has not elapsed"); the eligibility gates are BUDGET
+    # decisions ("this card has spent its run budget", "this provider is
+    # walled"). A budget decision must win: if the guard ran first, an
+    # over-cap card with a recent completion would be reported as
+    # ``recent_success`` forever and never reach the budget gate that is
+    # supposed to park it. Budget-first also means a card that is over its
+    # cap stops being re-evaluated on every tick, which is what keeps the
+    # audit trail bounded.
+    #
+    # The gate is skipped only when no policy module is available at all -
+    # and then the card is INELIGIBLE (fail closed), never eligible.
+    _elig_module = _load_eligibility_module()
+    _decision: Any = None
+    # A board with NO policy file has not opted into these gates. The
+    # dispatcher must leave it completely alone: these budgets are a factory
+    # opt-in, not a Hermes-wide requirement. Only a policy that EXISTS and
+    # cannot be read fails closed.
+    _policy_applies = False
+    if _elig_module is not None:
+        try:
+            _policy = eligibility_policy if eligibility_policy is not None else _elig_module.load_policy()
+            _policy_applies = bool(getattr(_policy, "applicable", True))
+            if not _policy_applies:
+                _decision = _elig_module.EligibilityDecision(eligible=True)
+            else:
+                _decision = _elig_module.evaluate_card(
+                    conn,
+                    task_id,
+                    policy=_policy,
+                    assignee=assignee,
+                    slots=eligibility_slots,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            # An unevaluatable gate refuses. Never let an exception here
+            # become a spawn.
+            _kb._log.warning(
+                "kanban dispatch: eligibility evaluation failed for %s: %s "
+                "(refusing the claim)", task_id, exc,
+            )
+            _decision = _elig_module.EligibilityDecision(
+                eligible=False, reason="policy_unreadable",
+                detail=f"eligibility evaluation raised: {exc}", park="blocked",
+            )
+        if not _decision.eligible:
+            result.ineligible.append((task_id, _decision.reason or "ineligible"))
+            if _decision.park:
+                result.parked.append((task_id, _decision.park, _decision.reason or ""))
+                # Move the card into the native park state so it cannot be
+                # re-evaluated on every tick, cannot re-enter the ready lane
+                # on its own, and holds no claim or capacity while parked.
+                # ``scheduled`` is not dispatchable (``_lane_rows`` selects
+                # only ready/review), so a parked card stays parked until a
+                # human or the recovery path releases it.
+                if not dry_run:
+                    try:
+                        if _decision.park == "scheduled":
+                            _kb.schedule_task(
+                                conn, task_id, reason=_decision.detail or "provider wall",
+                            )
+                        elif _decision.park in ("blocked", "triage"):
+                            # A terminal budget is a human decision. ``block_task``
+                            # records the sticky block event, so ``recompute_ready``
+                            # will not promote the card back to ready on its own.
+                            #
+                            # ``triage`` is NOT a direct status write: the native
+                            # route to triage is ``_route_block``, reached through
+                            # ``block_task`` when the same-kind block recurrence
+                            # count reaches BLOCK_RECURRENCE_LIMIT. So a triage
+                            # verdict is expressed as a block with kind
+                            # ``needs_input``; when the card's own recurrence
+                            # count is already at the limit, ``block_task`` routes
+                            # it to triage itself. The verdict's own triage state
+                            # is therefore advisory here, and the board remains
+                            # the single authority on where the card ends up.
+                            _kb.block_task(
+                                conn, task_id,
+                                reason=_decision.detail or _decision.reason or "eligibility gate",
+                                kind="needs_input",
+                            )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        _kb._log.warning(
+                            "kanban dispatch: could not park %s into %s: %s",
+                            task_id, _decision.park, exc,
+                        )
+            # Record the refusal ONCE per (card, reason) transition - not once
+            # per tick. A parked card is evaluated every tick; writing a row
+            # each time is how the audit trail grew to 832 guard rows a week
+            # for cards that were not doing anything.
+            if not dry_run:
+                try:
+                    with _kb.write_txn(conn):
+                        _last = conn.execute(
+                            "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                            "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)
+                        ).fetchone()
+                        _payload: dict[str, Any] = {
+                            "reason": _decision.reason,
+                            "detail": _decision.detail,
+                            "park": _decision.park,
+                        }
+                        if (_last is None or _last["kind"] != "ineligible"
+                                or _last["payload"] != _kb._json_or_null(_payload)):
+                            _kb._append_event(conn, task_id, "ineligible", _payload)
+                except Exception as exc:  # pragma: no cover - defensive
+                    _kb._log.debug(
+                        "kanban dispatch: could not record ineligible event for %s: %s",
+                        task_id, exc,
+                    )
+            return False
+    else:
+        # No policy module: fail closed. The factory must not run unguarded.
+        result.ineligible.append((task_id, "policy_unreadable"))
+        if not dry_run:
+            try:
+                with _kb.write_txn(conn):
+                    _last = conn.execute(
+                        "SELECT kind FROM task_events WHERE task_id = ? "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)
+                    ).fetchone()
+                    if _last is None or _last["kind"] != "ineligible":
+                        _kb._append_event(conn, task_id, "ineligible", {
+                            "reason": "policy_unreadable",
+                            "detail": "dispatch-eligibility module unavailable",
+                        })
+            except Exception:  # pragma: no cover - defensive
+                pass
+        return False
+
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2118,9 +2366,22 @@ def _dispatch_lane_task(
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
+    def _count_provider_spawn(provider: Optional[str]) -> None:
+        """Consume a provider slot for a successful spawn.
+
+        The provider slot state is read once per tick, so without this the
+        second card on the same provider in the SAME tick would still see a
+        free slot and be claimed - a double-claim. Incrementing here makes the
+        cap hold within a tick exactly as it does across ticks.
+        """
+        if not provider or eligibility_slots is None:
+            return
+        eligibility_slots.running[provider] = eligibility_slots.running.get(provider, 0) + 1
+
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
+        _count_provider_spawn(_decision.provider if _decision is not None else None)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
     claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
@@ -2158,6 +2419,7 @@ def _dispatch_lane_task(
         # only on successful completion (complete_task).
         result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
         _count_spawn(claimed.assignee)
+        _count_provider_spawn(_decision.provider if _decision is not None else None)
         return True
     except Exception as exc:
         from tools.process_registry import RestartSafeScopeUnavailable
@@ -2417,10 +2679,29 @@ def _dispatch_once_locked(
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
+    # Dispatch eligibility: read the policy ONCE per tick and resolve the
+    # provider occupancy ONCE per tick. Both are then threaded into every
+    # lane task, so a card that passes the gate consumes a slot that the next
+    # card in the same tick can see (concurrency-safe within the tick).
+    _elig_module = _load_eligibility_module()
+    eligibility_policy: Any = None
+    eligibility_slots: Any = None
+    if _elig_module is not None:
+        try:
+            eligibility_policy = _elig_module.load_policy()
+            eligibility_slots = _elig_module.provider_slot_state(conn)
+        except Exception as exc:  # pragma: no cover - defensive
+            _kb._log.warning(
+                "kanban dispatch: could not build eligibility state: %s "
+                "(every card is INELIGIBLE this tick)", exc,
+            )
+            eligibility_policy = None
+            eligibility_slots = None
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        eligibility_policy=eligibility_policy, eligibility_slots=eligibility_slots,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

@@ -122,6 +122,9 @@ PEN_CANVAS_SCHEMA = {
     "description": (
         "Design on a pen.dev canvas in the Hermes desktop app — the Canvas tab "
         "beside this chat. You and the user share one live canvas. "
+        "When the user asks to open a canvas, or to design / mock up / "
+        "wireframe a screen, page or UI, use this tool, not an inline HTML "
+        "preview. "
         "HOW THE CANVAS IS CHANGED: the editor has no create/add/draw tools. "
         "Every change is a pen script run with action='execute', "
         "args={input: '<script>'} (Insert / Get / Delete / Print and the "
@@ -136,7 +139,10 @@ PEN_CANVAS_SCHEMA = {
         "Host actions: 'open' opens a tab (args: {name?: 2-4 word title from "
         "the brief, path?: absolute .pen file} — ALWAYS pass name when "
         "creating) and returns the live tool list. 'close' puts the canvas "
-        "away (file stays in the library). 'schema' re-fetches the tool list "
+        "away (file stays in the library). 'selection' returns what the user "
+        "has selected on the canvas (nodes: [{id, type, name}]) — call it when "
+        "they say 'this', 'these' or 'the selected …' and act on those ids. "
+        "'schema' re-fetches the tool list "
         "(get-mcp-schema) — call it when tools look stale; Pencil changes them. "
         "'import' brings a live web page onto the canvas as editable layers "
         "(args: {url?, selector?: one element by CSS selector, else the whole "
@@ -161,8 +167,8 @@ PEN_CANVAS_SCHEMA = {
             "action": {
                 "type": "string",
                 "description": (
-                    "'open' / 'close' for the pane, 'schema' for the live tool "
-                    "list, 'import' to bring a web page onto the canvas, or an "
+                    "'open' / 'close' for the pane, 'selection' for what the "
+                    "user has selected, 'schema' for the live tool list, 'import' to bring a web page onto the canvas, or an "
                     "editor tool name from that list — 'execute' for every "
                     "canvas change, 'read_skill', 'get_style', 'get_app_state'. "
                     "Never a made-up name."

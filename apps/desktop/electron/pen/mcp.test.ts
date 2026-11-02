@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { isPenSchemaAction, penToolNames, unknownPenToolError } from './mcp'
+import { isPenSchemaAction, isPenSelectionAction, penToolNames, unknownPenToolError } from './mcp'
 
 test('schema fetches the live list; get_app_state is an editor tool', () => {
   assert.equal(isPenSchemaAction('schema'), true)
@@ -30,4 +30,9 @@ test('a made-up tool is refused with the real list and the way in; a real one pa
   assert.equal(unknownPenToolError('execute', tools), null)
   // No list yet: nothing to check against, let the editor answer.
   assert.equal(unknownPenToolError('create_frame', []), null)
+})
+
+test('selection is a host action, not an editor tool', () => {
+  assert.equal(isPenSelectionAction('selection'), true)
+  assert.equal(isPenSelectionAction('execute'), false)
 })

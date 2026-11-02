@@ -4,6 +4,11 @@ export function isPenSchemaAction(action: string): boolean {
   return action === 'schema' || action === 'get-mcp-schema'
 }
 
+/** Host action: what the user has selected on the canvas ("make this blue"). */
+export function isPenSelectionAction(action: string): boolean {
+  return action === 'selection'
+}
+
 /** Tool names from a `get-mcp-schema` answer; empty when it is not one. */
 export function penToolNames(schema: unknown): string[] {
   const tools = schema && typeof schema === 'object' && 'tools' in schema ? (schema as { tools: unknown }).tools : null

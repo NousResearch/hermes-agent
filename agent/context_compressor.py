@@ -2193,7 +2193,8 @@ class ContextCompressor(
                 custom_providers=self.custom_providers,
             )
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
-            self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length, self._base_threshold_percent, self.exact_threshold)
             self._emit_init_summary_once()
         return self._resolved_context_length
 
@@ -2210,7 +2211,7 @@ class ContextCompressor(
         # Re-apply the raise-only floor so percent and tokens derive from the same window.
         _base = getattr(self, "_base_threshold_percent", None)
         if _base is not None:
-            self.threshold_percent = self._effective_threshold_percent(value, _base)
+            self.threshold_percent = self._effective_threshold_percent(value, _base, self.exact_threshold)
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self._emit_init_summary_once()
 
@@ -2219,7 +2220,8 @@ class ContextCompressor(
         if self._threshold_tokens is None:
             # Resolve the window first: it may floor threshold_percent as a side effect.
             _ctx = self.context_length
-            self._threshold_tokens = self._compute_threshold_tokens(_ctx, self.threshold_percent, self.max_tokens)
+            self._threshold_tokens = self._compute_threshold_tokens(
+                _ctx, self.threshold_percent, self.max_tokens, self.exact_threshold)
             self._apply_threshold_tokens_cap()
         return self._threshold_tokens
 
@@ -2655,8 +2657,8 @@ class ContextCompressor(
         guard quotes is the number the compressor installs (#83450). Excludes the auxiliary-summariser
         ceiling, which the feasibility probe re-derives per runtime."""
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
-        effective_percent = self._effective_threshold_percent(context_length, base_percent)
-        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
+        effective_percent = self._effective_threshold_percent(context_length, base_percent, self.exact_threshold)
+        threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens, self.exact_threshold)
         cap = self._effective_threshold_cap(context_length)
         if cap is not None:
             threshold = min(threshold, cap)
@@ -2752,9 +2754,11 @@ class ContextCompressor(
             self.threshold_tokens = _aux_ceiling
 
     @staticmethod
-    def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float, exact_threshold: bool = False,
+    ) -> float:
         """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""
-        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+        if not exact_threshold and context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
 
@@ -2768,6 +2772,7 @@ class ContextCompressor(
     @staticmethod
     def _compute_threshold_tokens(
         context_length: int, threshold_percent: float, max_tokens: int | None = None,
+        exact_threshold: bool = False,
     ) -> int:
         """Compute the compaction trigger in tokens from the effective input budget.
         Base is ``(context_length - max_tokens) * threshold_percent`` floored at MINIMUM_CONTEXT_LENGTH;
@@ -2788,6 +2793,9 @@ class ContextCompressor(
         """
         effective_window = ContextCompressor._effective_input_window(context_length, max_tokens)
         pct_value = int(effective_window * threshold_percent)
+        # Opt-in ratio-only trigger: retain output headroom and downstream caps, bypass both floors.
+        if exact_threshold:
+            return max(1, min(pct_value, effective_window - 1))
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # The floor must not consume output headroom: cap at 85% when it is the binding term. Near-minimum windows
         # otherwise trigger at ~98%, and providers that silently clip over-window prompts (ollama) never raise the
@@ -2808,7 +2816,7 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, exact_threshold: bool = False,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2816,6 +2824,7 @@ class ContextCompressor(
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
+        self.exact_threshold = exact_threshold
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.

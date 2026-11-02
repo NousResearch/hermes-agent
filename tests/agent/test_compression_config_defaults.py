@@ -24,3 +24,9 @@ def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
     cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]
+
+
+@pytest.mark.parametrize("raw, expected", [(None, False), (False, False), ("false", False), (True, True), ("true", True)])
+def test_exact_threshold_is_opt_in(raw, expected):
+    cfg = {} if raw is None else {"exact_threshold": raw}
+    assert _parse_compression_config(_agent(), {"compression": cfg}).exact_threshold is expected

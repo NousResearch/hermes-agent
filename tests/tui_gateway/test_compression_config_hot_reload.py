@@ -114,6 +114,29 @@ def test_unchanged_compression_config_is_noop(monkeypatch):
     assert compressor.threshold_tokens == 99_999
 
 
+def test_exact_threshold_change_and_removal_apply_without_rebuild(monkeypatch):
+    from agent import agent_init
+
+    session, compressor = _session_with_compressor()
+    compressor.context_length = 65_536
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 65_536)
+    cfg = {"compression": {"threshold": 0.70, "threshold_tokens": None}}
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    live_agent = session["agent"]
+    server._sync_agent_compression_with_config("exact-test", session)
+    assert compressor.threshold_tokens == 55_705
+    cfg["compression"]["exact_threshold"] = True
+    server._sync_agent_compression_with_config("exact-test", session)
+    assert session["agent"] is live_agent
+    assert compressor.exact_threshold is True
+    assert compressor.threshold_percent == 0.70
+    assert compressor.threshold_tokens == 45_875
+    del cfg["compression"]["exact_threshold"]
+    server._sync_agent_compression_with_config("exact-test", session)
+    assert compressor.exact_threshold is False
+    assert compressor.threshold_tokens == 55_705
+
+
 def _default_cap():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 

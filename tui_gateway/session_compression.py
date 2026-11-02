@@ -18,7 +18,7 @@ def _tui_compression_config_signature(cfg: dict | None) -> tuple:
     keys = GatewayRunner._extract_cache_busting_config(cfg)
     picked = {k: v for k, v in keys.items() if k.startswith("compression.") or k == "model.context_length"}
     compression = cfg.get("compression") if isinstance(cfg, dict) and isinstance(cfg.get("compression"), dict) else {}
-    picked.update({f"compression.{k}": compression.get(k) for k in ("idle_compact_after_seconds", "tail_mode")})
+    picked.update({f"compression.{k}": compression.get(k) for k in ("idle_compact_after_seconds", "tail_mode", "exact_threshold")})
     return tuple(sorted(picked.items()))
 
 
@@ -114,6 +114,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
         return
+    cc.exact_threshold = is_truthy_value(compression.get("exact_threshold", False))
     # tail_mode: unknown/absent values land on the ctor default ("lean"), matching agent_init.
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
@@ -145,7 +146,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         getattr(agent, "model", "") or "", cc.model_thresholds, pct, getattr(agent, "provider", "") or "",
     )
     try:
-        cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
+        cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base, cc.exact_threshold)
     except Exception:
         cc.threshold_percent = pct
     # Same scoping rule as construction and the switch path: the pin describes the configured default

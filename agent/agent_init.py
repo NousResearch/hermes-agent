@@ -1543,6 +1543,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
     return CompressionSettings(
         threshold=threshold,
+        exact_threshold=_cfg_flag(cfg, "exact_threshold", False),
         autoraise_notice_enabled=autoraise_notice_enabled,
         enabled=_cfg_flag(cfg, "enabled", True),
         target_ratio=target_ratio,
@@ -1995,6 +1996,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
+            exact_threshold=cs.exact_threshold,
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,

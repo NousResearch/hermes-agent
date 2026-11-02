@@ -280,13 +280,16 @@ class GatewayAuthorizationMixin:
 
     def _names_receiving_bot(self, source: SessionSource, identity) -> bool:
         """Whether a multiplexed *identity* names the bot that received *source*: not inferred, and not
-        a restored primary guess (:meth:`_restored_transport_trusted`). An API-server row is exempt: its
-        primary listener is pinned by construction (``session_api._pin_api_identity``), never guessed.
+        a restored primary guess (:meth:`_restored_transport_trusted`). The shared-listener mirrors
+        (api_server, webhook) are exempt: a secondary profile's /p/<profile>/ surface IS the primary's
+        listener by construction (``SHARED_LISTENER_MIRROR_PLATFORMS``), never a guess.
         LOCAL is not: its saved launch-profile transport is the session authority's fact, but the bot
         that answers is the runtime profile's own LocalSessionAdapter (#139060), as on a live turn."""
         if identity is None or not identity.multiplexed or identity.transport_inferred:
             return False
-        return (getattr(source, "platform", None) == Platform.API_SERVER
+        from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
+        platform = getattr(getattr(source, "platform", None), "value", None)
+        return (platform in SHARED_LISTENER_MIRROR_PLATFORMS
                 or self._restored_transport_trusted(source, identity))
 
     def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:

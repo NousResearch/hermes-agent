@@ -1419,7 +1419,8 @@ def interruptible_backoff_sleep(
     # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
     # the per-iteration pre-expiry adoption does not run between retries.
     agent._adopt_nous_key_before_expiry()
-    agent._adopt_vertex_token_before_expiry()
+    if hasattr(agent, "_adopt_vertex_token_before_expiry"):
+        agent._adopt_vertex_token_before_expiry()
     return None
 
 
@@ -1951,6 +1952,19 @@ def route_classified_error(
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
             if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
+    elif (
+        _should_fallback
+        and getattr(agent, "_fallback_activated", False)
+        and not getattr(_retry, "primary_fallback_wrap_attempted", False)
+        and getattr(agent, "_rate_limited_until", 0) <= time.monotonic()
+        and callable(getattr(agent, "_restore_primary_runtime", None))
+    ):
+        # CF-61: when already on the terminal fallback provider and the primary provider's
+        # cooldown has already expired, a rate-limit/transport error on the fallback itself
+        # should immediately restore the primary rather than stalling on the exhausted fallback.
+        _retry.primary_fallback_wrap_attempted = True
+        if agent._restore_primary_runtime():
+            return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
     # escalate to the fallback chain once; False -> terminal handling.

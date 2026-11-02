@@ -157,3 +157,50 @@ def test_interrupt_during_ladder_wait_returns_interrupted_result():
     verdict, retry = _settle(agent, _Err(503, "down"))
     assert verdict.action == "return" and verdict.result["interrupted"] is True
     assert retry.auto_recovery_cycles_used == 1
+
+
+def test_terminal_fallback_429_wraps_back_to_primary_runtime_once():
+    """CF-60: when already on the terminal fallback provider (_fallback_activated=True,
+    no pending fallback left) and retries exhaust on a 429 (e.g. Vertex TPM quota exhausted),
+    settle_unrecovered_error restores the primary runtime once and breaks to restart."""
+    agent = _Agent(fallback_left=False)
+    agent._fallback_activated = True
+    agent._rate_limited_until = 999999999.0
+    restored = []
+    agent._restore_primary_runtime = lambda: restored.append(True) or True
+
+    verdict, retry = _settle(agent, _Err(429, "TPM quota exhausted. No spare capacity is currently available"))
+    assert verdict.action == "break"
+    assert verdict.retry_count == 0
+    assert retry.primary_fallback_wrap_attempted is True
+    assert agent._rate_limited_until == 0
+    assert restored == [True]
+
+    # Second exhaustion on the same call must NOT infinite-loop wrap-back
+    verdict2, _ = _settle(agent, _Err(429, "TPM quota exhausted"), retry=retry)
+    assert verdict2.action == "return" and verdict2.result == {"failed": True}
+    assert restored == [True]
+
+
+def test_openrouter_upstream_429_records_provider_failure_and_reorders_upstreams():
+    """CF-60: when OpenRouter returns a 429 from an upstream provider (e.g. Google AI Studio),
+    provider_latency_circuit_breaker.record_provider_failure demotes that upstream so
+    adjust_provider_order moves google-vertex/global to slot #1."""
+    from agent.provider_latency_circuit_breaker import (
+        adjust_provider_order,
+        record_provider_failure,
+        reset_circuit_breaker,
+    )
+
+    reset_circuit_breaker()
+    try:
+        order = ["google-ai-studio/flex", "google-vertex/global", "google-ai-studio"]
+        assert adjust_provider_order("google/gemini-4-argon", order) == order
+
+        record_provider_failure("google/gemini-4-argon", "Google AI Studio")
+        reordered = adjust_provider_order("google/gemini-4-argon", order)
+        assert reordered == ["google-vertex/global", "google-ai-studio/flex", "google-ai-studio"]
+    finally:
+        reset_circuit_breaker()
+
+

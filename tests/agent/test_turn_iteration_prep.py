@@ -234,4 +234,41 @@ def test_prepare_iteration_suppresses_noop_reanchor_log_and_logs_real_index_shif
         assert stale_logs == ["Re-anchored stale current_turn_user_idx 2 -> 0 (session=sess-reanchor)"]
 
 
+def test_prepare_iteration_restores_primary_runtime_between_tool_rounds_not_on_restart():
+    """CF-60: prepare_iteration must call _restore_primary_runtime on subsequent tool
+    iterations (api_call_count > 0 and _rebuilt_restarts_since_response == 0) when
+    _fallback_activated is True, but never during an in-flight retry restart."""
+    from agent.turn_iteration_prep import prepare_iteration
+
+    restored = []
+    agent = SimpleNamespace(
+        _nous_wire_pending=None,
+        step_callback=None,
+        _skill_nudge_interval=0,
+        valid_tool_names=set(),
+        _adopt_nous_key_before_expiry=lambda: None,
+        _adopt_vertex_token_before_expiry=lambda: None,
+        _fallback_activated=True,
+        _rebuilt_restarts_since_response=1,
+        _restore_primary_runtime=lambda: restored.append(True) or True,
+        _drain_pending_steer=lambda: None,
+        run_budget_seconds=None,
+        iteration_budget=SimpleNamespace(remaining=10, max_iterations=20),
+        logger=None,
+        _sanitize_args_cursor={},
+        _sanitize_tool_call_arguments=lambda *a, **kw: 0,
+        session_id="sess-cf60",
+    )
+
+    # During in-flight fallback restart (_rebuilt_restarts_since_response == 1): must NOT restore primary
+    prepare_iteration(agent, messages=[{"role": "user", "content": "hi"}], api_call_count=1)
+    assert restored == []
+
+    # Next completed tool round (_rebuilt_restarts_since_response == 0): MUST attempt restore
+    agent._rebuilt_restarts_since_response = 0
+    prepare_iteration(agent, messages=[{"role": "user", "content": "hi"}], api_call_count=1)
+    assert restored == [True]
+
+
+
 

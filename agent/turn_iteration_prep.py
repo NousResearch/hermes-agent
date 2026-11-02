@@ -171,7 +171,19 @@ def prepare_iteration(
     # instead of letting this iteration's request 401. With many agents sharing the hour that
     # 401 was a storm, and the pool benched the sole credential for all of them.
     agent._adopt_nous_key_before_expiry()
-    agent._adopt_vertex_token_before_expiry()
+    if hasattr(agent, "_adopt_vertex_token_before_expiry"):
+        agent._adopt_vertex_token_before_expiry()
+    # CF-61: a transient mid-turn failover (e.g. a 1-second OpenRouter 429 or stream drop)
+    # must not pin a multi-step tool turn onto the fallback provider for its remaining
+    # 20-100+ tool iterations once the primary cooldown has elapsed. Restore primary at
+    # the start of the next completed tool iteration (never on an in-flight retry restart).
+    if (
+        api_call_count > 0
+        and not getattr(agent, "_rebuilt_restarts_since_response", 0)
+        and getattr(agent, "_fallback_activated", False)
+        and callable(getattr(agent, "_restore_primary_runtime", None))
+    ):
+        agent._restore_primary_runtime()
 
     # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
     # standalone user row after the newest tool result (never smeared onto the tool row: that

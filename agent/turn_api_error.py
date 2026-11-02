@@ -142,6 +142,31 @@ def handle_api_error(
         reason=classified.reason.value,
     )
 
+    # CF-61: wire OpenRouter upstream provider failures into provider_latency_circuit_breaker
+    # so a rate-limited/failing upstream (e.g. Google AI Studio shared pool) is demoted and
+    # subsequent retries/calls reorder healthy OpenRouter upstreams (e.g. google-vertex/global) first.
+    _upstream_prov = (
+        (error_context.get("upstream_provider") if isinstance(error_context, dict) else None)
+        or (getattr(classified, "error_context", None) or {}).get("upstream_provider")
+    )
+    if _upstream_prov and classified.reason in (
+        FailoverReason.upstream_rate_limit,
+        FailoverReason.rate_limit,
+        FailoverReason.overloaded,
+        FailoverReason.server_error,
+        FailoverReason.timeout,
+    ):
+        try:
+            from agent.provider_latency_circuit_breaker import record_provider_failure
+            record_provider_failure(str(getattr(agent, "model", "") or ""), str(_upstream_prov))
+            if isinstance(api_kwargs, dict) and isinstance(api_kwargs.get("extra_body"), dict):
+                from agent.chat_completion_helpers import _provider_preferences_for_agent
+                _prefs = _provider_preferences_for_agent(agent)
+                if _prefs:
+                    api_kwargs["extra_body"]["provider"] = _prefs
+        except Exception:
+            logger.debug("provider circuit-breaker failure record failed", exc_info=True)
+
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
         messages=messages, api_messages=api_messages,
@@ -395,6 +420,20 @@ def settle_unrecovered_error(
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
             retry_count = compression_attempts = 0
             return _verdict("break")
+        if (
+            getattr(agent, "_fallback_activated", False)
+            and not getattr(_retry, "primary_fallback_wrap_attempted", False)
+            and callable(getattr(agent, "_restore_primary_runtime", None))
+        ):
+            # CF-61: when all retries on the terminal fallback provider are exhausted
+            # (e.g. Vertex 429 TPM quota exhausted after an earlier OpenRouter failover),
+            # clear the primary cooldown and wrap back to the primary runtime once before giving up.
+            _retry.primary_fallback_wrap_attempted = True
+            agent._rate_limited_until = 0
+            if agent._restore_primary_runtime():
+                active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+                retry_count = compression_attempts = 0
+                return _verdict("break")
         # Fallback first (above); only with nothing left to move to does the bounded auto-recovery
         # ladder park the turn on a transient outage instead of ending it (#85426, #107307).
         from agent.turn_recovery_autorecover import auto_recover_after_exhaustion

@@ -4,7 +4,7 @@ sha: "2d3b15dcc513bab7fc2463d29fb581524a94c8fb"
 title: Nexus Recovery Peer
 description: >-
   Optional bounded peer-model suggestion after repeated tool failure or a failed
-  delegated child. Disclosure: when an administrator explicitly configures a
+  delegated child. Disclosure — when an administrator explicitly configures a
   provider/model route and grants the required LLM override capabilities, the
   plugin sends a redacted excerpt of the task and failure to that provider via
   Hermes ctx.llm. Redaction is best-effort, not a confidentiality guarantee;

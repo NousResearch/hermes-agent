@@ -221,7 +221,7 @@ def test_gateway_profile_reconcile_parks_the_profile(monkeypatch, tmp_path):
     monkeypatch.setattr("gateway.run_runtime.release_profile_home", lambda runner, home: released.append(home))
     monkeypatch.setattr("gateway.run_runtime.serve_profile_runtime", serve)
     verdict = asyncio.run(Runner()._serve_profile_runtime("work", Path(tmp_path)))
-    assert verdict and "HTTP 503" in verdict and released == [Path(tmp_path)]
+    assert verdict and "HTTP 503" in verdict[0] and released == [Path(tmp_path)]
 
 
 def test_compute_host_turn_answers_turn_error(monkeypatch):

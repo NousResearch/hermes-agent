@@ -59,9 +59,10 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
-    @pytest.mark.parametrize("model", ["anthropic/claude-fable-5", "claude-opus-5-5", "anthropic/claude-opus-5.5"])
+    @pytest.mark.parametrize("model", ["anthropic/claude-fable-5", "claude-opus-5-5", "anthropic/claude-opus-5.5",
+                                       "claude-mythos-5-1", "anthropic/claude-mythos-5.1"])
     def test_mandatory_thinking_models_keep_the_omission(self, model: str) -> None:
-        """Fable and Opus 5.5 answer a disable with HTTP 400, so don't send one."""
+        """Fable, Mythos and Opus 5.5 answer a disable with HTTP 400, so don't send one."""
         kwargs = _kwargs(model, {"enabled": False})
         assert "thinking" not in kwargs
 

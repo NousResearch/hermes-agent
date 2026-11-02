@@ -48,6 +48,7 @@ import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
+import { LocalDashboardAuth } from './local-dashboard-auth'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
@@ -1298,6 +1299,11 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           ) : null}
         </div>
       ) : null}
+
+      {/* Local dashboard sign-in lives here, not in the remote panel: it
+          writes credentials for the backend this app itself runs, and must
+          never be mistaken for creating credentials on a remote backend. */}
+      {state.mode === 'local' && !state.envOverride ? <LocalDashboardAuth /> : null}
 
       {state.mode === 'ssh' && !state.envOverride ? (
         <div className="mt-5 grid gap-1">

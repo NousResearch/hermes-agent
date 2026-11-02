@@ -418,7 +418,8 @@ def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
     """1 when *a* holds the later-ISSUED token pair than *b*, -1 the earlier, 0 tied, None unstamped.
 
     The forked-grant heal's ordering (``auth_oauth_grants.oauth_pair_order``): JWT ``iat``, then
-    ``obtained_at``; expiry only as the last fallback, since a later rotation can carry a shorter TTL.
+    ``obtained_at`` (which also breaks an equal whole-second ``iat``); expiry only orders states
+    lacking an issue stamp, since a later rotation can carry a shorter TTL.
     A side stamped only by expiry against one stamped only by issue time is a tie (no adopt, no
     push); JWT states carry both claims, so they always order.
     """

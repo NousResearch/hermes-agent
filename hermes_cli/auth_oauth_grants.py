@@ -414,15 +414,21 @@ def _oauth_identity(entry: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _oauth_stamps(entry: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
-    """(issued, expires) epoch seconds of an OAuth pair; server-stamped JWT claims first."""
+def _oauth_stamps(
+        entry: dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """(JWT iat, local issue stamp, expires) epoch seconds of an OAuth pair."""
     from agent.credential_pool_timestamps import _parse_absolute_timestamp
     claims = _decode_jwt_claims(entry.get("access_token"))
 
     def first(*values: Any) -> Optional[float]:
         return next((ts for ts in map(_parse_absolute_timestamp, values) if ts), None)
-    return (first(claims.get("iat"), entry.get("last_refresh"), entry.get("obtained_at")),
+    return (first(claims.get("iat")), first(entry.get("last_refresh"), entry.get("obtained_at")),
             first(claims.get("exp"), entry.get("expires_at_ms"), entry.get("expires_at")))
+
+
+def _sign(x: Optional[float], y: Optional[float]) -> Optional[int]:
+    """Order of two stamps when both are known, else None."""
+    return None if x is None or y is None else (x > y) - (x < y)
 
 
 def oauth_pair_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
@@ -430,12 +436,18 @@ def oauth_pair_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
 
     ISSUE time decides: a rotation always issues later, but not always later-expiring (the Portal
     sets access TTLs per client and per issue), so expiry only orders pairs lacking an issue stamp
-    on either side. A side with no stamp at all is the older one.
+    on either side. Equal whole-second ``iat`` claims (two rotations in one second) fall to the
+    sub-second local issue stamp, and stay a tie without one. A side with no stamp at all is older.
     """
-    sa, sb = _oauth_stamps(a), _oauth_stamps(b)
-    for x, y in zip(sa, sb):
-        if x is not None and y is not None and x != y:
-            return 1 if x > y else -1
+    (ia, la, ea), (ib, lb, eb) = _oauth_stamps(a), _oauth_stamps(b)
+    if ia is not None and ib is not None:
+        return _sign(ia, ib) or _sign(la, lb) or 0
+    issued = _sign(ia or la, ib or lb)
+    if issued is not None:
+        return issued
+    if _sign(ea, eb):
+        return _sign(ea, eb)
+    sa, sb = (ia, la, ea), (ib, lb, eb)
     a_any, b_any = any(v is not None for v in sa), any(v is not None for v in sb)
     if not a_any and not b_any:
         return None

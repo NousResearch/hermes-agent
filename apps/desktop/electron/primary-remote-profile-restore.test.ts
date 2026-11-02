@@ -60,6 +60,18 @@ test('only a successful authoritative roster moves the primary, onto a profile t
       want: 'default'
     },
     {
+      name: 'single-profile gateway keeps the inherited profile',
+      listing: { profiles: [{ name: 'default' }, { name: 'work' }] },
+      status: { gateway_shared_with: [] },
+      want: 'work'
+    },
+    {
+      name: 'a served list never gains an unlisted default',
+      listing: { profiles: [{ name: 'default' }, { name: 'lab' }, { name: 'work' }] },
+      status: { gateway_shared_with: ['lab'] },
+      want: 'lab'
+    },
+    {
       name: 'served set unknown: installed counts as served',
       listing: { profiles: [{ name: 'default' }, { name: 'work' }] },
       status: { gateway_shared_with: null },

@@ -104,10 +104,11 @@ export function servedStartupProfile(
  * The profiles this gateway serves, from `/api/status`: `/api/profiles` lists
  * every INSTALLED profile, parked and standalone ones included, while a
  * gateway-hosted listener refuses those with `profile_mismatch`.
- * `gateway_shared_with` is the multiplexer's served set; [] means a
- * single-profile gateway that serves only the host's own `default`. Null
- * (no gateway running, an older backend, a failed read) is unknown, and every
- * installed profile counts as served, as before the set was read.
+ * `gateway_shared_with` is the multiplexer's served set, its launch profile
+ * included. [] (a single-profile gateway, serving only the profile it was
+ * launched as) and null (no gateway running, an older backend, a failed read)
+ * are unknown, and every installed profile counts as served, as before the set
+ * was read.
  */
 export function servedProfileSet(status: unknown): null | Set<string> {
   const shared = (status as { gateway_shared_with?: unknown } | null)?.gateway_shared_with
@@ -116,7 +117,11 @@ export function servedProfileSet(status: unknown): null | Set<string> {
     return null
   }
 
-  return new Set(['default', ...shared.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))])
+  const names = shared.filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+
+  // [] is a single-profile gateway serving only the profile it was launched as,
+  // which the list does not name: unknown here, not `default`.
+  return names.length ? new Set(names) : null
 }
 
 /** A complete profile listing, or null: a failed or partial read proves nothing. */

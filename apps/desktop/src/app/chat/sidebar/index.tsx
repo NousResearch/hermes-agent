@@ -177,6 +177,7 @@ import {
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useGatewayProjectTree,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
@@ -985,9 +986,11 @@ export function ChatSidebar({
   // linked worktrees under their main repo. The desktop only layers local view
   // state on top: dismissed auto-projects, persisted repo/lane order, and the
   // overview sort. Membership is the backend tree's — never re-derived here.
+  const gatewayProjectTree = useGatewayProjectTree(projectTree, agentSessions)
+
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
+      filterToSessionBearingProjects(filterVisibleProjects(gatewayProjectTree, dismissedAutoProjects))
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))
@@ -1006,11 +1009,8 @@ export function ChatSidebar({
       activeProjectId
     )
 
-    // Layer the user's manual drag-order on top of the deterministic sort. Empty
-    // (default) returns `sorted` untouched; projects the user hasn't ordered yet
-    // keep their sorted position rather than jumping the hand-picked list.
-    // Deduplicate by id — safety net for backend merge edge cases
-    // (e.g. Windows path-casing differences across profiles).
+    // Layer the user's manual drag-order on the deterministic sort; unordered projects keep their
+    // sorted position. Dedupe by id: backend merge edge cases (Windows path casing across profiles).
     const seen = new Set<string>()
 
     const deduped = sorted.filter(project => {
@@ -1025,7 +1025,7 @@ export function ChatSidebar({
 
     return orderProjectsByIds(deduped, projectOrderIds)
   }, [
-    projectTree,
+    gatewayProjectTree,
     dismissedAutoProjects,
     orderRepos,
     activeProjectId,

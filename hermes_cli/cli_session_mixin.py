@@ -608,6 +608,26 @@ class CLISessionMixin:
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
+        # /new is a full conversation boundary: read fresh from disk via
+        # load_cli_config() instead of the module-level CLI_CONFIG snapshot —
+        # the latter is loaded once at import time and never refreshed, so
+        # edits to config.yaml made after the CLI started (e.g.
+        # `hermes config set model.default ...`) would be invisible to /new
+        # and silently reset the model to the stale import-time value
+        # (#71188). Tolerate a missing or non-dict agent/model section so
+        # /new never KeyErrors. Sections that fail to load keep their stale
+        # values rather than blocking the boundary.
+        try:
+            from cli import load_cli_config
+            _fresh_config = load_cli_config() or {}
+        except Exception:
+            _fresh_config = {}
+        _fresh_agent = _fresh_config.get("agent")
+        if isinstance(_fresh_agent, dict) and _fresh_agent:
+            CLI_CONFIG["agent"] = _fresh_agent
+        _fresh_model = _fresh_config.get("model")
+        if isinstance(_fresh_model, dict) and _fresh_model:
+            CLI_CONFIG["model"] = _fresh_model
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
         # After the model reset: the effort belongs to the model the fresh session lands on (a /reasoning

@@ -2058,6 +2058,10 @@ DEFAULT_CONFIG = {
         # Force IPv4. With broken/unreachable IPv6, Python tries AAAA first and hangs for the full
         # TCP timeout before falling back. True skips IPv6 entirely.
         "force_ipv4": False,
+        # Cap the TLS version for provider connections. Some CDN edges and middleboxes accept
+        # TLS 1.2 but kill TLS 1.3 ClientHellos ([SSL: UNEXPECTED_EOF_WHILE_READING] while curl
+        # works, #44365). "1.2" caps the handshake; "" (default) keeps the OpenSSL default.
+        "tls_max_version": "",
     },
     # Gateway monitoring: service health + redacted operational diagnostics exported over OTLP to an
     # operator endpoint (OTEL Collector, DataDog, ...). Content-free by construction: no prompts,

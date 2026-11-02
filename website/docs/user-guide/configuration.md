@@ -3192,9 +3192,12 @@ Connectivity workarounds for outbound HTTP:
 ```yaml
 network:
   force_ipv4: false   # Force IPv4 for outbound connections (default: false)
+  tls_max_version: "" # Cap the TLS version for model-provider connections: "1.2" or "1.3" (default: "" = no cap)
 ```
 
 `force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Hermes already races IPv6 and IPv4 for every outbound connection it makes (Happy Eyeballs, RFC 8305: the IPv4 attempt starts 250 ms after IPv6 and whichever connects first wins), so an advertised-but-blackholed IPv6 route costs about a quarter second per connection instead of the full timeout. This covers the gateway's WebSocket dials (relay connector, platform adapters) as well as HTTP. Set this to `true` only when you want to skip IPv6 entirely and connect over IPv4 directly. `hermes doctor` runs an `IPv6 route` check that detects a dead IPv6 path and points at this setting.
+
+`tls_max_version` — some CDN edges and middleboxes accept a TLS 1.2 handshake but drop TLS 1.3 ones. The symptom is `[SSL: UNEXPECTED_EOF_WHILE_READING]` some seconds into every request to one provider, while `curl` to the same URL works (curl on Windows and macOS uses the OS TLS stack, not OpenSSL). Set `tls_max_version: "1.2"` to cap the handshake for model-provider clients (main and auxiliary). The cap keeps your trust settings: a provider's `ssl_ca_cert` and the OS trust store still apply, and `ssl_verify: false` stays as it is. Only `1.2` and `1.3` are accepted (a `tls`/`tlsv` prefix is allowed); other values are ignored with a warning. TLS 1.0 and 1.1 cannot be enabled this way.
 
 ## Onboarding
 

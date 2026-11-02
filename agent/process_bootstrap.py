@@ -4,7 +4,8 @@ Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
 (``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
 runs sync httpx connects through the process-wide Happy Eyeballs racer
-(``hermes_bootstrap``).
+(``hermes_bootstrap``), and the optional ``network.tls_max_version`` handshake
+cap applied to every keepalive client.
 """
 
 from __future__ import annotations
@@ -267,6 +268,122 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
+@functools.lru_cache(maxsize=8)
+def _parse_tls_max_version(raw: str) -> Any:
+    """``ssl.TLSVersion`` for a ``network.tls_max_version`` value, else None.
+
+    Accepts ``1.2`` / ``1.3``, optionally prefixed ``tls``/``tlsv`` (any case).
+    1.0/1.1 are rejected: the knob dodges broken TLS 1.3 paths, it does not
+    re-enable deprecated protocols. Cached so a bad value warns once.
+    """
+    import ssl
+
+    normalized = raw.strip().lower()
+    for prefix in ("tlsv", "tls"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+    version = {"1.2": ssl.TLSVersion.TLSv1_2, "1.3": ssl.TLSVersion.TLSv1_3}.get(normalized)
+    if version is None:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Ignoring network.tls_max_version=%r: expected '1.2' or '1.3'", raw)
+    return version
+
+
+def _configured_tls_max_version() -> Any:
+    """The ``network.tls_max_version`` cap from config.yaml (None when unset/invalid).
+
+    Some CDN edges and middleboxes accept TLS 1.2 ClientHellos but kill TLS 1.3
+    ones, surfacing as ``[SSL: UNEXPECTED_EOF_WHILE_READING]`` ~15 s into every
+    request while curl (the OS TLS stack) works (#44365). Read from config at
+    client build time; every process (gateway, CLI, spawned agents) loads its
+    own config, so nothing has to be inherited through the environment.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        net = (load_config_readonly() or {}).get("network")
+    except Exception:
+        return None
+    raw = net.get("tls_max_version") if isinstance(net, dict) else None
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    # An unquoted ``tls_max_version: 1.2`` parses as a YAML float.
+    return _parse_tls_max_version(str(raw))
+
+
+def _set_maximum_version(ctx: Any, max_version: Any) -> None:
+    """Set ``ctx.maximum_version`` on either SSLContext class.
+
+    truststore's context forwards the property to the stdlib context it wraps, so a
+    plain assignment is right there. On a stdlib-class context (a provider
+    ``ssl_ca_cert`` context) the Python setter resolves the module-global
+    ``SSLContext``, which truststore's injection replaces, and recurses until
+    RecursionError; go through the C-level descriptor instead.
+    """
+    import _ssl
+
+    if type(ctx).__module__.startswith("truststore") or not isinstance(ctx, _ssl._SSLContext):
+        ctx.maximum_version = max_version
+    else:
+        _ssl._SSLContext.maximum_version.__set__(ctx, max_version)
+
+
+_CAPPED_DEFAULT_CONTEXTS: dict[Any, Any] = {}
+_CAPPED_DEFAULT_CONTEXTS_LOCK = threading.Lock()
+
+
+def _capped_default_context(max_version: Any) -> Any:
+    """httpx's own ``verify=True`` context, capped, with a stable identity per version.
+
+    ``httpx.create_ssl_context()`` is exactly what httpx builds for
+    ``verify=True``, so default trust semantics are unchanged. Memoized because
+    sync transports are pooled by the ``verify`` object's identity
+    (``_shared_transport_key``): a fresh context per client would give every
+    client its own pool.
+    """
+    with _CAPPED_DEFAULT_CONTEXTS_LOCK:
+        ctx = _CAPPED_DEFAULT_CONTEXTS.get(max_version)
+        if ctx is None:
+            import httpx
+
+            ctx = httpx.create_ssl_context()
+            _set_maximum_version(ctx, max_version)
+            _CAPPED_DEFAULT_CONTEXTS[max_version] = ctx
+        return ctx
+
+
+def _apply_tls_max_version(verify: Any) -> Any:
+    """Compose the configured TLS cap onto an httpx ``verify`` value.
+
+    * ``ssl.SSLContext`` (per-provider ``ssl_ca_cert`` or the platform-store
+      context from ``agent.ssl_verify``) -> capped in place, so its CA material
+      and identity survive; no CA lookup of our own can make this step fail.
+    * ``True`` -> the memoized capped default context.
+    * ``False`` (``ssl_verify: false``) and anything else -> unchanged; a caller
+      that turned verification off has opted out of TLS policy.
+    """
+    max_version = _configured_tls_max_version()
+    if max_version is None:
+        return verify
+    import _ssl
+
+    # ``_ssl._SSLContext`` is the base of both the stdlib class (provider ``ssl_ca_cert``
+    # contexts) and truststore's injected one; ``ssl.SSLContext`` names only the latter.
+    if isinstance(verify, _ssl._SSLContext):
+        try:
+            if verify.maximum_version != max_version:
+                _set_maximum_version(verify, max_version)
+        except (ValueError, OSError):
+            pass
+        return verify
+    if verify is True:
+        return _capped_default_context(max_version)
+    return verify
+
+
 def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
     """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
 
@@ -288,6 +405,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
     try:
         import httpx
         proxy = _get_proxy_for_base_url(base_url)
+        # network.tls_max_version (#44365): cap before the shared-transport key is computed.
+        verify = _apply_tls_max_version(verify)
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport

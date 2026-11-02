@@ -1085,6 +1085,9 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
     with _records_lock:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status
+            # Only an active record is ever force-finalized under its dispatcher's Context; a
+            # retained completed one would otherwise pin that turn's agent and history.
+            _records[delegation_id].pop("_context", None)
         _prune_completed_locked()
 
 

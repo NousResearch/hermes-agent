@@ -359,6 +359,9 @@ class SessionPersistenceMixin:
         self._loaded = True
         self._routing_db_loaded = db_load_succeeded
         self._routing_fallback_baseline = None if db_load_succeeded else self._entries_as_dicts()
+        for entry in self._entries.values():
+            if entry.origin is None:
+                entry.origin = self._stored_origin(entry)
         if mirror_retired and db_load_succeeded:
             # Rewrite the mirror while the fences that kept those routes out still hold: a prune's
             # ages out, and the import would then restore the retired route.
@@ -372,6 +375,25 @@ class SessionPersistenceMixin:
                     logger.warning("gateway.session: could not strip retired routes from sessions.json", exc_info=True)
         # A hard crash skips graceful shutdown and leaves sessions.json pointing at ended sessions.
         self._prune_stale_sessions_locked()
+
+    def _stored_origin(self, entry: SessionEntry) -> Optional[SessionSource]:
+        """*entry*'s messaging source rebuilt from its conversation row, if it still routes to the
+        entry's key. A routing entry persisted without an origin (#146696) otherwise leaves restart
+        resume, route recovery and wakes nothing to route by until the chat speaks again. Local and
+        API routes are left alone: their receipts, not the row, name their owner."""
+        import sqlite3
+
+        from gateway.session_route_recovery import _messaging_platform, _row_source
+        db = self._db_for_key(entry.session_key)
+        try:
+            row = db.get_session(entry.session_id) if db is not None else None
+        except sqlite3.Error:
+            return None
+        platform = row and _messaging_platform(entry.platform.value if entry.platform else row['source'])
+        source = _row_source(row, platform, None) if platform else None
+        if source is None or source.platform != platform:
+            return None
+        return source if self._generate_session_key(source) == entry.session_key else None
 
     def _import_legacy_sessions_json(self, db_had_entries: bool) -> int:
         """Legacy import: sessions.json fills only keys the DB lacks. Lock held. Returns how many

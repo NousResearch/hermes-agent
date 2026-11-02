@@ -4249,8 +4249,9 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
         print()
         print("    hermes gateway migrate --multiplex")
     print()
+    force_verb = "start" if _running_under_s6() else "install"
     print("  A separate per-profile gateway (for a fleet split across UNIX users or a")
-    print(f"  HERMES_HOME outside profiles/) needs --force:  hermes -p {suffix} gateway install --force")
+    print(f"  HERMES_HOME outside profiles/) needs --force:  hermes -p {suffix} gateway {force_verb} --force")
     print()
     from hermes_constants import display_hermes_home
     from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
@@ -4772,6 +4773,9 @@ def _systemd_unit_installed() -> bool:
 
 
 def _is_service_installed() -> bool:
+    if _running_under_s6():
+        from hermes_cli.service_manager import S6ServiceManager
+        return S6ServiceManager().has_force_run_script(f"gateway-{_current_profile_name()}")
     return _installed_service_kind() is not None
 
 
@@ -4823,7 +4827,31 @@ def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
 # Main Command Handler
 # =============================================================================
 
-def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None) -> bool:
+def _enable_s6_force_slot_if_present(profile: str | None = None) -> None:
+    """Stamp ``--force`` onto a named profile's s6 slot when ``install --force`` runs under s6."""
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError, get_service_manager, register_unregistered_profile_gateway,
+    )
+    if profile is None:
+        profile = _current_profile_name()
+    if not profile or profile == "default":
+        return
+    mgr = get_service_manager()
+    enable_force = getattr(mgr, "enable_force_run_script", None)
+    if not callable(enable_force):
+        return
+    service = f"gateway-{profile}"
+    with contextlib.suppress(RuntimeError, ValueError, OSError):
+        try:
+            enable_force(service)
+        except GatewayNotRegisteredError:
+            if register_unregistered_profile_gateway(mgr, profile):
+                enable_force(service)
+
+
+def _dispatch_via_service_manager_if_s6(
+    action: str, profile: str | None = None, *, force: bool = False
+) -> bool:
     """Dispatch start/stop/restart via s6 inside an s6 container; True iff dispatched (caller returns).
     Profile defaults to the current one; missing slot / s6 errors become actionable CLI messages."""
     from hermes_cli.service_manager import (
@@ -4841,6 +4869,10 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     service = f"gateway-{profile}"
     try:
         try:
+            if action == "start" and force:
+                enable_force = getattr(mgr, "enable_force_run_script", None)
+                if callable(enable_force):
+                    enable_force(service)
             getattr(mgr, action)(service)
         except GatewayNotRegisteredError:
             # A profile created from the HOST against a bind-mounted home has a directory but no
@@ -4848,6 +4880,10 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise
+            if force:
+                enable_force = getattr(mgr, "enable_force_run_script", None)
+                if callable(enable_force):
+                    enable_force(service)
             print(f"✓ registered the s6 gateway slot for profile {profile!r}")
             mgr.start(service)
     except (RuntimeError, ValueError, OSError) as exc:  # S6Error is a RuntimeError
@@ -5218,6 +5254,8 @@ def _cmd_install(args):
             elevated_handoff=getattr(args, 'elevated_handoff', False),
         )
     else:
+        if force and _running_under_s6():
+            _enable_s6_force_slot_if_present()
         _handle_no_backend("install", wsl=True, s6=True)
     if backend is not None and _is_service_installed():
         from hermes_cli.gateway_setup_service import record_service_choice
@@ -5297,7 +5335,11 @@ def _cmd_start(args):
         start_scope = host_scope_for_all_verb(owner)
     else:
         _guard_named_profile_under_multiplexer(force=force)
-        if _dispatch_via_service_manager_if_s6("start"):
+        if (
+            _dispatch_via_service_manager_if_s6("start", force=True)
+            if force
+            else _dispatch_via_service_manager_if_s6("start")
+        ):
             return
         start_scope = contextlib.nullcontext()
 

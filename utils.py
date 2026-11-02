@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -528,6 +528,41 @@ def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool =
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
+# Reentrancy trackers for _yaml_write_lock, keyed by canonical path — the
+# same pattern as hermes_cli.config._env_write_lock: a thread that already
+# holds the lock for a file re-enters without re-acquiring the kernel lock.
+_YAML_WRITE_LOCK_HOLDERS: dict[str, threading.local] = {}
+_YAML_WRITE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _yaml_write_lock(path: Path):
+    """Serialize a whole YAML read-modify-write cycle for one file (#147939).
+
+    Thread + cross-process: reuses ``hermes_cli.auth._file_lock`` (fcntl
+    flock / msvcrt byte lock, reentrant per thread), the same lock the
+    ``.env`` writer uses. Without it, two concurrent config writers both
+    snapshot the pre-write file and the loser's replace silently drops the
+    winner's key. The import is call-time: ``hermes_cli.auth`` imports this
+    module at module level, so a top-level import would be circular.
+    On a filesystem without flock the helper degrades to a depth-only
+    guard (same behaviour as auth's locks), never to a crash."""
+    from hermes_cli.auth import _file_lock
+
+    path = Path(path)
+    try:
+        holder_key = str(path.resolve(strict=False))
+    except Exception:
+        holder_key = str(path)
+    with _YAML_WRITE_LOCK_HOLDERS_GUARD:
+        holder = _YAML_WRITE_LOCK_HOLDERS.setdefault(holder_key, threading.local())
+    lock_path = path.with_name(path.name + ".lock")
+    with _file_lock(
+        lock_path, holder, 15.0,
+        f"Timed out waiting for the config file lock ({lock_path})"):
+        yield
+
+
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
@@ -547,26 +582,20 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
-def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
-    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
+def _apply_roundtrip_update(config, key_path: str, value: Any) -> bool:
+    """Apply one dotted-key update to an already-loaded round-trip document.
 
-    Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
-    single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
-    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
-    litters the file and diverges from whole-document writers that drop the key).
-    """
+    Returns False only for the original early return (removing a key under
+    a missing/scalar parent: nothing to remove); True otherwise, including
+    a pop of an absent key, so the caller still dumps. Navigation is
+    unchanged from the original single-key writer: honor escaped dots and
+    prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
+    blind splitting — same navigation as ``hermes config set``'s
+    ``_set_nested``; otherwise /model + TUI persistence wrote
+    ``glm-5: {'3': ...}`` phantom siblings. See #91607."""
     from ruamel.yaml.comments import CommentedMap
-    # Honor escaped dots and prefer existing literal dotted keys (model IDs like ``glm-5.3``) over
-    # blind splitting — same navigation as ``hermes config set``'s ``_set_nested``; otherwise
-    # /model + TUI persistence wrote ``glm-5: {'3': ...}`` phantom siblings.
-    # See #91607.
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
-    path = Path(path)
-    from hermes_constants import mkdir_under_hermes_home
-
-    mkdir_under_hermes_home(path.parent)
-    yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
     i = 0
@@ -578,16 +607,50 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
                 current.pop(seg, None)
             else:
                 current[seg] = value
-            break
+            return True
         next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
             if value is None:
-                return  # nothing to remove under a missing/scalar parent
+                return False  # nothing to remove under a missing/scalar parent
             next_value = CommentedMap()
             current[seg] = next_value
         current = next_value
         i += consumed
-    _roundtrip_dump(path, yaml_rt, config)
+
+
+def atomic_roundtrip_yaml_updates(path: str | Path, updates: dict) -> None:
+    """Update several dotted YAML keys in ONE locked load-mutate-dump cycle.
+
+    A grouped write (e.g. a model switch: default + provider) must publish
+    as one replace, not one replace per key: per-key replaces let a
+    concurrent writer interleave between keys, losing a key or leaving a
+    half-applied group behind (#147939). The whole cycle holds
+    :func:`_yaml_write_lock`, so a concurrent writer loads only after
+    this write has landed, and its own update preserves these keys.
+    ``value=None`` removes the key, as in :func:`atomic_roundtrip_yaml_update`."""
+    path = Path(path)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
+    with _yaml_write_lock(path):
+        yaml_rt, config = _roundtrip_load(path)
+        applied = False
+        for key_path, value in updates.items():
+            if _apply_roundtrip_update(config, key_path, value):
+                applied = True
+        if applied:
+            _roundtrip_dump(path, yaml_rt, config)
+
+
+def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
+    """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
+
+    Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
+    single setting mutation must not disturb the rest. Still writes via temp file + atomic replace.
+    ``value=None`` removes the key (a ``key: null`` leftover reads as absent everywhere but
+    litters the file and diverges from whole-document writers that drop the key).
+    """
+    atomic_roundtrip_yaml_updates(path, {key_path: value})
 
 
 # ruamel's round-trip dumper resolves plain scalars under YAML 1.2, where only true/false/null are
@@ -628,7 +691,19 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     ``extra_content_on_create`` (commented example blocks) is appended only when the file is
     being created — re-appending it on every rewrite is how the stock boilerplate replaced
     users' own comments (#92554).
+
+    The whole load-merge-dump cycle holds :func:`_yaml_write_lock`, so a
+    concurrent single-key writer cannot be lost by a whole-document save
+    that loaded before it (#147939).
     """
+    path = Path(path)
+    with _yaml_write_lock(path):
+        _atomic_roundtrip_yaml_save_locked(path, new_state, extra_content_on_create=extra_content_on_create)
+
+
+def _atomic_roundtrip_yaml_save_locked(path: Path, new_state: dict, *,
+                                       extra_content_on_create: str | None = None) -> None:
+    """``atomic_roundtrip_yaml_save`` body, with the write lock held by the caller."""
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
     from hermes_cli.config import require_readable_config_before_write
 

@@ -1907,8 +1907,11 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     The replace deletes keys missing from the snapshot, so every route decision (and its disk
     I/O) is made from a pre-read BEFORE the snapshot; read -> merge -> replace is then a pure
     in-memory section. Only when another writer changed ``model:`` in between are the updates
-    recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
-    config lock, once one exists, must wrap the same section."""
+    recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only, so the file path
+    also holds ``utils._yaml_write_lock`` across read -> merge -> replace: a cross-process
+    single-key writer landing in between no longer gets its key deleted by
+    this replace (#147939). The lock is reentrant per thread, so the
+    replace's own lock acquisition inside the same section is a no-op."""
     from pathlib import Path
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
@@ -1930,20 +1933,22 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
             unset=tuple(f"model.{k}" for k in updates if k not in masked)))
         return
     with _CONFIG_LOCK:
-        config = read_user_config_raw(path)
-        model_cfg = config.get("model")
-        if model_cfg != planned_from:
-            updates = model_selection_config_updates(result, model_cfg)
-        merged = _merge_selection_updates(model_cfg, updates)
-        if isinstance(model_cfg, dict):
-            # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
-            # dict; edit it in place so every alias carries the new route, as the shared node on
-            # disk will. A fresh copy left the alias stale and the round-trip merge wrote it back.
-            model_cfg.clear()
-            model_cfg.update(merged)
-        else:
-            config["model"] = merged
-        atomic_config_replace(path, config)
+        from utils import _yaml_write_lock
+        with _yaml_write_lock(path):
+            config = read_user_config_raw(path)
+            model_cfg = config.get("model")
+            if model_cfg != planned_from:
+                updates = model_selection_config_updates(result, model_cfg)
+            merged = _merge_selection_updates(model_cfg, updates)
+            if isinstance(model_cfg, dict):
+                # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
+                # dict; edit it in place so every alias carries the new route, as the shared node on
+                # disk will. A fresh copy left the alias stale and the round-trip merge wrote it back.
+                model_cfg.clear()
+                model_cfg.update(merged)
+            else:
+                config["model"] = merged
+            atomic_config_replace(path, config)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

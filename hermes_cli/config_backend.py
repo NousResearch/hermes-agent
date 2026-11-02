@@ -199,13 +199,18 @@ class FileBackend:
 
     @staticmethod
     def write_path(path: Path, changes: Changes) -> None:
-        from utils import atomic_roundtrip_yaml_save, atomic_roundtrip_yaml_update
+        from utils import atomic_roundtrip_yaml_save, atomic_roundtrip_yaml_updates
         if changes.document is not None:
             atomic_roundtrip_yaml_save(path, changes.document, extra_content_on_create=changes.extra_content_on_create)
-        for key, value in changes.set.items():
-            atomic_roundtrip_yaml_update(path, key, value)
-        for key in changes.unset:
-            atomic_roundtrip_yaml_update(path, key, None)
+        # One locked load-mutate-dump for the whole grouped write, not one
+        # replace per key: per-key replaces let a concurrent writer
+        # interleave between keys and lose a key or leave a half-applied
+        # group behind (#147939). The file backend still applies the
+        # document first, then set/unset, as before.
+        updates = {k: v for k, v in changes.set.items()}
+        updates.update({k: None for k in changes.unset})
+        if updates:
+            atomic_roundtrip_yaml_updates(path, updates)
 
     def config_path(self, home: Path) -> Path:
         return Path(home) / CONFIG_FILENAME

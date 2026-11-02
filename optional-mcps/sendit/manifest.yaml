@@ -1,0 +1,25 @@
+# Proposed catalog entry. Nous approval requires a merged Hermes core PR.
+manifest_version: 1
+name: sendit
+connector_slug: sendit
+description: Connect social accounts, validate posts, upload media, publish, schedule, and review analytics with SendIt.
+source: https://github.com/Shree-git/sendit-hermes-skills
+transport:
+  type: http
+  url: https://sendit.infiniteappsai.com/api/mcp
+auth:
+  type: oauth
+suggest:
+  keywords:
+    - sendit
+    - social publishing
+  hosts:
+    - sendit.infiniteappsai.com
+post_install: |
+  Complete SendIt browser OAuth. No SendIt API key or social platform password is needed.
+  Reauthorize with hermes mcp login sendit when needed.
+  Run /reload-mcp in an open session or restart Hermes to load the tools.
+  Install the SendIt workflow skill with:
+    hermes skills install Shree-git/sendit-hermes-skills/skills/sendit
+  Review available tools with hermes mcp configure sendit.
+  Publish or schedule only when the user requests it, after validating the content.

@@ -53,12 +53,18 @@ jobs:
           test -n "$asset"
           file="hermes_cli/web_dist/$asset"
           test -s "$file"
-          if grep -Fq 'addEventListener("focus",onResume)' "$file" || grep -Fq 'addEventListener("focus", onResume)' "$file"; then
-            echo 'focus-to-onResume listener remains in emitted ChatPage bundle' >&2
-            exit 1
-          fi
+          focus_count=$(node - "$file" <<'NODE'
+          const fs = require('node:fs');
+          const source = fs.readFileSync(process.argv[2], 'utf8');
+          const matches = source.match(/window\\.addEventListener\\(["']focus["']/g) ?? [];
+          process.stdout.write(String(matches.length));
+          NODE
+          )
+          echo "verified_asset=$asset"
+          echo "window_focus_listener_count=$focus_count"
           echo "verified_asset=$asset" >> "$GITHUB_STEP_SUMMARY"
-          grep -Fq 'onWindowFocus' "$file"
+          echo "window_focus_listener_count=$focus_count" >> "$GITHUB_STEP_SUMMARY"
+          test "$focus_count" = 1
           tar -czf hermes-dashboard-web-dist.tgz hermes_cli/web_dist
 
       - name: Set up Python

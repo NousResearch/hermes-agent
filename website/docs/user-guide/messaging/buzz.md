@@ -145,6 +145,12 @@ media on another public origin, add its exact `host` or `host:port` to
 must be listed explicitly. Protected media that requires authenticated
 retrieval through the Buzz CLI is not handled by this native public-URL path.
 
+## Reading canonical message links
+
+When a user supplies a canonical `buzz://message` link, Hermes can call the bundled `buzz_read_message_link` tool to retrieve that exact signed Buzz event with the configured identity. The link must contain a channel UUID and 64-character hexadecimal event id; an optional thread id is validated against the event's thread root.
+
+The lookup uses Buzz's exact event-ID thread query and then validates the returned event's channel and optional thread root. CLI failures and malformed responses return safe errors without exposing credential-bearing stderr. The private key remains in the subprocess environment and is never placed in command arguments or tool output.
+
 ## Run the gateway
 
 ```bash

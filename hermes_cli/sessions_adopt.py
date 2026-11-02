@@ -48,7 +48,11 @@ def adoptable_sessions(path) -> list[dict]:
             if tip is None or POLICY_PREFIX + key in bound or LEGACY_PREFIX + key in bound:
                 continue
             try:
-                validate_legacy_row(db, tip)
+                # Mirrors the owner's acceptance for THIS caller: the sweep resumes over the host's
+                # native connection with ``adopt_owned_stamp``, so a Desktop row a dashboard login
+                # stamped is listed too — otherwise it stayed unreachable from every browser forever.
+                from gateway.session_local_migration import login_stamp
+                validate_legacy_row(db, tip, native_claim=login_stamp(tip))
             except RuntimeStoreError:
                 continue
             found.append(tip)
@@ -69,7 +73,7 @@ async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
     async with connect_gateway(max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES) as client:
         for done, row in enumerate(rows, 1):
             try:
-                snapshot = await client.rpc('session.resume', session_id=row['id'])
+                snapshot = await client.rpc('session.resume', session_id=row['id'], adopt_owned_stamp=True)
             except GatewayRPCError as exc:
                 skipped[_refusal(exc)] += 1
                 continue

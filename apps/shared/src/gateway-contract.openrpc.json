@@ -9515,6 +9515,11 @@
             "default": false,
             "title": "Display Projection",
             "type": "boolean"
+          },
+          "adopt_owned_stamp": {
+            "default": false,
+            "title": "Adopt Owned Stamp",
+            "type": "boolean"
           }
         },
         "title": "CanonicalResumeParams",

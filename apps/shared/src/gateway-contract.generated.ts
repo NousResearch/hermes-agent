@@ -5072,6 +5072,7 @@ export interface CanonicalResumeParams {
   omit_messages?: boolean
   cols?: number | null
   display_projection?: boolean
+  adopt_owned_stamp?: boolean
 }
 export interface CanonicalListParams {
   profile?: string | null

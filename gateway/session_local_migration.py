@@ -46,8 +46,13 @@ def require_history_claim(authority, conn, actor, sid):
         raise RuntimeStoreError('permission_denied')
 
 
-def resolve_local_target(authority, actor, sid):
-    """Resolve physical history IDs without silently adopting canonical corruption."""
+def resolve_local_target(authority, actor, sid, *, adopt_owned_stamp=False):
+    """Resolve physical history IDs without silently adopting canonical corruption.
+
+    ``adopt_owned_stamp``: the caller is the host's own native adoption sweep (``hermes sessions
+    adopt``), so a row carrying a dashboard login's stamp is adoptable too — the one trust context
+    that may waive it. Every other resume keeps the stamp foreign.
+    """
     db = authority.db
     row = db.get_session(sid)
     if row is None:
@@ -67,7 +72,7 @@ def resolve_local_target(authority, actor, sid):
         authority.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import restore_local_session
         return restore_local_session(authority, ref.session_id) if bound else ref
-    return adopt_legacy_session(authority, actor, row)
+    return adopt_legacy_session(authority, actor, row, adopt_owned_stamp=adopt_owned_stamp)
 
 
 def legacy_launch_params(row):
@@ -232,14 +237,36 @@ def _endpoint_owner(saved, config):
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
 
-def adopt_legacy_session(authority, actor, row):
+def login_stamp(row):
+    """Whether the row carries the ``<provider>:<user>`` login a served Desktop stamps on its chats.
+
+    ``hermes serve`` writes the WS-upgrade login at creation (``tui_gateway/session_transports.py``).
+    Messaging identities (``telegram:42``) and a local principal (``uid:1002``) are not logins: those
+    stay foreign to everyone but their own authority.
+    """
+    label = row.get('user_id')
+    if row.get('source') != 'desktop' or not isinstance(label, str) or label.count(':') != 1:
+        return False
+    provider = label.split(':', 1)[0].strip()
+    return bool(provider) and provider not in {platform.value for platform in Platform} | {'uid'}
+
+
+def adopt_legacy_session(authority, actor, row, *, adopt_owned_stamp=False):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
-    if (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor
-            or not {'session:read', 'session:create'} <= actor.capabilities):
+    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, login_owned_by, validate_legacy_row
+    # The native-first-claim rule settles ownership for an UNSTAMPED row: an old transcript that
+    # names nobody. A dashboard login that stamped the row answers for it too (``require_history_claim``
+    # reads the same stamp). ``adopt_owned_stamp`` adds the host's own adoption sweep, whose whole job is
+    # to make long-lived rows reachable from a browser — and a stamp no native ticket can ever spell
+    # (the Webapp's socket carries the local session token) stayed unadoptable, so those chats 4001'd
+    # ``not_found`` in every browser forever.
+    native = (getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) == actor
+              and {'session:read', 'session:create'} <= actor.capabilities)
+    if not native and not login_owned_by(row, actor.subject):
         raise RuntimeStoreError('not_found')
-    from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row, subject=actor.subject)
+    waive_stamp = native and adopt_owned_stamp and login_stamp(row)
+    validate_legacy_row(authority.db, row, subject=actor.subject, native_claim=waive_stamp)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
@@ -307,7 +334,11 @@ def adopt_legacy_session(authority, actor, row):
     entry = SessionEntry(route, row['id'], now, now, origin=source, platform=Platform.LOCAL)
     receipt = {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),
-               'legacy_session_id': row['id'], 'lineage': [row['id']]}
+               'legacy_session_id': row['id'], 'lineage': [row['id']],
+               # Carried to ``bind_legacy_target``: the sweep that waived the row's login stamp
+               # answers for it there too, or the commit re-validates under ``principal_id`` alone
+               # and refuses the very adoption this call just authorized.
+               **({'native_adoption': True} if waive_stamp else {})}
     try:
         # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
         with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:

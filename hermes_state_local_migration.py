@@ -41,16 +41,19 @@ def login_owned_by(row, subject):
     return _login_label(subject) == user_id
 
 
-def validate_legacy_row(db, row, *, subject=None):
+def validate_legacy_row(db, row, *, subject=None, native_claim=False):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
     # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    # ``native_claim``: the host's own adoption sweep (``hermes sessions adopt``), which answers for a
+    # stamp nobody can spell: the Webapp's socket authenticates with the host's local session token,
+    # never the dashboard login stamped on the rows a served Desktop created. Only that sweep sets it.
     user_id = row.get('user_id')
     if (row['source'] not in LEGACY_LOCAL_SOURCES
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
-            or (user_id and user_id != subject and not legacy_account_label(row)
+            or (not native_claim and user_id and user_id != subject and not legacy_account_label(row)
                 and not login_owned_by(row, subject))
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
@@ -63,7 +66,8 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    validate_legacy_row(db, dict(row), subject=receipt['principal_id'],
+                        native_claim=bool(receipt.get('native_adoption')))
     from hermes_state_mutation_binding import BINDING_PREFIX
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:

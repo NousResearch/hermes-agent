@@ -241,3 +241,54 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
         refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert 'error' in refused, refused
         assert db.get_session(sid)['user_id'] == user_id
+
+@pytest.mark.asyncio
+async def test_the_adoption_sweep_claims_a_login_stamped_desktop_chat(tmp_path, monkeypatch):
+    """A served Desktop stamps its dashboard login on every chat it creates; the Webapp's socket
+    carries the host's local session token instead, so before this the row answered ``not_found`` to
+    every browser for good — and the sweep skipped it too (no login subject to spell the stamp).
+
+    Only the host's native adoption sweep waives that stamp. A browser asking for it still meets a
+    foreign owner and writes nothing; once adopted, the browser login continues the chat as it
+    continues any adopted one.
+    """
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    for sid in ('desk-plain', 'desk-browser', 'desk-sweep'):
+        db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id='basic:allex')
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+        'profile_id': str(tmp_path), 'instance_id': 'first'})
+    browser = AuthorityConnection(authority, object(), {'provider': 'session-token',
+        'user_id': 'legacy-token-owner', 'profile_id': str(tmp_path), 'instance_id': 'first'}, operator=True)
+
+    def resume(connection, rid, sid, sweep=False):
+        params = {'session_id': sid, **({'adopt_owned_stamp': True} if sweep else {})}
+        return connection.dispatch({'id': rid, 'method': 'session.resume', 'params': params})
+
+    refused = await resume(native, 1, 'desk-plain')
+    assert refused.get('error', {}).get('message') == 'not_found', refused
+    # A browser cannot make the claim, with or without the flag.
+    browser_refused = await resume(browser, 2, 'desk-browser', sweep=True)
+    assert browser_refused.get('error', {}).get('message') == 'not_found', browser_refused
+    assert db.get_session('desk-browser')['user_id'] == 'basic:allex', 'a refusal never writes'
+
+    adopted = await resume(native, 3, 'desk-sweep', sweep=True)
+    assert adopted.get('result', {}).get('session_id') == 'desk-sweep', adopted
+    assert [m['content'] for m in adopted['result']['messages']] == ['DESK-SWEEP']
+    continued = await resume(browser, 4, 'desk-sweep')
+    assert continued.get('result', {}).get('session_id') == 'desk-sweep', continued
+    assert [m['content'] for m in continued['result']['messages']] == ['DESK-SWEEP']

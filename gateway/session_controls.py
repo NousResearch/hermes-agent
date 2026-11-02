@@ -609,8 +609,12 @@ class AuthorityConnection:
             # owner, not on the physical transcript ID the history picker / Desktop supplies
             # after list_sessions projects the tip (#139306).
             if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
+                # ``adopt_owned_stamp`` is the host's own adoption sweep (``hermes sessions adopt``)
+                # asking to claim rows a dashboard login stamped; ``adopt_legacy_session`` honours it
+                # only for a native transport, so any other client's request changes nothing.
                 ref = resolve_local_target(self.authority, self.actor,
-                    self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
+                    self.authority.db.get_compression_tip(ref.session_id) or ref.session_id,
+                    adopt_owned_stamp=params.get('adopt_owned_stamp') is True)
             elif row:
                 # A messaging compression continuation attaches to its lineage root, the session
                 # its lane's turns stream to; the reply names that root.

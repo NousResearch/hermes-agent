@@ -72,6 +72,9 @@ class CanonicalResumeParams(ProfileParams):
     # A renderer (the Ink TUI) asks for main's display projection of the same rows
     # (``tui_gateway.session_history._history_to_messages``) as ``display_messages``.
     display_projection: bool = False
+    # The host's own adoption sweep (``hermes sessions adopt``) may claim a pre-gateway row a
+    # dashboard login stamped; the owner honours it only for a native transport.
+    adopt_owned_stamp: bool = False
 
 
 class CanonicalSessionHandle(Result):

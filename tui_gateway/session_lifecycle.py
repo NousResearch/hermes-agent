@@ -489,11 +489,17 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             logger.info("Preserving session %s during %s: another backend owns an active lease", session_id, end_reason)
         if session_id:
             # The *session's* profile state.db (app-global remote mode), not the launch profile's.
+            # A profile session's row is the only proof of who owns it: when that db cannot be read,
+            # ownership is unknown and the TUI stays a viewer, since ending a gateway-owned row is
+            # the destructive guess (#60609). The launch profile keeps assuming ownership.
+            ownership_known = not session.get("profile_home")
             with contextlib.suppress(Exception), _session_db(session) as db:
                 if db is not None:
+                    source = (db.get_session(session_id) or {}).get("source", "")
+                    ownership_known = True
                     # Never end gateway-originated sessions: Groundhog Day loop (gateway self-heals to the parent,
                     # compression splits back to the reaped child, forever).
-                    if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
+                    if _is_gateway_owned_source(source):
                         _tui_owns_lifecycle = False
                     elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
                         # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
@@ -502,6 +508,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                         # A turn the gateway's ledger still holds keeps the row open too (#140642).
                         if not _end_unless_ledger_busy(db, session_id, session_key, end_reason):
                             _tui_owns_lifecycle = False
+            if not ownership_known:
+                logger.warning(
+                    "Preserving session %s during %s: its profile state.db is unavailable or unreadable, "
+                    "so ownership is unknown", session_id, end_reason)
+                _tui_owns_lifecycle = False
     # ``_teardown_session`` follows with ``agent.close()``, whose ``_finalize_owned_session_row`` ends the row as
     # ``agent_close`` through the agent's own handle — every spare decision above would be undone one call later.
     if agent is not None and (_desktop_automatic_cleanup or not _tui_owns_lifecycle):

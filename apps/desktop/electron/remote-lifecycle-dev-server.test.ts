@@ -43,9 +43,13 @@ test.skipIf(process.platform === 'win32')(
         { encoding: 'utf8', mode: 0o700 }
       )
 
-      for (const [devServer, expected] of [
-        ["http://127.0.0.1:5175/'$(x)", "http://127.0.0.1:5175/'$(x)"],
-        ['', 'unset']
+      // `remote` is a value the remote login shell already exports (a dev profile on that host): a
+      // packaged build must clear it, and a dev build's own renderer replaces it.
+      for (const [devServer, remote, expected] of [
+        ["http://127.0.0.1:5175/'$(x)", undefined, "http://127.0.0.1:5175/'$(x)"],
+        ["http://127.0.0.1:5175/'$(x)", 'http://127.0.0.1:5174', "http://127.0.0.1:5175/'$(x)"],
+        ['', undefined, 'unset'],
+        ['', 'http://127.0.0.1:5174', 'unset']
       ]) {
         const command: string = buildSpawnCommand(hermesPath, '', {
           devServer,
@@ -53,9 +57,14 @@ test.skipIf(process.platform === 'win32')(
           logPath: path.join(directory, 'spawn.log')
         })
 
-        // A runner launched from a dev shell may export the variable itself; the spawn must not inherit it.
+        // A runner launched from a dev shell may export the variable itself; only `remote` may reach the spawn.
         const env: NodeJS.ProcessEnv = { ...process.env, HOME: directory, HERMES_HOME: directory }
         delete env.HERMES_DESKTOP_DEV_SERVER
+
+        if (remote !== undefined) {
+          env.HERMES_DESKTOP_DEV_SERVER = remote
+        }
+
         await exec(command, { shell, env })
 
         assert.equal(await readFile(reportPath, 'utf8'), expected)

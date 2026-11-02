@@ -136,6 +136,7 @@ class TestPytestProcessRecognition:
             ["/venv/bin/pytest", "-q"],
             [r"C:\venv\Scripts\pytest.exe", "-q"],
             ["/usr/bin/py.test", "tests/"],
+            ["/venv/bin/python", "/repo/scripts/run_tests_parallel.py", "-q"],
         ],
     )
     def test_recognises_pytest_invocations(self, cmdline):

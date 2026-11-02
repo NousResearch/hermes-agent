@@ -20,7 +20,7 @@ from plugins.platforms.matrix.adapter import MatrixAdapter, _sanitize_matrix_htm
 
 
 def test_matrix_body_is_counter_only():
-    body, html = matrix_tool_activity_bodies(
+    body, _html = matrix_tool_activity_bodies(
         [
             "🔍 Searching past sessions",
             "💻 terminal: ls -la /tmp",
@@ -197,6 +197,16 @@ async def test_progress_producer_sends_html_then_edits_same_root_without_plain_l
     assert "matrix_formatted_body" not in runner._ctx._progress_metadata
 
 
+def test_detached_matrix_route_keeps_generic_progress_state():
+    """A conversation its chat moved past answers through the local adapter, not the Matrix pane."""
+    runner, _ = _progress_runner()
+    runner._ctx.source = SimpleNamespace(
+        chat_id="!room:example.org", platform="matrix", detached_route="agent:main:matrix:!room",
+    )
+    local = SimpleNamespace(name="local", MAX_MESSAGE_LENGTH=4000, edit_message=AsyncMock(), send=AsyncMock())
+    assert runner._progress_edit_state(local).is_matrix is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error", ["forbidden", "flood control", "timeout"])
 async def test_progress_edit_failure_never_falls_back_to_new_message(error):
@@ -251,7 +261,7 @@ def _real_progress_runner(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["all", "verbose"])
 async def test_terminal_callbacks_survive_real_progress_delivery(monkeypatch, tmp_path, mode):
-    runner, adapter, events, typing = _real_progress_runner(monkeypatch, tmp_path)
+    runner, _adapter, events, typing = _real_progress_runner(monkeypatch, tmp_path)
     runner._ctx.progress_mode = mode
     runner.progress_callback("tool.started", "terminal", args={"command": "echo first"})
     task = asyncio.create_task(runner.send_progress_messages())

@@ -16,7 +16,7 @@ from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from gateway.config import Platform
-from gateway.matrix_tool_activity import matrix_tool_activity_bodies
+from gateway.matrix_tool_activity import is_matrix_pane_target, matrix_tool_activity_bodies
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import typing_metadata_for_turn
@@ -591,7 +591,7 @@ class GatewayTurnProgressMixin:
             with suppress(Exception):
                 raw_limit = int(adapter.max_message_length_for_chat(ctx.source.chat_id) or 4000)
                 len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
-        is_matrix = getattr(adapter, "name", "") == "matrix" or ctx.source.platform == Platform.MATRIX
+        is_matrix = is_matrix_pane_target(adapter, ctx.source)
         return self._ProgressEditState(
             adapter=adapter, progress_lines=[], progress_msg_id=None,
             # Matrix always edits one root. Other platforms honor tool_progress_grouping.

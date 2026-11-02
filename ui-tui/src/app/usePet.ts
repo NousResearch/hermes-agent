@@ -70,6 +70,7 @@ interface PetCellsResult {
   graphics?: string
   imageId?: number
   placeholder?: string[]
+  marginRight?: number
   scale?: number
   slug?: string
   state?: string
@@ -78,6 +79,10 @@ interface PetCellsResult {
 type CacheEntry =
   | { kind: 'cells'; frameMs: number; frames: PetGrid[] }
   | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
+
+export function petMarginRight(cells: PetCellsResult | null, meta: { marginRight?: number }): number {
+  return cells?.marginRight ?? meta.marginRight ?? 1
+}
 
 const FRAME_MS = 160
 const POLL_MS = 2500
@@ -91,6 +96,7 @@ export interface PetRender {
   enabled: boolean
   grid: PetGrid | null
   kitty: KittyView | null
+  marginRight: number
 }
 
 /**
@@ -112,6 +118,7 @@ export function usePet(): PetRender {
   const { gw } = useGateway()
   const { write } = useStdout()
   const [enabled, setEnabled] = useState(false)
+  const [marginRight, setMarginRight] = useState(1)
   const [grid, setGrid] = useState<PetGrid | null>(null)
   const [kitty, setKitty] = useState<KittyView | null>(null)
 
@@ -238,6 +245,7 @@ export function usePet(): PetRender {
           return
         }
 
+        setMarginRight(petMarginRight(update.cells, update.meta))
         const res = update.cells
 
         if (!res) {
@@ -348,5 +356,5 @@ export function usePet(): PetRender {
     return () => clearInterval(interval)
   }, [enabled, petState, write])
 
-  return { enabled, grid, kitty }
+  return { enabled, grid, kitty, marginRight }
 }

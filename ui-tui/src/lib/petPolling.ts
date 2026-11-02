@@ -4,6 +4,7 @@ import { asRpcResult } from './rpc.js'
 
 export interface PetMetaResult {
   enabled?: boolean
+  marginRight?: number
   scale?: number
   slug?: string
   spritesheetRevision?: string

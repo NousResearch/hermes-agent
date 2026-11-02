@@ -25789,6 +25789,11 @@
             "default": null,
             "title": "Scale"
           },
+          "marginRight": {
+            "default": 1,
+            "title": "Marginright",
+            "type": "integer"
+          },
           "graphics": {
             "anyOf": [
               {
@@ -25914,6 +25919,11 @@
             ],
             "default": null,
             "title": "Spritesheetrevision"
+          },
+          "marginRight": {
+            "default": 1,
+            "title": "Marginright",
+            "type": "integer"
           }
         },
         "required": [
@@ -26513,6 +26523,11 @@
             ],
             "default": null,
             "title": "Spritesheetrevision"
+          },
+          "marginRight": {
+            "default": 1,
+            "title": "Marginright",
+            "type": "integer"
           }
         },
         "required": [
@@ -26722,6 +26737,11 @@
             ],
             "default": null,
             "title": "Scale"
+          },
+          "marginRight": {
+            "default": 1,
+            "title": "Marginright",
+            "type": "integer"
           },
           "stateRows": {
             "anyOf": [
@@ -27027,6 +27047,11 @@
             ],
             "default": null,
             "title": "Scale"
+          },
+          "marginRight": {
+            "default": 1,
+            "title": "Marginright",
+            "type": "integer"
           },
           "stateRows": {
             "anyOf": [

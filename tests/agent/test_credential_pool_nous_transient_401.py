@@ -97,8 +97,11 @@ def test_one_refresh_per_episode_then_bounded_backoff(tmp_path, monkeypatch):
     pool = load_pool("nous")
     (entry,) = pool.entries()
     posts = _count_refresh_posts(monkeypatch)
-    from agent import credential_auth_recovery
-    monkeypatch.setattr(credential_auth_recovery, "TRANSIENT_AUTH_BACKOFF_S", (0.01, 0.02, 0.03))
+    try:  # absent on base: let the refresh-POST count, not an ImportError, be what fails there
+        from agent import credential_auth_recovery
+        monkeypatch.setattr(credential_auth_recovery, "TRANSIENT_AUTH_BACKOFF_S", (0.01, 0.02, 0.03))
+    except ImportError:
+        pass
     agent = _Agent(key)
     agent._credential_pool_entry_id = entry.id
 

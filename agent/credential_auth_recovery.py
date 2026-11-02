@@ -113,7 +113,9 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
         )
         return False, has_retried_429
     provider = agent.provider
-    nous = provider == "nous"
+    # Only a 401 is the "valid key refused" shape worth backing off on; a non-entitlement 403
+    # keeps the capped-refresh path and fails fast.
+    nous = provider == "nous" and status_code == 401
     entry_id = credential_id
     if nous:
         found = _entry_for(pool, credential_id, api_key_hint)

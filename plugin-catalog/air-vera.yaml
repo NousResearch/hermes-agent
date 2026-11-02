@@ -1,0 +1,23 @@
+name: air-vera
+repo: https://github.com/ruhorh66-rgb/air-plugins
+sha: f14e047d364167235ccd794a20249da2ffe76aa2
+subdir: air-vera/hermes
+description: Bounded native AirVera 0.2.10 control-plane tool for Hermes Agent; installs disabled and requires a separately accepted AirVera runtime.
+maintainer: ruhorh66-rgb
+tier: community
+category: tools
+version: "0.2.10"
+title: AirVera
+docs_url: https://github.com/ruhorh66-rgb/air-plugins/tree/f14e047d364167235ccd794a20249da2ffe76aa2/air-vera
+readme: false
+platforms:
+  - windows
+known_issues:
+  - Native AirVera 0.2.10 must be installed and accepted separately; this plugin does not install, activate, or grant access to provider mutations.
+  - Telegram-to-Hermes-to-native read-only E2E has not yet been accepted.
+capabilities:
+  provides_tools:
+    - air_vera
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

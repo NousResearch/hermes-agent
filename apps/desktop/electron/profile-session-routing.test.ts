@@ -25,6 +25,7 @@ import {
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
+  tagOwnerlessRowsWithConnection,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -60,6 +61,18 @@ test('all-profiles session routing is limited to read-only list endpoints', () =
   assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=default'), false)
   assert.equal(isAllProfilesSessionListRequest('POST', '/api/profiles/sessions?profile=all'), false)
   assert.equal(isAllProfilesSessionListRequest('GET', '/api/sessions?profile=all'), false)
+})
+
+test('primary owner tagging preserves rows already named by another source', () => {
+  const rows = [{ id: 'primary' }, { id: 'remote', connection_id: 'gateway-remote' }, { id: 'blank', connection_id: '' }]
+
+  tagOwnerlessRowsWithConnection(rows, 'local')
+
+  assert.deepEqual(rows, [
+    { id: 'primary', connection_id: 'local' },
+    { id: 'remote', connection_id: 'gateway-remote' },
+    { id: 'blank', connection_id: 'local' }
+  ])
 })
 
 test('pinned registry aggregation requires the selected gateway to be pooled', () => {

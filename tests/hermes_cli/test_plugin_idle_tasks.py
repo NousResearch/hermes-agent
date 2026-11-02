@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from hermes_cli.plugins_idle_tasks import cmd_idle_tasks, load_state, run_plugin_idle_tasks
+from hermes_cli.plugins_idle_tasks import cmd_idle_tasks, load_state, registered_idle_tasks, run_plugin_idle_tasks
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 IDLE = 3 * 3600.0
@@ -25,7 +25,13 @@ def _ctx(name="wisdom"):
 
 
 def _poll(manager, now, idle=IDLE):
-    return run_plugin_idle_tasks(idle_for_seconds=idle, manager=manager, now=now)
+    """One poll, waited out: ``{"<plugin>:<task>": last_status}`` for the runs it started."""
+    started = run_plugin_idle_tasks(idle_for_seconds=idle, manager=manager, now=now)
+    for worker in started.values():
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+    tasks = registered_idle_tasks(manager)
+    return {key: load_state(tasks[key].state_path())["last_status"] for key in started}
 
 
 def _recorder(calls, result="checked 3 skills"):

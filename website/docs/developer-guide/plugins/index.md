@@ -1961,7 +1961,7 @@ def register(ctx):
 - it is not paused (`hermes plugins idle-tasks <plugin> --pause <task>`);
 - no other run of it is in flight, in this process or another one.
 
-`fn` runs synchronously on the polling thread, in the profile that registered it, so keep it bounded. An exception is logged and recorded as `last_status: error` and never reaches the host. State lives in the plugin's data dir, `<data dir>/idle-tasks/<name>.json` (`last_run_at`, `run_count`, `paused`, `last_summary`, `last_status`, `last_error`), so each profile schedules its own copy.
+`fn` runs on its own thread, in the profile that registered it, and the host does not wait for it: the poll returns at once, and no second run of the task starts while one is in flight. Keep a run short and safe to repeat. An exception is logged and recorded as `last_status: error` and never reaches the host. State lives in the plugin's data dir, `<data dir>/idle-tasks/<name>.json` (`last_run_at`, `run_count`, `paused`, `last_summary`, `last_status`, `last_error`), so each profile schedules its own copy.
 
 No capability gates this: the scheduler only calls your own function. Anything privileged that function does goes through its own gate (model calls through the [`ctx.llm` trust gate](../plugin-llm-access.md#trust-gate), and so on).
 

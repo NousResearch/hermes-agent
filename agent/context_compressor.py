@@ -3405,10 +3405,10 @@ class ContextCompressor(
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
-    # Aggregate cap applied after per-message limits; class alias so subclasses/tests can override.
+    # Aggregate cap; class alias so subclasses/tests can override.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
-    def _render_tool_call_for_summary(self, tc: Any) -> str:
+    def _render_tool_call_for_summary(self, tc: Any, *, clip: bool = True) -> str:
         """``  name(args)`` line for the summarizer; object-shaped calls render as ``name(...)``."""
         if not isinstance(tc, dict):
             fn = getattr(tc, "function", None)
@@ -3417,11 +3417,11 @@ class ContextCompressor(
         # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
         # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
         args = _redact_compaction_text(fn.get("arguments", ""))
-        if len(args) > self._TOOL_ARGS_MAX:
+        if clip and len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
-    def _serialize_records_for_summary(self, turns: list[dict[str, Any]]) -> list[str]:
+    def _serialize_records_for_summary(self, turns: list[dict[str, Any]], *, clip: bool = True) -> list[str]:
         """Serialize turns into a list of labeled, redacted records for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
@@ -3436,13 +3436,13 @@ class ContextCompressor(
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
-            if len(content) > self._CONTENT_MAX:
+            if clip and len(content) > self._CONTENT_MAX:
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
-                content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
+                content += "\n[Tool calls:\n" + "\n".join(self._render_tool_call_for_summary(tc, clip=clip) for tc in msg["tool_calls"]) + "\n]"
             parts.append(f"[{role.upper()}]: {content}")
         return parts
 
@@ -3909,13 +3909,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _pruned_skill_names = list(dict.fromkeys(
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
-        # Lean mode even-samples oversized input (one bounded request, never a second).
-        if getattr(self, "tail_mode", "lean") == "lean":
-            records = self._serialize_records_for_summary(turns_to_summarize)
-            content_to_summarize, coverage = self._sample_summary_records(records)
-            self._record_summary_input_coverage(coverage)
-        else:
-            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
+        from agent.summary_input import prepare_summary_input
+        content_to_summarize = prepare_summary_input(self, turns_to_summarize)
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)

@@ -278,6 +278,7 @@ class TestBrowserUseStrictSelection:
             config = provider._get_config_or_none()
         assert config["managed_mode"] is False
         assert config["api_key"] == "bu-key"
+        assert config["base_url"] == "https://api.browser-use.com/api/v4"
 
 
 # ---------------------------------------------------------------------------

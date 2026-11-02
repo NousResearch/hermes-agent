@@ -401,3 +401,54 @@ def test_a_refused_image_send_does_not_wedge_later_text_sends(monkeypatch, tmp_p
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_a_forward_on_a_history_larger_than_the_default_frame_is_still_admitted(tmp_path, monkeypatch):
+    """A real loopback WebSocket owner answers the relay's ``session.resume`` with a history above
+    websockets' 1 MiB default frame cap (a long Bot Chat): the forward must still reach
+    ``prompt.submit`` and return the owner's receipt, not close 1009 and end ``OwnerUnconfirmed``."""
+    import json
+    import threading
+
+    from websockets.asyncio.server import serve
+
+    from hermes_cli import gateway_client
+    from tui_gateway import owner_forward
+
+    history = [{"role": "assistant", "content": "x" * 1024} for _ in range(2048)]
+    ready, stop, port, seen = threading.Event(), None, [], []
+
+    async def answer(ws):
+        async for raw in ws:
+            request = json.loads(raw)
+            seen.append(request["method"])
+            result = ({"session_id": "key-1", "messages": history} if request["method"] == "session.resume"
+                      else {"admission_id": "adm-1", "status": "queued"})
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+
+    async def run():
+        nonlocal stop
+        stop = asyncio.get_running_loop().create_future()
+        async with serve(answer, "127.0.0.1", 0, subprotocols=[gateway_client.GATEWAY_WS_PROTOCOL],
+                         max_size=None) as listener:
+            port.append(listener.sockets[0].getsockname()[1])
+            ready.set()
+            await stop
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_until_complete, args=(run(),), daemon=True)
+    thread.start()
+    assert ready.wait(10)
+    monkeypatch.setattr(gateway_client, "_session_ticket", lambda *_a, **_k: "ticket")
+    endpoint = SimpleNamespace(api_origin=f"http://127.0.0.1:{port[0]}")
+    monkeypatch.setattr(owner_forward, "discover_owner", lambda _home: endpoint)
+    session = {"session_key": "key-1", "profile_home": str(tmp_path)}
+    try:
+        receipt = owner_forward.forward_prompt("sid-1", session, "GO", emit=lambda *_a: True, home=tmp_path)
+    finally:
+        session["_finalized"] = True  # releases the relay thread
+        loop.call_soon_threadsafe(stop.set_result, None)
+        thread.join(10)
+    assert len(json.dumps(history)) > 2 ** 20
+    assert seen == ["session.resume", "prompt.submit"]
+    assert receipt == {"admission_id": "adm-1", "status": "queued"}

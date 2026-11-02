@@ -885,3 +885,18 @@ def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monke
     assert proc.returncode != 0, proc.stdout
     assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
     assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout
+def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
+    """A slow file submitted last runs alone at the end of the run; start it first."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_order", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    root = Path("/repo")
+    a, b, c, d = (root / f"tests/test_{n}.py" for n in "abcd")
+    files = [a, b, c, d]
+    cache = {"tests/test_b.py": 1.0, "tests/test_c.py": 90.0, "tests/test_d.py": 5.0}
+    # Uncached a gets the 2.0s default estimate, between d and b.
+    assert rtp._longest_first(files, cache, root) == [c, d, a, b]
+    assert rtp._longest_first(files, {}, root) == files

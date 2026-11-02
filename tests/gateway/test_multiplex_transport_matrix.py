@@ -217,3 +217,25 @@ async def test_secondary_bot_route_runs_in_the_routed_runtime_scope(mux):
         await handler(MessageEvent(text="hi", source=mux.team_b.build_source(
             chat_id=chat, chat_type="dm", user_id=chat)))
     assert scopes == [mux.home, mux.home / "profiles" / "team_b"]
+
+
+def test_inbound_turn_records_the_receiving_bot_on_a_route_saved_without_one(mux, tmp_path):
+    """A route saved before ``transport_profile`` existed (or carried over by /reset, /new) is NULL, so
+    after a restart its completions have no bot to answer through. The next inbound turn records the
+    bot that received it; an inferred identity (no transport evidence) never fills it with a guess."""
+    from gateway.session import SessionStore
+
+    def store():
+        return SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig(multiplex_profiles=True))
+
+    live, _ = _live(mux, mux.team_b, "999", transport_profile="team_b")
+    legacy = store()
+    legacy.get_or_create_session(live).transport_profile = None
+    legacy._save_entries()
+
+    inferred = SessionSource(platform=Platform.TELEGRAM, chat_id="999", chat_type="dm", user_id="999")
+    assert resolve_identity(inferred, runner=mux.runner).transport_inferred
+    after_restart = store()
+    assert after_restart.get_or_create_session(inferred).transport_profile is None
+    assert after_restart.get_or_create_session(live).transport_profile == "team_b"
+    assert store().get_or_create_session(live, touch_activity=False).transport_profile == "team_b"

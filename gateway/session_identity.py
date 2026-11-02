@@ -113,6 +113,13 @@ def transport_profile_of(source: Any) -> Optional[str]:
     return identity.transport_profile if identity is not None and identity.multiplexed else None
 
 
+def known_transport_profile(source: Any) -> Optional[str]:
+    """:func:`transport_profile_of` minus inferred identities: the bot a live adapter or a persisted
+    record named, never the primary-profile guess a source with no transport evidence falls back to."""
+    identity = identity_of(source)
+    return transport_profile_of(source) if identity is not None and not identity.transport_inferred else None
+
+
 def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner

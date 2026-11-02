@@ -237,8 +237,13 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     data = safe_json_loads(result)
     if isinstance(data, dict):
         failed = data.get("success") is False
-        if tool_name == "memory" and failed and "exceed the limit" in data.get("error", ""):
-            return True, " [full]"
+        # Mirror _detect_tool_failure: match the legacy "exceed the limit"
+        # wording and any newer variant containing "full", case-insensitively.
+        if tool_name == "memory" and failed:
+            err_raw = data.get("error") or ""
+            err_lower = err_raw.lower() if isinstance(err_raw, str) else str(err_raw).lower()
+            if "exceed the limit" in err_lower or "full" in err_lower:
+                return True, " [full]"
         # Same rule as _detect_tool_failure: a JSON object is judged by its top-level
         # shape, never by a substring scan of its nested content.
         err = data.get("error") or data.get("message")

@@ -142,6 +142,33 @@ def test_a_later_rotation_with_a_shorter_ttl_is_still_the_newer_pair(homes, monk
     assert posted[-1] == "RT3"
 
 
+def test_two_rotations_in_one_iat_second_order_by_obtained_at_not_expiry(homes):
+    """Equal whole-second ``iat``: the sub-second ``obtained_at`` decides, never the shorter TTL."""
+    hermes_home, _ = homes
+    iat = 2_000_000_000  # fixed clock: both rotations stamped in the same JWT second
+
+    def rotation(tag, refresh_token, *, offset, ttl):
+        def b64(d):
+            return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+        token = ".".join([b64({"alg": "none"}), b64(
+            {"sub": "user-1", "scope": auth_mod.DEFAULT_NOUS_SCOPE, "iat": iat, "exp": iat + ttl,
+             "tag": tag}), "sig"])
+        state = _state(tag, refresh_token, issued=0, ttl=ttl, token=token)
+        state["obtained_at"] = datetime.fromtimestamp(iat + offset, UTC).isoformat()
+        return state
+
+    first = rotation("K1", "RT1", offset=0.2, ttl=3600)
+    later = rotation("K2", "RT2", offset=0.7, ttl=900)  # the later rotation carries a shorter TTL
+    _seed(hermes_home, first, later)
+
+    profile = dict(first)
+    with auth_nous._nous_shared_store_lock():
+        assert auth_nous._merge_shared_nous_oauth_state(profile) is True
+    assert profile["refresh_token"] == "RT2"
+    auth_nous._write_shared_nous_state(first, renewal=True)  # the spent pair never restores
+    assert auth_nous._read_shared_nous_state()["refresh_token"] == "RT2"
+
+
 def test_unknown_identities_never_push_over_the_shared_store(homes):
     hermes_home, _ = homes
     # No JWT ``sub`` on either side: unknown identities, so a newer profile is not pushed over shared.

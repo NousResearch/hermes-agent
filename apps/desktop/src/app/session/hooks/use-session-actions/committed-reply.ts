@@ -59,10 +59,9 @@ const promptText = (message: ChatMessage | undefined) =>
  * dropped live row would be re-seeded by the next delta. So it takes the
  * committed bubble's place. `committedNew` admits only page bubbles that are
  * new since the baseline and not themselves live; the bubble must follow the
- * live row's own prompt, end in a reply, and say exactly what the live row
- * says. A live row still short of the stored text keeps both: its tail may
- * never arrive (a completion lost to a reconnect), and only the committed
- * bubble holds the whole reply.
+ * live row's own prompt, end in a reply, and say at least what the live row
+ * says. A live row still short of the stored text (its tail lost to a
+ * reconnect, or still in flight) is the same reply: see livePlaceOnCommittedPage.
  */
 export function pageReplyCommittingLiveRow(
   page: ChatMessage[],
@@ -88,7 +87,30 @@ export function pageReplyCommittingLiveRow(
       index > pagePrompt &&
       message.role === 'assistant' &&
       committedNew(message) &&
-      Boolean(replyAfterLastTool(message).trim()) &&
-      spokenText(message).trim() === said
+      committedReplyCovers(message, said)
   )
+}
+
+/**
+ * The committed bubble a live row replaces, and the row that stands there: the
+ * live row, so the turn's late deltas and its completion still find it by id.
+ * A live row short of the stored reply takes the stored body, because its tail
+ * may never arrive (a completion lost to a reconnect). Keeping both bubbles
+ * instead painted the reply twice until the completion landed.
+ */
+export function livePlaceOnCommittedPage(
+  page: ChatMessage[],
+  committedNew: (message: ChatMessage) => boolean,
+  live: ChatMessage,
+  liveMessages: ChatMessage[]
+): { index: number; row: ChatMessage } | null {
+  const index = pageReplyCommittingLiveRow(page, committedNew, live, liveMessages)
+
+  if (index < 0) {
+    return null
+  }
+
+  const stored = page[index]
+
+  return { index, row: spokenText(stored).trim() === spokenText(live).trim() ? live : { ...live, parts: stored.parts } }
 }

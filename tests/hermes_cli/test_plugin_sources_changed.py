@@ -8,14 +8,14 @@ the hot-serve path now consults, and that a rescan happens only when the sources
 import shutil
 
 import pytest
-import yaml
 
+import hermes_yaml as yaml
 from hermes_cli.plugins import (
     PluginManager,
     _reset_plugin_managers_for_tests,
     get_plugin_manager,
-    rediscover_plugins_if_changed,
 )
+from hermes_cli.plugins_discovery import rediscover_plugins_if_changed
 
 KEY = "platforms/demo"
 

@@ -268,14 +268,23 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
 
 def _gap_map(counts: list[int], texts: list[str], empty: list[int]) -> str:
     """Per-gap breakdown labeled with the text before each gap, so the agent picks which to OCR."""
+    # Sparse-page eligibility and gap boundaries are different decisions: a SHORT
+    # but nonblank divider (e.g. "Exhibit A", fewer than PDF_EMPTY_PAGE_CHARS
+    # chars) still counts toward the sparse threshold, but it must stay OUTSIDE
+    # the following blank range so it can act as that range's label. Only
+    # truly-blank pages group into ranges; any nonblank page splits them.
+    blank = [p for p in empty if counts[p - 1] == 0]
     # Sorted 1-based page numbers -> (start, end) runs; consecutive pages share ``page - index``.
-    runs = [list(g) for _k, g in itertools.groupby(enumerate(empty), lambda e: e[1] - e[0])]
+    runs = [list(g) for _k, g in itertools.groupby(enumerate(blank), lambda e: e[1] - e[0])]
     ranges = [(run[0][1], run[-1][1]) for run in runs]
     lines: list[str] = []
     for a, b in ranges[:PDF_GAP_MAP_MAX_ENTRIES]:
         label = ""
-        for prev in range(a - 2, -1, -1):  # nearest preceding page with text
-            if counts[prev] >= PDF_EMPTY_PAGE_CHARS:
+        # Walk back to the nearest preceding page with ANY text: the blanks are
+        # already grouped into ranges, so this stops at a divider or a full text
+        # page — either one labels the gap.
+        for prev in range(a - 2, -1, -1):
+            if counts[prev] > 0:
                 snippet = " ".join(texts[prev].split())[:_GAP_CONTEXT_CHARS]
                 label = f' — after "{snippet}" (p{prev + 1})'
                 break

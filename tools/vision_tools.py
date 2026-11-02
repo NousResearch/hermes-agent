@@ -89,6 +89,47 @@ if _VISION_DOWNLOAD_TIMEOUT is None:
 # Hard cap on downloaded media (50 MB): bounds memory/disk against attacker-hosted files.
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
+# Pre-analysis prompts for user-attached images. Every entry point that
+# pre-analyzes an image reads one of these instead of inlining a private copy,
+# so the wording cannot drift between the gateway, the CLI and the agent loop.
+# Two styles exist on purpose: the gateway pays for the analysis on every
+# message and wants the concise variant, while an interactive turn benefits
+# from the detailed one.
+VISION_ANALYSIS_PROMPT_CONCISE = (
+    "Concisely describe this image in 2-4 sentences "
+    "(~200 Chinese characters or ~150 English words). "
+    "Cover the main subject, key visible text/data/code, and overall context. "
+    "If it is a chart, diagram, or scientific figure, include the important "
+    "labels, legend, and key values. Skip decorative details."
+)
+
+VISION_ANALYSIS_PROMPT_DETAILED = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, UI, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
+
+def get_vision_analysis_prompt(style: str = "concise") -> str:
+    """Return the pre-analysis prompt for user-attached images.
+
+    ``auxiliary.vision.analysis_prompt`` in config.yaml overrides both styles
+    verbatim when it is a non-empty string; otherwise ``style`` picks the
+    built-in default (``"concise"`` or ``"detailed"``).
+
+    One source of truth for every call site that pre-analyzes a user image
+    (gateway, CLI, agent loop), so the prompt cannot silently diverge.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        val = cfg_get(load_config(), "auxiliary", "vision", "analysis_prompt")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    except Exception:
+        pass
+    return VISION_ANALYSIS_PROMPT_DETAILED if style == "detailed" else VISION_ANALYSIS_PROMPT_CONCISE
+
 
 # CPU-burst cap: a turn can fan out dozens of vision_analyze calls (base64 encode + Pillow
 # resize each) that would saturate every core and starve the shared event loop. Only the CPU

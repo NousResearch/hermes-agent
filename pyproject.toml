@@ -263,6 +263,10 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
 ]
+# Gradium Phonon. `ptts` is a Rust extension (abi3 wheels for every platform we ship) whose only
+# dependency is numpy, so unlike [kittentts] it pulls no torch/transformers closure. Weights
+# (~64MB q8) download from the Hugging Face Hub on first synthesis, not at install.
+phonon = ["ptts==0.4.2"]
 modal = ["modal==1.6.2"]
 daytona = ["daytona==0.225.0"]
 vercel = ["vercel==0.12.0"]

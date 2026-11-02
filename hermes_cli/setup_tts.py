@@ -69,6 +69,12 @@ def _install_kittentts_deps() -> bool:
     return _install_tts_extra("kittentts")
 
 
+def _install_phonon_deps() -> bool:
+    """Install Phonon's `ptts` runtime with user approval. Returns True on success."""
+    _setup._info(None, "Installing ptts (~7MB wheel; ~64MB q8 weights downloaded on first use)...", None)
+    return _install_tts_extra("phonon")
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
@@ -114,7 +120,9 @@ _TTS_PROVIDER_CHOICES = [
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
     ("neutts", "NeuTTS (local on-device, free, ~300MB model download)"),
-    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
+    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)"),
+    ("phonon", "Phonon (local on-device, free, 102 voices, ~64MB model, CPU)"),
+    ("ollama", "Ollama speech (Phonon via a local/remote Ollama, no key)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
@@ -139,7 +147,12 @@ _TTS_LOCAL_PROVIDERS = {
     "kittentts": ("kittentts", "KittenTTS",
                   ("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).",
                    "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"),
-                  "Install KittenTTS now?", _install_kittentts_deps)}
+                  "Install KittenTTS now?", _install_kittentts_deps),
+    "phonon": ("ptts", "Phonon",
+               ("Phonon is Gradium's 31M/40M TTS on the ptts Rust runtime: CPU-only, numpy only,",
+                "no torch, no espeak-ng, no API key. 102 voices across 5 languages.",
+                "~7MB wheel + ~64MB q8 weights on first use (Apache 2.0 / CC BY-NC 4.0)."),
+               "Install Phonon now?", _install_phonon_deps)}
 
 
 def _tts_api_key_step(selected: str) -> str:
@@ -260,6 +273,10 @@ def _setup_tts_provider(config: dict):
         selected = _tts_api_key_step(selected)
     elif selected == "xai":
         selected = _tts_xai_step(config)
+    elif selected == "ollama":
+        _setup.print_info("Phonon needs Ollama 0.40.9+ and (today) an Apple Silicon host:")
+        _setup.print_info("  ollama serve            # if not already running")
+        _setup.print_info("  ollama pull phonon      # 31m-en; phonon:40m-<fr|de|es|pt|multilingual|en>")
     config.setdefault("tts", {})["provider"] = selected
     _setup.save_config(config)
     _setup.print_success(f"TTS provider set to: {_TTS_PROVIDER_LABELS.get(selected, selected)}")

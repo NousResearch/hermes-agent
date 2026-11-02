@@ -33,6 +33,8 @@ Convert text to speech with eleven providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Phonon** | Excellent | Free (local) | None needed |
+| **Ollama speech** | Excellent | Free (local daemon) | None needed |
 
 ### Platform Delivery
 
@@ -177,6 +179,8 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
 | Piper | 5000 |
+| Phonon | 2000 |
+| Ollama speech | 4096 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -210,6 +214,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Phonon** and **Ollama speech** output WAV and also need **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -222,7 +227,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, Phonon, and Ollama speech audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -288,11 +293,60 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### Phonon (local, 102 voices, 5 languages)
+
+[Phonon](https://huggingface.co/gradium/phonon-31m-en) is Gradium's text-to-speech family: a 31M English checkpoint (Apache 2.0) and 40M checkpoints for English, French, German, Spanish, Portuguese and a multilingual one (all CC BY-NC 4.0). Hermes runs it through Gradium's [`ptts`](https://github.com/gradium-ai/xn-ptts) runtime — a Rust extension with abi3 wheels on Windows, Linux and macOS whose only dependency is `numpy`. No PyTorch, no ONNX runtime, no `espeak-ng`, no API key, and no GPU: it is CPU-only by design.
+
+**Install via `hermes setup tts`** → Phonon, or request the extra directly: `python -c "import pm; pm.sync_venv(['phonon'], explicit=True)"`. The ~7MB wheel installs immediately; the ~64MB `q8` weights download from the Hugging Face Hub on first speech.
+
+```yaml
+tts:
+  provider: phonon
+  phonon:
+    model: 31m-en          # or 40m-en, 40m-fr, 40m-de, 40m-es, 40m-pt, 40m-multilingual
+    voice: Easton          # any of the 102 catalogue voices, by name or voice_id
+```
+
+**Gated checkpoints.** The 40M models are gated on the Hub: accept the terms at
+`huggingface.co/gradium/phonon-40m-<language>` and authenticate (`hf auth login`, or set `HF_TOKEN`)
+before selecting one. Hermes quotes the Hub's own error and spells out those two steps when a load
+hits it. The `31m-en` checkpoint is ungated and needs no account.
+
+**Voices.** The [catalogue](https://huggingface.co/gradium/phonon-voices) has 102 voices — 37 English (US, UK and 12 character voices), 15 French, 13 German, 25 Spanish (Spain and Mexico) and 12 Portuguese — selectable in Settings → Voice, or by name/`voice_id` in config. Each voice is an embedding downloaded on first use, so `voice: default` (the checkpoint's own voice) is the only one that costs no extra download. Names are matched case- and accent-insensitively, so `noemie` finds `Noémie`.
+
+**Language normalization.** Phonon spells numbers, dates, currencies and abbreviations out before it speaks, and that step needs the right language. Hermes takes it from the **checkpoint** — a French *voice* on the English *checkpoint* still speaks with an English model, so its text normalizes as English — and only the multilingual checkpoint falls back to the selected voice's locale. Set `tts.phonon.lang` (`en`/`fr`/`de`/`es`/`pt`) to override either.
+
+**Other knobs:** `tts.phonon.quant` (weight format, default `q8`), `tts.phonon.threads` (CPU threads, `0` = runtime default), `tts.phonon.voice_catalog` (look a voice up in your own Hugging Face repo, `voices.jsonl` or folder). Output is 24 kHz mono WAV.
+
+### Ollama speech models
+
+Any [Ollama](https://ollama.com) daemon at **0.40.9 or newer** can serve speech models over its OpenAI-compatible `POST /v1/audio/speech`. Hermes talks to it directly — no SDK, no key — so the model runs wherever Ollama runs, including a box on your network.
+
+```yaml
+tts:
+  provider: ollama
+  ollama:
+    base_url: http://localhost:11434/v1   # any host; /v1 optional
+    model: phonon                          # or phonon:40m-fr, phonon:40m-multilingual, ...
+    voice: default
+```
+
+Pull a speech model first:
+
+```bash
+ollama pull phonon             # == phonon:31m-en
+ollama pull phonon:40m-multilingual
+```
+
+`ollama pull` refuses the model until the daemon is 0.40.9+. **The Phonon packages Ollama publishes are Apple Silicon only**, and each one ships a single voice named `default` — the 102-voice catalogue above is not part of them. On other platforms, or if you want the full catalogue, use the `phonon` provider instead, which runs the same weights on any CPU.
+
+Ollama ignores nothing: an unsupported `speed`/`instructions` or an unknown voice is a `400`. Hermes sends only `model`, `input`, `voice` and `response_format`, and surfaces the daemon's own error text (including the list of voices it does have) when it refuses.
+
 ### Warm-up and unload via speech toggles (local engines)
 
-Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
+Local engines (Piper, KittenTTS, Phonon) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
 
-- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
+- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB; Phonon ~64MB) so it isn't parked in RAM for nothing.
 - **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases. A TUI attached to the shared gateway refuses `/voice tts`, because the gateway cannot play speech in that terminal.
 
 Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. The unload waits `tts.keep_warm_seconds` (default `60`) after the last release, and any toggle turning speech back on within that window keeps the loaded model, so a wake-word loop or a quickly restarted voice conversation doesn't reload the voice each time. Set it to `0` to unload immediately. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.

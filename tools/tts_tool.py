@@ -2,8 +2,8 @@
 """Text-to-speech tool: config resolution, built-in provider dispatch, output policy, registration.
 
 Built-ins: Edge (free default), ElevenLabs, OpenAI, DeepInfra, MiniMax, Mistral, Gemini, xAI,
-local NeuTTS / KittenTTS / Piper; plus ``type: command`` providers under ``tts.providers.<name>``
-and plugin-registered ones. Output is Opus (.ogg) on voice-bubble platforms, MP3 elsewhere.
+local NeuTTS / KittenTTS / Piper / Phonon, Ollama's speech endpoint (``/v1/audio/speech``); plus
+``type: command`` providers under ``tts.providers.<name>`` and plugin-registered ones. Output is Opus (.ogg) on voice-bubble platforms, MP3 elsewhere.
 Sibling ``tts_tool_*`` modules hold backends/delivery/lifecycle; they read the seams defined
 here (config, provider resolution, lazy SDK importers) through ``_origin()`` at call time.
 """
@@ -45,14 +45,17 @@ from tools.tts_tool_delivery import (
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
     _generate_mistral_tts, _generate_xai_tts, _resolve_minimax_tts_runtime)
-from tools.tts_tool_local import _generate_kittentts, _generate_neutts, _generate_piper_tts
+from tools.tts_tool_local import (
+    _generate_kittentts, _generate_neutts, _generate_phonon, _generate_piper_tts)
+from tools.tts_tool_ollama import _generate_ollama_tts
 from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 
 
-_PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
+_PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral",
+                       "tts.phonon": "phonon"}
 
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
 def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str] = None) -> Callable[[], Any]:
@@ -79,6 +82,7 @@ _import_mistral_client = _sdk_importer("mistralai.client", "Mistral", feature="t
 _import_sounddevice = _sdk_importer("sounddevice")
 _import_kittentts = _sdk_importer("kittentts", "KittenTTS")
 _import_piper = _sdk_importer("piper", "PiperVoice")  # piper-tts wheels embed espeak-ng
+_import_ptts = _sdk_importer("ptts", feature="phonon")  # Rust runtime, numpy only
 
 
 def _importable(importer: Callable[[], Any]) -> bool:
@@ -99,6 +103,7 @@ def _package_installed(name: str) -> bool:
 def _check_neutts_available() -> bool: return _package_installed("neutts")
 def _check_kittentts_available() -> bool: return _package_installed("kittentts")
 def _check_piper_available() -> bool: return _package_installed("piper")
+def _check_phonon_available() -> bool: return _package_installed("ptts")
 
 
 # --- Defaults / config ---
@@ -162,7 +167,8 @@ _MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)"
 
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
-_FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_FFMPEG_OPUS_PROVIDERS = frozenset({
+    "edge", "neutts", "minimax", "xai", "kittentts", "piper", "phonon", "ollama"})
 
 
 # --- Built-in provider dispatch ---
@@ -190,7 +196,13 @@ _BUILTIN_DISPATCH: dict[str, tuple] = {
                   "Run 'hermes setup tts' and choose KittenTTS."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
-              "Run 'hermes tools' and select Piper under TTS.")}
+              "Run 'hermes tools' and select Piper under TTS."),
+    "phonon": (lambda: _importable(_import_ptts), "Phonon (local)", "_generate_phonon",
+               "Phonon provider selected but the 'ptts' package is not installed. "
+               "Run 'hermes setup tts' and choose Phonon."),
+    # No SDK and no key: the requirement is a reachable `ollama serve`, which cannot be probed
+    # from a check_fn that runs on every tool listing — the request itself reports it.
+    "ollama": (None, "Ollama speech", "_generate_ollama_tts", None)}
 
 
 def _error_json(message: str) -> str:
@@ -613,7 +625,11 @@ _BUILTIN_REQUIREMENTS: dict[str, Callable[[], bool]] = {
     "mistral": lambda: _pm_extra_available("mistral") and bool(_resolve_provider_key("MISTRAL_API_KEY", "mistral")),
     "neutts": lambda: _check_neutts_available(),
     "kittentts": lambda: _check_kittentts_available(),
-    "piper": lambda: _check_piper_available()}
+    "piper": lambda: _check_piper_available(),
+    "phonon": lambda: _check_phonon_available(),
+    # Nothing local to install and no credential: whether the daemon answers is only knowable
+    # from the request, so an explicit `ollama` selection is always "can run".
+    "ollama": lambda: True}
 
 
 def _pm_extra_available(extra: str) -> bool:
@@ -637,7 +653,8 @@ def _pm_extra_available(extra: str) -> bool:
 _SDK_ON_DEMAND: dict[str, Optional[str]] = {
     "edge": None,
     "elevenlabs": "ELEVENLABS_API_KEY",
-    "mistral": "MISTRAL_API_KEY"}
+    "mistral": "MISTRAL_API_KEY",
+    "phonon": None}
 
 
 def _ready_after_first_use_install(provider: str) -> bool:

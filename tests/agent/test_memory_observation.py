@@ -1181,19 +1181,21 @@ def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
     monkeypatch, caplog
 ):
     from hermes_cli.plugin_host_wire import decode, encode
+    from hermes_cli import plugin_host_wire_memory
 
     _disable_hook(monkeypatch)
     _stub_direct_prefetch(monkeypatch)
+    monkeypatch.setattr(plugin_host_wire_memory, "_observation_wire_budget", lambda: 20_000)
     raw = MemoryPrefetchResult(
         context="hosted provider context",
         observations=(_observation({"ok": True}),) + tuple(
-            MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 4050 for i in range(4)})
+            MemoryObservation("x" * 128, "x" * 128, 1, {str(i): "x" * 4000 for i in range(4)})
             for _ in range(100)
         ),
     )
     hosted = decode(encode(raw))
     assert hosted._wire_truncated is True
-    hosted_prefix_size = 1
+    hosted_prefix_size = 2
     manager = MemoryManager()
     manager.add_provider(
         StructuredMemoryProvider(name="builtin", result=hosted)

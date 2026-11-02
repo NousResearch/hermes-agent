@@ -27,7 +27,9 @@ def _encode_memory_observation(
         _freeze_memory_observation_payload,
         _thaw_json_value,
     )
-    from agent.memory_manager_prefetch import _builtin_dict_fields, _validate_observation_metadata
+    from agent.memory_manager_prefetch import (
+        _builtin_dict_fields, _observation_envelope_size, _validate_observation_metadata,
+    )
 
     if type(value) is MemoryObservation:
         source_kind = value.source_kind
@@ -47,6 +49,7 @@ def _encode_memory_observation(
     else:
         return encode(_opaque_wire_value(value), refs, depth + 1)
 
+    metadata_valid = True
     try:
         source_kind, schema, version, provider = _validate_observation_metadata(
             source_kind, schema, version, provider
@@ -59,6 +62,7 @@ def _encode_memory_observation(
             # Preserve the candidate count without encoding its rejected payload or metadata.
             return encode(_opaque_wire_value(value), refs, depth + 1)
     except (TypeError, ValueError, OverflowError):
+        metadata_valid = False
         payload = None
 
     if type(version) is int:
@@ -81,6 +85,12 @@ def _encode_memory_observation(
         frozen_payload, _ = _freeze_memory_observation_payload(
             payload, operation_budget=budget
         )
+        if metadata_valid:
+            _observation_envelope_size(
+                source_kind, schema, version,
+                provider if provider_name is _UNKNOWN_PROVIDER else str.__str__(provider_name),
+                frozen_payload,
+            )
         payload = {
             "__record__": "MemoryObservationPayload",
             "fields": _thaw_json_value(frozen_payload),

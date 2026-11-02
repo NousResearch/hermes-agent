@@ -6,6 +6,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from operator import length_hint
 from typing import Any, List, Optional
 
 from agent.memory_provider import (
@@ -102,6 +103,17 @@ def _validate_observation_metadata(source_kind: Any, schema: Any, raw_version: A
     return source_kind, schema, version, str.__str__(raw_provider)
 
 
+def _observation_envelope_size(source_kind, schema, version, provider, payload):
+    encoded = json.dumps(
+        {"source_kind": source_kind, "provider": provider, "schema": schema,
+         "version": version, "payload": _thaw_json_value(payload)},
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
+        raise ValueError("observation envelope is too large")
+    return len(encoded)
+
+
 def _normalize_observation(
     provider: Any, candidate: Any, traversal_budget: Optional[list[int]]
 ) -> Optional[tuple[MemoryObservation, int]]:
@@ -161,19 +173,9 @@ def _normalize_observation(
         frozen_payload, _payload_bytes = _freeze_memory_observation_payload(
             candidate.payload, operation_budget=traversal_budget
         )
-        encoded = json.dumps(
-            {
-                "source_kind": source_kind,
-                "provider": provider_name,
-                "schema": schema,
-                "version": version,
-                "payload": _thaw_json_value(frozen_payload),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        if len(encoded) > MAX_MEMORY_OBSERVATION_BYTES:
-            raise ValueError("observation envelope is too large")
+        encoded_size = _observation_envelope_size(
+            source_kind, schema, version, provider_name, frozen_payload
+        )
         return (
             MemoryObservation(
                 source_kind=source_kind,
@@ -182,7 +184,7 @@ def _normalize_observation(
                 version=version,
                 payload=frozen_payload,
             ),
-            len(encoded),
+            encoded_size,
         )
     except Exception as exc:  # health: allow BLE001 -- malformed candidates are isolated
         _invalid_observation(provider, exc)
@@ -222,7 +224,10 @@ def _normalize_observations(
     truncated_reason = None
     while True:
         if inspected_budget is not None and inspected_budget[0] <= 0:
-            truncated_reason = "inspected"
+            # These are builtin list/tuple iterators, so checking remaining length
+            # neither invokes provider code nor pulls beyond the inspected cap.
+            if length_hint(iterator):
+                truncated_reason = "inspected"
             break
         at_limit = (
             len(observations) >= remaining_count

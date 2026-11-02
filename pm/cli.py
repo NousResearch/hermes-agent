@@ -377,14 +377,14 @@ def cmd_install(args) -> int:
     without = list(dict.fromkeys(getattr(args, "without", None) or ()))
     if without:
         from pm.defaults import record_declined
-        from pm.extras import record_declined_extras
+        from pm.install import decline_extras
 
         # Persisted before anything installs: later bare installs and
         # `hermes update` read the same record, so the opt-out sticks. A
         # dropped extra leaves the recorded selection at this install's sync.
         declined_packages, declined_extras, _ = _split_without(without)
         record_declined(add=declined_packages)
-        record_declined_extras(add=declined_extras)
+        decline_extras(declined_extras)
     defaults: list[str] = []
     if not (args.names or extras):
         from pm.defaults import default_packages

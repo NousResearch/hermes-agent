@@ -715,11 +715,13 @@ exec "$@"
 """
 
 
-@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+@pytest.mark.platforms("linux")
 def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_path: Path) -> None:
     """A ``--depth 1`` fetch killed mid-transfer strands ``.git/shallow.lock`` and git refuses every
     later fetch ("shallow.lock': File exists") until the age sweep: the next update drops it once
     its killed run's git is gone, never while the fetch still runs."""
+    from tests.waiting import wait_until
+
     from hermes_cli.gitlock import release_dead_fetch_locks
 
     clone = tmp_path / "clone"
@@ -742,11 +744,11 @@ def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo
         proc = subprocess.Popen(fetch, cwd=clone, env={**os.environ, "GIT_CONFIG_GLOBAL": str(config)},
                                 stdout=subprocess.DEVNULL, stderr=sink)
     try:
-        deadline = time.monotonic() + 30
-        while not held.exists():
-            assert proc.poll() is None and time.monotonic() < deadline, \
-                f"the fetch never reached its pack transfer: {err.read_text(encoding='utf-8')}"
-            time.sleep(0.05)
+        def reached_pack_transfer() -> bool:
+            assert proc.poll() is None, f"the fetch exited early: {err.read_text(encoding='utf-8')}"
+            return held.exists()
+
+        wait_until(reached_pack_transfer, timeout=30, what="the fetch reaching its pack transfer")
         assert lock.exists(), "premise: the shallow fetch holds shallow.lock"
         assert release_dead_fetch_locks(clone) == [] and lock.exists(), "the reclaim took a live fetch's lock"
     finally:
@@ -764,7 +766,7 @@ def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo
     assert tips[0] == tips[1]
 
 
-@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+@pytest.mark.platforms("linux")
 def test_a_live_hermes_shallow_lock_holder_keeps_its_lock(repo: Path) -> None:
     """Hermes's own ``_ShallowLock`` holder runs no git between its git calls: the reclaim must
     still see it (it keeps the lock open), even after a killed update."""

@@ -241,6 +241,10 @@ interface UseTerminalSessionOptions {
   cwd: string
   /** Only the active tab is visible, owns the agent reader, and runs injections. */
   active: boolean
+  /** True when the terminal is shown in either the primary or split slot. */
+  visible?: boolean
+  /** CSS width token (e.g. '50%') so entering/leaving split mode triggers refit. */
+  layoutWidth?: CSSProperties['width']
   onAddSelectionToChat: (text: string, label?: string) => void
   /** Last observed shell cwd from the previous session; the fresh PTY starts
    *  here (falling back to `cwd`) so a prior `cd` survives a relaunch. */
@@ -388,6 +392,8 @@ export function useTerminalSession({
   id,
   cwd,
   active,
+  visible = active,
+  layoutWidth,
   onAddSelectionToChat,
   restoreCwd,
   reviveBuffer,
@@ -1153,7 +1159,7 @@ export function useTerminalSession({
   // redrawAllTerminals) — refreshing only this one leaves its siblings drawing
   // from wiped atlas pages.
   useEffect(() => {
-    if (!active || status !== 'open') {
+    if (!visible || status !== 'open') {
       return
     }
 
@@ -1162,11 +1168,14 @@ export function useTerminalSession({
 
       fitRef.current?.()
       redrawAllTerminals()
-      term?.focus()
+
+      if (active) {
+        term?.focus()
+      }
     })
 
     return () => cancelAnimationFrame(frame)
-  }, [active, status])
+  }, [active, visible, layoutWidth, status])
 
   // Flush a queued command (e.g. a provider-disconnect) into the live session.
   // Only the active tab runs it (so a broadcast doesn't fan out to every shell);

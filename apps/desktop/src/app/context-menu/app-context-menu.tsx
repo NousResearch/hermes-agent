@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
+import { $splitTerminalId, createTerminal, toggleSplitTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -88,6 +89,7 @@ function Item({
 function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, t: Translations): ReactNode[][] {
   const { terminal } = open
   const selection = terminal.getSelection()
+  const isSplit = Boolean($splitTerminalId.get())
 
   return [
     [
@@ -116,7 +118,16 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
         label={t.contextMenu.edit.selectAll}
         onSelect={() => terminal.selectAll()}
       />
-    ].filter(Boolean)
+    ].filter(Boolean),
+    [
+      <Item
+        icon="split-horizontal"
+        key="terminal-split"
+        label={isSplit ? 'Unsplit Terminal' : 'Split Terminal Side-by-Side'}
+        onSelect={() => toggleSplitTerminal()}
+      />,
+      <Item icon="add" key="terminal-new" label={t.rightSidebar.terminalNew} onSelect={() => createTerminal()} />
+    ]
   ]
 }
 

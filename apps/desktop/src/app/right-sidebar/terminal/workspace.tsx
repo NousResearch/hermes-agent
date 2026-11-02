@@ -1,12 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { type CSSProperties, useEffect } from 'react'
 
 import { $backgroundStatusBySession } from '@/store/composer-status'
 
 import { seedAgentTerminalCommand, syncAgentTerminalSnapshot } from './agent-terminal-stream'
 import { setActiveTerminalId } from './buffer'
 import { AgentTerminalInstance, TerminalInstance } from './instance'
-import { $activeTerminalId, $terminals, ensureAgentTerminal } from './terminals'
+import { $activeTerminalId, $splitTerminalId, $terminals, ensureAgentTerminal } from './terminals'
 
 interface TerminalWorkspaceProps {
   onAddSelectionToChat: (text: string, label?: string) => void
@@ -19,7 +19,21 @@ interface TerminalWorkspaceProps {
 export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspaceProps) {
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)
+  const splitId = useStore($splitTerminalId)
   const background = useStore($backgroundStatusBySession)
+
+  const isSplit = Boolean(
+    splitId &&
+    activeId &&
+    splitId !== activeId &&
+    terminals.some(t => t.id === splitId) &&
+    terminals.some(t => t.id === activeId)
+  )
+
+  const splitTerminals = isSplit ? terminals.filter(t => t.id === activeId || t.id === splitId).slice(0, 2) : []
+
+  const leftId = splitTerminals[0]?.id
+  const rightId = splitTerminals[1]?.id
 
   // Mirror the tab selection into the agent reader (read_terminal reads it).
   useEffect(() => {
@@ -46,21 +60,57 @@ export function TerminalWorkspace({ onAddSelectionToChat }: TerminalWorkspacePro
 
   return (
     <>
-      {terminals.map(term =>
-        term.kind === 'agent' ? (
-          <AgentTerminalInstance active={term.id === activeId} id={term.id} key={term.id} procId={term.procId!} />
+      {terminals.map(term => {
+        const isActive = term.id === activeId
+        let visible = isActive
+        let style: CSSProperties | undefined
+
+        if (isSplit) {
+          const topBorder = isActive ? '2px solid var(--ui-stroke-primary)' : '2px solid transparent'
+
+          if (term.id === leftId) {
+            visible = true
+            style = {
+              left: 0,
+              width: 'calc(50% - 1px)',
+              right: 'auto',
+              borderRight: '1px solid var(--ui-stroke-secondary)',
+              borderTop: topBorder
+            }
+          } else if (term.id === rightId) {
+            visible = true
+            style = {
+              left: '50%',
+              width: '50%',
+              right: 'auto',
+              borderTop: topBorder
+            }
+          }
+        }
+
+        return term.kind === 'agent' ? (
+          <AgentTerminalInstance
+            active={isActive}
+            id={term.id}
+            key={term.id}
+            procId={term.procId!}
+            style={style}
+            visible={visible}
+          />
         ) : (
           <TerminalInstance
-            active={term.id === activeId}
+            active={isActive}
             cwd={term.cwd}
             id={term.id}
             key={term.id}
             onAddSelectionToChat={onAddSelectionToChat}
             restoreCwd={term.restoreCwd}
             reviveBuffer={term.reviveBuffer}
+            style={style}
+            visible={visible}
           />
         )
-      )}
+      })}
     </>
   )
 }

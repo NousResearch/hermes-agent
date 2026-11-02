@@ -242,9 +242,25 @@ export const $terminals = atom<readonly TerminalEntry[]>(
   restored.terminals.map(term => ({ ...term, kind: 'user' as const }))
 )
 export const $activeTerminalId = atom<string | null>(restored.activeTerminalId)
+export const $splitTerminalId = atom<string | null>(null)
 
 $terminals.subscribe(list => persistTerminals(list, $activeTerminalId.get()))
 $activeTerminalId.subscribe(active => persistTerminals($terminals.get(), active))
+
+function activateTerminalWithSplit(nextActiveId: string): void {
+  const prevActiveId = $activeTerminalId.get()
+  const currentSplitId = $splitTerminalId.get()
+
+  if (nextActiveId === prevActiveId) {
+    return
+  }
+
+  if (currentSplitId && nextActiveId === currentSplitId) {
+    $splitTerminalId.set(prevActiveId && prevActiveId !== nextActiveId ? prevActiveId : null)
+  }
+
+  $activeTerminalId.set(nextActiveId)
+}
 
 export const $activeTerminal = computed(
   [$terminals, $activeTerminalId],
@@ -317,7 +333,7 @@ export function ensureTerminal(): void {
 
 export function selectTerminal(id: string): void {
   if ($terminals.get().some(term => term.id === id)) {
-    $activeTerminalId.set(id)
+    activateTerminalWithSplit(id)
   }
 }
 
@@ -356,7 +372,7 @@ $currentCwd.listen(cwd => {
   const match = list.find(term => term.kind === 'user' && terminalCwd(term) === target)
 
   if (match) {
-    $activeTerminalId.set(match.id)
+    activateTerminalWithSplit(match.id)
   }
 })
 
@@ -373,7 +389,56 @@ export function cycleTerminal(direction: 1 | -1): void {
     list.findIndex(term => term.id === $activeTerminalId.get())
   )
 
-  $activeTerminalId.set(list[(current + direction + list.length) % list.length].id)
+  activateTerminalWithSplit(list[(current + direction + list.length) % list.length].id)
+}
+
+/** Toggle split terminal mode (view two terminals side-by-side). */
+export function toggleSplitTerminal(targetId?: string): void {
+  const currentSplit = $splitTerminalId.get()
+  let activeId = $activeTerminalId.get()
+  let list = $terminals.get()
+
+  if (!activeId || !list.some(t => t.id === activeId)) {
+    activeId = list[0]?.id ?? createTerminal()
+    list = $terminals.get()
+  }
+
+  if (targetId && currentSplit === targetId) {
+    $splitTerminalId.set(null)
+
+    return
+  }
+
+  if (currentSplit && !targetId) {
+    $splitTerminalId.set(null)
+
+    return
+  }
+
+  if (targetId) {
+    if (targetId === activeId) {
+      const fallback = list.find(t => t.id !== activeId)
+
+      if (fallback) {
+        $splitTerminalId.set(fallback.id)
+      }
+    } else if (list.some(t => t.id === targetId)) {
+      $splitTerminalId.set(targetId)
+    }
+
+    return
+  }
+
+  const other = list.find(t => t.id !== activeId)
+
+  if (other) {
+    $splitTerminalId.set(other.id)
+  } else {
+    const primaryId = activeId
+    const newTermId = createTerminal()
+    $activeTerminalId.set(primaryId)
+    $splitTerminalId.set(newTermId)
+  }
 }
 
 /** Drop a terminal. Focus slides to the neighbor that fills its slot; closing
@@ -391,6 +456,15 @@ export function closeTerminal(id: string): void {
 
   if ($activeTerminalId.get() === id) {
     $activeTerminalId.set((next[index] ?? next[index - 1])?.id ?? null)
+  }
+
+  const nextActiveId = $activeTerminalId.get()
+  const currentSplitId = $splitTerminalId.get()
+
+  if (currentSplitId === id || next.length < 2) {
+    $splitTerminalId.set(null)
+  } else if (currentSplitId && currentSplitId === nextActiveId) {
+    $splitTerminalId.set(next.find(t => t.id !== nextActiveId)?.id ?? null)
   }
 
   if (!next.length) {
@@ -428,6 +502,7 @@ export function closeAllTerminals(): void {
     return
   }
 
+  $splitTerminalId.set(null)
   $terminals.set([])
   $activeTerminalId.set(null)
   setTerminalTakeover(false)
@@ -437,6 +512,7 @@ export function closeOtherTerminals(id: string): void {
   const keep = $terminals.get().find(term => term.id === id)
 
   if (keep) {
+    $splitTerminalId.set(null)
     $terminals.set([keep])
     $activeTerminalId.set(keep.id)
   }

@@ -19,13 +19,15 @@ import { setTerminalTakeover } from '../store'
 
 import {
   $activeTerminalId,
+  $splitTerminalId,
   $terminals,
   closeAllTerminals,
   closeOtherTerminals,
   closeTerminal,
   createTerminal,
   selectTerminal,
-  type TerminalEntry
+  type TerminalEntry,
+  toggleSplitTerminal
 } from './terminals'
 
 const RAIL_ACTION =
@@ -38,6 +40,7 @@ export function TerminalRail() {
   const { t } = useI18n()
   const terminals = useStore($terminals)
   const activeId = useStore($activeTerminalId)
+  const splitId = useStore($splitTerminalId)
   const bindings = useStore($bindings)
   const toggleHint = bindings['view.showTerminal']?.[0]
   const newHint = bindings['view.newTerminal']?.[0]
@@ -51,6 +54,36 @@ export function TerminalRail() {
       // for a tab can't drag in the file-browser/review panel.
       data-suppress-pane-reveal=""
     >
+      <div className="flex w-full shrink-0 flex-col items-center gap-0.5 border-b border-(--ui-stroke-quaternary) py-1">
+        <Tip
+          label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
+          placement="right-rail"
+        >
+          <button
+            aria-label={t.rightSidebar.terminalNew}
+            className={cn(RAIL_ACTION, 'size-7 text-(--ui-text-secondary) hover:text-foreground')}
+            onClick={() => createTerminal()}
+            type="button"
+          >
+            <Codicon name="add" size="0.875rem" />
+          </button>
+        </Tip>
+        <Tip label={splitId ? 'Unsplit' : 'Split Side-by-Side'} placement="right-rail">
+          <button
+            aria-label={splitId ? 'Unsplit' : 'Split Side-by-Side'}
+            className={cn(
+              RAIL_ACTION,
+              'size-7',
+              splitId ? 'bg-(--chrome-action-hover) text-foreground' : 'text-(--ui-text-secondary)'
+            )}
+            onClick={() => toggleSplitTerminal()}
+            type="button"
+          >
+            <Codicon name="split-horizontal" size="0.875rem" />
+          </button>
+        </Tip>
+      </div>
+
       <ul
         aria-label={t.rightSidebar.terminalsAria}
         className="flex min-h-0 flex-1 flex-col items-center gap-0.5 self-stretch overflow-y-auto overflow-x-hidden overscroll-contain py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -61,26 +94,12 @@ export function TerminalRail() {
             active={term.id === activeId}
             canCloseOthers={terminals.length > 1}
             index={index}
+            isSplit={term.id === splitId}
             key={term.id}
             term={term}
             toggleHint={toggleHint}
           />
         ))}
-        <li className="flex w-full justify-center">
-          <Tip
-            label={<TipHintLabel hint={newHint && formatCombo(newHint)} text={t.rightSidebar.terminalNew} />}
-            placement="right-rail"
-          >
-            <button
-              aria-label={t.rightSidebar.terminalNew}
-              className={cn(RAIL_ACTION, 'size-7 text-(--ui-text-quaternary)')}
-              onClick={() => createTerminal()}
-              type="button"
-            >
-              <Codicon name="add" size="0.8125rem" />
-            </button>
-          </Tip>
-        </li>
       </ul>
 
       <div className="flex shrink-0 flex-col items-center pb-1.5">
@@ -103,22 +122,26 @@ interface TerminalRailItemProps {
   active: boolean
   canCloseOthers: boolean
   index: number
+  isSplit: boolean
   term: TerminalEntry
   toggleHint?: string
 }
 
-function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: TerminalRailItemProps) {
+function TerminalRailItem({ active, canCloseOthers, index, isSplit, term, toggleHint }: TerminalRailItemProps) {
   const { t } = useI18n()
-  const label = `${index + 1}. ${term.title}`
+  const label = `${index + 1}. ${term.title}${isSplit ? ' (split)' : ''}`
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
-          {active && (
+          {(active || isSplit) && (
             <span
               aria-hidden="true"
-              className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
+              className={cn(
+                'absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm',
+                active ? 'bg-(--ui-stroke-primary)' : 'bg-(--ui-stroke-secondary)'
+              )}
             />
           )}
           <Tip
@@ -127,10 +150,10 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
           >
             <button
               aria-label={label}
-              aria-selected={active}
+              aria-selected={active || isSplit}
               className={cn(
                 'grid size-7 place-items-center rounded-md transition-colors',
-                active
+                active || isSplit
                   ? 'bg-(--chrome-action-hover) text-foreground'
                   : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
               )}
@@ -141,7 +164,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
               type="button"
             >
               <Codicon
-                className={cn(term.kind === 'agent' && !active && 'text-primary')}
+                className={cn(term.kind === 'agent' && !active && !isSplit && 'text-primary')}
                 name={term.kind === 'agent' ? 'agent' : 'terminal'}
                 size="0.875rem"
               />
@@ -150,6 +173,10 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
         </li>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem onSelect={() => toggleSplitTerminal(term.id)}>
+          {isSplit ? 'Close Split' : 'Split Side-by-Side'}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => closeTerminal(term.id)}>{t.common.close}</ContextMenuItem>
         <ContextMenuItem disabled={!canCloseOthers} onSelect={() => closeOtherTerminals(term.id)}>
           {t.rightSidebar.terminalCloseOthers}

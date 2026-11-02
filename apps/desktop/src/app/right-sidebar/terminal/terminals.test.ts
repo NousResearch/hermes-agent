@@ -373,3 +373,73 @@ describe('shared WebGL atlas refresh fan-out', () => {
     }
   })
 })
+
+describe('terminal split state machine', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('splits a single terminal tab by spawning a second tab without activeId === splitId collision', async () => {
+    const { $activeTerminalId, $splitTerminalId, $terminals, createTerminal, toggleSplitTerminal } =
+      await loadTerminalStore()
+
+    const firstId = createTerminal('/repo')
+    expect($terminals.get()).toHaveLength(1)
+    expect($activeTerminalId.get()).toBe(firstId)
+    expect($splitTerminalId.get()).toBeNull()
+
+    toggleSplitTerminal()
+
+    const all = $terminals.get()
+    expect(all).toHaveLength(2)
+    const secondId = all[1]!.id
+    expect(secondId).not.toBe(firstId)
+    expect($activeTerminalId.get()).toBe(firstId)
+    expect($splitTerminalId.get()).toBe(secondId)
+    expect($activeTerminalId.get()).not.toBe($splitTerminalId.get())
+  })
+
+  it('swaps active and split IDs when selecting or cycling to the secondary split pane so the split never collapses', async () => {
+    const {
+      $activeTerminalId,
+      $splitTerminalId,
+      closeOtherTerminals,
+      closeTerminal,
+      createTerminal,
+      cycleTerminal,
+      selectTerminal,
+      toggleSplitTerminal
+    } = await loadTerminalStore()
+
+    const firstId = createTerminal('/repo/a')
+    const secondId = createTerminal('/repo/b')
+    selectTerminal(firstId)
+    toggleSplitTerminal()
+
+    expect($activeTerminalId.get()).toBe(firstId)
+    expect($splitTerminalId.get()).toBe(secondId)
+
+    // Clicking the right-hand (split) pane focuses it while keeping the left pane as the split partner
+    selectTerminal(secondId)
+    expect($activeTerminalId.get()).toBe(secondId)
+    expect($splitTerminalId.get()).toBe(firstId)
+
+    // Cycling between 2 split tabs also swaps without collapsing
+    cycleTerminal(1)
+    expect($activeTerminalId.get()).toBe(firstId)
+    expect($splitTerminalId.get()).toBe(secondId)
+
+    // closeOtherTerminals clears the split state
+    closeOtherTerminals(firstId)
+    expect($splitTerminalId.get()).toBeNull()
+
+    // Re-split and close the active pane: the remaining split pane becomes active and split clears
+    toggleSplitTerminal()
+    const newSplitId = $splitTerminalId.get()!
+    expect(newSplitId).toBeTruthy()
+    closeTerminal(firstId)
+    expect($activeTerminalId.get()).toBe(newSplitId)
+    expect($splitTerminalId.get()).toBeNull()
+  })
+})

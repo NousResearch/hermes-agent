@@ -579,7 +579,7 @@ Precedence is `block` > `approve` > no directive, regardless of registration ord
 return {"action": "modify", "args": {"new_string": "fixed content"}}
 ```
 
-The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. If two hooks modify the same key, the later hook wins.
+The returned `args` dictionary is shallow-merged over the original tool arguments before the tool executes. Multiple `modify` hooks accumulate — each hook's keys are merged into one accumulated dict built from the original args, so hook A changing `path` and hook B changing `content` both survive. Each callback receives the original arguments, not the accumulated modifications. If two hooks modify the same key, the later hook wins. Conflicting values produce a warning naming the tool and argument keys, without logging the values; identical values and disjoint keys do not warn.
 
 Shell hooks also accept the Claude Code-compatible format:
 

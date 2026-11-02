@@ -39,6 +39,7 @@ from hermes_cli.plugins_manifest import (
     manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
     validate_config_schema,
 )
+from hermes_cli.plugins_tool_directives import merge_pre_tool_modification
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
     discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
@@ -1926,19 +1927,16 @@ def _get_pre_tool_call_directive_details(
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
     )
     modified_args: Optional[dict[str, Any]] = None
+    modified_keys: set = set()
     first_approve: Optional[tuple[Optional[str], Optional[str]]] = None  # (message, rule_key)
     for result in hook_results:
         if not isinstance(result, dict):
             continue
         action = result.get("action")
-        # "modify" — transform tool_input before dispatch. Processed before the block/approve gate
-        # so modify directives are visible even when a later hook blocks. Each modify directive
-        # shallow-merges its keys into one accumulated dict built from the original args.
+        # Accumulate modifications before the block/approve gate, without chaining callback payloads.
         if action == "modify":
-            partial = result.get("args")
-            if isinstance(partial, dict) and partial:
-                modified_args = {**(modified_args if modified_args is not None else
-                                    (args if isinstance(args, dict) else {})), **partial}
+            modified_args = merge_pre_tool_modification(
+                tool_name, args, modified_args, result.get("args"), modified_keys)
             continue
         if action not in ("block", "approve"):
             continue

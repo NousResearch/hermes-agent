@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "installed_at": "2026-08-24",
+  "root": "/Volumes/Storage Unit/Application-Data/Continuity-Pilot/hermes-20260824",
+  "tools": {
+    "basic-memory": {
+      "version": "0.22.1",
+      "source": "https://github.com/basicmachines-co/basic-memory/releases/tag/v0.22.1"
+    },
+    "beads": {
+      "version": "1.0.4",
+      "source": "https://github.com/gastownhall/beads/releases/tag/v1.0.4",
+      "darwin-arm64-sha256": "9f451cd313cd2593ce17c9c727377f286eabe76150a50a1fbc98355b6ea2496b"
+    },
+    "spec-kit": {
+      "version": "1.0.1",
+      "source": "https://github.com/github/spec-kit/releases/tag/v1.0.1"
+    }
+  }
+}

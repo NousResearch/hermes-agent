@@ -100,8 +100,9 @@ jobs:
       - name: Run targeted updater and boundary tests
         env:
           PYTHONPATH: ${{ runner.temp }}/hermes-test-bootstrap:${{ github.workspace }}
+          PYTEST_PLUGINS: hermes_ci_plugin
         run: |
-          .venv/bin/python -m pytest -q -p hermes_ci_plugin \
+          .venv/bin/python -m pytest -q -o addopts= \
             tests/hermes_cli/test_update_diverged_rescue_ref.py \
             tests/hermes_cli/test_update_existing_branch_baseline.py \
             tests/hermes_cli/test_update_head_moved_gate.py \

@@ -451,11 +451,14 @@ def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
         return False  # a free-tier identity has no refresh token; nothing to merge into an OAuth state
     refresh_changed = shared_refresh.strip() != str(state.get("refresh_token") or "").strip()
     order = _nous_state_order(shared, state)
-    same = _same_known_nous_identity(shared, state)
+    # A quarantined profile has no access token, so its identity reads as unknown: it must still
+    # recover from a sibling's re-login (ca6513542d5), so an empty profile adopts on order alone.
+    known_same = _same_known_nous_identity(shared, state)
+    same = known_same or not _nonempty_str(state.get("access_token"))
     # Unstamped on both sides: no evidence either way, keep the legacy "a different token wins".
     # Never across identities: a profile signed in as one account keeps it (profiles are islands).
     if not (same and (order == 1 or (order is None and refresh_changed))):
-        if order == -1 and refresh_changed and same:
+        if order == -1 and refresh_changed and known_same:
             _oauth_trace(
                 "nous_shared_store_older_than_profile",
                 shared_refresh_token_fp=_token_fingerprint(shared_refresh),

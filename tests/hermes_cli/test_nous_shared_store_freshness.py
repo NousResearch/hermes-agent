@@ -159,3 +159,15 @@ def test_a_profile_never_adopts_another_accounts_newer_shared_login(homes):
     auth_mod.resolve_nous_access_token()
     assert _profile_refresh_token(hermes_home) == "RTA"
     assert auth_nous._read_shared_nous_state()["refresh_token"] == "RTB"
+
+
+def test_a_quarantined_profile_recovers_from_a_siblings_relogin(homes):
+    """A quarantined profile has no tokens (so no known identity) and must still adopt the fresh login."""
+    hermes_home, _ = homes
+    quarantined = {k: v for k, v in _state("K-old", "RT-old", issued=-7200).items()
+                   if k not in {"access_token", "refresh_token", "expires_at", "expires_in", "obtained_at",
+                                "agent_key", "agent_key_expires_at"}}
+    quarantined["last_auth_error"] = {"provider": "nous", "code": "invalid_grant", "reason": "test"}
+    _seed(hermes_home, quarantined, _state("K-login", "RT-login", issued=-5))
+    auth_mod.resolve_nous_access_token()
+    assert _profile_refresh_token(hermes_home) == "RT-login"

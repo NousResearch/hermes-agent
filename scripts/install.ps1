@@ -567,7 +567,10 @@ function Test-PinnedGitHttpsReady([string]$GitExe) {
         return $false
     }
     if ($LASTEXITCODE -or -not $exec) { return $false }
-    return (Test-Path -LiteralPath (Join-Path ("$exec".Trim()) 'git-remote-https.exe'))
+    # No .exe suffix when pwsh drives a POSIX git (the Linux installer tests).
+    $core = "$exec".Trim()
+    return ((Test-Path -LiteralPath (Join-Path $core 'git-remote-https.exe')) -or
+            (Test-Path -LiteralPath (Join-Path $core 'git-remote-https')))
 }
 
 # A file held without delete sharing (Defender scanning fresh files, a

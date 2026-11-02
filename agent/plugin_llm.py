@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
+from agent.plugin_llm_stream import PluginLlmStreamError, PluginLlmStreamEvent
+
 logger = logging.getLogger(__name__)
 
 
@@ -495,6 +497,21 @@ class PluginLlm:
         agent, kw = self._gate(provider, model, agent_id, profile, task, None, temperature, max_tokens, timeout, spec)
         return self._finish("acomplete_structured", agent, kw, await self._invoke_async(kw), purpose, spec)
 
+    def astream(
+        self, messages: list[dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
+        temperature: Optional[float] = None, max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None, agent_id: Optional[str] = None, profile: Optional[str] = None,
+        purpose: Optional[str] = None, task: Optional[str] = None, max_output_chars: int = 1_000_000,
+    ) -> Any:
+        """One host-owned incremental stream; use ``async with`` and ``async for``.
+
+        The completion trust/task gates also apply here. Unsupported transports
+        fail explicitly, never downgrade to a buffered completion.
+        """
+        from agent.plugin_llm_stream import PluginLlmAsyncStream
+        agent, kw = self._gate(provider, model, agent_id, profile, task, messages, temperature, max_tokens, timeout)
+        return PluginLlmAsyncStream(self, agent, kw, purpose, max_output_chars)
+
     def _gate(
         self, provider: Optional[str], model: Optional[str], agent_id: Optional[str], profile: Optional[str],
         task: Optional[str], messages: Optional[list[dict[str, Any]]], temperature: Optional[float],
@@ -505,11 +522,8 @@ class PluginLlm:
         passes). Returns the effective agent id and the call kwargs, in the documented
         order: messages, provider_override, model_override, profile_override,
         temperature, max_tokens, timeout, extra_body, task."""
-        policy = self._policy_loader(self._plugin_id)
-        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
-        eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
-            policy, requested_provider=provider, requested_model=model, requested_agent_id=agent_id,
-            requested_profile=profile)
+        eff_task, (eff_provider, eff_model, eff_agent, eff_profile) = self._validate_access(
+            provider, model, agent_id, profile, task)
         extra_body = None
         if spec is not None:
             messages = _build_structured_messages(**spec)
@@ -517,6 +531,15 @@ class PluginLlm:
         return eff_agent, dict(messages=messages, provider_override=eff_provider, model_override=eff_model,
                                profile_override=eff_profile, temperature=temperature, max_tokens=max_tokens,
                                timeout=timeout, extra_body=extra_body, task=eff_task)
+
+    def _validate_access(self, provider, model, agent_id, profile, task):
+        """Re-read current policy and task ownership without rebuilding request inputs."""
+        policy = self._policy_loader(self._plugin_id)
+        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
+        overrides = _check_overrides(
+            policy, requested_provider=provider, requested_model=model,
+            requested_agent_id=agent_id, requested_profile=profile)
+        return eff_task, overrides
 
     def _finish(
         self, name: str, agent_id: Optional[str], kw: dict[str, Any], invoked: tuple[str, str, Any],
@@ -592,6 +615,8 @@ __all__ = [
     "PluginLlmCompleteResult",
     "PluginLlmImageInput",
     "PluginLlmInput",
+    "PluginLlmStreamError",
+    "PluginLlmStreamEvent",
     "PluginLlmStructuredResult",
     "PluginLlmTextInput",
     "PluginLlmTrustError",

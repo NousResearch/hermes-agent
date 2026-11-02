@@ -320,6 +320,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-brainchain',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',

@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: worktable
+description: >-
+  Docs, HTML Docs, Records, annotations, and threads in your Worktable,
+  shared with people and other agents.
+source: https://docs.worktable.dev/reference/mcp/
+
+# Worktable Cloud's hosted remote MCP (Streamable HTTP, URL-only). OAuth 2.1
+# through WorkOS AuthKit: RFC 9728 protected-resource metadata, then AS
+# metadata with Client ID Metadata Documents and dynamic registration. Hermes's
+# MCP client and mcp_oauth_manager handle discovery, PKCE, token exchange, and
+# refresh. Verified with `hermes mcp login` on Hermes v0.22.6.
+transport:
+  type: http
+  url: https://app.worktable.cloud/api/mcp
+
+auth:
+  type: oauth
+
+# The delivery tools are for agent runtimes that answer thread messages (the
+# Worktable plugin for Hermes uses them through ctx.call_mcp); a chat agent
+# has no use for them.
+tools:
+  default_excluded:
+    - worktable_delivery_claim
+    - worktable_delivery_report
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - worktable
+  hosts:
+    - worktable.cloud
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Worktable Cloud
+  (or run `hermes mcp login worktable`). Approve access, then restart the
+  session so tools load.
+
+  For a self-hosted Worktable, or to have Hermes answer Worktable thread
+  messages, use the Worktable plugin for Hermes instead:
+  https://docs.worktable.dev/agents/connections/

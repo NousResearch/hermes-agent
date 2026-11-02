@@ -2,16 +2,7 @@ name: surplus-intelligence-seller
 repo: https://github.com/ProlowN/surplus-intelligence-seller
 sha: 9e2ffb995194e41029fbea9fe1c4b18a10aad2ff
 subdir: ""
-description: >-
-  Sell the full daily Venice DIEM allowance on Surplus Intelligence before
-  00:00 UTC. Seller-only and Venice-only: lists DIEM-funded Venice inference
-  as Surplus offers, rebalances discount and caps through the epoch, and
-  deepens price late in the day so leftover DIEM (which does not roll over)
-  is avoided. Earnings settle in USDC on Base. Disclosure — Venice API key
-  is sent to Surplus Intelligence (encrypted at rest) so Surplus can proxy
-  buyer traffic; Surplus seller API and Venice billing/rate-limit endpoints
-  are called to manage offers and read remaining DIEM; SIWE mint uses a
-  throwaway wallet whose private key is discarded after signing.
+description: "Sell the full daily Venice DIEM allowance on Surplus Intelligence before 00:00 UTC. Seller-only and Venice-only: lists DIEM-funded Venice inference as Surplus offers, rebalances discount and caps through the epoch, and deepens price late in the day so leftover DIEM (which does not roll over) is avoided. Earnings settle in USDC on Base. Disclosure — Venice API key is sent to Surplus Intelligence (encrypted at rest) so Surplus can proxy buyer traffic; Surplus seller API and Venice billing/rate-limit endpoints are called to manage offers and read remaining DIEM; the tools create, reprice, pause and cancel offers without an approval prompt (price floor 0.10x), and if the Venice account also holds paid USD credit, buyer traffic past the DIEM can bill it unless the key's USD limit is 0; SIWE mint uses a throwaway wallet whose private key is discarded after signing, and the minted seller key is shown in the conversation."
 maintainer: ProlowN
 tier: community
 category: tools

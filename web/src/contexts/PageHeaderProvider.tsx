@@ -5,6 +5,35 @@ import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
+function titleRowLayout(afterTitle: ReactNode, isEnvRoute: boolean) {
+  if (afterTitle && isEnvRoute) {
+    return "flex-col items-start sm:flex-row sm:items-center";
+  }
+  if (afterTitle) {
+    return "flex-row flex-wrap items-center";
+  }
+  return "flex-row items-center";
+}
+
+function titleWidth(afterTitle: ReactNode, isEnvRoute: boolean) {
+  if (afterTitle && isEnvRoute) {
+    return "max-w-full sm:min-w-0 sm:shrink sm:truncate";
+  }
+  if (afterTitle) {
+    return "shrink truncate";
+  }
+  return "truncate";
+}
+
+function canUseNativeFullscreen() {
+  return (
+    "requestFullscreen" in document.documentElement &&
+    "exitFullscreen" in document &&
+    !(/Android/i.test(navigator.userAgent) &&
+      /Firefox/i.test(navigator.userAgent))
+  );
+}
+
 export function PageHeaderProvider({
   children,
   pluginTabs,
@@ -22,12 +51,6 @@ export function PageHeaderProvider({
   );
 
   const [isFocusMode, setIsFocusMode] = useState(false);
-
-  // Android Firefox on Fire OS may terminate during native fullscreen.
-  // Use an in-page focus mode instead.
-  const isAndroidFirefox =
-    /Android/i.test(navigator.userAgent) &&
-    /Firefox/i.test(navigator.userAgent);
 
   useEffect(() => {
     const update = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -117,21 +140,13 @@ export function PageHeaderProvider({
             <div
               className={cn(
                 "flex min-w-0 flex-1 gap-2 sm:gap-3",
-                afterTitle && isEnvRoute
-                  ? "flex-col items-start sm:flex-row sm:items-center"
-                  : afterTitle
-                    ? "flex-row flex-wrap items-center"
-                    : "flex-row items-center",
+                titleRowLayout(afterTitle, isEnvRoute),
               )}
             >
               <h1
                 className={cn(
                   "font-expanded min-w-0 text-sm font-bold tracking-[0.08em] text-midground",
-                  afterTitle && isEnvRoute
-                    ? "max-w-full sm:min-w-0 sm:shrink sm:truncate"
-                    : afterTitle
-                      ? "shrink truncate"
-                      : "truncate",
+                  titleWidth(afterTitle, isEnvRoute),
                 )}
               >
                 {displayTitle}
@@ -160,8 +175,7 @@ export function PageHeaderProvider({
               Focus Mode
             </button>
 
-            {"requestFullscreen" in document.documentElement &&
-              "exitFullscreen" in document && !isAndroidFirefox && (
+            {canUseNativeFullscreen() && (
                 <button
                   type="button"
                   onClick={toggleFullscreen}

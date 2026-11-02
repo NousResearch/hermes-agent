@@ -1935,6 +1935,8 @@ The hook fires before Hermes decides, and the due flags are the values that deci
 
 ### Run a job when Hermes is idle (`ctx.register_idle_task`)
 
+Experimental: the signature may change in a later release ([details](../plugin-llm-access.md#idle-tasks-ctxregister_idle_task)).
+
 Some work has no turn to hang off: re-scoring your plugin's data once a day, suggesting a cleanup, compacting a cache. `ctx.register_idle_task` runs it on the same scheduler as the skill [curator](../../user-guide/features/curator.md), from the same places (gateway housekeeping for every served profile, CLI/TUI startup, the `hermes serve` maintenance tick):
 
 ```python

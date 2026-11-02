@@ -58,18 +58,27 @@ const START_TIMEOUT = 10_000
 
 // 4401 is what sign-out closes a tab's sockets with; no redial succeeds until the tab signs in again.
 const CLOSE_SIGNALS: Record<number, string> = {
-  4401: 'signed-out', 4403: 'denied', 4409: 'superseded', 4410: 'expired', 1013: 'capacity'
+  4401: 'signed-out',
+  4403: 'denied',
+  4409: 'superseded',
+  4410: 'expired',
+  1013: 'capacity'
 }
 
 class TerminalConnectionError extends Error {
-  constructor(message: string, readonly signal = 'disconnected') {
+  constructor(
+    message: string,
+    readonly signal = 'disconnected'
+  ) {
     super(message)
   }
 }
 
 /** Only an attachment that stayed up resets the retry ladder (shared stable-open rule). */
 function settleOpen(state: TerminalState): void {
-  if (isStableOpen(state.openedAt)) {state.retry = 0}
+  if (isStableOpen(state.openedAt)) {
+    state.retry = 0
+  }
   state.openedAt = null
 }
 
@@ -77,11 +86,16 @@ function settleOpen(state: TerminalState): void {
  * unchanged size sends no SIGWINCH: step one row away first so the program redraws. The server
  * holds the step back until the program has answered the step (web_host_terminal_sessions._resize). */
 function sendResumeSize(socket: WebSocket, state: TerminalState, trimmed?: boolean): void {
-  if (trimmed) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows > 1 ? state.rows - 1 : state.rows + 1}]`)}
+  if (trimmed) {
+    socket.send(`\u001b[RESIZE:${state.cols};${state.rows > 1 ? state.rows - 1 : state.rows + 1}]`)
+  }
   socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)
 }
 
-async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTerminalOptions['websocketUrl']): Promise<boolean> {
+async function closeSavedShell(
+  saved: SavedTerminal,
+  websocketUrl: BrowserTerminalOptions['websocketUrl']
+): Promise<boolean> {
   const url = new URL(await websocketUrl(saved.profile))
   url.searchParams.set('attach', saved.terminalId)
   url.searchParams.set('action', 'close')
@@ -98,12 +112,16 @@ async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTermin
     }, START_TIMEOUT)
 
     socket.onmessage = event => {
-      if (typeof event.data !== 'string' || !event.data.startsWith(META)) {return}
+      if (typeof event.data !== 'string' || !event.data.startsWith(META)) {
+        return
+      }
 
       try {
         const meta = JSON.parse(event.data.slice(META.length)) as { closed?: boolean; terminalId?: string }
         acknowledged = meta.closed === true && meta.terminalId === saved.terminalId
-      } catch { /* A close is confirmed only by valid metadata and normal closure. */ }
+      } catch {
+        /* A close is confirmed only by valid metadata and normal closure. */
+      }
     }
 
     socket.onerror = () => {
@@ -114,7 +132,9 @@ async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTermin
     socket.onclose = event => {
       window.clearTimeout(timer)
 
-      if (event.code === 1000 && acknowledged) {resolve(true)} else {
+      if (event.code === 1000 && acknowledged) {
+        resolve(true)
+      } else {
         reject(new Error(event.reason || 'Terminal close was not confirmed; retry closing this tab'))
       }
     }
@@ -146,11 +166,15 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
   url.searchParams.set('cols', String(state.cols))
   url.searchParams.set('rows', String(state.rows))
 
-  if (state.cwd) {url.searchParams.set('cwd', state.cwd)}
+  if (state.cwd) {
+    url.searchParams.set('cwd', state.cwd)
+  }
 
-  if (state.terminalId) {url.searchParams.set('attach', state.terminalId)}
+  if (state.terminalId) {
+    url.searchParams.set('attach', state.terminalId)
+  }
   const resuming = Boolean(state.terminalId)
-  const socket = state.socket = new WebSocket(url)
+  const socket = (state.socket = new WebSocket(url))
   socket.binaryType = 'arraybuffer'
   const decoder = new TextDecoder()
 
@@ -161,7 +185,9 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     const current = () => state.generation === generation && !context.isPaused() && !state.stopped
 
     const fail = (error: Error) => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
       settled = true
       window.clearTimeout(timer)
       state.cancelDial = undefined
@@ -177,18 +203,26 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     state.cancelDial = () => fail(new TerminalConnectionError('Terminal attachment cancelled'))
 
     const output = (data: string) => {
-      if (!current()) {return}
+      if (!current()) {
+        return
+      }
       emitData(state, data, replayNext)
       replayNext = false
     }
 
     socket.onmessage = event => {
-      if (!current()) {return}
+      if (!current()) {
+        return
+      }
 
       if (typeof event.data === 'string' && event.data.startsWith(META)) {
         try {
           const meta = JSON.parse(event.data.slice(META.length)) as {
-            shell?: string; cwd?: string; terminalId?: string; reconnected?: boolean; truncated?: boolean
+            shell?: string
+            cwd?: string
+            terminalId?: string
+            reconnected?: boolean
+            truncated?: boolean
           }
 
           if (typeof meta.shell !== 'string' || !meta.shell.trim()) {
@@ -201,7 +235,9 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
 
           state.shell = meta.shell
 
-          if (typeof meta.cwd === 'string') {state.cwd = meta.cwd}
+          if (typeof meta.cwd === 'string') {
+            state.cwd = meta.cwd
+          }
 
           if (typeof meta.terminalId === 'string' && meta.terminalId) {
             state.terminalId = meta.terminalId
@@ -216,14 +252,21 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
             if (resuming) {
               // Rebuild this xterm from the server tail, never append a second copy.
               state.pendingData = []
-              emitData(state, '\u001bc' + (meta.truncated ? '[Earlier terminal output was trimmed from the retained history]\r\n' : ''), true)
+              emitData(
+                state,
+                '\u001bc' +
+                  (meta.truncated ? '[Earlier terminal output was trimmed from the retained history]\r\n' : ''),
+                true
+              )
             }
           }
 
           handshakeComplete = true
 
           // Resume query dimensions do not resize an existing server PTY.
-          if (resuming) {sendResumeSize(socket, state, meta.truncated)}
+          if (resuming) {
+            sendResumeSize(socket, state, meta.truncated)
+          }
           setStatus(state, 'open')
           state.openedAt = Date.now()
 
@@ -245,7 +288,9 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
         output(event.data)
       } else if (event.data instanceof Blob) {
         void event.data.arrayBuffer().then(buffer => {
-          if (current()) {output(decoder.decode(buffer, { stream: true }))}
+          if (current()) {
+            output(decoder.decode(buffer, { stream: true }))
+          }
         })
       } else {
         output(decoder.decode(event.data as ArrayBuffer, { stream: true }))
@@ -253,19 +298,27 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     }
 
     socket.onerror = () => {
-      if (!settled) {fail(new TerminalConnectionError('Host terminal WebSocket failed to connect'))}
+      if (!settled) {
+        fail(new TerminalConnectionError('Host terminal WebSocket failed to connect'))
+      }
     }
 
     socket.onclose = event => {
-      if (!current()) {return}
+      if (!current()) {
+        return
+      }
       settleOpen(state)
       const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
       const exited = event.code === 4410 && event.reason === PROCESS_EXITED_REASON
 
-      if (signal === 'expired') {forget(state)}
+      if (signal === 'expired') {
+        forget(state)
+      }
 
       if (!handshakeComplete) {
-        fail(new TerminalConnectionError(event.reason || `Host terminal closed (${event.code})`, exited ? EXITED : signal))
+        fail(
+          new TerminalConnectionError(event.reason || `Host terminal closed (${event.code})`, exited ? EXITED : signal)
+        )
 
         return
       }
@@ -291,13 +344,18 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   const terminals = new Map<string, TerminalState>()
   let sequence = 0
   let paused = false
-  const storageKey = (key: string) => `hermes.webapp.terminal.v1:${JSON.stringify([window.location.origin, options.basePath, key])}`
+  const storageKey = (key: string) =>
+    `hermes.webapp.terminal.v1:${JSON.stringify([window.location.origin, options.basePath, key])}`
 
   const load = (key?: string): SavedTerminal | null => {
     const saved = key ? readJson<SavedTerminal>(storageKey(key)) : null
 
-    return saved && typeof saved.terminalId === 'string' && saved.terminalId.length > 0 &&
-      (saved.profile === null || typeof saved.profile === 'string') ? saved : null
+    return saved &&
+      typeof saved.terminalId === 'string' &&
+      saved.terminalId.length > 0 &&
+      (saved.profile === null || typeof saved.profile === 'string')
+      ? saved
+      : null
   }
 
   const forget = (state: Pick<TerminalState, 'restoreKey'> & { terminalId?: string }) => {
@@ -307,13 +365,17 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   }
 
   const setStatus = (state: TerminalState, status: HermesTerminalState) => {
-    if (state.status === status) {return}
+    if (state.status === status) {
+      return
+    }
     state.status = status
     state.stateListeners.forEach(listener => listener(status))
   }
 
   const emitData = (state: TerminalState, data: string, replay = false) => {
-    if (!data) {return}
+    if (!data) {
+      return
+    }
 
     if (!state.dataListeners.size) {
       state.pendingData.push({ data, replay })
@@ -327,7 +389,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
       return
     }
 
-    state.dataListeners.forEach(listener => replay ? listener(data, { replay }) : listener(data))
+    state.dataListeners.forEach(listener => (replay ? listener(data, { replay }) : listener(data)))
   }
 
   const stopSocket = (state: TerminalState) => {
@@ -354,11 +416,15 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     state.exit = { code: null, signal }
     state.exitListeners.forEach(listener => listener(state.exit!))
 
-    if (signal === 'signed-out') {options.onSignedOut?.()}
+    if (signal === 'signed-out') {
+      options.onSignedOut?.()
+    }
   }
 
   const reconnect = (state: TerminalState) => {
-    if (paused || state.stopped) {return}
+    if (paused || state.stopped) {
+      return
+    }
 
     if (!state.terminalId || state.retry >= MAX_RETRIES) {
       finish(state, 'disconnected')
@@ -367,35 +433,51 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     }
 
     setStatus(state, 'reconnecting')
-    state.retryTimer = window.setTimeout(() => {
-      const attempt = dial(state)
-      const generation = state.generation
-      void attempt.catch(error => {
-        if (paused || state.stopped || generation !== state.generation) {return}
-        stopSocket(state)
+    state.retryTimer = window.setTimeout(
+      () => {
+        const attempt = dial(state)
+        const generation = state.generation
+        void attempt.catch(error => {
+          if (paused || state.stopped || generation !== state.generation) {
+            return
+          }
+          stopSocket(state)
 
-        // A 401 from the ticket route: signed out, and every further attempt would be refused.
-        if (isGatewayReauthRequired(error)) {
-          finish(state, 'signed-out')
-        } else if (error instanceof TerminalConnectionError && error.signal === EXITED) {
-          finish(state, null)
-        } else if (error instanceof TerminalConnectionError && error.signal !== 'disconnected') {
-          finish(state, error.signal)
-        } else {
-          reconnect(state)
-        }
-      })
-    }, reconnectBackoffDelayMs(state.retry++, RETRY_BACKOFF))
+          // A 401 from the ticket route: signed out, and every further attempt would be refused.
+          if (isGatewayReauthRequired(error)) {
+            finish(state, 'signed-out')
+          } else if (error instanceof TerminalConnectionError && error.signal === EXITED) {
+            finish(state, null)
+          } else if (error instanceof TerminalConnectionError && error.signal !== 'disconnected') {
+            finish(state, error.signal)
+          } else {
+            reconnect(state)
+          }
+        })
+      },
+      reconnectBackoffDelayMs(state.retry++, RETRY_BACKOFF)
+    )
   }
 
-  const dial = (state: TerminalState) => dialTerminal(state, {
-    websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect
-  })
+  const dial = (state: TerminalState) =>
+    dialTerminal(state, {
+      websocketUrl: options.websocketUrl,
+      storageKey,
+      isPaused: () => paused,
+      stopSocket,
+      emitData,
+      setStatus,
+      forget,
+      finish,
+      reconnect
+    })
 
   const detach = async (id: string) => {
     const state = terminals.get(id)
 
-    if (!state) {return false}
+    if (!state) {
+      return false
+    }
     state.stopped = true
     stopSocket(state)
     terminals.delete(id)
@@ -406,14 +488,18 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   const dispose = async (id: string) => {
     const state = terminals.get(id)
 
-    if (!state) {return false}
+    if (!state) {
+      return false
+    }
     // Closing a tab during startup must wait for its server-minted identity.
     await state.started?.catch(() => undefined)
     state.stopped = true
     stopSocket(state)
 
     try {
-      if (state.terminalId) {await closeSavedShell({ terminalId: state.terminalId, profile: state.profile }, options.websocketUrl)}
+      if (state.terminalId) {
+        await closeSavedShell({ terminalId: state.terminalId, profile: state.profile }, options.websocketUrl)
+      }
     } catch (error) {
       finish(state, 'disconnected')
       throw error
@@ -430,17 +516,27 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     terminals.forEach(state => {
       stopSocket(state)
 
-      if (!state.stopped) {setStatus(state, 'reconnecting')}
+      if (!state.stopped) {
+        setStatus(state, 'reconnecting')
+      }
     })
   }
 
   const resume = (event: PageTransitionEvent) => {
-    if (!event.persisted || !paused || window.hermesDesktop?.terminal !== api) {return}
+    if (!event.persisted || !paused || window.hermesDesktop?.terminal !== api) {
+      return
+    }
     paused = false
     terminals.forEach(state => {
-      if (state.stopped) {return}
+      if (state.stopped) {
+        return
+      }
 
-      if (state.terminalId) {reconnect(state)} else {finish(state, 'disconnected')}
+      if (state.terminalId) {
+        reconnect(state)
+      } else {
+        finish(state, 'disconnected')
+      }
     })
   }
 
@@ -461,10 +557,14 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     closeSaved: async restoreKey => {
       const state = [...terminals.values()].find(state => state.restoreKey === restoreKey)
 
-      if (state) {return dispose(state.id)}
+      if (state) {
+        return dispose(state.id)
+      }
       const saved = load(restoreKey)
 
-      if (saved) {await closeSavedShell(saved, options.websocketUrl)}
+      if (saved) {
+        await closeSavedShell(saved, options.websocketUrl)
+      }
       forget({ restoreKey })
 
       return true
@@ -472,50 +572,77 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     onData: (id, callback) => {
       const state = terminals.get(id)
 
-      if (!state) {return () => undefined}
+      if (!state) {
+        return () => undefined
+      }
       state.dataListeners.add(callback)
       const pending = state.pendingData.splice(0)
 
-      if (pending.length) {queueMicrotask(() => {
-        if (state.dataListeners.has(callback)) {pending.forEach(frame => frame.replay ? callback(frame.data, { replay: true }) : callback(frame.data))}
-      })}
+      if (pending.length) {
+        queueMicrotask(() => {
+          if (state.dataListeners.has(callback)) {
+            pending.forEach(frame => (frame.replay ? callback(frame.data, { replay: true }) : callback(frame.data)))
+          }
+        })
+      }
 
-      return () => { state.dataListeners.delete(callback) }
+      return () => {
+        state.dataListeners.delete(callback)
+      }
     },
     onExit: (id, callback) => {
       const state = terminals.get(id)
 
-      if (!state) {return () => undefined}
+      if (!state) {
+        return () => undefined
+      }
       state.exitListeners.add(callback)
 
-      if (state.exit) {queueMicrotask(() => { if (state.exitListeners.has(callback)) {callback(state.exit!)} })}
+      if (state.exit) {
+        queueMicrotask(() => {
+          if (state.exitListeners.has(callback)) {
+            callback(state.exit!)
+          }
+        })
+      }
 
-      return () => { state.exitListeners.delete(callback) }
+      return () => {
+        state.exitListeners.delete(callback)
+      }
     },
     onState: (id, callback) => {
       const state = terminals.get(id)
 
-      if (!state) {return () => undefined}
+      if (!state) {
+        return () => undefined
+      }
       state.stateListeners.add(callback)
       callback(state.status)
 
-      return () => { state.stateListeners.delete(callback) }
+      return () => {
+        state.stateListeners.delete(callback)
+      }
     },
     resize: async (id, size) => {
       const state = terminals.get(id)
 
-      if (!state) {return false}
+      if (!state) {
+        return false
+      }
       state.cols = Math.max(1, Math.round(size.cols))
       state.rows = Math.max(1, Math.round(size.rows))
 
-      if (state.status !== 'open' || state.socket?.readyState !== WebSocket.OPEN) {return false}
+      if (state.status !== 'open' || state.socket?.readyState !== WebSocket.OPEN) {
+        return false
+      }
       state.socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)
 
       return true
     },
     start: async startOptions => {
       const existing = startOptions?.restoreKey
-        ? [...terminals.values()].find(state => state.restoreKey === startOptions.restoreKey) : undefined
+        ? [...terminals.values()].find(state => state.restoreKey === startOptions.restoreKey)
+        : undefined
 
       if (existing) {
         // StrictMode/remount can overlap startup before a capability is minted.
@@ -535,12 +662,22 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         restoreKey: startOptions?.restoreKey,
         profile: saved ? saved.profile : options.currentProfile(),
         terminalId: saved?.terminalId,
-        cwd: startOptions?.cwd || '', shell: 'host-shell',
+        cwd: startOptions?.cwd || '',
+        shell: 'host-shell',
         cols: Math.max(2, Math.round(startOptions?.cols || 80)),
         rows: Math.max(2, Math.round(startOptions?.rows || 24)),
-        socket: null, generation: 0, stopped: false, status: 'reconnecting',
-        retry: 0, retryTimer: 0, openedAt: null, pendingData: [],
-        dataListeners: new Set(), exit: null, exitListeners: new Set(), stateListeners: new Set()
+        socket: null,
+        generation: 0,
+        stopped: false,
+        status: 'reconnecting',
+        retry: 0,
+        retryTimer: 0,
+        openedAt: null,
+        pendingData: [],
+        dataListeners: new Set(),
+        exit: null,
+        exitListeners: new Set(),
+        stateListeners: new Set()
       }
 
       terminals.set(state.id, state)
@@ -558,7 +695,10 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         stopSocket(state)
         terminals.delete(state.id)
 
-        if (isGatewayReauthRequired(error) || (error instanceof TerminalConnectionError && error.signal === 'signed-out')) {
+        if (
+          isGatewayReauthRequired(error) ||
+          (error instanceof TerminalConnectionError && error.signal === 'signed-out')
+        ) {
           options.onSignedOut?.()
         }
 
@@ -568,7 +708,9 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     write: async (id, data) => {
       const state = terminals.get(id)
 
-      if (!state || state.stopped || state.status !== 'open' || state.socket?.readyState !== WebSocket.OPEN) {return false}
+      if (!state || state.stopped || state.status !== 'open' || state.socket?.readyState !== WebSocket.OPEN) {
+        return false
+      }
       state.socket.send(data)
 
       return true

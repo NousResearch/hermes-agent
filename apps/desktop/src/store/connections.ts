@@ -690,10 +690,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const activation = new AbortController()
   let rehomed = false
   pendingTarget = targetKey
+
   abandonInFlight = () => {
     activation.abort()
     rollbackRehome(rehomed, currentProfile, targetIsActive)
   }
+
   $pendingConnectionId.set(connectionId)
   let undoRehome = (): void => undefined
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideLivenessForceClose, LIVENESS_PROBE_FAILURE_STREAK, probeGatewayLiveness } from './gateway-liveness-policy'
+import {
+  decideLivenessForceClose,
+  LIVENESS_PROBE_FAILURE_STREAK,
+  probeGatewayLiveness
+} from './gateway-liveness-policy'
 
 describe('decideLivenessForceClose', () => {
   it('keeps the socket on the first timeout while a turn is in flight (#95327)', () => {

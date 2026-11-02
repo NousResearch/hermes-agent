@@ -59,6 +59,7 @@ describe('setVoiceChatMode', () => {
     // shared-primary route edits the LAUNCH profile's config.yaml (#125969 class).
     expect(requestAgent).toHaveBeenCalledWith('conn-a', 'work', 'config.set', {
       key: 'voice.voice_chat_mode',
+      profile: 'work',
       value: 'gpt-live'
     })
   })

@@ -42,9 +42,12 @@ function push(mirror: Mirror): void {
   // would resolve through this machine's pool and miss a remote-only profile.
   // Read from the registry: on a gateway switch this runs inside the $gateway
   // notification, before the new route's profile atom is published.
+  // The profile also rides in the params: several profiles share one remote
+  // backend, and an unscoped write there edits its launch profile.
   const { connectionId, profile } = activeGatewayRoute()
   void requestGatewayForAgent(connectionId, profile, 'config.set', {
     key: mirror.configKey,
+    profile,
     value: mirror.read() ? 'true' : 'false'
   }).catch(() => {
     // Not connected, or a gateway too old to know the key. The next toggle

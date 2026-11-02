@@ -25,6 +25,9 @@ vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 
 const {
+  $gateway,
+  activeGatewayConnectionId,
+  activeGatewayProfileKey,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -49,6 +52,9 @@ function installDesktop(): void {
   }
 }
 
+// The window's one primary socket: a re-home keeps the socket object.
+const primarySocket = { connectionState: 'open' } as never
+
 let seen: string[] = []
 
 let stopWatching = (): void => {}
@@ -59,7 +65,7 @@ beforeEach(() => {
   // into the request scope; reproduce that hop without the store's UI deps.
   configureGatewayRegistry({ onActiveRouteChanged: profile => setApiRequestProfile(profile), onEvent: vi.fn() })
   // Window primary: this device, profile alpha.
-  setPrimaryGateway({ connectionState: 'open' } as never, 'alpha')
+  setPrimaryGateway(primarySocket, 'alpha')
   setPrimaryGatewayConnectionId('local', 'local')
   setApiRequestProfile('alpha')
   seen = []
@@ -89,11 +95,27 @@ describe('ambient request scope across a gateway switch', () => {
   })
 
   it('re-homing the foregrounded primary to another machine carries the primary profile with it', () => {
-    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+    setPrimaryGateway(primarySocket, 'default')
     setPrimaryGatewayConnectionId('box', 'remote')
 
     expect(seen).not.toContain('box|alpha')
     expect($apiRequestScope.get()).toEqual({ connectionId: 'box', profile: 'default' })
+  })
+
+  it('a socket listener sees the whole new route, never the new socket with the old profile', async () => {
+    const heard: string[] = []
+
+    const stop = $gateway.listen(() => {
+      heard.push(`${activeGatewayConnectionId()}|${activeGatewayProfileKey()}|${$apiRequestScope.get().profile}`)
+    })
+
+    try {
+      await expect(ensureGatewayForAgent('box', 'gamma')).resolves.toBe(true)
+    } finally {
+      stop()
+    }
+
+    expect(heard).toEqual(['box|gamma|gamma'])
   })
 
   it('leaves the profile half alone while the connection stays put', () => {

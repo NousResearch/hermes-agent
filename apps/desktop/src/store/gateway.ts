@@ -8,7 +8,7 @@ import {
   resolveGatewayWsUrl,
   type ServerRequest
 } from '@hermes/shared'
-import { atom } from 'nanostores'
+import { atom, batch } from 'nanostores'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import type { HermesConnection } from '@/global'
@@ -669,9 +669,6 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   }
 
   g.activeKey = normKey(profile)
-  const gateway = activeGateway()
-  g.$gateway.set(gateway)
-  setGatewayState(gateway?.connectionState ?? 'closed')
 
   // Publish the BARE profile this route serves, in the same synchronous step
   // as the socket selection. activeKey may be a composite registry scope
@@ -683,10 +680,20 @@ function applyActive(profile: string, activationEpoch: number): boolean {
   const routeProfile =
     g.activeKey === g.primaryProfile ? g.primaryProfile : (g.secondaries.get(g.activeKey)?.profile ?? g.primaryProfile)
 
-  // The registry connection (null: local pool) moves with the profile it serves.
-  publishRequestConnection(activeGatewayConnectionId(), routeProfile)
-  g.$activeProfile.set(routeProfile)
-  g.config?.onActiveRouteChanged?.(routeProfile)
+  // One notification frame for the whole route: a $gateway listener (the
+  // display-toggle auto-push) notified before the profile half was published
+  // read the NEW socket's connection with the OLD route's profile and wrote
+  // config to a profile the user never switched to.
+  batch(() => {
+    const gateway = activeGateway()
+    g.$gateway.set(gateway)
+    setGatewayState(gateway?.connectionState ?? 'closed')
+    // The registry connection (null: local pool) moves with the profile it serves.
+    publishRequestConnection(activeGatewayConnectionId(), routeProfile)
+    g.$activeProfile.set(routeProfile)
+    g.config?.onActiveRouteChanged?.(routeProfile)
+  })
+
   traceIdentityChange(
     'gateway-route',
     'active',

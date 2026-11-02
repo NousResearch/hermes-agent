@@ -202,11 +202,9 @@ export default defineConfig(({ command }) => ({
             },
             // One chunk per heavyweight, lazy-only library family.
             // @streamdown/code lives WITH shiki because it statically imports
-            // the full shiki bundle.
-            {
-              name: 'mermaid',
-              test: /node_modules[\\/](mermaid|cytoscape|dagre|khroma|elkjs|d3|d3-[^\\/]+|@mermaid-js)[\\/]/
-            },
+            // the full shiki bundle. Pele (mermaid fences) is deliberately not
+            // grouped: `pele/lazy` keeps each diagram type in its own small
+            // chunk, and a group would merge them back into one.
             {
               name: 'shiki',
               test: /node_modules[\\/](shiki|@shikijs|react-shiki|@streamdown[\\/]code|oniguruma-to-es|oniguruma-parser|regex(-[^\\/]+)?)[\\/]/

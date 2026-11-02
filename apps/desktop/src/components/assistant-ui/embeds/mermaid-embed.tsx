@@ -1,50 +1,141 @@
 'use client'
 
-import type { Mermaid as MermaidApi } from 'mermaid'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { Zoomable } from '@/components/ui/zoomable'
-import { copySvgAsPng, normalizeSvgSize, xmlWellFormedSvg } from '@/lib/svg-image'
+import { onThemeRepaint } from '@/hooks/use-theme-epoch'
+import { copySvgAsPng } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
 import { createMermaidRenderCache, createRetryableLoader, nextPaint } from './mermaid-render-cache'
 import type { RichFenceProps } from './types'
-import { useIsDark } from './use-is-dark'
 
-let lastTheme: 'dark' | 'default' | null = null
-const loadMermaid = createRetryableLoader<MermaidApi>(() => import('mermaid').then(module => module.default))
+// Pele (obsidianmd/pele) draws Mermaid syntax as plain SVG. Its lazy entry
+// puts each diagram type in its own chunk, so a flowchart pulls in only the
+// flowchart parser and layout.
+const loadPele = createRetryableLoader(() => import('pele/lazy'))
 
-// Re-initialise only on first use / theme flip. `securityLevel: 'strict'` makes
-// mermaid sanitise label HTML and drop click handlers, so the rendered SVG is
-// safe to inject.
-function ensureInit(mermaid: MermaidApi, dark: boolean) {
-  const theme = dark ? 'dark' : 'default'
+// Pele colors a diagram through `--pele-*` custom properties. The SVG is shown
+// as an <img>: its own document, with no scripts and no access to the app's
+// CSS. So the app's tokens are resolved to concrete colors here and written
+// onto the SVG root. These are the `--dt-*` tokens: Tailwind's `--color-*`
+// names are `@theme inline`, so they never exist as runtime properties.
+const PALETTE: ReadonlyArray<readonly [pele: string, token: string]> = [
+  ['--pele-bg', '--dt-background'],
+  ['--pele-fg', '--dt-foreground'],
+  ['--pele-muted', '--dt-muted-foreground'],
+  ['--pele-line', '--dt-muted-foreground'],
+  ['--pele-surface', '--dt-muted'],
+  ['--pele-surface-alt', '--dt-card'],
+  ['--pele-border', '--dt-muted-foreground'],
+  ['--pele-accent', '--dt-primary'],
+  ['--pele-critical', '--dt-destructive']
+]
 
-  if (theme === lastTheme) {
-    return
+interface DiagramTheme {
+  font: string
+  fontMono: string
+  vars: string
+}
+
+// Resolved through probes, so color-mix() and oklch() tokens arrive as values
+// the isolated SVG document can use. All probes are styled before any is read,
+// so the pass costs one style recalc. A token that does not resolve (unset, or
+// a broken var() chain in a skin) is left out, so Pele's own default applies
+// instead of the probe's inherited color. Serialised: it doubles as the cache
+// key.
+const UNRESOLVED = 'rgb(1, 2, 3)'
+
+function resolveTheme(): string {
+  const root = getComputedStyle(document.documentElement)
+  const host = document.createElement('div')
+  host.style.display = 'none'
+
+  const probes = PALETTE.map(([, token]) => {
+    const probe = document.createElement('span')
+    probe.style.color = `var(${token}, ${UNRESOLVED})`
+
+    return probe
+  })
+
+  host.append(...probes)
+  document.body.append(host)
+
+  const vars = PALETTE.flatMap(([pele], i) => {
+    const color = getComputedStyle(probes[i]).color
+
+    return !color || color === UNRESOLVED ? [] : [`${pele}:${color}`]
+  }).join(';')
+
+  host.remove()
+
+  const theme: DiagramTheme = {
+    font: root.getPropertyValue('--dt-font-sans').trim() || 'sans-serif',
+    fontMono: root.getPropertyValue('--dt-font-mono').trim() || 'monospace',
+    vars
   }
 
-  mermaid.initialize({ fontFamily: 'inherit', securityLevel: 'strict', startOnLoad: false, theme })
-  lastTheme = theme
+  return JSON.stringify(theme)
+}
+
+// One resolved theme shared by every mounted diagram, re-resolved once per
+// theme repaint (mode flip or skin change) rather than once per diagram.
+let sharedTheme: null | string = null
+let stopRepaints: (() => void) | null = null
+const themeListeners = new Set<() => void>()
+
+function subscribeTheme(listener: () => void): () => void {
+  if (!stopRepaints) {
+    // Nothing tracked repaints while no diagram was mounted.
+    sharedTheme = null
+    stopRepaints = onThemeRepaint(() => {
+      sharedTheme = null
+      themeListeners.forEach(notify => notify())
+    })
+  }
+
+  themeListeners.add(listener)
+
+  return () => {
+    themeListeners.delete(listener)
+
+    if (themeListeners.size === 0) {
+      stopRepaints?.()
+      stopRepaints = null
+      sharedTheme = null
+    }
+  }
+}
+
+const currentTheme = () => (sharedTheme ??= resolveTheme())
+
+// Pele's root always carries a style attribute; the palette goes in front of
+// it, so Pele's own `var(--pele-*, default)` references pick it up. Colors are
+// computed values (rgb()/color()/oklch()) and carry no quote or ampersand.
+function withPalette(svg: string, vars: string): string {
+  return vars ? svg.replace(/^<svg\b[^>]*?\sstyle="/, root => `${root}${vars};`) : svg
 }
 
 const renderCache = createMermaidRenderCache({
   maxEntries: 32,
-  render: async (code, theme) => {
-    const mermaid = await loadMermaid()
-    ensureInit(mermaid, theme === 'dark')
-    const id = `mmd-${Math.random().toString(36).slice(2)}`
-    const result = await mermaid.render(id, code)
+  render: async (code, themeKey) => {
+    const pele = await loadPele()
+    const theme = JSON.parse(themeKey) as DiagramTheme
 
-    // Mermaid's markup targets inline HTML, so a label's `<br/>` reaches us as
-    // an open `<br>` and a non-breaking space as `&nbsp;`; make it XML before
-    // the size pass and the data: URI below, or the diagram decodes to a
-    // broken image (#133089).
-    return normalizeSvgSize(xmlWellFormedSvg(result.svg))
+    // Links and images off: the diagram is display-only, as under mermaid's
+    // strict mode (no click handlers, no remote fetches).
+    const { svg } = await pele.renderAsync(code, {
+      fontFamily: theme.font,
+      fontFamilyMono: theme.fontMono,
+      images: false,
+      links: false
+    })
+
+    return withPalette(svg, theme.vars)
   },
-  // Defer until the source fallback has had a frame to paint, so the mermaid
-  // runtime import and parse/layout cannot contend with first paint of the
-  // message body (#98967's seam; requestIdleCallback is inert in jsdom).
+  // Defer until the source fallback has had a frame to paint, so the chunk
+  // import cannot contend with first paint of the message body (#98967's seam;
+  // requestIdleCallback is inert in jsdom).
   defer: nextPaint
 })
 
@@ -62,6 +153,12 @@ function SourcePreview({ code, muted }: { code: string; muted?: boolean }) {
 }
 
 function svgAccessibleText(svg: string): string {
+  // Pele writes <title>/<desc> only for accTitle/accDescr or a diagram title;
+  // skip the parse for the common diagram that has neither.
+  if (!svg.includes('<title') && !svg.includes('<desc')) {
+    return 'Mermaid diagram'
+  }
+
   const document = new DOMParser().parseFromString(svg, 'image/svg+xml')
 
   const text = [document.querySelector('title')?.textContent, document.querySelector('desc')?.textContent]
@@ -71,11 +168,11 @@ function svgAccessibleText(svg: string): string {
   return text.join(' — ') || 'Mermaid diagram'
 }
 
-// Lazy chunk (pulls in mermaid). Renders ```mermaid fences as diagrams; shows
-// the source while the message streams (partial syntax throws) and falls back
-// to source on parse failure.
+// Lazy chunk (pulls in Pele). Renders ```mermaid fences as diagrams; shows the
+// source while the message streams (partial syntax throws) and falls back to
+// source on parse failure.
 export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
-  const isDark = useIsDark()
+  const theme = useSyncExternalStore(subscribeTheme, currentTheme)
   const [svg, setSvg] = useState('')
   const [failed, setFailed] = useState(false)
 
@@ -92,7 +189,7 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
 
     void (async () => {
       try {
-        const rendered = await renderCache.render(code, isDark ? 'dark' : 'default', controller.signal)
+        const rendered = await renderCache.render(code, theme, controller.signal)
 
         if (!cancelled) {
           setSvg(rendered)
@@ -109,7 +206,7 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
       cancelled = true
       controller.abort()
     }
-  }, [code, isDark, streaming])
+  }, [code, theme, streaming])
 
   if (streaming) {
     return <SourcePreview code={code} muted />

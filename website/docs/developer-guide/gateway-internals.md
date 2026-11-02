@@ -701,7 +701,8 @@ receipt (the agent's next turn is the report) unless the launching turn is still
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable
 durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
-events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
+events keep their owning adapter, including raw progress/final notices; a restored session answers
+through the bot recorded at ingress, or not at all. Adapter acceptance is
 at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
 async completions remain durable delivery rows, never autonomous new model turns. Require the
 `admit_internal_event` receipt for completion/watch injection: a handler returning None is not

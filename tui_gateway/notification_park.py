@@ -11,9 +11,16 @@ Parking keeps the event OUT of ``completion_queue``: a foreign event left in the
 ``take_ready`` returning at once and spins those loops. The caps are total AND per owner, so a session that is gone
 for good cannot spend the whole budget.
 
+Progress notices (``watch_*``, ``heartbeat``) yield to results: a process completion or async delegation that finds
+its owner's slots (or the total) full displaces the oldest such notice, same owner first, so a chatty
+``watch_patterns`` process cannot crowd out the completion the user is waiting for.
+
 A startup replay (``restored``) delegation is not parked: its row's owner process is dead, so the orphan sweep
 re-offers it until its owner is back. A live delegation's owner is THIS process, which the sweep skips, so its
-parked copy is the only one; when the park lets go of it (TTL) its offer goes back to the durable ledger.
+parked copy is the only in-memory one. When the park lets go of it (TTL) that loss is logged at WARNING, as an
+unparked drop always was, and its offer is cleared with ``return_completion_offer``; the durable row stays
+pending, but the sweep only re-offers it once it also re-offers rows of a live owner (the ledger re-offer lane),
+and until then it is replayed at the next process start.
 """
 
 from __future__ import annotations
@@ -44,16 +51,43 @@ def _expire_locked(now: float) -> list:
     return expired
 
 
+def _is_progress(evt: dict) -> bool:
+    evt_type = str(evt.get("type") or "")
+    return evt_type == "heartbeat" or evt_type.startswith("watch_")
+
+
 def _release(events) -> None:
-    """Events the park let go of: a delegation's offer goes back to the durable ledger's re-offer path."""
+    """Events the park let go of. A delegation is a lost result (WARNING, as an unparked drop logs it) whose offer
+    is cleared so a ledger re-offer may pick the still-pending row up; see the module docstring."""
     if not events:
         return
     from tools.async_delegation import return_completion_offer
     for evt in events:
-        if evt.get("type") == "async_delegation":
+        is_delegation = evt.get("type") == "async_delegation"
+        if is_delegation:
             return_completion_offer(evt)
-        logger.debug("Dropping parked %s notification past its retention window (key=%r)",
-                     evt.get("type", "completion"), str(evt.get("session_key") or ""))
+        (logger.warning if is_delegation else logger.debug)(
+            "Dropping parked %s notification past its retention window (key=%r)",
+            evt.get("type", "completion"), str(evt.get("session_key") or ""))
+
+
+def _key(evt: dict) -> str:
+    return str(evt.get("session_key") or "")
+
+
+def _admit_locked(evt: dict, key: str) -> tuple[bool, list]:
+    """Room for ``evt`` (caller holds ``_lock``): a result displaces the oldest progress notice when full, same
+    owner first (only a same-owner victim frees a per-owner slot). Returns (admitted, displaced)."""
+    key_full = bool(key) and sum(1 for _d, held in _parked if _key(held) == key) >= MAX_PARKED_PER_KEY
+    if not key_full and len(_parked) < MAX_PARKED:
+        return True, []
+    if _is_progress(evt):
+        return False, []
+    progress = [i for i, (_d, held) in enumerate(_parked) if _is_progress(held)]
+    victims = [i for i in progress if _key(_parked[i][1]) == key] or ([] if key_full else progress)
+    if not victims:
+        return False, []
+    return True, [_parked.pop(victims[0])[1]]
 
 
 def park(evt: dict) -> bool:
@@ -62,15 +96,15 @@ def park(evt: dict) -> bool:
     if not _parkable(evt):
         return False
     now = time.monotonic()
-    key = str(evt.get("session_key") or "")
     with _lock:
         expired = _expire_locked(now)
-        admitted = len(_parked) < MAX_PARKED and not (
-            key and sum(1 for _deadline, held in _parked
-                        if str(held.get("session_key") or "") == key) >= MAX_PARKED_PER_KEY)
+        admitted, displaced = _admit_locked(evt, _key(evt))
         if admitted:
             _parked.append((now + RETENTION_SECONDS, evt))
     _release(expired)
+    for held in displaced:
+        logger.debug("Dropping parked %s notification to make room for a %s (key=%r)",
+                     held.get("type"), evt.get("type", "completion"), _key(held))
     return admitted
 
 

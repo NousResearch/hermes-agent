@@ -128,10 +128,11 @@ def test_the_finalizing_owners_drain_parks_instead_of_dropping(monkeypatch):
     assert _parked() == [evt]
 
 
-def test_a_delegation_the_park_lets_go_of_goes_back_to_the_ledger(monkeypatch):
-    """Bounded retention must not turn into silent loss: a parked delegation past its window hands its offer
-    back to the durable ledger, and a startup replay (its owner process is dead, so the orphan sweep re-offers
-    it) is never parked at all."""
+def test_a_delegation_the_park_lets_go_of_is_a_loud_loss_with_its_offer_cleared(monkeypatch, caplog):
+    """Bounded retention must not turn into silent loss: a parked delegation past its window is logged at WARNING
+    (as an unparked drop is) and its sweep offer is cleared; a startup replay (its owner process is dead, so the
+    orphan sweep re-offers it) is never parked at all."""
+    caplog.set_level("WARNING", logger=notification_park.__name__)
     returned: list = []
     monkeypatch.setattr("tools.async_delegation.return_completion_offer", returned.append)
     monkeypatch.setattr(notification_park, "RETENTION_SECONDS", 0.0)
@@ -141,7 +142,28 @@ def test_a_delegation_the_park_lets_go_of_goes_back_to_the_ledger(monkeypatch):
 
     assert notification_park.claim(lambda evt: server._session_owns_notification_event("owner-sid", owner, evt)) == []
     assert returned == [live] and _parked() == []
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
     assert notification_park.park(_delegation("deleg_replayed", restored=True)) is False
+
+
+def test_a_result_displaces_progress_notices_instead_of_being_refused(monkeypatch):
+    """A closed session's watch_patterns process can match more often than its per-owner slots allow before it
+    exits: the completion the user waits for must still be parked (the oldest progress notice yields), and a
+    full park of other owners' progress notices must not refuse it either."""
+    other = _session(OTHER_KEY)
+    registry = _registry()
+    watches = [{**_completion(), "type": "watch_match", "output": f"match {i}"}
+               for i in range(notification_park.MAX_PARKED_PER_KEY)]
+    done = _completion()
+
+    server._notif_handle_ready("other-sid", other, [*watches, done], set(), registry, lambda _evt: "text", None)
+
+    assert _parked() == [*watches[1:], done]
+    assert registry.completion_queue.empty()
+    monkeypatch.setattr(notification_park, "MAX_PARKED", len(_parked()))
+    deleg = _delegation(session_key="third-session-key")
+    assert notification_park.park(deleg) is True and deleg in _parked() and watches[1] not in _parked()
+    assert notification_park.park({**watches[0], "session_key": "third-session-key"}) is False
 
 
 def test_shutdown_drain_hands_back_what_it_could_not_route(monkeypatch):

@@ -173,8 +173,9 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
     """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it for its
-    owner's return (``notification_park``). One the park refuses: a delegation's offer goes back to the ledger
-    (or onto ``deferred`` during a shutdown drain, which requeues it); anything else drops."""
+    owner's return (``notification_park``). One the park refuses: a delegation is dropped at WARNING with its offer
+    cleared (``return_completion_offer``; the row stays pending) or, during a shutdown drain, goes onto ``deferred``
+    to be requeued; anything else drops."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
     from tui_gateway import notification_park

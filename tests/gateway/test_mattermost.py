@@ -709,3 +709,60 @@ class TestMultiplexProfileScope:
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
 
+
+# ---------------------------------------------------------------------------
+# Standalone send: media_delivered reporting
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_standalone_send_reports_media_delivered(tmp_path):
+    """_standalone_send uploads media and attaches file_ids to the post, so its
+    success result must carry media_delivered=True. send_message_tool relies
+    on that key to decide whether to warn about omitted attachments; without
+    it, mattermost (not on the tool's hardcoded media-platform list) is
+    reported as having dropped attachments that were actually delivered."""
+    from types import SimpleNamespace
+
+    from plugins.platforms.mattermost.adapter import _standalone_send
+
+    audio = tmp_path / "note.ogg"
+    audio.write_bytes(b"FAKEOGG")
+
+    pconfig = SimpleNamespace(
+        token="mm-tok",
+        extra={"url": "https://mm.example.com"},
+    )
+
+    import gateway.platforms.base as base_mod
+    with patch.object(base_mod, "resolve_proxy_url", return_value=None), \
+         patch.object(base_mod, "proxy_kwargs_for_aiohttp", return_value=({}, {})), \
+         patch("aiohttp.ClientSession") as _Session:
+        session = AsyncMock()
+        upload_cm = AsyncMock()
+        up_resp = AsyncMock()
+        up_resp.status = 200
+        up_resp.json = AsyncMock(return_value={"file_infos": [{"id": "F1"}]})
+        up_resp.text = AsyncMock(return_value="")
+        upload_cm.__aenter__ = AsyncMock(return_value=up_resp)
+        upload_cm.__aexit__ = AsyncMock(return_value=False)
+        post_cm = AsyncMock()
+        post_resp = AsyncMock()
+        post_resp.status = 200
+        post_resp.json = AsyncMock(return_value={"id": "post9"})
+        post_resp.text = AsyncMock(return_value="")
+        post_cm.__aenter__ = AsyncMock(return_value=post_resp)
+        post_cm.__aexit__ = AsyncMock(return_value=False)
+        session.post = MagicMock(side_effect=[upload_cm, post_cm])
+        _Session.return_value.__aenter__ = AsyncMock(return_value=session)
+        _Session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await _standalone_send(
+            pconfig,
+            "ch_1",
+            "hello",
+            media_files=[{"path": str(audio)}],
+        )
+
+    assert result.get("success") is True
+    assert result.get("media_delivered") is True
+    assert result.get("message_id") == "post9"
+

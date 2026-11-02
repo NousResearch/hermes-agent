@@ -625,7 +625,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastStartWorkTokenRef.current = startWorkSessionRequest.token
-    startSessionInWorkspace(startWorkSessionRequest.path, { openTab: startWorkSessionRequest.openTab })
+    startSessionInWorkspace(startWorkSessionRequest.path, {
+      openTab: startWorkSessionRequest.openTab,
+      owner: startWorkSessionRequest.owner
+    })
 
     if (startWorkSessionRequest.draft) {
       requestComposerInsert(startWorkSessionRequest.draft, { target: 'main' })

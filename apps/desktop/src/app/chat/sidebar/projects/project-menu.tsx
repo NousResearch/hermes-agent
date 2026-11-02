@@ -112,12 +112,17 @@ function useProjectActions({
 
   // The OS file manager needs the local filesystem; a remote backend's
   // project is not on this computer (the file trees hide reveal the same way).
+  // Another gateway's project names its own machine: one on This device opens
+  // even from a remote window; one elsewhere stays listed but disabled, as no
+  // file manager here can show it.
+  const onThisComputer = project.connectionId ? project.connectionId === 'local' : !isDesktopFsRemoteMode()
+
   const pathItems: ActionItemSpec[] = [
-    ...(isDesktopFsRemoteMode()
+    ...(!project.connectionId && isDesktopFsRemoteMode()
       ? []
       : [
           {
-            disabled: !project.path,
+            disabled: !project.path || !onThisComputer,
             icon: 'folder-opened',
             key: 'reveal',
             label: p.reveal,

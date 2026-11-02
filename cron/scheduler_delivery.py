@@ -1519,7 +1519,9 @@ def _standalone_send(
         # unstarted, and a wait_for wrapper created out here would be left never awaited.
         return await asyncio.wait_for(_send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+            media_files=media_files,
+            args={"metadata": {"job_id": job.get("id", ""), "job_name": _redact_cron_payload(job.get("name", ""), "job name")}},
+        ), timeout=send_timeout)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

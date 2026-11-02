@@ -1316,6 +1316,8 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
+                from gateway.session_ingress import fire_post_delivery
+                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
@@ -1393,13 +1395,16 @@ class SessionAuthority:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
                     drop_producer_turn(self, admission_id)
+                    from gateway.session_ingress import fire_post_delivery
+                    await fire_post_delivery(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
                 # Taken on every exit, so a turn that never settled leaves no reset for a later one.
                 reset = self.deferred_resets.pop(live.route, None)
             await self._run_deferred_reset(live.route, reset)
-            from gateway.session_ingress import deliver_settled
+            from gateway.session_ingress import deliver_settled, fire_post_delivery
             await deliver_settled(self, admission_id)
+            await fire_post_delivery(self, admission_id)
             await self._resolve_settled_waiter(admission_id, response)
 
     @staticmethod

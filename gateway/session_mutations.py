@@ -425,16 +425,22 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
     from gateway.session_vault_prompt import release_unlocks
+    from gateway.config import Platform
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
         allow_for_session((authority.profile_id, sid))
         # So do the password managers it unlocked: this path never reaches the viewer-close settle.
         release_unlocks(sid)
+        authority.launch_sources.pop(sid, None)
         candidate = authority.sessions.pop(sid, None)
         if candidate is not None:  # a detached conversation's route is its own key
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+            if candidate.source is not None and local is not None:
+                local.forget(candidate.source, candidate.route)
             if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
                 from gateway.session_detached import drop_owner_hints
                 drop_owner_hints(authority.runner.session_store, candidate.route)

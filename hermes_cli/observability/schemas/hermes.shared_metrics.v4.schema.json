@@ -3122,6 +3122,7 @@
                 "identical_call_streak",
                 "identical_cycle",
                 "iteration_budget",
+                "read_only_loop",
                 "same_tool_failure",
                 "subagent_cap",
                 "web_search_cap"

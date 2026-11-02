@@ -160,6 +160,42 @@ Some tools are intercepted by `agent/tool_executor.py` (called from `agent/conve
 
 These tools modify agent state directly and return synthetic tool results without going through the registry.
 
+### Read-Only Loop Guard
+
+`agent/tool_guardrails.py` guards against a worker that keeps reading and never edits. It is
+**off by default**; enable it under `tool_loop_guardrails`:
+
+```yaml
+tool_loop_guardrails:
+  read_only_loop_enabled: true
+  read_only_loop_warn_after: 3      # consecutive read-only calls before a warning
+  read_only_loop_block_after: 6     # consecutive read-only calls before a refusal
+```
+
+**What counts as read-only.** `read_file`, `search_files`, `kanban_show`, `kanban_list`,
+`kanban_attachments`, and `terminal` commands that only inspect (`grep`, `cat`, `sed -n`, `ls`,
+`git status`, `git log`). A `terminal` command that mutates (`cat > file`, `git apply`, a write
+through a script) is treated as progress, not a read.
+
+**Streak accounting.** The streak is per turn and consecutive: it counts only calls made since
+the last mutating call, so varied polling and re-reads after an edit are never flagged. A
+successful mutating call (`write_file`, `patch`, or a mutating `terminal` command) resets it to
+zero. A failed call does not advance the streak.
+
+**What the guard does.** At the warning threshold the call still runs and the warning reaches
+the model. At the block threshold the call is **refused**: the tool never executes and the model
+receives a synthetic tool result telling it to edit the target file now or report what is blocking
+it. The turn continues — a refusal is not a halt — so the worker can act on the feedback in the
+same turn.
+
+**Opting out.** A genuinely read-only task (audit, report, review) passes
+`read_only_exempt: true` as a tool argument. That declaration exempts the **whole session**, not
+just the one call, so an auditor does not have to repeat it on every read.
+
+Refusals, blocks, and halts are recorded in the shared metrics contract under the
+`read_only_loop` detector, so a worker stuck in a read loop is visible in observability even
+though the turn was not halted.
+
 ## Callback Surfaces
 
 `AIAgent` supports platform-specific callbacks that enable real-time progress in the CLI, gateway, and ACP integrations:

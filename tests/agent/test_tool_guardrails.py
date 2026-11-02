@@ -506,3 +506,110 @@ def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled,
             break
     else:
         raise AssertionError("a permanently failing endpoint must still halt or block")
+
+
+def _read_only_controller(**overrides):
+    """Controller with the read-only-loop guard switched on."""
+    config = ToolCallGuardrailConfig.from_mapping({"read_only_loop_enabled": True, **overrides})
+    return ToolCallGuardrailController(config)
+
+
+def test_read_only_streak_warns_after_the_warn_threshold():
+    controller = _read_only_controller()
+
+    decisions = []
+    for i in range(3):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        decisions.append(controller.after_call("read_file", args, json.dumps({"content": "x"})))
+
+    assert decisions[-1].action == "warn", decisions
+    assert decisions[-1].code == "read_only_loop_warning", decisions
+    assert "without changing any file" in decisions[-1].message, decisions
+    assert decisions[0].action == "allow" and decisions[1].action == "allow", decisions
+
+
+def test_read_only_streak_refuses_the_read_after_the_block_threshold():
+    controller = _read_only_controller()
+
+    for i in range(6):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        controller.after_call("read_file", args, json.dumps({"content": "x"}))
+
+    decision = controller.before_call("read_file", {"path": "file_6.py"})
+    assert decision.action == "refuse", decision
+    assert decision.code == "read_only_loop_block", decision
+    assert not decision.allows_execution, decision
+    # The refusal must tell the worker to act, not merely to stop.
+    assert "edit the target file now" in decision.message, decision
+    assert "report what is blocking you" in decision.message, decision
+    # A refusal keeps the turn alive so the worker can still make the edit.
+    assert not decision.should_halt, decision
+
+
+def test_mutating_call_resets_the_read_only_streak():
+    controller = _read_only_controller()
+
+    for i in range(5):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        controller.after_call("read_file", args, json.dumps({"content": "x"}))
+
+    # A successful write is the worker acting: the streak starts over.
+    controller.before_call("write_file", {"path": "out.py", "content": "x"})
+    controller.after_call("write_file", {"path": "out.py", "content": "x"}, json.dumps({"ok": True}))
+
+    for i in range(5):
+        args = {"path": f"after_{i}.py"}
+        assert controller.before_call("read_file", args).allows_execution, args
+
+
+def test_read_only_guard_is_off_by_default():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="webhook"))
+
+    for i in range(10):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        decision = controller.after_call("read_file", args, json.dumps({"content": "x"}))
+        assert decision.code != "read_only_loop_warning", decision
+
+    assert controller.before_call("read_file", {"path": "file_10.py"}).allows_execution
+
+
+def test_read_only_exempt_call_opts_the_session_out():
+    controller = _read_only_controller()
+
+    for i in range(6):
+        args = {"path": f"file_{i}.py"}
+        controller.before_call("read_file", args)
+        controller.after_call("read_file", args, json.dumps({"content": "x"}))
+
+    # A read-only task (audit, report) declares itself exempt on the next call.
+    exempt_args = {"path": "audit.py", "read_only_exempt": True}
+    assert controller.before_call("read_file", exempt_args).allows_execution
+    controller.after_call("read_file", exempt_args, json.dumps({"content": "x"}))
+
+    # The exemption holds for the rest of the session.
+    for i in range(10):
+        args = {"path": f"audit_{i}.py"}
+        assert controller.before_call("read_file", args).allows_execution, args
+        controller.after_call("read_file", args, json.dumps({"content": "x"}))
+
+
+def test_terminal_read_only_commands_count_but_edits_do_not():
+    controller = _read_only_controller()
+
+    # `grep` inspects: it counts towards the read-only streak.
+    for i in range(3):
+        args = {"command": f"grep -rn needle_{i} ."}
+        controller.before_call("terminal", args)
+        decision = controller.after_call("terminal", args, "hit")
+    assert decision.code == "read_only_loop_warning", decision
+
+    # `cat > file` writes: the worker acted, so the streak resets.
+    write_args = {"command": "cat > notes.txt <<EOF"}
+    controller.before_call("terminal", write_args)
+    controller.after_call("terminal", write_args, "written")
+
+    assert controller.before_call("read_file", {"path": "x.py"}).allows_execution

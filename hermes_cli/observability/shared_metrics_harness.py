@@ -319,6 +319,7 @@ _GUARD_DETECTORS = {
     "identical_call_streak_halt": "identical_call_streak", "identical_call_streak": "identical_call_streak",
     "identical_cycle_halt": "identical_cycle", "identical_cycle": "identical_cycle",
     "loop_web_search_cap": "web_search_cap", "loop_subagent_cap": "subagent_cap",
+    "read_only_loop_warning": "read_only_loop", "read_only_loop_block": "read_only_loop",
 }
 
 
@@ -336,7 +337,8 @@ def record_guardrail_decision(agent: Any, action: Any, code: Any) -> None:
     Once per turn per detector and signal."""
     try:
         detector = _GUARD_DETECTORS.get(str(code or ""))
-        signal = {"warn": "repeated_tool_call", "block": "loop_detected", "halt": "loop_detected"}.get(str(action or ""))
+        signal = {"warn": "repeated_tool_call", "block": "loop_detected", "halt": "loop_detected",
+                  "refuse": "loop_detected"}.get(str(action or ""))
         if detector is None or signal is None or not _active(agent):
             return
         _record_guard(agent, signal, detector)

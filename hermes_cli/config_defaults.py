@@ -5,6 +5,7 @@ docs of config.yaml.
 """
 
 from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_cli.config_defaults_guardrails import tool_loop_guardrails
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -542,24 +543,7 @@ DEFAULT_CONFIG = {
     "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
     # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
     # are always on; hard stops are opt-in so interactive sessions keep flowing.
-    "tool_loop_guardrails": {
-        "warnings_enabled": True,
-        "hard_stop_enabled": False,
-        # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
-        # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
-        "non_interactive_hard_stop_enabled": True,
-        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
-        "hard_stop_after": {
-            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
-        },
-        # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
-        # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
-        # pathological, hence low defaults. 0 = unlimited.
-        "loop_caps": {
-            "max_web_searches": 50,   # web_search calls per turn
-            "max_subagents": 50,      # subagents spawned per turn
-        },
-    },
+    "tool_loop_guardrails": tool_loop_guardrails(),
 
     "compression": {
         "enabled": True,

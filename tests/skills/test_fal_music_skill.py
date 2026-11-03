@@ -55,3 +55,19 @@ def test_dry_run_payload_only_uses_declared_keys(model, capsys):
 def test_lyrics_required_models_default_to_instrumental_marker(capsys):
     fal_music.main(["--model", "minimax-music-3", "--prompt", "synthpop", "--dry-run"])
     assert json.loads(capsys.readouterr().out)["payload"]["lyrics"] == "[inst]"
+
+
+# Generic CLI knob -> payload keys that carry it. A knob whose key an endpoint declares must be wired.
+KNOB_KEYS = {"--seed": {"seed"}, "--negative-prompt": {"negative_prompt"}, "--loop": {"loop"},
+             "--instrumental": {"force_instrumental", "is_instrumental"}}
+NOT_WIRED = {("lyria3.5", "--negative-prompt")}  # declared but documented as unsupported
+
+
+@pytest.mark.parametrize("model", sorted(fal_music.MODELS))
+def test_declared_generic_knobs_are_wired(model, capsys):
+    fal_music.main(["--model", model, "--prompt", "lofi", "--seed", "7", "--negative-prompt", "harsh",
+                    "--instrumental", "--loop", "--dry-run"])
+    payload = json.loads(capsys.readouterr().out)["payload"]
+    for knob, keys in KNOB_KEYS.items():
+        if keys & DECLARED[model] and (model, knob) not in NOT_WIRED:
+            assert keys & set(payload), f"{model} declares {sorted(keys & DECLARED[model])} but {knob} is not wired"

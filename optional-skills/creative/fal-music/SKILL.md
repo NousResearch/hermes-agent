@@ -39,11 +39,11 @@ generation (use `heartmula`).
 
 | id | endpoint | length | lyrics | pick it when |
 |----|----------|--------|--------|--------------|
-| `elevenlabs-music` (default) | `elevenlabs/music/v2.5` | 10–300 s | no (prompt describes vocals) | best general quality, vocal or instrumental; $0.60 / output minute, rounded up |
+| `elevenlabs-music` (default) | `elevenlabs/music/v2.5` | 10–300 s | no (prompt describes vocals) | best general quality, vocal or instrumental, `--seed`; $0.60 / output minute, rounded up |
 | `minimax-music-3` | `minimax/music-3` | 1–300 s | yes, `[verse]`/`[chorus]` tags | full songs with your lyrics, WAV out, seedable |
 | `minimax-music-2.6` | `fal-ai/minimax-music/v2.6` | model-decided | yes | cheaper MiniMax tier, `--instrumental` flag |
-| `lyria3` / `lyria3-pro` | `fal-ai/lyria3[/pro]` | ~30 s fixed | no | Google Lyria clips; prompt only |
-| `lyria3.5` | `google/lyria-3.5` | model-decided | no | newest Lyria (Sep 2026); same prompt-only surface, MP3 + optional lyrics text |
+| `lyria3` / `lyria3-pro` | `fal-ai/lyria3[/pro]` | ~30 s fixed | no | Google Lyria clips; prompt + optional `--negative-prompt` |
+| `lyria3.5` | `google/lyria-3.5` | model-decided | no | newest Lyria (Sep 2026); prompt only, MP3 + optional lyrics text |
 | `mureka-9.5` | `mureka/v9.5/generate/song` | 120–300 s or model-decided | yes (prompt then steers style) | Mureka's top song tier; $0.15 / song with lyrics, $0.50 prompt-only |
 | `mureka-9` | `mureka/v9/generate/song` | model-decided | yes (prompt then steers style) | cheapest vocal songs from your lyrics ($0.045 / song; $0.30 prompt-only) |
 | `mureka-9-instrumental` | `mureka/v9/generate/instrumental` | model-decided | no | $0.045 instrumental tracks, prompt ≤ 1,024 chars |

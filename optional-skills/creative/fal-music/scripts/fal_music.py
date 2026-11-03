@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.request
 from typing import Any, Optional
@@ -34,6 +35,8 @@ def _elevenlabs_music(a: argparse.Namespace) -> dict[str, Any]:
         payload["music_length_ms"] = int(a.duration * 1000)
     if a.instrumental:
         payload["force_instrumental"] = True
+    if a.seed is not None:
+        payload["seed"] = a.seed
     return payload
 
 
@@ -57,7 +60,15 @@ def _minimax_music_26(a: argparse.Namespace) -> dict[str, Any]:
 
 
 def _lyria3(a: argparse.Namespace) -> dict[str, Any]:
-    return {"prompt": a.prompt}  # ~30s fixed-length clips; no duration/seed/negative knobs
+    return {"prompt": a.prompt}  # prompt-only surface; no duration or seed knobs
+
+
+def _lyria3_negative(a: argparse.Namespace) -> dict[str, Any]:
+    # Lyria 3 / 3 Pro honor negative_prompt; 3.5 declares it but documents it as unsupported.
+    payload = _lyria3(a)
+    if a.negative_prompt:
+        payload["negative_prompt"] = a.negative_prompt
+    return payload
 
 
 def _stable_audio_3(a: argparse.Namespace) -> dict[str, Any]:
@@ -110,7 +121,7 @@ MODELS: dict[str, dict[str, Any]] = {
     "elevenlabs-music": {
         "endpoint": "elevenlabs/music/v2.5", "build": _elevenlabs_music, "duration": (10, 300), "ext": "mp3",
         "kind": "music (vocals or instrumental)", "lyrics": False,
-        "notes": "Best overall quality; $0.60 per output minute (rounded up). Prompt-driven; use --instrumental to forbid vocals.",
+        "notes": "Best overall quality; $0.60 per output minute (rounded up). Prompt-driven; use --instrumental to forbid vocals; --seed for repeatable takes.",
     },
     "minimax-music-3": {
         "endpoint": "minimax/music-3", "build": _minimax_music_3, "duration": (1, 300), "ext": "wav",
@@ -123,19 +134,19 @@ MODELS: dict[str, dict[str, Any]] = {
         "notes": "Previous MiniMax generation; no duration knob, --instrumental supported.",
     },
     "lyria3": {
-        "endpoint": "fal-ai/lyria3", "build": _lyria3, "duration": None, "ext": "mp3",
+        "endpoint": "fal-ai/lyria3", "build": _lyria3_negative, "duration": None, "ext": "mp3",
         "kind": "~30s music clips", "lyrics": False,
-        "notes": "Google Lyria 3. Prompt only (no duration, seed or negative prompt). Also returns generated lyrics when applicable.",
+        "notes": "Google Lyria 3. Prompt plus optional --negative-prompt (no duration or seed). Also returns generated lyrics when applicable.",
     },
     "lyria3-pro": {
-        "endpoint": "fal-ai/lyria3/pro", "build": _lyria3, "duration": None, "ext": "mp3",
+        "endpoint": "fal-ai/lyria3/pro", "build": _lyria3_negative, "duration": None, "ext": "mp3",
         "kind": "~30s music clips, higher fidelity", "lyrics": False,
-        "notes": "Google Lyria 3 Pro. Same prompt-only surface as lyria3.",
+        "notes": "Google Lyria 3 Pro. Same surface as lyria3 (prompt + --negative-prompt).",
     },
     "lyria3.5": {
         "endpoint": "google/lyria-3.5", "build": _lyria3, "duration": None, "ext": "mp3",
         "kind": "music clips, newest Lyria", "lyrics": False,
-        "notes": "Google Lyria 3.5 (fal, Sep 2026). Same prompt-only surface as lyria3; negative prompts are declared but documented as unsupported.",
+        "notes": "Google Lyria 3.5 (fal, Sep 2026). Prompt only: negative prompts are declared but documented as unsupported, so they are not sent.",
     },
     "mureka-9.5": {
         "endpoint": "mureka/v9.5/generate/song", "build": _mureka_song, "duration": (120, 300), "ext": "mp3",
@@ -196,7 +207,8 @@ def build_payload(model: str, args: argparse.Namespace) -> dict[str, Any]:
         ("duration", requested, requested is not None and not any(k in payload for k in ("duration", "duration_seconds", "music_length_ms"))),
         ("seed", args.seed, args.seed is not None and "seed" not in payload),
         ("negative-prompt", args.negative_prompt, bool(args.negative_prompt) and "negative_prompt" not in payload),
-        ("instrumental", args.instrumental, args.instrumental and not any(k in payload for k in ("force_instrumental", "is_instrumental"))),
+        ("instrumental", args.instrumental, args.instrumental and payload.get("lyrics") != "[inst]"
+         and not any(k in payload for k in ("force_instrumental", "is_instrumental"))),
         ("loop", args.loop, args.loop and "loop" not in payload),
     ) if present]
     if ignored:
@@ -225,8 +237,11 @@ def generate(model: str, payload: dict[str, Any], output: str) -> dict[str, Any]
     except Exception as exc:  # fal_client raises its own HTTP error types; surface the message, not a traceback
         raise SystemExit(f"fal request failed ({MODELS[model]['endpoint']}): {exc}") from exc
     url = _audio_url(result)
-    with urllib.request.urlopen(url, timeout=120) as resp, open(output, "wb") as fh:
-        fh.write(resp.read())
+    try:  # the generation is already billed: a failed download must still say where the audio lives
+        with urllib.request.urlopen(url, timeout=120) as resp, open(output, "wb") as fh:
+            shutil.copyfileobj(resp, fh)
+    except OSError as exc:
+        raise SystemExit(f"generated, but saving {url} to {output} failed: {exc}") from exc
     extra = {k: v for k, v in result.items() if k not in ("audio", "audio_file")}
     return {"output": output, "url": url, "model": model, "endpoint": MODELS[model]["endpoint"], **extra}
 

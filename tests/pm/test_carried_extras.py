@@ -85,3 +85,33 @@ def test_a_requested_extra_or_core_that_cannot_build_still_fails(venv, broken, c
 
     assert _recorded() is None
     assert extras.declined_extras() == frozenset()
+
+
+def test_a_carried_extra_that_fails_for_the_moment_is_retried_by_the_next_update(venv):
+    """A carried extra whose trials fail on a download or tooling problem is not a verdict. Publishing
+    without it would write the facts that end the old venv's re-scan, losing the extra with no record;
+    the sync fails instead, and the next update carries it again and builds it once the cause clears."""
+    from pm.package import InstallError
+
+    package = venv(set())
+    # The full sync fails to build matrix; then its source goes missing for every per-extra trial.
+    failures = [BuildFailure("venv", "uv sync exited 1: Failed to build `review-optional`")]
+    unavailable = InstallError("venv", "uv sync exited 2: `review-optional` does not appear to be a Python project")
+    source_down = [True]
+
+    def apply(enabled, **inputs):
+        if "matrix" in enabled and source_down[0]:
+            package.applied.append(sorted(enabled))
+            raise failures.pop() if failures else unavailable
+        return _Venv.apply(package, enabled, **inputs)
+
+    package.apply = apply
+    with pytest.raises(InstallError, match=r"\['matrix'\].*could not be prepared"):
+        install.sync_venv(["all", "fal", "matrix"], explicit=True, carried=["fal", "matrix"])
+    assert _recorded() is None
+    assert extras.declined_extras() == frozenset()
+
+    source_down[0] = False
+    # No facts yet, so the next update scans the old venv and carries the same selection.
+    install.sync_venv(["all", "fal", "matrix"], explicit=True, carried=["fal", "matrix"])
+    assert _recorded() == ["all", "fal", "matrix"]

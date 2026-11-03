@@ -178,8 +178,10 @@ native package such as Matrix's `python-olm` whose compiler or CMake is
 missing), the update installs everything else, prints which extra it left out,
 and records that beside the install's dependency state, so a later scan of the
 old venv does not carry it again. `hermes pm install --extra NAME` adds it back
-once the build is fixed. An extra you request yourself still fails the install
-when it cannot build.
+once the build is fixed. A carried extra that fails only for the moment (a
+download or a missing tool) is never dropped: the update fails before it
+publishes anything, so the next update scans the old venv again and retries
+it. An extra you request yourself still fails the install when it cannot build.
 
 ### Lazy-install policy
 

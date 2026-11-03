@@ -52,24 +52,40 @@ def failing_carried(package, failure: BaseException, *, extras: list[str], carri
     return failing
 
 
+def refuse_transient(failing: dict[str, tuple[str, bool]], failure: BaseException) -> None:
+    """Fail the sync, publishing nothing, when a carried extra failed for the moment, not for good.
+
+    Publishing without it writes the facts that end the old venv's re-scan, and nothing else ever
+    carries the extra again: it would be lost with no record. Unpublished, the next update scans
+    the old venv again and retries it; a build verdict found then is left out as usual.
+    """
+    from pm.package import InstallError
+
+    transient = {extra: detail for extra, (detail, verdict) in failing.items() if not verdict}
+    if transient:
+        raise InstallError("venv", f"the extras {sorted(transient)} Hermes carried over from the old venv could "
+                                   f"not be prepared: {'; '.join(transient.values())[:600]}",
+                           "fix the download or tooling problem, then rerun `hermes update`: "
+                           "it tries them again") from failure
+
+
 _NO_BUILD = "it no longer builds on this machine"
 
 
 def record_left_out(package, failing: dict[str, tuple[str, bool]]) -> None:
     """Record the build verdicts so no later scan carries them, then tell the operator.
 
-    A download failure is not recorded: the next legacy carry may try it again.
+    Every entry of *failing* is a build verdict: ``refuse_transient`` already failed the sync
+    for any other cause.
     """
     from pm import receipt
     from pm.extras import install_hint, record_declined_extras
 
-    built_badly = [extra for extra, (_detail, verdict) in failing.items() if verdict]
-    record_declined_extras(add=built_badly, reasons=dict.fromkeys(built_badly, _NO_BUILD),
-                           project_root=package.project_root())
-    for extra, (detail, verdict) in failing.items():
-        why = f"{_NO_BUILD} (the build output is above)" if verdict else "its dependencies could not be downloaded"
+    record_declined_extras(add=failing, reasons=dict.fromkeys(failing, _NO_BUILD), project_root=package.project_root())
+    for extra, (detail, _verdict) in failing.items():
         message = (f"Left the optional {extra!r} extra out of this update: Hermes carried it over from the old "
-                   f"venv, and {why}. Everything else is installed. Once that is fixed, run "
+                   f"venv, and {_NO_BUILD} (the build output is above). Everything else is installed. Once that "
+                   f"is fixed, run "
                    f"`{install_hint(extra)}` to add it back.")
         print(f"⚠ {message}", file=sys.stderr, flush=True)
         receipt.record_warning(f"{message} Detail: {detail[:300]}")

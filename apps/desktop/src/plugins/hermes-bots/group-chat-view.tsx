@@ -86,7 +86,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { LegacyTypingRow } from './group-chat-legacy-parts'
+import { LegacyRoomTitle, LegacyWorkingRow } from './group-chat-legacy-parts'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
@@ -117,7 +117,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
-import { ROOM_AVATAR_SIZE, ROOM_COMPOSER_AREAS, ROOM_COMPOSER_INPUT_CLASS, RoomActivityRow, RoomComposer, RoomHeader, RoomMessage } from './group-room-ui'
+import { ROOM_AVATAR_SIZE, ROOM_COMPOSER_AREAS, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomHeader, RoomMessage } from './group-room-ui'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -1021,30 +1021,14 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       onBack={() => (onBack ? onBack() : $groupChatWorkspace.set(null))}
       stopLabel={b.group.stopHint}
       title={
-        <span className="flex min-w-0 items-center gap-2">
-          {/* Room picture (set via Group settings) leads the title when present. */}
-          {room.image ? (
-            <img alt="" className="size-6 shrink-0 rounded-md object-cover ring-1 ring-(--ui-stroke-tertiary)" src={room.image} />
-          ) : (
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-(--ui-bg-quaternary) text-(--ui-text-tertiary)">
-              <Codicon name="organization" />
-            </span>
-          )}
-          <span className="min-w-0 truncate">{group}</span>
-          <Tip label={memberNames}>
-            <span
-              aria-label={availabilityLabel}
-              className={cn(
-                'shrink-0 text-xs font-normal text-(--ui-text-tertiary)',
-                members.length > 0 && availableMembers < members.length && 'text-amber-600 dark:text-amber-300'
-              )}
-            >
-              {members.length > 0 && availableMembers < members.length
-                ? availabilityLabel
-                : b.group.memberCount(members.length)}
-            </span>
-          </Tip>
-        </span>
+        <LegacyRoomTitle
+          availabilityLabel={availabilityLabel}
+          countLabel={b.group.memberCount(members.length)}
+          group={group}
+          image={room.image}
+          memberNames={memberNames}
+          short={members.length > 0 && availableMembers < members.length}
+        />
       }
       trailing={
         <>
@@ -1598,20 +1582,16 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
               members={members}
             />
           ))}
-          {room.running ? (
-            room.turn && !roomClarifies.length ? (
-              <LegacyTypingRow
-                avatar={speakerFace(room.turn.name, botRosterMeta(room.turn, allMeta))}
-                key={'working'}
-                name={displayName(room.turn, botRosterMeta(room.turn, allMeta))}
-                since={[...activityEvents].reverse().find(event => event.kind === 'working' && event.member === room.turn?.name)?.at}
-              />
-            ) : (
-              <RoomActivityRow icon={roomClarifies.length ? 'question' : 'loading'} key={'working'}>
-                {roomClarifies.length ? b.group.waitingForAnswer : b.group.roomWorking}
-              </RoomActivityRow>
-            )
-          ) : null}
+          <LegacyWorkingRow
+            activity={activityEvents}
+            avatar={(turn: GroupMember) => speakerFace(turn.name, botRosterMeta(turn, allMeta))}
+            clarifying={roomClarifies.length > 0}
+            key={'working'}
+            labels={{ roomWorking: b.group.roomWorking, waitingForAnswer: b.group.waitingForAnswer }}
+            nameOf={(turn: GroupMember) => displayName(turn, botRosterMeta(turn, allMeta))}
+            running={Boolean(room.running)}
+            turn={room.turn}
+          />
           {/* Scroll anchor (#89835): rooms opened at scroll position 0, mid- */
           /* history. The effect below scrolls this sentinel into view on */
           /* mount and on log growth — unless the user has scrolled up. */}

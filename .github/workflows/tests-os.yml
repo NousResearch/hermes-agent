@@ -199,8 +199,11 @@ jobs:
             -v --tb=short
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
-          # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
+          # starved cold child startup before the fixture's idle deadline while
+          # every child re-analysed its modules (~22s on arm64); run_tests.sh now
+          # forwards the warm module analysis cache, so the 32-core arm64
+          # runners use every core. The x64 runners keep 16.
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '32' || '16') || '' }}
           HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.

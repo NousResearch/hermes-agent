@@ -135,12 +135,18 @@ jobs:
         # bash -> python test chain never saves that analysis, so a cold cache costs
         # every PowerShell child a test spawns the full 22s. A launch from a PowerShell
         # step saves it; run_tests.sh forwards PSModuleAnalysisCachePath to the tests.
-        # Usually the build-deps step above already warmed it and this takes ~1s.
+        # Takes ~1s when an earlier PowerShell step already warmed it.
+        if: runner.os == 'Windows'
+        shell: powershell
+        # This step's own powershell.exe does the analysis and saves it when it exits.
+        run: Get-ChildItem . | Out-Null
+
+      - name: EXPERIMENT measure a PowerShell child launch (do not merge)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           $t = Measure-Command { powershell.exe -NoProfile -NonInteractive -Command 'Get-ChildItem . | Out-Null' }
-          Write-Host ("module analysis cache ready in {0:N1}s ({1})" -f $t.TotalSeconds, $env:PSModuleAnalysisCachePath)
+          Write-Host ("PROBE child launch after warm step {0:N1}s" -f $t.TotalSeconds)
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other

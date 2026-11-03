@@ -137,9 +137,10 @@ jobs:
         # step saves it; run_tests.sh forwards PSModuleAnalysisCachePath to the tests.
         # Takes ~1s when an earlier PowerShell step already warmed it.
         if: runner.os == 'Windows'
-        shell: powershell
-        # This step's own powershell.exe does the analysis and saves it when it exits.
-        run: Get-ChildItem . | Out-Null
+        # A PowerShell step's own shell does not save the analysis, and starting one
+        # cold costs the same 22s again; a powershell.exe started from cmd saves it.
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -Command "Get-ChildItem . | Out-Null"
 
       - name: EXPERIMENT measure a PowerShell child launch (do not merge)
         if: runner.os == 'Windows'

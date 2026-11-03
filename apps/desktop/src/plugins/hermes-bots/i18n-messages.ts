@@ -3,9 +3,12 @@
  */
 
 import { type CanonicalGroupMessages } from './canonical-group-locales'
+import { type PauseMessages } from './pause-locales'
 
 export type BotsMessages = {
   canonical: { [K in keyof CanonicalGroupMessages]: string }
+  /** Pause / Resume and per-bot notification level (`bot-pause.ts`). */
+  pause: PauseMessages
   /** Left rail: the bot + group-chat roster. */
   editor: {
     fullConfigHint: string

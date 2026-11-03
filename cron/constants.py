@@ -1,6 +1,6 @@
 """Fire-claim timing bounds shared by the job store and its siblings.
 
-Import-free on purpose: a sibling loaded fresh from a newer on-disk tree must resolve
+Import-free at load on purpose: a sibling loaded fresh from a newer on-disk tree must resolve
 these without going through the ``cron.jobs`` object a long-lived process cached at boot.
 """
 
@@ -18,5 +18,15 @@ CLAIM_TTL_INACTIVITY_HEADROOM = 3
 
 
 def is_recurring(job: dict) -> bool:
-    """A cron/interval job (vs a one-shot); a null ``schedule`` counts as not recurring."""
-    return (job.get("schedule") or {}).get("kind") in {"cron", "interval"}
+    """A cron/interval job (vs a one-shot); a null or unparseable ``schedule`` counts as not
+    recurring. ``schedule`` is persisted parsed, but programmatic callers and older stores hand
+    the raw string the scheduler parses on its own paths, so this parses it the same way."""
+    schedule = job.get("schedule")
+    if isinstance(schedule, str):
+        from cron.jobs import parse_schedule  # late: only the raw-string shape needs the parser
+
+        try:
+            schedule = parse_schedule(schedule)
+        except ValueError:
+            return False
+    return isinstance(schedule, dict) and schedule.get("kind") in {"cron", "interval"}

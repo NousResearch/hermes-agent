@@ -131,6 +131,9 @@ def _tick_admitted(
 
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
+        # Bot Mode pause: a paused bot's due slots are consumed, not run, so its resume never bursts.
+        from tools.bot_mode_pause import hold_paused_profile_jobs
+        due_jobs = hold_paused_profile_jobs(due_jobs, _sched.logger)
         if headless:
             from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
             due_jobs = refuse_agent_jobs_without_gateway(due_jobs)

@@ -310,6 +310,9 @@ export function noteBotMetaWrite(key: string) {
 type BotMetaServerOutcome = 'failed' | 'persisted' | 'unsupported'
 
 interface BotMetaSaveResult {
+  /** Present when the gateway enforces `paused` (stops routines, refuses teammates); an older
+   *  one stores the flag in `ui_meta` without acting on it. */
+  pauseEnforced?: true
   serverOutcome: BotMetaServerOutcome
   serverPersisted: boolean
 }
@@ -318,6 +321,7 @@ interface BotMetaSaveResult {
  *  which is what makes the field optional rather than the contract. */
 interface ProfilesConfigureResult {
   applied?: {
+    bot_pause_enforced?: boolean
     ui_meta?: boolean
     ui_meta_conflicts?: Record<string, unknown>
   }
@@ -417,6 +421,11 @@ async function persistBotMetaPatch(
   }
 }
 
+/** `{ pauseEnforced: true }` when the gateway said it enforces `paused`, else nothing. */
+function pauseEnforcement(result: null | ProfilesConfigureResult): Pick<BotMetaSaveResult, 'pauseEnforced'> {
+  return result?.applied?.bot_pause_enforced === true ? { pauseEnforced: true } : {}
+}
+
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
   const { bot, key, name, route } = botOwner(owner)
   const prevMeta = $botMeta.get()[key] || {}
@@ -510,10 +519,13 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //   'failed'      — gateway speaks the contract and explicitly reported
   //                   the ui_meta write did NOT apply.
   let serverOutcome: BotMetaServerOutcome = 'unsupported'
+  let configured: null | ProfilesConfigureResult = null
 
   if (serverRequest) {
     try {
       const result = await serverRequest
+
+      configured = result
 
       if (result?.applied?.ui_meta === true) {
         serverOutcome = 'persisted'
@@ -533,6 +545,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   await localPersistence
 
   return {
+    ...pauseEnforcement(configured),
     serverPersisted: serverOutcome === 'persisted',
     serverOutcome
   }

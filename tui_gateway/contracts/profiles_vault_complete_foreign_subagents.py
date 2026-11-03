@@ -293,6 +293,9 @@ class ProfilesConfigureApplied(Result):
     ui_meta: bool | None = None
     ui_meta_revisions: dict[str, int] | None = None
     ui_meta_conflicts: dict[str, UiMetaConflict] | None = None
+    # Set when a ``hermes-bots`` write landed on a gateway that enforces its ``paused`` flag
+    # (routines held, teammate messages refused); absent from older gateways that only store it.
+    bot_pause_enforced: bool | None = None
     soul: bool | None = None
     description: bool | None = None
     model: bool | None = None

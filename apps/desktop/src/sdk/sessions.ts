@@ -5,6 +5,7 @@ import {
   setSidebarSessionOrderManual,
   unpinSession
 } from '@/store/layout'
+import { registerNotificationLevelResolver } from '@/store/native-notification-policy'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
 import { setSessionColorOverride } from '@/store/session-color'
 
@@ -75,5 +76,12 @@ export const sessionsHost = {
    *  a hand-picked colour are one value. */
   setColor: (storedSessionId: string, color: null | string): void => {
     setSessionColorOverride(durableSessionPinId(storedSessionId), color)
-  }
+  },
+
+  /** Name how much a session's owner may notify natively ('all' | 'needs-you'
+   *  | 'off'): Bot Mode answers per bot from that bot's own setting. The
+   *  resolver gets the session ids and its connection-qualified owner and
+   *  returns a level, or nothing when the owner is not its own. Returns the
+   *  unregister function. */
+  registerNotificationLevel: registerNotificationLevelResolver
 }

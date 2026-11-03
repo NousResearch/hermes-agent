@@ -15,8 +15,9 @@ from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_failure_reasons import HELD_NOT_SENT
+from tools.bot_failure_reasons import HELD_NOT_SENT, RECIPIENT_PAUSED
 from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
+from tools.bot_mode_pause import is_bot_paused
 logger = logging.getLogger(__name__)
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
@@ -852,6 +853,10 @@ async def _deliver(connection, params):
                 raise RuntimeStoreError('unknown_execution')
             holder = authority.db.get_session_by_title('Bot Chat')
             ref, live, entry = await _target(authority, actor)
+            if author is not None and author.get('is_bot') is True and is_bot_paused(home):
+                # After ``_target``: a first delivery mints the Bot Chat, so the refusal's receipt
+                # always has a session to name and is saved like any other.
+                return await _paused_refusal(actor, home, key, message, author, category, entry.session_id)
             pinned = params.get('session_id', entry.session_id)
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
@@ -917,6 +922,22 @@ def _not_sent_record(authority, actor, home, key, message, author, category):
     if author is not None:
         record['author'] = dict(author)
     return record
+
+
+async def _paused_refusal(actor, home, key, message, author, category, session_id):
+    """A teammate's delivery to a bot its user paused (``tools/bot_mode_pause.py``): refused before
+    any admission, as a terminal ``refused`` receipt bound to the full identity, so the sender gets
+    a definite no-send with :data:`RECIPIENT_PAUSED` and a replay of the id (even after the resume)
+    answers the same. The refusal is the receiving side's delivery policy; the human's own Bot Chat
+    turns carry no bot author and are never refused here."""
+    from gateway.session_automation import automation_notification_metadata
+    record = dict(delivery_id=key, profile_home=str(home), principal_id=actor.subject, message=message,
+                  status='failed', refused=True, reply='', reason=RECIPIENT_PAUSED, author=dict(author),
+                  error='The recipient bot is paused by its user; nothing was delivered', session_id=session_id)
+    record.update(automation_notification_metadata({'notification_category': category}))
+    await write_receipt(home, record)
+    logging.getLogger(__name__).info('Bot Chat delivery %s refused: recipient paused', key)
+    return _refused_answer(record)
 
 
 async def _held_by_another_writer(home, key, exc):

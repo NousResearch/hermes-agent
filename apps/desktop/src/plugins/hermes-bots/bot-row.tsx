@@ -33,6 +33,8 @@ import {
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { botNotificationLevel, isBotPaused } from './bot-pause'
+import { BotPausedGlyph, BotPauseMenu, pausedFaceClass } from './bot-pause-menu'
 import {
   $botChatFocused,
   $focusedBotOwner,
@@ -126,6 +128,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   const meta = botRosterMeta(bot, allMeta)
   const hidden = isBotHidden(bot, allMeta)
   const pinned = isBotPinned(bot, allMeta)
+  const paused = isBotPaused(bot, allMeta)
+  const notifyLevel = botNotificationLevel(bot, allMeta)
   const sourceStatus = botSourceStatus(bot)
   const groups = botGroups(meta)
   const last = bot.last_session
@@ -264,7 +268,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       }}
       onPointerEnter={warm}
     >
-      <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
+      <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60', pausedFaceClass(paused))}>
         <BotFace
           color={avatarColor(color, bot.name)}
           image={photo ? image : null}
@@ -287,6 +291,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="pinned" />
               </Tip>
             ) : null}
+            <BotPausedGlyph paused={paused} />
             {hidden ? (
               <Tip label={b.roster.hiddenFromRoster}>
                 <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="eye-closed" />
@@ -401,6 +406,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         >
           {hidden ? b.bot.unhide : b.bot.hide}
         </ContextMenuItem>
+        <BotPauseMenu bot={bot} level={notifyLevel} paused={paused} />
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>

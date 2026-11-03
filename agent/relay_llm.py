@@ -410,6 +410,8 @@ class ManagedLlmStream(Iterator[Any]):
         self._runtime_lease = attempt.runtime.acquire_operation_lease()
         try:
             self._loop = loop = asyncio.new_event_loop()
+            if _has_running_event_loop():
+                raise RuntimeError("Synchronous Relay stream cannot run on an event-loop thread")
             self._stream = loop.run_until_complete(
                 attempt.run_managed(
                     attempt.runtime.relay.llm.stream_execute, partial(self._provider_stream, attempt),
@@ -496,6 +498,8 @@ class ManagedLlmStream(Iterator[Any]):
             return await anext(self._stream)
 
         try:
+            if _has_running_event_loop():
+                raise RuntimeError("Synchronous Relay stream cannot run on an event-loop thread")
             chunk = self._loop.run_until_complete(next_chunk())
         except StopAsyncIteration:
             if self._raw_chunks:
@@ -960,5 +964,7 @@ def _run_awaitable(
     if not inspect.isawaitable(value):
         return value
     if _has_running_event_loop():
+        if inspect.iscoroutine(value):
+            value.close()
         raise RuntimeError(loop_error)
     return asyncio.run(value)

@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.waiting import wait_until
+from gateway import hosted_room_driver as driver
+from tui_gateway.hosted_room_member_activity import project_room_member_activity
 from tui_gateway.hosted_room_service import HostedRoomService
 
 
@@ -68,7 +70,26 @@ def test_status_names_the_member_answering_while_its_turn_runs(tmp_path: Path):
         assert service.rpc.started.wait(timeout=5)
         status = service.status("room-1")
         assert status["working"] is True
-        assert status["member_activity"] == [{"member_id": "ops", "status": "running"}]
+        [activity] = status["member_activity"]
+        assert (activity["member_id"], activity["status"]) == ("ops", "running")
+        assert activity["started_at"] > 0 and "tool" not in activity
+        assert status["max_rounds"] == service.discussion_limits.max_rounds
+
+        # The member's own session frames say which tool it is in, and that it is still making progress.
+        [task] = driver.list_tasks(service.db_path, room_id="room-1")
+        sessions = {"member-sid": {"_hosted_room_task": {
+            "room_id": "room-1", "task_id": task["identity"].task_id, "member_id": "ops"}}}
+
+        def frame(kind: str) -> dict:
+            return {"method": "event", "params": {
+                "type": kind, "session_id": "member-sid", "payload": {"tool_id": "c1", "name": "terminal"}}}
+
+        project_room_member_activity(frame("tool.start"), sessions)
+        [activity] = service.status("room-1")["member_activity"]
+        assert activity["tool"] == "terminal" and activity["progress_at"] >= activity["started_at"]
+        project_room_member_activity(frame("tool.complete"), sessions)
+        [activity] = service.status("room-1")["member_activity"]
+        assert "tool" not in activity and activity["progress_at"] > 0
 
         service.rpc.release.set()
         wait_until(lambda: service.status("room-1")["member_activity"] == [], timeout=5)

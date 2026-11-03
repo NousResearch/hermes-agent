@@ -34194,6 +34194,18 @@
             "default": null,
             "title": "Last Error"
           },
+          "max_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Rounds"
+          },
           "peer_routes": {
             "items": {
               "$ref": "#/components/schemas/PeerRouteStatus"
@@ -34567,7 +34579,7 @@
       },
       "RoomMemberActivity": {
         "additionalProperties": false,
-        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``.",
+        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``started_at`` is when it\nbegan running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the\nprocess running the turn.",
         "properties": {
           "member_id": {
             "title": "Member Id",
@@ -34576,6 +34588,42 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool"
+          },
+          "progress_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Progress At"
           }
         },
         "required": [

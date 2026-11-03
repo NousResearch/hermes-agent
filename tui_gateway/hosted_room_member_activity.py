@@ -12,10 +12,40 @@ the durable events.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
 
 HOOK_NAME = "on_room_member_activity"
+
+# Per running task: the tool it is in right now and when it last did anything. In-process only (the
+# process running the turn is the one that sees its frames); ``groups.state`` merges it into
+# ``member_activity`` so a room can tell a bot busy in a tool from one gone quiet.
+_PROGRESS_LIMIT = 512
+_progress: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
+_progress_lock = threading.Lock()
+
+
+def _note_progress(key: tuple[str, str], kind: str, payload: Mapping[str, Any] | None) -> None:
+    with _progress_lock:
+        entry = _progress.pop(key, None) or {"tool": None}
+        if kind == "tool.started":
+            entry["tool"] = str((payload or {}).get("name") or "") or None
+        elif kind == "tool.completed":
+            entry["tool"] = None
+        entry["progress_at"] = time.time()
+        _progress[key] = entry
+        while len(_progress) > _PROGRESS_LIMIT:
+            _progress.popitem(last=False)
+
+
+def task_progress(room_id: str, task_id: str) -> dict[str, Any]:
+    """``{"tool", "progress_at"}`` for a task this process has seen frames from, else ``{}``."""
+    with _progress_lock:
+        entry = _progress.get((room_id, task_id))
+        return {key: value for key, value in (entry or {}).items() if value is not None}
 
 # Session event frame ``type`` -> room activity ``kind``. Frames not listed (session.info,
 # status.update, message.start/complete, ...) are session chrome, not member activity.
@@ -65,5 +95,7 @@ def project_room_member_activity(frame: Mapping[str, Any], sessions: Mapping[str
     hosted_task = session.get("_hosted_room_task") if isinstance(session, Mapping) else None
     if not isinstance(hosted_task, Mapping):
         return False
-    return emit_room_member_activity(
-        hosted_task, kind=kind, payload=payload if isinstance(payload, Mapping) else None, seq=params.get("seq"))
+    payload = payload if isinstance(payload, Mapping) else None
+    if hosted_task.get("task_id"):
+        _note_progress((str(hosted_task.get("room_id")), str(hosted_task["task_id"])), kind, payload)
+    return emit_room_member_activity(hosted_task, kind=kind, payload=payload, seq=params.get("seq"))

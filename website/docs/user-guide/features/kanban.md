@@ -33,7 +33,7 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 - **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
-Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
+Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. Most CLI task verbs have a tool-call equivalent; the administrative retry-hold inspection and resolution commands below are intentionally human CLI-only, not model tools. The rest of this page shows CLI examples because they're easy to copy-paste.
 
 This is the shape that covers the workloads `delegate_task` can't:
 
@@ -620,8 +620,9 @@ budget counts only *consecutive* clean-exit protocol violations — interleaved
 rate-limited requeues are neutral, and any other failure kind resets the
 streak — and a per-task `max_retries` overrides the bound. A card blocked by
 this budget stays blocked (it is not auto-promoted like a below-`failure_limit`
-breaker block) until `hermes kanban unblock <id>`, which also grants a fresh
-retry budget. This usually means
+breaker block) until `hermes kanban unblock <id>`. That command does not reset
+the separate protocol-violation streak: one manual unblock buys another attempt,
+and a repeated violation can trip the same limit again. This usually means
 the model wrote a plain-text answer and exited without using the Kanban tool
 surface.
 
@@ -639,15 +640,32 @@ normal timer schedule: dispatch, automatic ready recomputation, ordinary unblock
 and direct claim cannot release it. The original failed runs, failure error and
 protocol events remain intact.
 
-Recovery is a fenced core API, not a model tool: `adopt_protocol_failure` can
-adopt only an unchanged legacy protocol `gave_up`; `get_retry_hold` returns the
-active hold and its current concurrency token; and `resolve_retry_hold` accepts only
-`resume` or `retire` with that token and an audited reason code. Resume records a
-release boundary (`retry_hold_resolved`) so only subsequent protocol runs count toward
-the next group; retire archives the task (`retry_retired`, non-grade) and refuses while
-live dependent work would be released. Neither wall-clock age, a successful run elsewhere,
-nor configuration changes reset these budgets. Hold and resolution metadata contain only
-bounded trusted identifiers and receipts—never prompts, outputs, tool arguments or provider
+A human operator can inspect active holds and the token needed for an explicit
+resolution:
+
+```bash
+hermes kanban holds list [--json]
+hermes kanban holds resolve <task> --action resume|retire --expected-hold-token <tok> --reason <code>
+```
+
+`resume` uses the normal parent gate (`ready` when parents are complete, otherwise
+`todo`) and records the release boundary. `retire` archives the task as a non-grade
+outcome and refuses when unresolved dependents would be released. Repeating the
+same resolution with the same token is idempotent. A stale token is refused; list
+again and review the current task state before deciding.
+
+The CLI calls the existing fenced core API; it does not add a model-facing tool.
+This is **manual or domain-owned recovery**, not automatic retry-on-cause-clear:
+there is no hold timer, health probe, or cause detector in this capability. A
+domain-owned recovery process can use the same core API after its own source and
+route checks. Cause-cleared automatic retry is the separate #108942 half; the two
+changes compose, and this hold API alone does not claim to complete that recovery
+story. `adopt_protocol_failure` can adopt only an unchanged legacy protocol
+`gave_up`; `get_retry_hold` returns the active hold and its current concurrency
+token; and `resolve_retry_hold` accepts only `resume` or `retire` with that token
+and an audited reason code. Neither wall-clock age, a successful run elsewhere,
+nor configuration changes reset these budgets. Hold and resolution metadata contain
+only bounded trusted identifiers and receipts—never prompts, outputs, tool arguments or provider
 credentials.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.

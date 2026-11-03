@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from types import SimpleNamespace
 
 from hermes_cli import cli_single_query as single_query
@@ -59,6 +60,70 @@ def test_main_loop_route_pairs_fail_closed_on_a_credential_shaped_identifier(tmp
 
         assert session_db.main_loop_route_pairs("worker-session-unsafe") == []
     finally:
+        session_db.close()
+
+
+def test_main_loop_route_pairs_returns_unknown_without_draining_queued_usage(tmp_path):
+    session_id = "worker-session-queued"
+    session_db = SessionDB(tmp_path / "state.db")
+    try:
+        session_db.create_session(session_id, source="cli", model="configured-primary")
+        with session_db._token_queue_cond:
+            session_db._token_queue.append((session_id, {
+                "input_tokens": 1,
+                "model": "fallback-model",
+                "billing_provider": "fallback-provider",
+                "api_call_count": 1,
+            }))
+        changes_before = session_db._conn.total_changes
+
+        routes = session_db.main_loop_route_pairs(session_id)
+        projection = single_query._build_kanban_retry_provenance(SimpleNamespace(
+            session_id="originating-session",
+            agent=SimpleNamespace(session_id=session_id, tools=_TOOLS, _session_db=session_db),
+        ))
+
+        assert session_db._conn.total_changes == changes_before, (
+            "main_loop_route_pairs wrote queued token deltas"
+        )
+        assert routes is None
+        assert projection["actual_routes"] is None
+        assert "actual_routes" in projection["unknown_fields"]
+        assert len(session_db._token_queue) == 1
+    finally:
+        session_db.close()
+
+
+def test_main_loop_route_pairs_returns_unknown_while_usage_writer_is_busy(tmp_path):
+    session_id = "worker-session-in-flight"
+    session_db = SessionDB(tmp_path / "state.db")
+    batch_started = threading.Event()
+    release_batch = threading.Event()
+    original_update = session_db.update_token_counts
+    try:
+        session_db.create_session(session_id, source="cli", model="configured-primary")
+
+        def blocked_update(target_session_id, **kwargs):
+            batch_started.set()
+            assert release_batch.wait(timeout=10)
+            return original_update(target_session_id, **kwargs)
+
+        session_db.update_token_counts = blocked_update
+        session_db.queue_token_counts(
+            session_id, input_tokens=1, model="fallback-model",
+            billing_provider="fallback-provider", api_call_count=1,
+        )
+        assert batch_started.wait(timeout=10)
+        assert session_db._token_writer_busy
+        changes_before = session_db._conn.total_changes
+
+        routes = session_db.main_loop_route_pairs(session_id)
+
+        assert session_db._conn.total_changes == changes_before
+        assert routes is None
+    finally:
+        release_batch.set()
+        session_db.update_token_counts = original_update
         session_db.close()
 
 

@@ -993,7 +993,13 @@ def restore_policy(data):
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not isinstance(policy.model, str) or not policy.model.strip()
+                # model=None/'' is what our own writers persist when the model cannot be
+                # resolved (session_local ``or None``, session_kanban raw resolution), and
+                # the launch path already resolves an empty policy model from config
+                # (session_hosted_rpc falls back to _resolve_gateway_model; #35381 made the
+                # runtime recover it). Failing the receipt here made every recovery tick
+                # refuse it forever (#148540). Non-string models stay rejected.
+                or (policy.model is not None and not isinstance(policy.model, str))
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool

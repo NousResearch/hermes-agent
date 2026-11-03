@@ -127,6 +127,8 @@ declare global {
       // over hermes:window-control; Electron/OS chrome owns them elsewhere.
       windowControls: {
         custom: boolean
+        getLinuxMode?: () => Promise<LinuxWindowControlsStatus>
+        setLinuxMode?: (mode: LinuxWindowControlsMode) => Promise<LinuxWindowControlsStatus>
         minimize: () => void
         toggleMaximize: () => void
         close: () => void
@@ -1144,6 +1146,13 @@ export interface HermesTitleBarTheme {
 export interface HermesActiveWork {
   count: number
   titles: string[]
+}
+
+export type LinuxWindowControlsMode = 'auto' | 'hide' | 'show'
+
+export interface LinuxWindowControlsStatus {
+  mode: LinuxWindowControlsMode
+  restartNeeded: boolean
 }
 
 export interface HermesWindowState {

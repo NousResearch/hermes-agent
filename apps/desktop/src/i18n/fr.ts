@@ -1019,6 +1019,13 @@ export const frOverrides = {
         'Choisissez le côté de la barre de titre où placer Paramètres, Disposition et HUD. Le côté droit laisse de la place aux onglets à gauche.',
       appActionsLeft: 'À gauche',
       appActionsRight: 'À droite',
+      windowControlsTitle: 'Boutons de fenêtre',
+      windowControlsDesc:
+        "Réduire, agrandir et fermer dans la barre de titre. Le mode Auto les masque sur les gestionnaires de fenêtres en mosaïque.",
+      windowControlsAuto: 'Auto',
+      windowControlsShow: 'Afficher',
+      windowControlsHide: 'Masquer',
+      windowControlsRestart: 'Redémarrez Hermes pour appliquer ce changement.',
       terminalFontTitle: 'Police du terminal',
       terminalFontDesc:
         'Choisissez une police installée pour les terminaux Desktop. Les Nerd Fonts affichent correctement Powerlevel10k et les icônes du shell ; laissez vide pour utiliser JetBrains Mono intégré.',

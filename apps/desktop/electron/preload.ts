@@ -87,6 +87,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   windowControls: {
     custom: customWindowControlsEnabled(),
+    getLinuxMode: () => ipcRenderer.invoke('hermes:window-controls:mode:get'),
+    setLinuxMode: mode => ipcRenderer.invoke('hermes:window-controls:mode:set', mode),
     minimize: () => ipcRenderer.send('hermes:window-control', 'minimize'),
     toggleMaximize: () => ipcRenderer.send('hermes:window-control', 'toggle-maximize'),
     close: () => ipcRenderer.send('hermes:window-control', 'close')

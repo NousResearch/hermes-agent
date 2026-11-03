@@ -1,6 +1,6 @@
 """s6 leg of the one-gateway-per-host convergence, shared by container boot and in-process migration.
 
-Inside the official image every profile has an s6 slot (``/run/service/gateway-<profile>``). The
+Inside the official image every profile has an s6 slot (``/run/hermes-service/gateway-<profile>``). The
 container's boot (``hermes_cli/container_boot.py``) registers every NAMED slot down and lets the
 root slot inherit their autostart intent; ``hermes gateway migrate --multiplex`` (and the hook
 ``hermes update`` runs) must be able to do the same thing to a slot that is UP, from inside the

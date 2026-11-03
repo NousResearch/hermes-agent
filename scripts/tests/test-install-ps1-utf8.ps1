@@ -9,7 +9,7 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvoca
 $installer = Join-Path $repoRoot 'scripts/install.ps1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('hermes-utf8-' + [guid]::NewGuid())
 $savedEncoding = [Console]::OutputEncoding
-$envNames = @('HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL', 'UTF8_PROBE_FIND_EXIT')
+$envNames = @('HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL', 'UTF8_PROBE_FIND_EXIT', 'UTF8_PROBE_GIT_EXEC_PATH')
 $savedEnv = @{}
 foreach ($name in $envNames) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name) }
 
@@ -104,6 +104,12 @@ class Fixture {
                 return 1;
             }
         }
+        if (args[0] == "--exec-path") {
+            byte[] execPath = new UTF8Encoding(false).GetBytes(Env("UTF8_PROBE_GIT_EXEC_PATH") + "\r\n");
+            Stream execOut = Console.OpenStandardOutput();
+            execOut.Write(execPath, 0, execPath.Length);
+            return 0;
+        }
         byte[] bytes = new UTF8Encoding(false).GetBytes(Env("UTF8_PROBE_PYTHON") + "\r\n");
         Stream stdout = Console.OpenStandardOutput();
         stdout.Write(bytes, 0, bytes.Length);
@@ -187,6 +193,17 @@ class Fixture {
         catch { $caught = $true }
         Assert-Equal $true $caught 'terminating errors propagate'
         Assert-Equal $codePage ([Console]::OutputEncoding.CodePage) 'encoding restored on throw'
+
+        # `git --exec-path` is UTF-8 too, and the gate that decides whether the
+        # pinned tree is usable captures it through the same seam. Decoded with
+        # the console code page the path is mojibake, Test-Path fails, and every
+        # repair re-extracts the pinned tree and then refuses it.
+        $gitExec = Join-Path $profileDir 'git-core'
+        New-Item -ItemType Directory -Path $gitExec -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $gitExec 'git-remote-https.exe') -Force | Out-Null
+        $env:UTF8_PROBE_GIT_EXEC_PATH = $gitExec
+        Assert-Equal $true (Test-PinnedGitHttpsReady $env:UTF8_PROBE_PYTHON) 'pinned git gate survives the code page'
+        Assert-Equal $codePage ([Console]::OutputEncoding.CodePage) 'git probe preserves caller encoding'
 
     }
     Write-Host 'UTF-8 native capture and dependency-stage regression tests passed.'

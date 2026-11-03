@@ -562,7 +562,12 @@ function Test-PinnedGitHttpsReady([string]$GitExe) {
     if (-not (Test-Path -LiteralPath $GitExe)) { return $false }
     $global:LASTEXITCODE = 0
     try {
-        $exec = Invoke-Native { & $GitExe --exec-path 2>$null }
+        # git writes --exec-path as UTF-8, and Windows PowerShell 5.1 decodes a captured native
+        # stdout with the console code page: an install under a profile name with an accent or a
+        # non-Latin character came back as mojibake, Test-Path failed, and every repair
+        # re-extracted the pinned tree and then refused it (git_extract_failed). Same seam as
+        # `uv python find` below.
+        $exec = Invoke-Native -Utf8Output { & $GitExe --exec-path 2>$null }
     } catch {
         return $false
     }

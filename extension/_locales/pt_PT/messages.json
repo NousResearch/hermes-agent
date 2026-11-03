@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "é seguido por 1 clique, favorito, melhoria e marcação de Mastodon, não importa qual instância você chama de casa.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "O nome da sua instância Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Precisa de ajuda?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Conectar Conta",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Voltar às Contas",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Ainda não está no Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Não consigo encontrar esta instância, por favor verifique o endereço e tente novamente.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Contas"
+  },
+  "add_account": {
+    "message": "+ Adicionar conta",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Mostrar notificações",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Esqueça",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Remover Conta",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "por"
+  },
+  "or": {
+    "message": "ou"
+  },
+  "send_feedback": {
+    "message": "Enviar Feedback",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Reportar erros",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Obter Apoio",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Doação",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze para Mastodon está pronto a usar!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Esta aba irá fechar em",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "segundos",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "p. ex.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Seguir",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Segue você",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Deixar de seguir",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Menção",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Mensagem directa",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Partilhar",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Mudo",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Bloco",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Denunciar",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Bloquear instância",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Abrir página original",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Link de cópia para postar",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Embutir",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Recurso no perfil",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Alterar idiomas de subscrito",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Ocultar boosts de",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Adicionar ou Remover de listas",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "hora",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "abaixo",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Você votou por esta resposta",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Configurações",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "tema"
+  },
+  "graze_theme_p": {
+    "message": "O Graze automaticamente corresponde ao seu tema, você pode substituí-Lo se quiser.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon Dark",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Luz de Mastodon",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Substituir Mastodon Theme Accent Color",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "linguagem"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Árabe"
+  },
+  "Bengali": {
+    "message": "Bengali"
+  },
+  "Bulgarian": {
+    "message": "Búlgaro"
+  },
+  "Chinese_Simplified": {
+    "message": "Chinês Simplificado"
+  },
+  "Chinese_Traditional": {
+    "message": "Chinês Tradicional"
+  },
+  "Czech": {
+    "message": "Checo"
+  },
+  "Danish": {
+    "message": "Dinamarquês"
+  },
+  "Dutch": {
+    "message": "Holandês"
+  },
+  "English": {
+    "message": "Inglês"
+  },
+  "Finnish": {
+    "message": "Finlandês"
+  },
+  "French": {
+    "message": "Francês"
+  },
+  "German": {
+    "message": "Alemão"
+  },
+  "Greek": {
+    "message": "Grego"
+  },
+  "Hawaiian": {
+    "message": "Havaiano"
+  },
+  "Hebrew": {
+    "message": "Hebraico"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Húngaro"
+  },
+  "Icelandic": {
+    "message": "Islandês"
+  },
+  "Indonesian": {
+    "message": "Indonésio"
+  },
+  "Italian": {
+    "message": "Italiano"
+  },
+  "Japanese": {
+    "message": "Japonês"
+  },
+  "Korean": {
+    "message": "Coreano"
+  },
+  "Malay": {
+    "message": "Malaio"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norueguês"
+  },
+  "Polish": {
+    "message": "Polonês"
+  },
+  "Portuguese": {
+    "message": "Português"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Português, brasileiro"
+  },
+  "Romanian": {
+    "message": "Romeno"
+  },
+  "Russian": {
+    "message": "Russo"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Sérvio (Cyrillic)"
+  },
+  "Spanish_Modern": {
+    "message": "Espanhol (Moderno)"
+  },
+  "Swedish": {
+    "message": "Sueco"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Tailandês"
+  },
+  "Turkish": {
+    "message": "Turco"
+  },
+  "Ukrainian": {
+    "message": "Ucraniano"
+  },
+  "Urdu_India": {
+    "message": "Urdu (Índia)"
+  },
+  "Vietnamese": {
+    "message": "Vietnamita"
+  },
+  "Welsh": {
+    "message": "Galês"
+  },
+  "convenience": {
+    "message": "conveniência"
+  },
+  "graze_convenience_p": {
+    "message": "O Graze pode fazer o nome do usuário do mastodonte em links ao redor da web.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Nomes de usuários do Mastodon Linkify",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "O Graze pode fazer o nome do usuário do mastodonte em links ao redor da web.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Exibir Hovercards",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Os Hovercards podem mostrar informações rápidas sobre o usuário quando você passa o mouse sobre o nome deles.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Mostrar pop-up para instâncias em que você não está federado",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Sugerir instâncias para federar quando visitar",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Mostrar pop-up quando logado em uma conta não adicionada ao Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Mostrar pop-up de adicionar login rápido da conta",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Substituir a linguagem automática no Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Ao clicar em responder em um servidor remoto ou \"toot esta página\" O Graze pode abrir uma resposta rápida ou levá-lo à sua instância inicial.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Resposta do Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Resposta da instância inicial",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Em instância remota o cronograma Local está mais de perto reflete os usuários e o conteúdo dessa instância.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Explore</strong> a <strong>Local</strong> timeline",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "conteúdo",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Faça display de conteúdo de instância remota combine com o seu próprio, ou misture.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Mostrar conteúdo por trás de um Content Warnings (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Jogar automaticamente GIFs",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Exibir NSFW / Imagens Sensíveis",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "configurar conta ativa",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Arrastar para reordenar",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Mensagens para {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Notificações para {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "TOMAR MEDIDAS A PARTIR DESTA CONTA",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Tomando ações como {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Mostrar imagens de avatar redondo",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Mostrar link, imagem e compartilhamento de trechos de texto a partir do menu de contexto através da web",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Mostrar menu de contexto do Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Perfis vazios de redirect (unfederados) em instâncias de origem para te dar um clique",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Redirecionar Automaticamente",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Expanda links para posts de Mastodon em suas timelines",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Exibir posts in-line expandidos",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe imagens de publicação e pré-visualizações de links",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Substituir previews de link padrão com imagens maiores e texto de trecho completo",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Exibir previews rich link",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze pode mostrar descritins de imagem \"Alt Text\" abaixo de imagens rathrer do que apenas em uma dica de ferramentas para leitura mais fácil",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Exibir descrições de imagem abaixo de imagens",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze só é compatível com instâncias em execução do Mastodon versão 4.0.0 ou superior",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Não foi possível encontrar esta instância. Por favor, verifique o endereço e tente novamente.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Ocorreu um erro. Por favor, tente novamente mais tarde.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Postagens",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Seguidores",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Seguinte",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Não, Obrigado.",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Ir para Diretório de Perfil",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Ir para Linha Temporal Local",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Siga uma conta do feed local para começar a ver conteúdo no seu feed inicial.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Você não é federado a $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Você poderá tomar ações desta conta em qualquer instância.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Adicionar $display_name$ ao Graz?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Adicionar ao Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

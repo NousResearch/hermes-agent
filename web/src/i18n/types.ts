@@ -73,6 +73,65 @@ export interface Translations {
     pluginNotRegistered: string;
   };
 
+  // ── Webhooks page ──
+  // Optional while locales are introduced incrementally. Components fall back
+  // to the English catalog until a locale supplies this group.
+  webhooksUi?: {
+    copy: string;
+    failedToLoad: string;
+    gatewayRestartFailedExit: string;
+    gatewayRestartFailedManual: string;
+    gatewayRestarting: string;
+    failedToRestart: string;
+    webhooksEnabledRestarting: string;
+    webhooksEnabledRestartFailed: string;
+    failedToEnableWebhooks: string;
+    nameRequired: string;
+    created: string;
+    failedToCreate: string;
+    deletedNamed: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    error: string;
+    newSubscription: string;
+    deleteWebhook: string;
+    deleteDescriptionNamed: string;
+    deleteDescription: string;
+    close: string;
+    createdCopySecret: string;
+    webhookUrl: string;
+    secretShownOnce: string;
+    done: string;
+    name: string;
+    namePlaceholder: string;
+    description: string;
+    descriptionPlaceholder: string;
+    events: string;
+    eventsPlaceholder: string;
+    deliverTo: string;
+    log: string;
+    githubComment: string;
+    deliverOnly: string;
+    skipAgent: string;
+    prompt: string;
+    promptPlaceholder: string;
+    webhookReceiverDisabled: string;
+    webhookReceiverDisabledHint: string;
+    enabling: string;
+    enableWebhooks: string;
+    enable: string;
+    disable: string;
+    restartNeeded: string;
+    restarting: string;
+    restartGateway: string;
+    subscriptions: string;
+    subscriptionsHint: string;
+    noSubscriptions: string;
+    allEvents: string;
+    deliverOnlyStatus: string;
+    disabledStatus: string;
+  };
+
   // ── App shell ──
   app: {
     brand: string;

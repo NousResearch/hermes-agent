@@ -526,7 +526,10 @@ interface GatewayErrorLike {
 /** "This session does not exist" from either backend: 4007 from a `hermes serve`
  *  socket, a 4001 refusal whose reason is `not_found` from the gateway that owns
  *  local sessions (gateway/session_controls.py). Only this answer may lead to
- *  minting a fresh member session; every other failure fails closed. */
+ *  minting a fresh member session; every other failure fails closed. The
+ *  gateway also answers `not_found` for a row this caller may not read
+ *  (gateway/session_local_title.py folds permission_denied into it); treating that as
+ *  absent is safe, since such a row could not be resumed by this caller anyway. */
 export function isSessionAbsentError(error: GatewayErrorLike | null | undefined): boolean {
   if (error?.code === 4007) {
     return true

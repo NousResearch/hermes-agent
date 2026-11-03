@@ -379,6 +379,8 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  inline_text_attachments: true  # False keeps cached text documents path-only
+  max_attachment_bytes: 33554432 # Per-document download cap (32 MiB); 0 disables it
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false
     channels: []                  # Empty uses free_response_channels

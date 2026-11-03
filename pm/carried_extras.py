@@ -65,8 +65,9 @@ def refuse_transient(failing: dict[str, tuple[str, bool]], failure: BaseExceptio
     if transient:
         raise InstallError("venv", f"the extras {sorted(transient)} Hermes carried over from the old venv could "
                                    f"not be prepared: {'; '.join(transient.values())[:600]}",
-                           "fix the download or tooling problem, then rerun `hermes update`: "
-                           "it tries them again") from failure
+                           "fix the download or tooling problem, then rerun `hermes update`: it tries them "
+                           "again; or leave them out for good with "
+                           + " ".join(f"`hermes pm install --without {extra}`" for extra in sorted(transient))) from failure
 
 
 _NO_BUILD = "it no longer builds on this machine"

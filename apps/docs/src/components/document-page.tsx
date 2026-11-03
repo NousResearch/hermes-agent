@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { DocsPage, DocsBody, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
 import { source } from '@/lib/source';
-import { canonicalUrl, type Locale } from '@/lib/urls';
+import type { Locale } from '@/lib/urls';
+import { documentPageMetadata } from '@/lib/document-metadata';
 import { getMDXComponents } from '@/mdx-components';
 
 export function documentParams(locale: Locale) {
@@ -12,19 +13,10 @@ export function documentParams(locale: Locale) {
 export function documentMetadata(slugs: string[] | undefined, locale: Locale): Metadata {
   const page = source.getPage(slugs, locale);
   if (!page) notFound();
-  const title = page.data.seo_title ?? page.data.title;
-  return {
-    title: page.data.seo_title ? { absolute: title } : title,
-    description: page.data.description,
-    alternates: {
-      canonical: canonicalUrl(page.url),
-      languages: Object.fromEntries(['en', 'zh-Hans'].map((language) => {
-        const other = source.getPage(page.slugs, language);
-        return [language, other ? canonicalUrl(other.url) : canonicalUrl(page.url)];
-      })),
-    },
-    openGraph: { title, description: page.data.description, url: canonicalUrl(page.url) },
-  };
+  return documentPageMetadata(page, {
+    en: source.getPage(page.slugs, 'en'),
+    'zh-Hans': source.getPage(page.slugs, 'zh-Hans'),
+  });
 }
 
 export async function DocumentPage({ slugs, locale }: { slugs?: string[]; locale: Locale }) {

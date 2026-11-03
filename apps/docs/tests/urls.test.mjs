@@ -13,7 +13,9 @@ test('public files and canonical URLs carry exactly one docs mount', () => {
   assert.equal(publicHref('/api/model-catalog.json'), '/docs/api/model-catalog.json');
   assert.equal(publicHref('/docs/api/model-catalog.json'), '/docs/api/model-catalog.json');
   assert.equal(publicHref('/'), '/docs/');
-  assert.equal(canonicalUrl('/zh-Hans/user-guide/cli'), 'https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/cli');
+  assert.equal(canonicalUrl('/zh-Hans/user-guide/cli'), 'https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/cli/');
+  assert.equal(canonicalUrl('/docs/zh-Hans/user-guide/cli/'), 'https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/cli/');
+  assert.equal(canonicalUrl('/plugins?view=all#install'), 'https://hermes-agent.nousresearch.com/docs/plugins/?view=all#install');
 });
 
 test('outside URLs and document-local fragments are not localized', () => {

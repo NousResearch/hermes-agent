@@ -58,7 +58,7 @@ function zhHref(route) {
 function expectedRoutes() {
   const en = EN_DOCS.map((doc) => "/" + doc.replace(/\.mdx?$/, "").replace(/(?:^|\/)index$/, ""));
   const zh = [...en.map(zhHref), ...ZH_ONLY_DOCS.map((doc) => zhHref("/" + doc.replace(/\.mdx?$/, "")))];
-  const hubs = ["/skills", "/plugins", zhHref("/skills"), zhHref("/plugins")];
+  const hubs = ["/skills", "/plugins", "/search", zhHref("/skills"), zhHref("/plugins"), zhHref("/search")];
   const catalog = PLUGINS.flatMap((plugin) => [
     `/plugins/${plugin.name}`, `/plugins/by/${plugin.maintainerSlug}`,
     zhHref(`/plugins/${plugin.name}`), zhHref(`/plugins/by/${plugin.maintainerSlug}`),
@@ -67,6 +67,7 @@ function expectedRoutes() {
 }
 
 const PAGE_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Page</title>
+<link rel="search" type="application/opensearchdescription+xml" href="/docs/opensearch.xml">
 <link rel="stylesheet" href="/docs/_next/static/app.css">
 <script src="/docs/_next/static/app.js"></script></head>
 <body><img src="/docs/img/logo.png">
@@ -97,7 +98,9 @@ function buildExport(t) {
   for (const route of routes) {
     const file = path.join(outDir, route, "index.html");
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, PAGE_HTML);
+    writeFileSync(file, route.startsWith("/zh-Hans")
+      ? PAGE_HTML.replace("/docs/opensearch.xml", "/docs/zh-Hans/opensearch.xml")
+      : PAGE_HTML);
     writeFileSync(path.join(path.dirname(file), "index.txt"), "RSC payload");
   }
   mkdirSync(path.join(outDir, "_next", "static"), { recursive: true });
@@ -114,6 +117,7 @@ function buildExport(t) {
     return file;
   };
   writeFileSync(writePublic("img", "logo.png"), "PNG");
+  writeFileSync(writePublic("img", "favicon.ico"), "ICO");
   writeFileSync(writePublic("img", "logo@2x.png"), "PNG2");
   writeFileSync(writePublic("search-config.json"), JSON.stringify({
     appId: "A1B2C3D4E5", apiKey: "0123456789abcdef0123456789abcdef", indexName: "hermes docs",
@@ -192,12 +196,72 @@ function dropRoute(appDir, route) {
   rmSync(path.join(pageDir, "index.txt"), { force: true });
 }
 
-/** Overwrite a generated file in BOTH public/ and out/ so the copy check stays quiet. */
+/** Keep a generated fixture's source and published copies in sync. */
 function rewriteArtifact(appDir, relative, content) {
   for (const base of ["public", "out"]) {
     writeFileSync(path.join(appDir, base, relative), content);
   }
+  if (relative.startsWith('api/') || relative.startsWith('oauth/')
+    || relative === 'llms.txt' || relative === 'llms-full.txt') {
+    writeFileSync(path.join(appDir, 'out', 'zh-Hans', relative), content);
+  }
 }
+
+const localizedArtifacts = ['api/model-catalog.json', 'oauth/client-metadata.json', 'llms.txt', 'llms-full.txt'];
+
+for (const relative of localizedArtifacts) {
+  test(`rejects a missing localized artifact: ${relative}`, (t) => {
+    const { appDir, outDir } = buildExport(t);
+    rmSync(path.join(outDir, 'zh-Hans', relative), { force: true });
+    const result = validateOutput(appDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes(`zh-Hans/${relative}`)), result.errors.join('\n'));
+  });
+
+  test(`rejects a localized artifact with different bytes: ${relative}`, (t) => {
+    const { appDir, outDir } = buildExport(t);
+    const file = path.join(outDir, 'zh-Hans', relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, 'different bytes');
+    const result = validateOutput(appDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes(`zh-Hans/${relative}`)), result.errors.join('\n'));
+  });
+}
+
+for (const locale of ["", "zh-Hans/"]) {
+  test(`rejects a missing full search route: ${locale || "en"}`, (t) => {
+    const { appDir } = buildExport(t);
+    dropRoute(appDir, "/" + locale + "search");
+    const result = validateOutput(appDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => /search.*page|search.*route/i.test(error)), result.errors.join("\n"));
+  });
+
+  test(`rejects a missing OpenSearch descriptor: ${locale || "en"}`, (t) => {
+    const { appDir, outDir } = buildExport(t);
+    rmSync(path.join(outDir, locale, "opensearch.xml"), { force: true });
+    const result = validateOutput(appDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes(locale + "opensearch.xml")), result.errors.join("\n"));
+  });
+
+  test(`rejects malformed OpenSearch markup: ${locale || "en"}`, (t) => {
+    const { appDir, outDir } = buildExport(t);
+    writeFileSync(path.join(outDir, locale, "opensearch.xml"), "not XML");
+    const result = validateOutput(appDir);
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes(locale + "opensearch.xml")), result.errors.join("\n"));
+  });
+}
+
+test("rejects missing OpenSearch autodiscovery on an exported page", (t) => {
+  const { appDir, outDir } = buildExport(t);
+  writeFileSync(path.join(outDir, "index.html"), PAGE_HTML.replace(/<link rel="search"[^>]*>/, ""));
+  const result = validateOutput(appDir);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => /autodiscovery/i.test(error)), result.errors.join("\n"));
+});
 
 test("accepts a complete bilingual export via the CLI", (t) => {
   const { appDir } = buildExport(t);
@@ -218,13 +282,17 @@ test("the CLI default anchors to its own apps/docs, not the working directory", 
   mkdirSync(scripts);
   cpSync(validatorCli, path.join(scripts, "validate-output.mjs"));
   cpSync(postbuildCli, path.join(scripts, "postbuild.mjs"));
+  cpSync(path.join(docsAppDir, "scripts/opensearch.mjs"), path.join(scripts, "opensearch.mjs"));
   symlinkSync(path.join(docsAppDir, "src"), path.join(appDir, "src"), "dir");
   symlinkSync(path.join(docsAppDir, "node_modules"), path.join(appDir, "node_modules"), "dir");
-  const result = spawnSync(process.execPath, [path.join(scripts, "validate-output.mjs")], {
-    encoding: "utf8", cwd: root,
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.ok(result.stdout.includes(`${routes.length} exported pages`), result.stdout);
+  const entry = path.join(scripts, "validate-output.mjs");
+  const linkedEntry = path.join(root, "validate-export.mjs");
+  symlinkSync(entry, linkedEntry);
+  for (const cli of [entry, linkedEntry]) {
+    const result = spawnSync(process.execPath, [cli], { encoding: "utf8", cwd: root });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`${routes.length} exported pages`), result.stdout);
+  }
 });
 
 test("rejects an exported page whose HTML is missing", (t) => {

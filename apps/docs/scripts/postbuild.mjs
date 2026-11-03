@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, cpSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { canonicalUrl, localizedHref, publicHref, splitLocalePath, LOCALES } from '../src/lib/urls.ts';
+import { writeOpenSearch } from './opensearch.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const internalRoutes = new Set(['/_not-found', '/_global-error', '/404', '/500']);
@@ -77,7 +78,7 @@ export function redirectScriptAsset() {
 }
 
 export function redirectHtml({ to, locale }, scriptUrl) {
-  const target = escapeMarkup(publicHref(to));
+  const target = escapeMarkup(new URL(canonicalUrl(to)).pathname);
   return `${redirectMarker}
 <!doctype html>
 <html lang="${locale}"><head><meta charset="utf-8">
@@ -111,6 +112,8 @@ export function sitemapXml(routes) {
     const alternates = LOCALES.map((locale) => [locale, localizedHref(logicalPath, locale)])
       .filter(([, href]) => knownRoutes.has(href))
       .map(([locale, href]) => `    <xhtml:link rel="alternate" hreflang="${locale}" href="${escapeMarkup(canonicalUrl(href))}"/>`);
+    const defaultRoute = knownRoutes.has(logicalPath) ? logicalPath : route;
+    alternates.push(`    <xhtml:link rel="alternate" hreflang="x-default" href="${escapeMarkup(canonicalUrl(defaultRoute))}"/>`);
     return ['  <url>', `    <loc>${escapeMarkup(canonicalUrl(route))}</loc>`, ...alternates, '  </url>'].join('\n');
   });
   return [
@@ -122,16 +125,29 @@ export function sitemapXml(routes) {
   ].join('\n');
 }
 
+function writeLocalizedArtifacts(outputDir) {
+  // Docusaurus published the same machine-readable files under each locale.
+  for (const locale of LOCALES.filter((locale) => locale !== 'en')) {
+    for (const relative of ['api', 'oauth', 'llms.txt', 'llms-full.txt']) {
+      const source = path.join(outputDir, relative);
+      if (!existsSync(source)) continue; // The validator owns required-artifact checks.
+      cpSync(source, path.join(outputDir, locale, relative), { recursive: true, force: true });
+    }
+  }
+}
+
 export function finishExport(appDir = appRoot) {
   const routes = exportedRoutes(appDir);
   const redirects = redirectEntries(routes);
   const outputDir = path.join(appDir, 'out');
   writeFileSync(path.join(outputDir, 'sitemap.xml'), sitemapXml(routes));
   writeRedirects(outputDir, redirects);
+  writeOpenSearch(outputDir);
+  writeLocalizedArtifacts(outputDir);
   return { pages: routes.length, redirects: redirects.length };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   try {
     const { values } = parseArgs({ options: { 'app-dir': { type: 'string' } } });
     console.log(JSON.stringify(finishExport(values['app-dir'] ? path.resolve(values['app-dir']) : appRoot)));

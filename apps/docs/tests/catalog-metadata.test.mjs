@@ -23,10 +23,12 @@ test('Next route metadata reads params without fetching a README and preserves l
   const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('Metadata must not fetch README content'); });
   const metadata = await pluginPageMetadata({ params: Promise.resolve({ name: 'example' }) }, 'zh-Hans');
   assert.equal(metadata.title, 'example · Plugin Catalog');
-  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/zh-Hans/plugins/example');
-  assert.equal(metadata.alternates.languages.en, 'https://hermes-agent.nousresearch.com/docs/plugins/example');
+  assert.equal(metadata.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/zh-Hans/plugins/example/');
+  assert.equal(metadata.alternates.languages.en, 'https://hermes-agent.nousresearch.com/docs/plugins/example/');
+  assert.equal(metadata.alternates.languages['x-default'], metadata.alternates.languages.en);
   const author = await authorPageMetadata({ params: Promise.resolve({ author: 'example-author' }) }, 'en');
   assert.equal(author.title, 'Plugins by Example author · Plugin Catalog');
-  assert.equal(author.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/plugins/by/example-author');
+  assert.equal(author.alternates.canonical, 'https://hermes-agent.nousresearch.com/docs/plugins/by/example-author/');
+  assert.equal(author.alternates.languages['x-default'], author.alternates.languages.en);
   assert.equal(fetch.mock.callCount(), 0);
 });

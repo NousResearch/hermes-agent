@@ -118,6 +118,7 @@ class CatalogEntry:
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
+    trust: Optional[str] = None
 
 
 class CatalogError(Exception):
@@ -331,6 +332,10 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     if not description:
         raise CatalogError(f"{path}: 'description' required")
 
+    trust = data.get("trust")
+    if "trust" in data and trust not in ("full", "untrusted"):
+        raise CatalogError(f"{path}: trust must be 'full' or 'untrusted'")
+
     # Validation order (transport, auth, tools, suggest, install) determines which error surfaces.
     transport = _parse_transport(path, data.get("transport"))
     auth = _parse_auth(path, data.get("auth"), name, transport.type == "http")
@@ -341,7 +346,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
-        post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path, trust=trust,
     )
 
 
@@ -539,6 +544,8 @@ def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
     cfg: dict = {}
+    if entry.trust is not None:
+        cfg["trust"] = entry.trust
     t = entry.transport
     if t.type == "stdio":
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)

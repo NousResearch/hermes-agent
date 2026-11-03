@@ -299,6 +299,17 @@ def _make_probe_dir(tmp_path: Path) -> Path:
     return probe_dir
 
 
+def _load_runner(name: str):
+    """scripts/run_tests_parallel.py as a module, for tests of its helpers."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
     repo_root = _probe_root(probe_dir.parent)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
@@ -813,7 +824,7 @@ def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(
 
 
 _FORK_PROBE = textwrap.dedent("""
-    import atexit, json, os, sys, tempfile
+    import atexit, json, multiprocessing, multiprocessing.util, os, sys, tempfile
     from pathlib import Path
 
     OUT = Path({out!r})
@@ -830,7 +841,12 @@ _FORK_PROBE = textwrap.dedent("""
             "sys_path": sys.path,
             "argv0": sys.argv[0],
             "product_preloaded": sorted(m for m in ("hermes_cli", "agent", "gateway", "tools") if m in sys.modules),
-            "slice_env": os.environ.get("HERMES_TEST_FORKSERVER"),
+            "forkserver_env": os.environ.get("HERMES_TEST_FORKSERVER"),
+            "mp_process": multiprocessing.current_process().name,
+            "mp_parent": multiprocessing.parent_process(),
+            "main_module": sys.modules["__main__"].__spec__.name,
+            "mp_main_is_main": sys.modules.get("__mp_main__") is sys.modules["__main__"],
+            "mp_tempdir_in_tmpdir": multiprocessing.util.get_temp_dir().startswith(os.environ["TMPDIR"]),
         }}))
 
     def test_failure_is_reported():
@@ -847,6 +863,9 @@ def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, mon
         probe_dir.mkdir()
         out = tmp_path / f"facts{fork}.json"
         (probe_dir / "test_probe_fork.py").write_text(_FORK_PROBE.format(out=str(out), fail="no"), encoding="utf-8")
+        # Runs first (-j 1, path order): the probe must not be the server's first child,
+        # which inherits less runner state than every later one.
+        (probe_dir / "test_a_first.py").write_text("def test_first():\n    pass\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_TEST_FORKSERVER", fork)
         proc = _run_runner(probe_dir)
         assert proc.returncode == 0, proc.stdout
@@ -862,7 +881,7 @@ def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, mon
         seen[fork] = facts
     assert seen["1"] == seen[""], seen
     assert seen["1"]["own_session"] and seen["1"]["product_preloaded"] == []
-    assert seen["1"]["slice_env"] is None  # the runner consumes it; tests never see it
+    assert seen["1"]["forkserver_env"] is None  # the runner consumes it; tests never see it
 
 
 @pytest.mark.platforms("linux")
@@ -875,13 +894,7 @@ def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monke
     (probe_dir / "test_probe_hang.py").write_text(
         "import time\n\ndef test_hangs():\n    time.sleep(600)\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
-    repo_root = _probe_root(probe_dir.parent)
-    proc = subprocess.run(
-        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"), "--paths", str(probe_dir),
-         "-j", "2", "--file-timeout", "5", "--file-retries", "0"],
-        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        encoding="utf-8", errors="replace", timeout=120, check=False,
-    )
+    proc = _run_runner(probe_dir, "-j", "2", "--file-timeout", "5", "--file-retries", "0")
     assert proc.returncode != 0, proc.stdout
     assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
     assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout
@@ -911,8 +924,9 @@ def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> 
         "tempfile.tempdir = sys.argv[1]\n"
         "sys.path.insert(0, sys.argv[2])\n"
         "from scripts import run_tests_fork_child\n"
-        "run_tests_fork_child.run(sys.argv[3], ['-q', '-p', 'no:cacheprovider'], sys.argv[4],\n"
-        "                         json.loads(sys.argv[5]), sys.argv[6], sys.path[1:], 'pytest')\n"
+        "run_tests_fork_child.run(argv=['pytest', sys.argv[3], '-q', '-p', 'no:cacheprovider'],\n"
+        "                         cwd=sys.argv[4], env=json.loads(sys.argv[5]), sys_path=sys.path[1:],\n"
+        "                         out_path=sys.argv[6])\n"
     )
     proc = subprocess.run(
         [sys.executable, "-c", server, str(tmp_path), str(repo_root), str(probe), str(tmp_path),
@@ -926,25 +940,21 @@ def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> 
 @pytest.mark.platforms("linux")
 def test_fork_server_exit_status_survives_concurrent_starts() -> None:
     """Starting a child polls every live child; a status read racing that poll must not turn 0 into 255."""
-    import importlib.util
     import multiprocessing
     from concurrent.futures import ThreadPoolExecutor
 
-    spec = importlib.util.spec_from_file_location(
-        "rtp_forkstatus", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
-    rtp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(rtp)
+    rtp = _load_runner("rtp_forkstatus")
     ctx = multiprocessing.get_context("forkserver")
 
     def one(_):
         proc = ctx.Process(target=sys.exit, args=(0,))
-        with rtp._fork_lock:
-            proc.start()
+        rtp._start_forked(proc)
         return rtp._forked_exit_status(proc, 60)
 
+    # Unlocked, about 1 status in 400 comes back 255; 2000 children take ~3s.
     with ThreadPoolExecutor(16) as pool:
-        statuses = list(pool.map(one, range(400)))
-    assert statuses == [0] * 400, sorted(set(statuses))
+        statuses = list(pool.map(one, range(2000)))
+    assert statuses == [0] * 2000, sorted(set(statuses))
 
 
 def test_a_green_file_that_exits_non_zero_reports_its_exit_status(tmp_path: Path) -> None:
@@ -962,12 +972,7 @@ def test_a_green_file_that_exits_non_zero_reports_its_exit_status(tmp_path: Path
 
 def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
     """A slow file submitted last runs alone at the end of the run; start it first."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "rtp_order", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
-    rtp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(rtp)
+    rtp = _load_runner("rtp_order")
     root = Path("/repo")
     a, b, c, d = (root / f"tests/test_{n}.py" for n in "abcd")
     files = [a, b, c, d]

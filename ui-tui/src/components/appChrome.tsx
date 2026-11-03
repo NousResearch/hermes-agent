@@ -530,6 +530,36 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+function clipboardFeedbackWidth(text: string | null | undefined, sessions: string): number {
+  return text ? stringWidth(` │ ${text}${sessions ? ` │ ${sessions}` : ''}`) : 0
+}
+
+function statusClipboardFeedbackNode(text: string | null | undefined, t: Theme) {
+  return text ? (
+    <Box flexShrink={1} overflow="hidden">
+      <Text color={t.color.ok} wrap="truncate-end">
+        {' │ '}
+        {text}
+      </Text>
+    </Box>
+  ) : null
+}
+
+function statusSessionCountNode(text: string, onClick: (() => void) | undefined, t: Theme) {
+  const click = (event: { stopImmediatePropagation?: () => void }) => {
+    event.stopImmediatePropagation?.()
+    onClick?.()
+  }
+
+  return onClick ? (
+    <Box flexShrink={0} onClick={click}>
+      <Text color={t.color.accent}> │ {text}</Text>
+    </Box>
+  ) : (
+    <Text color={t.color.muted}> │ {text}</Text>
+  )
+}
+
 export function StatusRule({
   battery,
   focusView,
@@ -546,6 +576,7 @@ export function StatusRule({
   modelReasoningEffortWire,
   indicatorStyle = 'kaomoji',
   notice,
+  clipboardFeedback,
   usage,
   bgCount,
   lastTurnEndedAt,
@@ -613,7 +644,10 @@ export function StatusRule({
       ? noticeReserve
       : stringWidth(status)
 
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+
   const essentialWidth =
+    clipboardFeedbackWidth(clipboardFeedback, sessionCountText) +
     stringWidth('─ ') +
     batteryWidth +
     slotWidth +
@@ -642,7 +676,6 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
@@ -680,7 +713,7 @@ export function StatusRule({
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+  const showSessionCount = !!sessionCountText && (!!clipboardFeedback || fits(SEP + stringWidth(sessionCountText)))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
@@ -706,18 +739,7 @@ export function StatusRule({
   // seeing it, so it must not drop off a narrow terminal.
   const showFocus = !!focusView
 
-  const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
-    event.stopImmediatePropagation?.()
-    onSessionCountClick?.()
-  }
-
-  const sessionCountNode = onSessionCountClick ? (
-    <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
-    </Box>
-  ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
-  )
+  const sessionCountNode = statusSessionCountNode(sessionCountText, onSessionCountClick, t)
 
   return (
     <Box height={1}>
@@ -747,7 +769,7 @@ export function StatusRule({
             </Text>
           )}
         </Box>
-        {/* Notice slot — the only shrinkable left element (R3-M7). Sits in a
+        {/* Notice slot — a shrinkable left element (R3-M7). Sits in a
             flexShrink={1} box with truncate-end so it yields/ellipsizes
             before the pinned model │ ctx box ever clips. */}
         {showNotice ? (
@@ -848,6 +870,7 @@ export function StatusRule({
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}
+        {statusClipboardFeedbackNode(clipboardFeedback, t)}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -986,6 +1009,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  clipboardFeedback?: string | null
   battery?: BatteryInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean

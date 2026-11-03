@@ -332,6 +332,8 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  arrowKeyMode: 'auto' | 'cursor'
+  copyOnSelect: boolean
   gatewayConnected?: boolean
   battery: boolean
   batteryStatus: BatteryInfo | null

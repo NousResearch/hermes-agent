@@ -338,6 +338,12 @@ export const applyDisplay = (
   }
 
   patchUiState({
+    ...(cfg
+      ? {
+          arrowKeyMode: d.arrow_key_mode === 'cursor' ? 'cursor' : 'auto',
+          copyOnSelect: d.tui_copy_on_select !== false
+        }
+      : {}),
     battery: !!d.battery,
     ...(applyBusy ? { busyInputMode: normalizeBusyInputMode(d.busy_input_mode) } : {}),
     compact: !!d.tui_compact,
@@ -408,7 +414,10 @@ export function useConfigSync({
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
     void hydrateVoiceMode(gw, setVoiceEnabled, scope)
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
-      if (!scope.isCurrent()) {return}
+      if (!scope.isCurrent()) {
+        return
+      }
+
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
@@ -433,7 +442,10 @@ export function useConfigSync({
 
     const id = setInterval(() => {
       quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
-        if (!scope.isCurrent()) {return}
+        if (!scope.isCurrent()) {
+          return
+        }
+
         const next = Number(r?.mtime ?? 0)
         const nextMcpRev = String(r?.mcp_rev ?? '')
 

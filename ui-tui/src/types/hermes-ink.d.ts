@@ -159,6 +159,7 @@ declare module '@hermes/ink' {
     readonly getState: () => unknown
     readonly version: () => number
     readonly subscribe: (cb: () => void) => () => void
+    readonly subscribeCopy: (cb: (text: string) => void) => () => void
     readonly shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
     readonly shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
     readonly moveFocus: (move: unknown) => void

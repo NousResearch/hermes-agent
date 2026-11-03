@@ -173,6 +173,7 @@ docs-check-generated:
 [group('docs')]
 docs-check-links:
     scripts/hermes-python apps/docs/scripts/check_doc_links.py
+    node apps/docs/scripts/check-source-links.mjs
 
 # Lint docs for ASCII box diagrams (pm installs the pinned ascii-guard on first run)
 [group('docs')]

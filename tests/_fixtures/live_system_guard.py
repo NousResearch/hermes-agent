@@ -98,6 +98,24 @@ def _live_system_guard(request, monkeypatch):
         _psutil = None
         _initial_children = set()
 
+    def _is_descendant_via_proc(pid: int, root: int) -> bool:
+        """Fallback ancestor walk using /proc when psutil is unavailable."""
+        seen = set()
+        cur = pid
+        while cur and cur not in (0, 1) and cur not in seen:
+            seen.add(cur)
+            try:
+                with open(f"/proc/{cur}/stat") as f:
+                    fields = f.read().split()
+                # ppid is field 4 (1-indexed) in /proc/<pid>/stat
+                ppid = int(fields[3])
+            except (OSError, ValueError, IndexError):
+                return False
+            if ppid == root:
+                return True
+            cur = ppid
+        return cur == root
+
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
         # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
@@ -110,7 +128,12 @@ def _live_system_guard(request, monkeypatch):
         if pid == test_pid or pid in _initial_children:
             return True
         if _psutil is None:
-            return False
+            # No psutil: walk /proc to see whether pid is a descendant of
+            # test_pid, so processes spawned later by the test (e.g. a server
+            # started by a module-scoped fixture) are still allowlisted
+            # (#148237). Otherwise teardown kills get blocked and pytest wedges
+            # in Popen.__exit__'s unbounded wait.
+            return _is_descendant_via_proc(pid, test_pid)
         try:
             walker = _psutil.Process(pid)
         except Exception:

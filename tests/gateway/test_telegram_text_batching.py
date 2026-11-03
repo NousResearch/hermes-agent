@@ -774,6 +774,7 @@ class TestSiblingMediaAbsorb:
             )
             assert adapter.handle_message.call_args[0][0].text == "held"
             assert adapter._absorb_pending_text_into_media_event(media) is False
+            assert not getattr(adapter, "_sibling_media_done", {})
         finally:
             adapter._end_media_inflight(sibling_key)
 
@@ -799,6 +800,7 @@ class TestSiblingMediaAbsorb:
             what="flush after download",
         )
         assert adapter.handle_message.call_args[0][0].text == "held"
+        assert not getattr(adapter, "_sibling_media_done", {})
 
     def test_observe_attribution_same_sender_still_pairs(self):
         """Group-observe strips source.user_id; pairing falls back to raw_message.from_user."""

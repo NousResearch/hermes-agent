@@ -169,11 +169,14 @@ class TelegramSiblingMediaMixin:
                 return
             event = self._sibling_wait_event(sibling_key)
             if self._sibling_wait_done(key, sibling_key):
+                self._drop_sibling_wait(sibling_key, event)
                 return
             try:
                 await asyncio.wait_for(event.wait(), timeout=remaining)
             except TimeoutError:
                 return
+            finally:
+                self._drop_sibling_wait(sibling_key, event)
 
     def _sibling_wait_done(self, key: str, sibling_key: str) -> bool:
         if self._pending_text_batches.get(key) is None:
@@ -189,12 +192,21 @@ class TelegramSiblingMediaMixin:
             events[sibling_key] = event
         return event
 
+    def _drop_sibling_wait(self, sibling_key: str, event: asyncio.Event) -> None:
+        """Forget this wait's event. A newer wait for the same key keeps its own."""
+        events = getattr(self, "_sibling_media_done", None)
+        if events and events.get(sibling_key) is event:
+            events.pop(sibling_key, None)
+
     def _signal_sibling_wait(self, sibling_key: str) -> None:
         events = getattr(self, "_sibling_media_done", None)
-        if events:
-            event = events.get(sibling_key)
-            if event is not None:
-                event.set()
+        if not events:
+            return
+        event = events.get(sibling_key)
+        if event is None:
+            return
+        event.set()
+        self._drop_sibling_wait(sibling_key, event)
 
     def _release_sibling_media_waits(self) -> None:
         events = getattr(self, "_sibling_media_done", None)

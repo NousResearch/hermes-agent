@@ -14,7 +14,8 @@ Resolution order for an ``https://`` URL:
 2. ``gh auth token`` (GitHub hosts only; the gh CLI's own login).
 3. ``git credential fill`` against the user's configured credential helpers (any host: GitLab,
    Bitbucket, self-hosted) with prompting disabled, so a stored credential is returned and a
-   missing one fails in ~100 ms instead of asking.
+   missing one fails in ~100 ms instead of asking. Git for Windows' ``helper-selector`` picker is
+   taken out of the helper list and a helper that never answers is stopped at the timeout (#140981).
 
 The credential is attached only after an anonymous attempt is refused
 (:func:`run_git_with_credential_fallback`), and a refused credential yields to the next one in
@@ -36,7 +37,7 @@ import subprocess
 import urllib.parse
 from typing import Iterator, Mapping, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import bounded_probe_run, noninteractive_git_env, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,58 @@ def _github_token() -> Optional[str]:
     return _env_github_token() or _gh_cli_token()
 
 
+_SELECTED_HELPER_KEY = "credential.helperselector.selected"
+_PICKED_NO_HELPER = "<no helper>"  # the value helper-selector stores for its "no helper" choice
+
+
+def _is_helper_selector(helper: str) -> bool:
+    name = re.split(r"[\\/]", helper.strip().strip('"'))[-1].lower()
+    return name.removesuffix(".exe") in {"helper-selector", "git-credential-helper-selector"}
+
+
+def _credential_helpers(git: str, env: Mapping[str, str]) -> Optional[tuple[list[tuple[str, str]], str]]:
+    """``(helpers, picked)``: every ``credential[.<url>].helper`` entry as ``(key, value)`` in the
+    order git reads them, and the helper last picked in helper-selector (``""`` when none). None
+    when git config could not be read."""
+    probe = bounded_probe_run(
+        [git, "config", "--null", "--get-regexp", r"^credential\.((.+\.)?helper|helperselector\.selected)$"],
+        timeout=5, env=env)
+    if probe is None or probe.returncode not in (0, 1):  # 1 = no such entries
+        return None
+    helpers, picked = [], ""
+    for record in filter(None, probe.stdout.split("\0")):
+        key, _, value = record.partition("\n")
+        if key == _SELECTED_HELPER_KEY:
+            picked = "" if value == _PICKED_NO_HELPER else value
+        else:
+            helpers.append((key, value))
+    return helpers, picked
+
+
+def _helper_selector_bypass_args(git: str, env: Mapping[str, str]) -> Optional[list[str]]:
+    """``-c`` args that take Git for Windows' ``helper-selector`` out of the user's helper list
+    (empty when it is not configured; None when git config could not be read).
+
+    PortableGit (the git Hermes ships on Windows) configures it system-wide, and it opens a picker
+    window on every call: ``credential.helperselector.selected`` only pre-ticks a choice. It is
+    swapped for the helper picked in it, or dropped when none was picked. Every other entry,
+    URL-scoped ones and empty reset markers included, is replayed in git's own order after a
+    leading reset; ``-c`` is read after every config file and ``GIT_CONFIG_COUNT`` entry."""
+    config = _credential_helpers(git, env)
+    if config is None:
+        return None
+    helpers, picked = config
+    if not any(_is_helper_selector(value) for _key, value in helpers):
+        return []
+    replay = ["credential.helper="]
+    for key, value in helpers:
+        if not _is_helper_selector(value):
+            replay.append(f"{key}={value}")
+        elif picked:
+            replay.append(f"{key}={picked}")
+    return [arg for entry in replay for arg in ("-c", entry)]
+
+
 def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     """``(username, password)`` from the user's own git credential helpers, never prompting."""
     git = shutil.which("git")
@@ -96,15 +149,19 @@ def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     # A GUI askpass (VS Code, ssh-askpass) would block on a dialog nobody sees.
     env.pop("GIT_ASKPASS", None)
     env.pop("SSH_ASKPASS", None)
+    # Unreadable config: skipping beats running a helper list that may still hold the picker.
+    bypass = _helper_selector_bypass_args(git, env)
+    if bypass is None:
+        logger.debug("git config unreadable; skipping the credential helper lookup for %s", origin)
+        return None
     parsed = urllib.parse.urlsplit(origin)
     request = f"protocol=https\nhost={parsed.netloc}\n\n"
-    try:
-        result = subprocess.run(
-            [git, "-c", "core.askPass=", "credential", "fill"], input=request, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=15, env=env,
-            creationflags=windows_hide_flags(), check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.debug("git credential fill failed for %s: %s", origin, exc)
+    # bounded_probe_run tree-kills a helper that never answers (#140981).
+    result = bounded_probe_run([git, "-c", "core.askPass=", *bypass, "credential", "fill"],
+                               timeout=15, env=env, input=request)
+    if result is None:
+        logger.warning("git credential helper for %s did not answer within 15s (or git could not start); "
+                       "skipping the stored-credential lookup", origin)
         return None
     if result.returncode != 0:
         return None

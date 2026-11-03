@@ -258,6 +258,9 @@ source it tries, in order:
 2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.
 3. Your git credential helper (`git credential fill`) for that host — works for
    GitLab, Bitbucket and self-hosted servers if a credential is already stored.
+   The lookup never opens a window: Git for Windows' credential-helper picker
+   (`helper-selector`) is skipped in favour of the helper you last chose in it,
+   and a helper that has not answered after 15 seconds is stopped.
 
 The credential is sent as a one-shot HTTP header for that install or update;
 it is never written into the plugin's `.git/config` or the install metadata.

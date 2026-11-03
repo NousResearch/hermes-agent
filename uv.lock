@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'android'",
@@ -2296,7 +2296,6 @@ wheels = [
 name = "hermes-agent"
 version = "0.0.0"
 source = { editable = "." }
-default-groups = []
 dependencies = [
     { name = "browser-harness" },
     { name = "certifi" },
@@ -2458,6 +2457,9 @@ matrix = [
     { name = "aiohttp-socks", marker = "sys_platform == 'linux'" },
     { name = "aiosqlite", marker = "sys_platform == 'linux'" },
     { name = "asyncpg", marker = "sys_platform == 'linux'" },
+    { name = "mautrix", marker = "sys_platform == 'linux'" },
+]
+matrix-e2ee = [
     { name = "mautrix", extra = ["encryption"], marker = "sys_platform == 'linux'" },
 ]
 mcp = [
@@ -2558,7 +2560,7 @@ voice = [
 wake = [
     { name = "numpy" },
     { name = "pvporcupine" },
-    { name = "pyopen-wakeword", marker = "(platform_machine != 'ARM64' and platform_machine != 'x86_64') or (platform_machine == 'ARM64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "pyopen-wakeword", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
     { name = "pypinyin" },
     { name = "sentencepiece" },
     { name = "sherpa-onnx" },
@@ -2566,7 +2568,7 @@ wake = [
     { name = "sounddevice" },
 ]
 wake-openwakeword = [
-    { name = "pyopen-wakeword", marker = "(platform_machine != 'ARM64' and platform_machine != 'x86_64') or (platform_machine == 'ARM64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
+    { name = "pyopen-wakeword", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 wake-porcupine = [
     { name = "pvporcupine" },
@@ -2680,7 +2682,8 @@ requires-dist = [
     { name = "kittentts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.7.5" },
     { name = "markdown", marker = "python_full_version >= '3.14'", specifier = "==3.11.2" },
-    { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
+    { name = "mautrix", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
+    { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix-e2ee'", specifier = "==0.21.1" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.3.0" },
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.1.1" },
@@ -2714,8 +2717,8 @@ requires-dist = [
     { name = "pyasn1", marker = "extra == 'google'", specifier = "==0.6.4" },
     { name = "pydantic", marker = "python_full_version >= '3.14'", specifier = "==2.14.1" },
     { name = "pyjwt", extras = ["crypto"], marker = "python_full_version >= '3.14'", specifier = "==2.15.1" },
-    { name = "pyopen-wakeword", marker = "(platform_machine != 'ARM64' and platform_machine != 'x86_64' and extra == 'wake') or (platform_machine == 'ARM64' and sys_platform == 'darwin' and extra == 'wake') or (platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'wake') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'wake')", specifier = "==1.1.0" },
-    { name = "pyopen-wakeword", marker = "(platform_machine != 'ARM64' and platform_machine != 'x86_64' and extra == 'wake-openwakeword') or (platform_machine == 'ARM64' and sys_platform == 'darwin' and extra == 'wake-openwakeword') or (platform_machine == 'x86_64' and sys_platform == 'win32' and extra == 'wake-openwakeword') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'wake-openwakeword')", specifier = "==1.1.0" },
+    { name = "pyopen-wakeword", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'wake') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'wake') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'wake')", specifier = "==1.1.0" },
+    { name = "pyopen-wakeword", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'wake-openwakeword') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'wake-openwakeword') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'wake-openwakeword')", specifier = "==1.1.0" },
     { name = "pypdf", marker = "extra == 'documents'", specifier = "==6.21.2" },
     { name = "pypdfium2", marker = "extra == 'documents-pdf'", specifier = "==5.14.0" },
     { name = "pypinyin", marker = "extra == 'wake'", specifier = "==0.55.0" },
@@ -2775,7 +2778,7 @@ requires-dist = [
     { name = "winrt-windows-services-store", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = ">=3.2.1,<4" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "wecom", "keychain", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["uvloop", "anthropic", "exa", "firecrawl", "parallel-web", "ddgs", "fal", "edge-tts", "neutts", "kittentts", "piper", "modal", "daytona", "vercel", "google-meet", "messaging", "cron", "slack", "matrix", "matrix-e2ee", "wecom", "keychain", "tts-premium", "voice", "wake", "telegram", "discord", "stt-whisper", "audio-io", "silk", "wake-openwakeword", "wake-sherpa", "wake-porcupine", "google-chat", "doc-extract", "documents", "documents-pdf", "trace-upload", "vision", "pty", "mcp", "nemo-relay", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -183,6 +183,22 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal(2)
 
 
+def test_openrouter_negative_catalog_price_is_unknown(monkeypatch):
+    """OpenRouter's routed-model -1 sentinel is not a billable token price (#137098)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {"typesafe/jev-router": {"pricing": {"prompt": "-1", "completion": "-1"}}},
+    )
+
+    cost = estimate_usage_cost(
+        "typesafe/jev-router",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1),
+        provider="openrouter",
+    )
+
+    assert (cost.status, cost.amount_usd) == ("unknown", None)
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

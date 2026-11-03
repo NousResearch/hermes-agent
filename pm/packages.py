@@ -504,9 +504,9 @@ class Venv(StatePackage):
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import build_member_dirs, members_stamp
 
-        h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        h.update(members_stamp(build_member_dirs(extras) if plugin_dirs is None else plugin_dirs).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,
@@ -521,7 +521,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import enabled_member_dirs, lock_and_sync
+        from pm.workspace import build_member_dirs, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -534,7 +534,7 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras) if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()

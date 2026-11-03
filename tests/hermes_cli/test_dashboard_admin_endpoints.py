@@ -827,6 +827,28 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is True
 
 
+    @pytest.mark.parametrize("version", [None, "", "1.2.3"])
+    @pytest.mark.parametrize("held", [True, False], ids=["held", "rollback"])
+    def test_release_message_names_only_a_known_version(self, monkeypatch, version, held):
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {
+            "behind": 0 if held else -1, "held": "downgrade" if held else None,
+            "rollback": not held, "sourceVersion": version, "channel": "preview", "commits": [],
+        })
+
+        response = self.client.get("/api/hermes/update/check")
+        assert response.status_code == 200
+        body = response.json()
+        release = "preview release" + (f" v{version}" if version else "")
+        assert body["message"].startswith(f"This build is newer than {release}," if held else
+                                          f"This build is newer than {release}.")
+        assert body["update_available"] is not held
+        assert body["source_version"] == version
+        if held:
+            assert body["held"] == "downgrade"
+        else:
+            assert "Updating moves it back" in body["message"]
+
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
 
         monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)

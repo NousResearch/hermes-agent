@@ -28,19 +28,11 @@ _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
-# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS`` come from each platform's
-# ``PlatformEntry.allowed_users_env`` / ``allow_all_env`` (shared with the pairing allowlist mirror).
-# Platforms whose env allowlist turns the unauthorized-DM default from "pair" into "ignore". Names
-# only (the env var is still the plugin's): this is the historical set the allowlist-aware default
-# covered, so adding a platform here is a behaviour change (Yuanbao was never in it).
-_ALLOWLIST_SUPPRESSES_PAIRING = frozenset({
-    Platform.TELEGRAM, Platform.DISCORD, Platform.WHATSAPP, Platform.WHATSAPP_CLOUD, Platform.SLACK,
-    Platform.SIGNAL, Platform.EMAIL, Platform.SMS, Platform.MATTERMOST, Platform.MATRIX, Platform.DINGTALK,
-    Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES,
-    Platform.QQBOT,
-})
+# ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``, the group-chat allowlist env and
+# whether an allowlist suppresses pairing come from each platform's ``PlatformEntry``
+# (``allowed_users_env`` / ``allow_all_env`` / ``group_allowed_chats_env`` /
+# ``allowlist_suppresses_pairing``), so a plugin platform declares them like a bundled one.
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
-_GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
 
 
 # Gate reads use the shared per-profile isolated reader (allowlist leak under multiplex, #72348).
@@ -57,6 +49,13 @@ def authz_field(name, field, entry):
     """Late-bound :func:`gateway.platform_env.authz_field` (entry field, else the bundled declaration)."""
     from gateway.platform_env import authz_field as _field
     return _field(name, field, entry)
+
+
+def _group_chat_env(platform, entry=None) -> str:
+    """The platform's group-chat allowlist env name (``PlatformEntry.group_allowed_chats_env``), or ""."""
+    if platform is None:
+        return ""
+    return authz_field(platform.value, "group_allowed_chats_env", entry or _registry_entry(platform)) or ""
 
 
 def _registry_entry(platform):
@@ -225,9 +224,11 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            if adapters or not self._is_shared_bot_satellite(profile_name):
+            from cron.scheduler_preflight import has_credential_platform
+            if has_credential_platform(adapters) or not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            # Its own LOCAL adapter stays layered over the borrowed primary bots.
+            return {**self._primary_adapters(), **adapters}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
@@ -235,18 +236,76 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
-    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
-        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
-        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
-        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
-        platform is its own credential boundary and never borrows the primary. Restored/cached sources
-        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
-        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+    def _routed_primary_adapter(self, source: Optional[SessionSource]):
+        """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.
+
+        Destination-gated: the most specific default-bot route matching *source*'s chat must name
+        *source*'s profile, and that profile must own no bot on the platform. A platform-only lookup
+        (``_adapters_for_profile``, ``send_message``, the platform-events API) never reaches here, so a
+        satellite cannot write to an arbitrary chat through the primary's credentials.
+        """
+        from gateway.delivery import resolve_delivery_transport
+        platform = getattr(source, "platform", None)
+        profile = (getattr(source, "profile", None) or "").strip()
+        if platform is None or not profile or not self._is_shared_bot_satellite(profile, platform):
+            return None
+        if platform in (self._profile_adapters_map().get(profile) or {}):
+            return None
+        if not self._default_bot_routes_to(source, profile):
+            return None
+        transport = resolve_delivery_transport(platform, self.config, self._primary_adapters())
+        return transport.adapter if transport is not None else None
+
+    def _default_bot_routes_to(self, source: SessionSource, profile: str) -> bool:
+        """Whether the most specific default-bot route matching *source*'s chat names *profile*."""
+        from gateway.profile_routing import match_profile_route
+        route = match_profile_route(
+            self.config.profile_routes, source.platform.value, guild_id=getattr(source, "scope_id", None),
+            chat_id=getattr(source, "chat_id", None), thread_id=getattr(source, "thread_id", None),
+            parent_chat_id=getattr(source, "parent_chat_id", None), user_id=getattr(source, "user_id", None),
+        )
+        return route is not None and route.profile == profile
+
+    def _restored_transport_trusted(self, source: SessionSource, identity) -> bool:
+        """Whether a persisted receiving bot can stand in for the live one. Routes saved before inferred
+        transports stopped being persisted may hold the primary-profile GUESS, indistinguishable on disk
+        from a primary bot that really received the chat; for another runtime that is only genuine
+        where a default-bot route sends the chat to that runtime. A live transport is always trusted."""
+        if identity.transport is not None:
+            return True
+        primary = getattr(self, "_primary_profile_name", None) or "default"
+        if identity.transport_profile != primary or identity.runtime_profile == primary:
+            return True
+        return self._default_bot_routes_to(source, identity.runtime_profile)
+
+    def _names_receiving_bot(self, source: SessionSource, identity) -> bool:
+        """Whether a multiplexed *identity* names the bot that received *source*: not inferred, and not
+        a restored primary guess (:meth:`_restored_transport_trusted`). The shared-listener mirrors
+        (api_server, webhook) are exempt: a secondary profile's /p/<profile>/ surface IS the primary's
+        listener by construction (``SHARED_LISTENER_MIRROR_PLATFORMS``), never a guess.
+        LOCAL is not: its saved launch-profile transport is the session authority's fact, but the bot
+        that answers is the runtime profile's own LocalSessionAdapter (#139060), as on a live turn."""
+        if identity is None or not identity.multiplexed or identity.transport_inferred:
+            return False
+        from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
+        platform = getattr(getattr(source, "platform", None), "value", None)
+        return (platform in SHARED_LISTENER_MIRROR_PLATFORMS
+                or self._restored_transport_trusted(source, identity))
+
+    def _is_shared_bot_satellite(self, profile_name: str, platform: Optional[Platform] = None) -> bool:
+        """A served profile that a ``profile_routes`` entry targets through the default profile's bot
+        (gateway/AGENTS.md). With no *platform*, it must own no bot at all: such a profile drains
+        through the primary's adapters (its ``_profile_adapters`` entry is the ``{}`` startup
+        placeholder). With *platform*, only a bot it owns on THAT platform makes it a credential
+        boundary there — the per-destination borrow in ``_routed_primary_adapter``. Restored/cached
+        sources carry no transport ref, so this keeps heartbeats, completions and goal notices
+        deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return False
-        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
-        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+        # A bot of its own that is down (failed to connect, or dropped) still makes it a credential boundary.
+        owned = (getattr(self, "_profile_bot_platforms", None) or {}).get(profile_name)
+        if owned and (platform is None or platform in owned):
             return False
         routes = getattr(config, "profile_routes", None) or []
         if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
@@ -282,12 +341,13 @@ class GatewayAuthorizationMixin:
         platform = getattr(source, "platform", None)
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        # A LOCAL session has no receiving bot.  Its default transport is inferred as the
-        # primary profile, but the policy and delivery adapter belong to the session authority.
-        # Let the delivery fallback resolve that profile instead of treating a lazily-created
-        # primary LocalSessionAdapter as the receiver (#139060).
-        if (identity is not None and identity.multiplexed
-                and not (platform == Platform.LOCAL and identity.transport_inferred)):
+        # An INFERRED transport is a guess (the primary profile), not a receiving bot: a hand-built
+        # internal source canonicalized by ``run_inbound`` (the CLI handoff turn) would otherwise take
+        # the primary's adapter for any chat, skipping the satellite route gate in
+        # ``_delivery_adapter_for`` and an owned-but-down bot's fail-closed row. So would that guess
+        # saved by an older release and restored after a restart. Neither has live provenance, so
+        # intake is None and delivery resolves the runtime profile's owner. Covers LOCAL (#139060).
+        if self._names_receiving_bot(source, identity):
             return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None
@@ -306,6 +366,14 @@ class GatewayAuthorizationMixin:
         """
         if source is None:
             return None
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):
+            # A conversation its chat moved past answers its app viewers only, through the local
+            # adapter's event-stream delivery (gateway/session_detached.py), never the chat.
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+            return self._adapters_for_profile(profile).get(Platform.LOCAL)
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter
@@ -316,12 +384,15 @@ class GatewayAuthorizationMixin:
         # fixture) uses the unique-owner heuristic below.
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+        if self._names_receiving_bot(source, identity):
             return None
-        # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
+        # No identity, or one whose transport was only guessed (hand-built source, pre-column row, a
+        # primary guess an older release saved):
         # the unique owner of ``(platform, runtime_profile)`` delivers.
         # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        # A satellite with no bot on the platform borrows the primary only for its routed chats.
+        return (self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+                or self._routed_primary_adapter(source))
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""
@@ -497,7 +568,11 @@ class GatewayAuthorizationMixin:
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
-        adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
+        # ``group_allow_from`` is a separate group list (Telegram); an adapter with a single user
+        # allowlist (Discord) declares ``allow_from_covers_groups`` so its groups read ``allow_from``.
+        groups_use_allow_from = getattr(adapter, "allow_from_covers_groups", False) is True
+        group_key = "allow_from" if groups_use_allow_from else "group_allow_from"
+        adapter_allow = extra.get(group_key if is_group else "allow_from")
         if not adapter_allow:
             # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
             # under multiplex only the default profile's list reaches the env (first-writer-wins
@@ -553,7 +628,7 @@ class GatewayAuthorizationMixin:
         # Chat-scoped group allowlists must work with ``user_id is None`` (anonymous admins,
         # sender_chat posts, channel broadcasts).
         if is_group and source.chat_id:
-            chat_allowlist_env = _GROUP_CHAT_ENV.get(source.platform, "")
+            chat_allowlist_env = _group_chat_env(source.platform)
             if chat_allowlist_env and _allows(_coerce_allow_set(_auth_env(chat_allowlist_env)), source.chat_id):
                 return True
             # config.yaml fallback (``extra.group_allowed_chats``): Telegram observe-unmentioned mode
@@ -681,7 +756,7 @@ class GatewayAuthorizationMixin:
 
         platform_allowlist = _auth_env(platform_allow_env)
         group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
-        group_chat_allowlist = _auth_env(_GROUP_CHAT_ENV.get(source.platform, "")) if is_group_or_forum else ""
+        group_chat_allowlist = _auth_env(_group_chat_env(source.platform, entry)) if is_group_or_forum else ""
         global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
 
         if not (platform_allowlist or group_user_allowlist or group_chat_allowlist or global_allowlist):
@@ -749,9 +824,11 @@ class GatewayAuthorizationMixin:
                 return "pair"
             if dm_policy in {"allowlist", "disabled"}:
                 return "ignore"
-            env_key = (authz_field(platform.value, "allowed_users_env", _registry_entry(platform)) or ""
-                       if platform in _ALLOWLIST_SUPPRESSES_PAIRING else "")
-            allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
+            entry = _registry_entry(platform)
+            # A group allowlist alone must not silence DM pairing: only platforms that opt in.
+            if authz_field(platform.value, "allowlist_suppresses_pairing", entry):
+                allowlist_keys = [authz_field(platform.value, "allowed_users_env", entry) or "",
+                                  _GROUP_USER_ENV.get(platform), _group_chat_env(platform, entry), *allowlist_keys]
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
             return "ignore"
         return "pair"

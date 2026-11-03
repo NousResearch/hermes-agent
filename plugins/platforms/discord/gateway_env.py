@@ -17,4 +17,5 @@ AUTHZ = {
     "allowed_users_env": "DISCORD_ALLOWED_USERS",
     "allow_all_env": "DISCORD_ALLOW_ALL_USERS",
     "allow_bots_env": "DISCORD_ALLOW_BOTS",
+    "allowlist_suppresses_pairing": True,
 }

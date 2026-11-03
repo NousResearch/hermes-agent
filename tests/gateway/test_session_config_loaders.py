@@ -174,7 +174,7 @@ def test_bg_side_agent_uses_the_sessions_provider_routing(tmp_path):
             reply = await session_tui_side.background(connection, SessionRef(owner.profile_id, ref.session_id),
                                                       {'session_id': ref.session_id, 'text': 'BG'})
             assert reply['task_id'].startswith('bg_')
-            for thread in list(session_tui_side._RUNNING):
+            for thread in list(owner._side_agents):
                 thread.join(30)
         finally:
             connection.subscriptions.clear()

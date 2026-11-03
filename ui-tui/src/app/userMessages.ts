@@ -104,10 +104,17 @@ export const stderrProblemActivity = (line: string): string => {
 // ── RPC errors ────────────────────────────────────────────────────────────
 
 const VERSION_SKEW_RE = /Extra inputs are not permitted|^unknown method:/
+// Both server routes' answer for a method they do not serve (tui_gateway/contracts/registry.py
+// unknown_method_message). A JSON-RPC client sends no version, so this is not proof of skew.
+const UNAVAILABLE_METHOD_RE = /^unknown method: (\S+) — not available on this Hermes backend$/
 
 /** The Ink bundle and the Python backend disagree on the wire: stale dist or an older attached backend. */
 export const isVersionSkewError = (err: unknown): boolean => {
   const { code, message } = rpcShape(err)
+
+  if (UNAVAILABLE_METHOD_RE.test(message ?? '')) {
+    return false
+  }
 
   return (
     code === RPC_UNKNOWN_METHOD ||
@@ -135,7 +142,12 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
     () => t('userMessages.rpc.sessionNotFound')
   ],
+  // A stored chat the gateway opens read-only (gateway/session_history_mount.py) names its refusal by reason.
+  [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
+  [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => UNAVAILABLE_METHOD_RE.exec(text), m => t('userMessages.rpc.methodUnavailable', m?.[1] ?? '?')],
+  [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
@@ -179,13 +191,34 @@ export const describeRpcError = (err: unknown): string => {
 export const isUnsupportedCommand = (err: unknown): boolean =>
   (err as { data?: { reason?: string } } | null)?.data?.reason === 'unsupported_command'
 
+/** The shared owner refuses `!cmd` / `{!cmd}` for a session whose terminal backend is not local
+ *  (gateway/session_shell.py): the command would run on the gateway host, outside the session's
+ *  sandbox. Name the backend and point at the agent; other errors read as describeRpcError. */
+export const describeShellExecError = (err: unknown): string => {
+  const data = (err as { data?: { detail?: unknown; reason?: unknown } } | null)?.data
+
+  if (data?.reason === 'unsupported_terminal_backend') {
+    const backend = typeof data.detail === 'string' ? data.detail.trim() : ''
+
+    // An older gateway names no backend: say so without a backend-shaped sentence.
+    return backend ? t('userMessages.rpc.shellBackendRefused', backend) : t('userMessages.rpc.shellBackendRefusedUnnamed')
+  }
+
+  return describeRpcError(err)
+}
+
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
 export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
 
   if (isUnsupportedCommand(err)) {
-    return t('canonical.controls.notAvailable', command)
+    // The owner names what to use instead for its client-local refusals (gateway/session_commands.py
+    // REFUSAL_HINTS) in `data.detail`; print it under the refusal.
+    const detail = (err as { data?: { detail?: unknown } } | null)?.data?.detail
+    const refusal = t('canonical.controls.notAvailable', command)
+
+    return typeof detail === 'string' && detail.trim() ? `${refusal}\n${detail.trim()}` : refusal
   }
 
   if (/slash worker timed out/.test(text)) {
@@ -238,6 +271,7 @@ const TURN_CODE_KEY: Record<string, keyof Translations['userMessages']['turn']['
   content_policy_blocked: 'contentPolicyBlocked',
   context_overflow: 'contextOverflow',
   format_error: 'formatError',
+  local_runtime_unavailable: 'localRuntimeUnavailable',
   model_not_found: 'modelNotFound',
   overloaded: 'overloaded',
   payload_too_large: 'payloadTooLarge',

@@ -1,0 +1,19 @@
+name: cursor-acp
+repo: https://github.com/neerazz/hermes-cursor-acp
+sha: d5b6146c4e6dcfca110fbcf736d8b51823bc8e64
+description: "Use your Cursor subscription models (Claude Opus/Sonnet 5.5, Composer 2.5, GPT-5.6, Grok) inside Hermes Agent via the Cursor CLI's ACP server (`agent acp`). Install with one command (`npx hermes-cursor-acp`) or `hermes plugins install cursor-acp`. The plugin rewrites `.cursor/cli.json` in an empty private workspace every run with a deny-all list (`Read`, `Write`, `Shell`, `WebFetch`, `Mcp`) to prevent Cursor's native CLI tools from accessing host files. It includes a custom extractor that recovers both flat `{\"name\", \"arguments\"}` and inline `<tool_call>` blocks that standard regex bridges drop, retries on concurrent `set_model` calls, and reports `usage=None` so Hermes proactive context compression functions correctly. Disclosure — sends the full conversation, Hermes tool schemas and tool results to Cursor through your locally installed, signed-in Cursor CLI (`agent acp`); Cursor's own tools are fenced by a deny-all `.cursor/cli.json` that the plugin rewrites in a private workspace under `$HERMES_HOME/cache/cursor-acp-workspace` on every start (a differing existing file is backed up to `cli.json.bak`), and Hermes executes every tool call under its own approvals."
+maintainer: neerazz
+tier: community
+category: models
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/neerazz/hermes-cursor-acp#readme
+version: "0.1.2"
+readme: true
+platforms:
+- linux
+- macos
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

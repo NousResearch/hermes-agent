@@ -5,9 +5,26 @@ import path from 'node:path'
 import { app } from 'electron'
 
 import { resolveDesktopHermesHome } from './data-paths'
+import { releasePackagedWorkingDirectory } from './packaged-working-directory'
 import { readDesktopLaunchConfig } from './renderer-heap-flags'
+import { restoreUserProxyEnv } from './updater/system-proxy-env'
 import { wslgLaunchArgs } from './wslg-launch'
 import { spawnWslgLaunch } from './wslg-launch-process'
+
+// A Desktop relaunched by an update (any rung: hand-off script, staged updater,
+// Start-Process) must not keep the system proxy the update's children were given.
+restoreUserProxyEnv(process.env)
+
+// `hermes desktop` asks this binary whether Chromium's namespace sandbox starts under the host's
+// AppArmor policy (#130177). Chromium creates its sandboxed zygote before any JS runs, so reaching
+// this line answers yes; exit before any window, single-instance lock, backend or relaunch.
+if (process.argv.includes('--hermes-sandbox-probe')) {
+  process.exit(0)
+}
+
+// Run before main creates windows/IME integrations or spawns resident helpers.
+// Closing Hermes cannot release a CWD inherited by an out-of-tree process.
+releasePackagedWorkingDirectory(app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED))
 
 function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
   // Resolve the home exactly like main.ts does, through the shared resolver:

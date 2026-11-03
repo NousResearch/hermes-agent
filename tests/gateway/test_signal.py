@@ -93,7 +93,7 @@ class TestSignalConnectCleanup:
 
         with patch("plugins.platforms.signal.adapter.httpx.AsyncClient", return_value=mock_client), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
-             patch("gateway.status.release_scoped_lock") as mock_release:
+             patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False

@@ -99,7 +99,7 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     syncs = []
     ensure = importlib.import_module('pm.install')
     monkeypatch.setattr(ensure, 'sync_venv', lambda **kw: syncs.append(kw))
-    args = Namespace(names=['manual-fixture'], target=None, check=True, uv=True, npm=False, termux=False)
+    args = Namespace(names=['manual-fixture'], target=None, skip_target=[], check=True, uv=True, npm=False, termux=False)
     assert cli.cmd_update(args) == 0
     assert not (repo / 'uv.lock').exists()
     assert not syncs
@@ -192,7 +192,7 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         monkeypatch.setenv('npm_config_cache', str(root / 'ambient-cache'))
         before = dict(os.environ)
         before_lock = lock.path.read_bytes()
-        args = Namespace(names=['manual-fixture'], target=None, check=True, uv=False, npm=True, termux=False)
+        args = Namespace(names=['manual-fixture'], target=None, skip_target=[], check=True, uv=False, npm=True, termux=False)
         assert cli.cmd_update(args) == 0
         assert not (repo / 'package-lock.json').exists()
         args.check = False

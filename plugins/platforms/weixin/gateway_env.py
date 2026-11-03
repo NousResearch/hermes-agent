@@ -24,4 +24,5 @@ AUTHZ = {
     "allowed_users_env": "WEIXIN_ALLOWED_USERS",
     "allow_all_env": "WEIXIN_ALLOW_ALL_USERS",
     "own_policy_env": ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY"),
+    "allowlist_suppresses_pairing": True,
 }

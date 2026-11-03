@@ -105,6 +105,7 @@ class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
     splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    serial_receive_loop = True  # the WebSocket loop awaits each event before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
@@ -675,8 +676,12 @@ def interactive_setup() -> None:
     save_env_value("MATTERMOST_TOKEN", token)
     print_success("Mattermost token saved")
     print()
-    info("🔒 Security: Restrict who can use your bot", "   To find your user ID: click your avatar → Profile",
-         "   or use the API: GET /api/v4/users/me")
+    info("🔒 Security: Restrict who can use your bot",
+         "   Find your user ID (the profile dialog does not show it):",
+         "   Admins: System Console → User Management → Users → open your user.",
+         "   Anyone: while logged in, open <server>/api/v4/users/me in a browser tab.",
+         "   With the bot token: GET <server>/api/v4/users/username/<your-username>.",
+         "   Copy the \"id\" field. /users/me with the bot token returns the bot's ID.")
     print()
     allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
     if allowed_users:

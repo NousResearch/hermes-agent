@@ -6,8 +6,11 @@ import { parseArgs } from 'node:util'
 import { isMain } from './frontend-common.mjs'
 
 const receiptName = 'hermes-build.json'
+// What `hermes update` leaves in a product it could not rebuild (STALE_MARKER in hermes_cli/webapp.py).
+const staleMarker = '.hermes-stale'
 const workspaces = { tui: 'ui-tui', web: 'web', desktop: 'apps/desktop' }
-const generated = new Set(['node_modules', 'dist', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
+// Another product's output under a workspace is never this product's input.
+const generated = new Set(['node_modules', 'dist', 'dist-webapp', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
 
 // OS file-manager metadata is never a build input, and it can land in ANY hashed
 // tree (source, output or a prepared dir) the moment the checkout is opened in
@@ -31,48 +34,80 @@ const tuiInputs = [
   'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
 ]
 
-function treeHash(root, inputs, skip, contents = () => true) {
-  const hash = createHash('sha256')
-  function visit(name) {
-    if (osMetadata(name) || skip(name)) return
-    const file = join(root, name)
-    hash.update(name.replaceAll('\\', '/')).update('\0')
-    if (!existsSync(file)) { hash.update('missing\0'); return }
-    if (statSync(file).isDirectory()) {
-      hash.update('directory\0')
-      for (const child of readdirSync(file).sort()) visit(`${name}/${child}`)
-    } else {
-      hash.update(contents(name) ? readFileSync(file) : 'file').update('\0')
-    }
-  }
-  for (const input of inputs) visit(input)
-  return hash.digest('hex')
-}
+// The browser renderer compiles Desktop and its shared package in a prepared
+// workspace. Release metadata (pyproject.toml, uv.lock, icons) is not its input.
+const webappInputs = [
+  'apps/desktop', 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+  'scripts/build/webapp.mjs', 'scripts/build/node-deps.mjs', 'scripts/build/frontend-common.mjs',
+  'scripts/build/freshness.mjs',
+]
 
-export function sourceHash(source, product) {
+function productInputs(product) {
+  if (product === 'tui') return tuiInputs
+  if (product === 'webapp') return webappInputs
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
-  return treeHash(source, product === 'tui' ? tuiInputs : [
+  return [
     workspace, 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
     'scripts/build',
     'scripts/generate-icons.mjs', 'scripts/generate_icons.py',
     // The root install-stamp.json is runtime identity rewritten after every install; desktop's
     // baked stamp is a prepared input.
     'assets', 'pyproject.toml', 'uv.lock',
-  ], name => {
+  ]
+}
+
+function skipInput(product) {
+  return name => {
     // Build scripts are inputs; workspace build directories are outputs.
     const parts = name.split('/')
     return (!name.startsWith('scripts/') && parts.some(part => generated.has(part)))
       || (product === 'tui' && (parts.includes('__tests__') || /\.(test|spec)(-d)?\.[cm]?[jt]sx?$/.test(name)))
       || parts.some(part => part.startsWith('.dist-') || part.startsWith('.staging-') || part === '__pycache__')
       || name.endsWith('.tsbuildinfo') || name.endsWith('.pyc')
-  })
+  }
 }
 
-function outputHash(out) {
+// Pre-order walk: a directory is reported before its sorted children.
+function walkTree(root, inputs, skip, onEntry) {
+  function visit(name) {
+    if (osMetadata(name) || skip(name)) return
+    const file = join(root, name)
+    if (!existsSync(file)) return onEntry(name, 'missing')
+    if (!statSync(file).isDirectory()) return onEntry(name, 'file')
+    onEntry(name, 'directory')
+    for (const child of readdirSync(file).sort()) visit(`${name}/${child}`)
+  }
+  for (const input of inputs) visit(input)
+}
+
+function treeHash(root, inputs, skip, contents = () => true) {
+  const hash = createHash('sha256')
+  walkTree(root, inputs, skip, (name, kind) => {
+    hash.update(name.replaceAll('\\', '/')).update('\0')
+    if (kind === 'file') hash.update(contents(name) ? readFileSync(join(root, name)) : 'file').update('\0')
+    else hash.update(`${kind}\0`)
+  })
+  return hash.digest('hex')
+}
+
+export function sourceHash(source, product) {
+  return treeHash(source, productInputs(product), skipInput(product))
+}
+
+/** The present entries a product's source hash covers, for mirroring a prepared workspace. */
+export function sourceEntries(source, product) {
+  const entries = []
+  walkTree(source, productInputs(product), skipInput(product), (name, kind) => {
+    if (kind !== 'missing') entries.push({ name, kind })
+  })
+  return entries
+}
+
+function outputHash(out, ignored = []) {
   // Native binaries can be signed after compilation. Their ABI validation is
   // owned by native preparation; renderer/main/preload bytes must stay intact.
-  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product',
+  return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product' || ignored.includes(name),
     name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
@@ -144,7 +179,7 @@ export function buildInputs(source, product, prepared = {}, env = process.env) {
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
       name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
-    ...(product === 'desktop' ? { env: rendererEnv(env) } : {}),
+    ...(product === 'desktop' || product === 'webapp' ? { env: rendererEnv(env) } : {}),
   }
 }
 
@@ -166,6 +201,16 @@ export function recordProduct({ source, product, out, inputs, stampClock }) {
     schema: 1, product, platform: process.platform, arch: process.arch, node: process.versions.node,
     inputs, stampClock, outputHash: outputHash(out),
   }) + '\n')
+}
+
+/** Validate output bytes against their receipt, independently of current inputs or host, and of
+ *  the marker ``hermes update`` leaves in a product it could not rebuild (hermes_cli/webapp.py),
+ *  which still fails productCurrent. */
+export function outputIntact(out, product) {
+  try {
+    const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+    return saved.schema === 1 && saved.product === product && saved.outputHash === outputHash(out, [staleMarker])
+  } catch { return false }
 }
 
 /** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */

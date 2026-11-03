@@ -1,7 +1,7 @@
 name: model-fallback-heuristic
 title: "Fallback — Model Switching Heuristics"
 repo: https://github.com/tomkubik/hermes-fallback
-sha: 87e28897f6d41760cf6a40b39f06a0fa6fab86e9
+sha: ce150572ea10de682a2c67902b314590b55683b3
 version: "0.2.0"
 description: >-
   Multi-provider heuristic model fallback and automatic failover routing across all configured
@@ -19,7 +19,7 @@ tier: community
 category: models
 requires_hermes: ">=0.19"
 docs_url: https://github.com/tomkubik/hermes-fallback#readme
-image: https://raw.githubusercontent.com/tomkubik/hermes-fallback/87e28897f6d41760cf6a40b39f06a0fa6fab86e9/assets/cover.png
+image: https://raw.githubusercontent.com/tomkubik/hermes-fallback/ce150572ea10de682a2c67902b314590b55683b3/assets/cover.png
 readme: true
 platforms: []
 capabilities:

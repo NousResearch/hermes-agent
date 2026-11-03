@@ -412,3 +412,26 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_selected_plugin_extra_naming_core_installs_the_workspace_core(layout):
+    """A plugin extra pinning core (``hermes-agent[x] @ git+…``) resolves to this checkout.
+
+    The generated root IS core, so uv refuses any member requirement naming it without a
+    ``{ workspace = true }`` source ("is included as a workspace member, but is missing an
+    entry in tool.uv.sources") and the whole lock fails. Any spelling of the name binds,
+    and the requested core extra installs from the workspace instead of the URL.
+    """
+    from pm.environments import site_packages
+
+    tmp, core, plugin, _ = layout
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="core-pinning-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=["member-dep==1.0"]\n[project.optional-dependencies]\n'
+        'chosen=["Construction_Root[other] @ git+https://example.invalid/hermes-agent'
+        '@0000000000000000000000000000000000000000"]\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    environment = managed_environment(tmp / "env")
+    ws.lock_and_sync([plugin], ["chosen"], root=tmp / "workspace", source=core, seed_lock=None,
+                     environment=environment)
+    installed = {p.name.split("-")[0] for p in site_packages(environment.destination).glob("*.dist-info")}
+    assert {"member_dep", "other_dep"} <= installed

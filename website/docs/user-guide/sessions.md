@@ -643,7 +643,7 @@ sweep that runs less often than that needs `--never-active --include-archived` t
 reach the rows already archived (pinned rows are still kept).
 
 :::info
-Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+With the regular filters, pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). The opt-in `--never-active` selector is an exception: it can also delete old keyed sessions that have never been used, even if they have not been ended. Pinned sessions are still protected.
 A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does.
 :::
 

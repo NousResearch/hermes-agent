@@ -3011,7 +3011,9 @@ export const frOverrides = {
       linked: (platform: string) => `Compte ${platform} associé. Écrivez au bot pour parler à votre agent.`,
       expired: 'Le code a expiré avant d’être utilisé. Demandez-en un nouveau et réessayez.',
       refused: (platform: string) => `${platform} a refusé l’association. Demandez un nouveau code et réessayez.`,
-      qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`
+      qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`,
+      managed: 'Géré par Team Gateway',
+      managedNote: (platform: string) => `Team Gateway assure la messagerie sur cette instance : le gateway désactive donc la connexion directe ${platform} à chaque démarrage. Pour l’utiliser en plus du relais, définissez GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true dans l’environnement du gateway (une connexion directe empêche l’instance de descendre à zéro et peut livrer les messages deux fois).`
     },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',

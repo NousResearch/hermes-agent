@@ -1635,7 +1635,9 @@ export const jaOverrides = {
       linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
       expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
       refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
-      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`
+      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
+      managed: 'Team Gateway が管理',
+      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`
     },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',

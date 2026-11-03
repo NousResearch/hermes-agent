@@ -2608,7 +2608,9 @@ export const en: Translations = {
       linked: (platform: string) => `${platform} account linked. Message the bot to talk to your agent.`,
       expired: 'That code expired before it was used. Get a new code and try again.',
       refused: (platform: string) => `${platform} refused the link. Get a new code and try again.`,
-      qrAlt: (platform: string) => `QR code for the shared ${platform} bot`
+      qrAlt: (platform: string) => `QR code for the shared ${platform} bot`,
+      managed: 'Managed by Team Gateway',
+      managedNote: (platform: string) => `Team Gateway carries messaging on this deployment, so the gateway turns the direct ${platform} connection off at every start. To run it alongside the relay, set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in the gateway's environment (a direct connection keeps the instance from scaling to zero and can deliver messages twice).`
     },
     telegramQr: {
       title: 'Choose how to connect your Telegram bot',

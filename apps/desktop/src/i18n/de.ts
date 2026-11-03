@@ -3003,7 +3003,9 @@ export const deOverrides = {
       linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
       refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
-      qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`
+      qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
+      managed: 'Von Team Gateway verwaltet',
+      managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`
     },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',

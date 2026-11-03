@@ -59,26 +59,35 @@ export function testMessagingPlatform(
 
 // -- Team Gateway account links -----------------------------------------------
 // A relay-fronted instance reaches Telegram/Discord/Slack only through the shared bot; these mint
-// the one-time `/link <code>` that binds a chat account to this agent. The relay serves the
-// gateway's own profile, so these carry no profile scope.
+// the one-time `/link <code>` that binds a chat account to this agent. The profile tag picks the
+// backend (a profile may point at another host); the relay itself serves that gateway's own profile.
 
-export function getRelayLinks(): Promise<RelayLinksResponse> {
-  return hermesApi<RelayLinksResponse>({ path: '/api/messaging/relay' })
+export function getRelayLinks(profile?: null | string): Promise<RelayLinksResponse> {
+  return hermesApi<RelayLinksResponse>({ ...profileScoped(profile), path: '/api/messaging/relay' })
 }
 
-export function requestRelayLink(platform: string): Promise<RelayLinkCode> {
+export function requestRelayLink(platform: string, profile?: null | string): Promise<RelayLinkCode> {
   return hermesApi<RelayLinkCode>({
+    ...profileScoped(profile),
     path: `/api/messaging/relay/${encodeURIComponent(platform)}/link`,
     method: 'POST'
   })
 }
 
-export function getRelayLinkState(code: string): Promise<RelayLinkCodeState> {
-  return hermesApi<RelayLinkCodeState>({ path: `/api/messaging/relay/link/${encodeURIComponent(code)}` })
+export function getRelayLinkState(code: string, profile?: null | string): Promise<RelayLinkCodeState> {
+  return hermesApi<RelayLinkCodeState>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/link/${encodeURIComponent(code)}`
+  })
 }
 
-export function unlinkRelayAccount(platform: string, platformUserId: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+export function unlinkRelayAccount(
+  platform: string,
+  platformUserId: string,
+  profile?: null | string
+): Promise<{ unlinked: boolean }> {
+  return hermesApi<{ unlinked: boolean }>({
+    ...profileScoped(profile),
     path: `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
     method: 'DELETE'
   })

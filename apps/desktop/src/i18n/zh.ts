@@ -2529,7 +2529,9 @@ export const zhOverrides = {
       linked: (platform: string) => `${platform} 账号已关联。给机器人发消息即可与智能体对话。`,
       expired: '代码在使用前已过期。请获取新代码后重试。',
       refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
-      qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`
+      qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`
     },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',

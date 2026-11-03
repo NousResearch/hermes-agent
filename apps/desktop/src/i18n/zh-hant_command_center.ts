@@ -187,7 +187,9 @@ export const zhHantCommandCenter = {
       linked: (platform: string) => `${platform} 帳號已連結。傳訊息給機器人就能和代理對話。`,
       expired: '代碼在使用前已過期。請取得新代碼後再試一次。',
       refused: (platform: string) => `${platform} 拒絕了連結。請取得新代碼後再試一次。`,
-      qrAlt: (platform: string) => `共用 ${platform} 機器人的 QR 碼`
+      qrAlt: (platform: string) => `共用 ${platform} 機器人的 QR 碼`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此執行個體的訊息由 Team Gateway 承載，因此閘道每次啟動都會關閉 ${platform} 的直接連線。若要與中繼同時使用，請在閘道環境中設定 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直接連線會使執行個體無法縮減到零，並可能重複傳遞訊息）。`
     },
     telegramQr: {
       title: '選擇連接 Telegram 機器人的方式',

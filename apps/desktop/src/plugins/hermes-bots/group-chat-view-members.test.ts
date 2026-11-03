@@ -242,4 +242,41 @@ describe('a room that spans machines', () => {
     expect(room.gateway.calls.map(call => call.profile)).not.toContain('scout')
     expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
   })
+
+  it('removing a member whose machine does not answer fails and keeps all three seats, through reconnect too', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(remote)]: { groups: ['Core'] } })
+
+    // The machine went away after the roster painted it reachable.
+    host.requestProfile = async () => {
+      throw new Error('connection refused')
+    }
+
+    await expect(room.members.setGroupChatMembers('Core', [programmer, reviewer])).rejects.toThrow(/Scout/)
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer', 'scout'])
+
+    // Reconnect: that machine's ui_meta still names the room, and now agrees with this Desktop.
+    const { mergeServerMeta } = await import('./profile-ops')
+    mergeServerMeta([{ ...remote, sourceReachable: true, ui_meta: { 'hermes-bots': { groups: ['Core'] } } }], Date.now() + 120_000)
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+  })
+
+  it('refuses before writing anything when the removed member is already shown offline', async () => {
+    const room = await loadRoom()
+    const offline = { ...remote, connectionLabel: 'Homelab', sourceReachable: false }
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, offline]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, offline])
+    room.data.$botMeta.set({ ...room.data.$botMeta.get(), [room.data.botMetaKey(offline)]: { groups: ['Core'] } })
+    const before = room.data.$botMeta.get()
+
+    await expect(room.members.setGroupChatMembers('Core', [programmer, planner])).rejects.toThrow(/Homelab/)
+
+    expect(room.data.$botMeta.get()).toEqual(before)
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+  })
 })

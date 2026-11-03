@@ -23,8 +23,14 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useState } from 'react'
 
-import { groupNeedsDesktopCourier, seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
-import { $botMeta, $lastRoster, botHandle, botRosterKey, saveBotMeta } from './data'
+import {
+  botOnConnection,
+  connectionName,
+  groupNeedsDesktopCourier,
+  seatableGroupBots,
+  useGroupCapability
+} from './canonical-group-capabilities'
+import { $botMeta, $lastRoster, botHandle, botRosterKey, botSourceStatus, saveBotMeta } from './data'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import {
@@ -36,6 +42,7 @@ import {
   groupSessionMemberKey
 } from './group-membership'
 import { harvestStrandedGroupReply } from './group-turns'
+import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
 import type { BotMeta, RosterRow } from './types'
@@ -85,8 +92,59 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
   }))
 }
 
+/** A member on another machine this Desktop cannot reach right now. Its seat
+ *  also lives in that machine's own ui_meta, so a removal saved while it is
+ *  offline lands only here and the next roster from that machine re-seats it. */
+export function memberMachineOffline(bot: RosterRow, connectionId: null | string): boolean {
+  return onOtherMachine(bot, connectionId) && (Boolean(bot.ghost) || !botSourceStatus(bot).available)
+}
+
+/** A stored member descriptor carries its connection but not `remoteSource`. */
+function onOtherMachine(bot: RosterRow, connectionId: null | string): boolean {
+  return !botOnConnection(bot, connectionId) && Boolean(bot.remoteSource || bot.connectionId || bot.route?.connectionId)
+}
+
+function memberSaveFailed(bot: RosterRow, meta: Record<string, BotMeta>): Error {
+  return new Error(botsText().crossGateway.memberSaveFailed(connectionName(bot), displayName(bot, botRosterMeta(bot, meta))))
+}
+
+/** A remote row's write that provably did not land on its machine. An older
+ *  gateway with no ui_meta contract ('unsupported') holds no seat to restore. */
+const REMOTE_WRITE_MISSED = new Set(['failed', 'unreachable'])
+
+interface MembershipWrite {
+  bot: RosterRow
+  enabled: boolean
+  previous: string[]
+}
+
+/** Write every changed row's groups[], other machines first. When one of them
+ *  did not take the change, put back every row already written (and that one's
+ *  local copy) and fail, so membership stays the same on every machine. */
+async function writeMembershipChanges(group: string, writes: MembershipWrite[], meta: Record<string, BotMeta>) {
+  const connectionId = host.state.connectionId.get()
+  const remote = (write: MembershipWrite) => onOtherMachine(write.bot, connectionId)
+  const ordered = [...writes.filter(remote), ...writes.filter(write => !remote(write))]
+  const done: MembershipWrite[] = []
+
+  for (const write of ordered) {
+    const result = await saveBotMeta(write.bot, groupMembershipPatch(botRosterMeta(write.bot, meta), group, write.enabled))
+    done.push(write)
+
+    if (remote(write) && REMOTE_WRITE_MISSED.has(result.serverOutcome)) {
+      for (const undo of done.reverse()) {
+        await saveBotMeta(undo.bot, { group: undo.previous[0] || null, groups: undo.previous })
+      }
+
+      throw memberSaveFailed(write.bot, meta)
+    }
+  }
+}
+
 /** Persist the room-side member picker result: each Bot's `groups[]` metadata
- * (on its owning connection) and the room's stored descriptors together. */
+ * (on its owning connection) and the room's stored descriptors together. Fails,
+ * with nothing changed, when a removed member's machine is offline or a remote
+ * write does not land. */
 export async function setGroupChatMembers(group: string, selected: RosterRow[]) {
   if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
     throw new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`)
@@ -103,15 +161,25 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
   // groups[] names the room, so a remote member whose list still names it would
   // take its seat back. saveBotMeta writes a remote row through its own
   // connection, as the per-Bot door does.
+  const writes: MembershipWrite[] = []
+
   for (const bot of $lastRoster.get()) {
     const enabled = selectedKeys.has(botRosterKey(bot))
     const current = botGroups(botRosterMeta(bot, meta))
 
     if (current.includes(group) !== enabled) {
-      await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
+      writes.push({ bot, enabled, previous: current })
     }
   }
 
+  const connectionId = host.state.connectionId.get()
+  const stranded = writes.find(write => !write.enabled && memberMachineOffline(write.bot, connectionId))
+
+  if (stranded) {
+    throw memberSaveFailed(stranded.bot, meta)
+  }
+
+  await writeMembershipChanges(group, writes, meta)
   await commitGroupChatRoster(group, previous, selected)
 }
 
@@ -145,6 +213,7 @@ interface GroupMemberPickerProps {
  *  checklist, pre-checked with the room's current seats. Nothing is written
  *  until Save; Cancel leaves membership untouched. */
 export function GroupMemberPicker({ group, members, open, onClose }: GroupMemberPickerProps) {
+  const b = useBots()
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const liveRoster: RosterRow[] = useValue($lastRoster)
 
@@ -200,8 +269,11 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
           {roster.map(bot => {
             const key = botRosterKey(bot)
             const checked = selected.has(key)
-            const disabled = !checked && atCap
             const meta = botRosterMeta(bot, allMeta)
+            // A seated member whose machine is offline cannot be removed from
+            // here: the removal could not reach that machine (see memberMachineOffline).
+            const locked = checked && memberMachineOffline(bot, connectionId)
+            const disabled = locked || (!checked && atCap)
 
             return (
               <RowButton
@@ -236,6 +308,11 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
                   <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
                     {`@${botHandle(bot.name, bot)}${bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''}`}
                   </div>
+                  {locked && (
+                    <div className="text-[0.625rem] text-(--ui-text-tertiary)" data-testid="group-member-locked">
+                      {b.crossGateway.memberOffline(connectionName(bot), displayName(bot, meta))}
+                    </div>
+                  )}
                 </div>
               </RowButton>
             )

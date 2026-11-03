@@ -307,7 +307,7 @@ export function noteBotMetaWrite(key: string) {
 
 /** Three-way outcome of the server half of a save — see the block comment on
  *  `serverOutcome` below for what separates 'unsupported' from 'failed'. */
-type BotMetaServerOutcome = 'failed' | 'persisted' | 'unsupported'
+type BotMetaServerOutcome = 'failed' | 'persisted' | 'unreachable' | 'unsupported'
 
 interface BotMetaSaveResult {
   serverOutcome: BotMetaServerOutcome
@@ -372,12 +372,14 @@ async function persistBotMetaPatch(
   bot: RosterRow,
   name: string,
   route: null | ProfileRoute,
-  patch: StoredBotMeta
+  patch: StoredBotMeta,
+  progress: { reached: boolean }
 ): Promise<null | ProfilesConfigureResult> {
   const { image: _image, pet: _pet, ...fields } = patch
 
   for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
     const server = await readServerBotMeta(bot, name, route)
+    progress.reached = true
 
     if (!server) {
       return null
@@ -414,6 +416,26 @@ async function persistBotMetaPatch(
     applied: {
       ui_meta: false
     }
+  }
+}
+
+/** Read a save's server reply as the three-way outcome documented in saveBotMeta. */
+async function settleServerOutcome(
+  request: Promise<null | ProfilesConfigureResult>,
+  routed: boolean,
+  progress: { reached: boolean }
+): Promise<BotMetaServerOutcome> {
+  try {
+    const result = await request
+
+    if (result?.applied?.ui_meta === true) {
+      return 'persisted'
+    }
+
+    return result && typeof result === 'object' && result.applied && typeof result.applied === 'object' ? 'failed' : 'unsupported'
+  } catch {
+    // A routed row that never answered is offline, not an older gateway.
+    return routed && !progress.reached ? 'unreachable' : 'unsupported'
   }
 }
 
@@ -455,9 +477,10 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
   let serverRequest: null | Promise<null | ProfilesConfigureResult> = null
+  const progress = { reached: false }
 
   try {
-    serverRequest = persistBotMetaPatch(bot, name, route, patch)
+    serverRequest = persistBotMetaPatch(bot, name, route, patch, progress)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -509,21 +532,12 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //                   an error toast here would fire on EVERY save forever.
   //   'failed'      — gateway speaks the contract and explicitly reported
   //                   the ui_meta write did NOT apply.
-  let serverOutcome: BotMetaServerOutcome = 'unsupported'
+  //   'unreachable' — a routed (other-machine) row whose gateway never
+  //                   answered the read: nothing landed there, and its
+  //                   unchanged ui_meta wins again on reconnect.
+  const serverOutcome = serverRequest ? await settleServerOutcome(serverRequest, Boolean(route), progress) : 'unsupported'
 
   if (serverRequest) {
-    try {
-      const result = await serverRequest
-
-      if (result?.applied?.ui_meta === true) {
-        serverOutcome = 'persisted'
-      } else if (result && typeof result === 'object' && result.applied && typeof result.applied === 'object') {
-        serverOutcome = 'failed'
-      }
-    } catch {
-      /* older/unavailable gateway — the local fallback remains saved */
-    }
-
     // Re-stamp now that the server write settled: a roster snapshot fetched
     // while profiles.configure was still in flight predates the new ui_meta
     // just as surely as one fetched before the local write.

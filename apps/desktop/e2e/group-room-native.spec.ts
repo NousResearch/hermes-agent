@@ -57,7 +57,7 @@ async function setupKeyedBackend(mockServer: MockServerOptions, multiplex: boole
 
 /** Every shot in the maintainer's theme: dark, unless THEME=light. */
 async function applyTheme(): Promise<void> {
-  const scheme = process.env.THEME === 'light' ? 'light' : 'dark'
+  const scheme: 'dark' | 'light' = process.env.THEME === 'light' ? 'light' : 'dark'
   await fixture!.app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode }, scheme)
   await fixture!.page.emulateMedia({ colorScheme: scheme })
   await fixture!.page.waitForTimeout(300)

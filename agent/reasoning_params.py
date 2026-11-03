@@ -172,15 +172,22 @@ class ReasoningParamsMixin:
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
 
-        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys) — called many times
-        per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
-        field rejection, the only events allowed to change the replayed bytes mid-session.
+        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys, resolved model
+        opt-outs) — called many times per turn — and recomputed after ``switch_model()`` / fallback
+        activation or a recorded field rejection, the only events allowed to change the replayed
+        bytes mid-session. The model-scoped replay opt-outs (``model.reasoning_replay_off`` /
+        ``model.reasoning_replay_filter``) are resolved fresh into the key, so a config edit reaches
+        the wire without a restart and the estimator predicate (``stale_thinking_reaches_wire``,
+        which reads the same config) can never disagree with it.
         """
-        from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
+        from agent.message_sanitization import (
+            model_replay_filter, model_replay_opt_out, reasoning_replay_route, rejected_reasoning_carriers,
+        )
 
         rejected = rejected_reasoning_carriers(self)
+        opt_out, replay_filter = model_replay_opt_out(self.model), model_replay_filter(self.model)
         key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
-               self._reasoning_echo_opt_in(), rejected)
+               self._reasoning_echo_opt_in(), rejected, opt_out, replay_filter)
         cached = getattr(self, "_reasoning_route_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]

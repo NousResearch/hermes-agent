@@ -472,7 +472,8 @@ __all__ = [
     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
+    "deterministic_call_id", "matches_reasoning_echo_family", "model_replay_filter",
+    "model_replay_opt_out", "needs_reasoning_echo",
     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
     "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
     "route_reasoning_carriers",
@@ -649,6 +650,12 @@ def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
 # A route that still rejects a field is learned at runtime (``record_reasoning_field_rejection``)
 # and the field is dropped for that (provider, host, model) only. Stored history keeps every
 # carrier; only wire copies are shaped here.
+#
+# Model-scoped opt-outs (``model.reasoning_replay_off`` / ``model.reasoning_replay_filter``) sit on
+# the same owner: they key on the MODEL, not the route, so a gateway serving a loop-prone model next
+# to must-echo models keeps every sibling's contract. ``reasoning_replay_off`` drops the replayed
+# text entirely (on a must-echo schema only the pad can ride — the field itself never disappears);
+# ``reasoning_replay_filter`` replays only reasoning the repo's own repetition guard judges clean.
 _REASONING_ECHO_RULES: tuple = (
     # (family, exact providers (raw), exact providers (lowered), model substrings (lowered), hosts)
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
@@ -684,10 +691,15 @@ _REASONING_CARRIER_ROUTES: tuple = (
 class ReasoningReplayRoute(NamedTuple):
     """``pad``: must-echo tier (missing reasoning_content -> " "). ``carriers``: the reasoning
     keys an assistant wire copy carries; ``None`` outside chat_completions, where the native
-    adapters own reasoning replay (only the must-echo pad is applied, details are untouched)."""
+    adapters own reasoning replay (only the must-echo pad is applied, details are untouched).
+    ``text_mode``: what rides inside the replayed field — ``"full"`` (stored text verbatim, the
+    default), ``"blank"`` (the pad only; a ``model.reasoning_replay_off`` model), or
+    ``"filtered"`` (stored text with guard-detected degenerate loops replaced by the pad; a
+    ``model.reasoning_replay_filter`` model)."""
 
     pad: bool
     carriers: frozenset | None
+    text_mode: str = "full"
 
 
 def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
@@ -743,16 +755,81 @@ def _profile_declares_native_details(provider_lower: str) -> bool:
     return bool(getattr(get_provider_profile(provider_lower), "native_reasoning_details_type", None))
 
 
+def _model_config_list_match(model: Any, key: str) -> bool:
+    """True when the lowered model id contains any entry of the ``model.<key>`` config list.
+
+    Substring match, the echo tables' model-column style. A missing, empty or malformed entry
+    leaves the default behavior untouched; errors reading config degrade to False.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        entries = (load_config_readonly().get("model") or {}).get(key)
+    except Exception:
+        return False
+    if not isinstance(entries, (list, tuple)):
+        return False
+    model_lower = str(model or "").strip().lower()
+    if not model_lower:
+        return False
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        needle = entry.strip().lower()
+        if needle and needle in model_lower:
+            return True
+    return False
+
+
+def model_replay_opt_out(model: Any) -> bool:
+    """``model.reasoning_replay_off`` — model-scoped opt-out of reasoning REPLAY (chat-completions).
+
+    For these models stored reasoning never rides the wire again: long sessions stop re-seeding
+    their own repetition loops with degenerate reasoning (cron 36579fbca6c2, 2026-11-02: with the
+    stored reasoning replayed the incident state looped 7/7, without it 0/9). On a must-echo schema
+    the field still rides — blanked to the pad, because dropping it is an HTTP 400 on tool-call
+    turns. Outside chat_completions the native adapters keep their own replay policy.
+    """
+    return _model_config_list_match(model, "reasoning_replay_off")
+
+
+def model_replay_filter(model: Any) -> bool:
+    """``model.reasoning_replay_filter`` — model-scoped sanity filter on replayed reasoning.
+
+    For these models the stored reasoning still replays (must-echo schemas keep their echo), but
+    text the repo's own repetition guard judges degenerate (``agent/repetition_guard.py``, the
+    same judge that aborts a live loop) is replaced by the pad instead of re-seeding the next
+    turn; legitimate reasoning passes byte-identical. Filtered routes replay only
+    ``reasoning_content`` — the details carrier would bypass the filter with the same text.
+    Precedence: a ``reasoning_replay_off`` match wins (the model is fully opted out).
+    """
+    return _model_config_list_match(model, "reasoning_replay_filter")
+
+
 def reasoning_replay_route(
     api_mode: Any, provider: Any, model: Any, base_url: Any, *, echo_opt_in: bool = False,
     rejected: Iterable[str] = (),
 ) -> ReasoningReplayRoute:
     """Replay decision for one route. Deterministic in its inputs, so the wire prefix is byte-stable
-    across turns and changes only on a route switch or a recorded rejection (``rejected``)."""
+    across turns and changes only on a route switch or a recorded rejection (``rejected``). The
+    model-scoped opt-outs (``model.reasoning_replay_off`` / ``model.reasoning_replay_filter``) are
+    read here too: they key on the model, survive ``switch_model()`` / fallback (the route
+    recomputes either way) and never strip a field the schema requires."""
     pad = bool(echo_opt_in) or needs_reasoning_echo(provider, model, base_url)
     if (api_mode or "chat_completions") != "chat_completions":
+        # Native adapters own reasoning replay on their wires; the opt-outs are
+        # chat-completions-scoped and leave the must-echo pad contract untouched.
         return ReasoningReplayRoute(pad, None)
     carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
+    if model_replay_opt_out(model):
+        # Never strip a field the schema requires: on a must-echo route only the pad rides
+        # (``text_mode="blank"``); everywhere else nothing rides at all.
+        if pad and RC in carriers:
+            return ReasoningReplayRoute(True, frozenset({RC}), "blank")
+        return ReasoningReplayRoute(False, frozenset(), "blank")
+    if model_replay_filter(model) and RC in carriers:
+        # Filtered routes replay only reasoning_content, and only guard-clean text of it.
+        return ReasoningReplayRoute(pad and RC in carriers, frozenset({RC}), "filtered")
     # A strict route never gets a reasoning key, not even the must-echo pad.
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 
@@ -776,6 +853,9 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     route = reasoning_replay_route(api_mode, provider, model, base_url)
     if route.carriers is None:
         return (api_mode or "") != "codex_responses" and route.pad
+    if route.text_mode == "blank":
+        # The field may ride, but only as the must-echo pad — no stale text is replayed.
+        return False
     return bool(route.carriers & {RC, R})
 
 
@@ -840,6 +920,27 @@ def _replayable_reasoning_text(msg: dict) -> str | None:
     return None
 
 
+def _replay_text(text: str | None, text_mode: str) -> str:
+    """The text that rides the ``reasoning_content`` carrier under the route's ``text_mode``."""
+    if text_mode == "blank":
+        return " "
+    if text_mode == "filtered" and text is not None and _replay_filter_rejects(text):
+        return " "
+    return text if text is not None else " "
+
+
+def _replay_filter_rejects(text: str) -> bool:
+    """True when the stored reasoning is itself a degenerate repetition loop — replaying it would
+    re-seed the next turn. The repo's own guard criteria (``agent/repetition_guard.py``), the same
+    judge that aborts a live loop; fails open (replays) if the guard cannot be loaded."""
+    try:
+        from agent.repetition_guard import is_runaway_repetition
+
+        return bool(is_runaway_repetition(text))
+    except Exception:
+        return False
+
+
 def _apply_legacy_must_echo_pad(source_msg: dict, api_msg: dict) -> None:
     """Native-adapter wires (``carriers=None``): the pre-replay contract, byte-for-byte. An explicit
     value is kept verbatim (legacy "" upgraded to " "); a tool-call turn holding only another
@@ -855,12 +956,16 @@ def _apply_legacy_must_echo_pad(source_msg: dict, api_msg: dict) -> None:
 
 def apply_reasoning_content_policy(
     source_msg: dict, api_msg: dict, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    text_mode: str = "full",
 ) -> None:
     """Shape an assistant replay message's reasoning keys for the active route (mutates ``api_msg``).
 
     ``needs_thinking_pad`` is the must-echo flag; ``carriers`` the keys the route reads
     (``reasoning_replay_route``). ``carriers=None`` is a non-chat-completions wire: only the
     must-echo ``reasoning_content`` rides there and ``reasoning_details`` is left to the adapter.
+    ``text_mode`` comes from the route: ``"blank"`` replays the pad only (a
+    ``model.reasoning_replay_off`` model), ``"filtered"`` replaces guard-detected degenerate
+    reasoning with the pad (a ``model.reasoning_replay_filter`` model).
     Keys the route does not read are removed, so a strict host never sees one (#45655, #70233).
     """
     if source_msg.get("role") != "assistant":
@@ -872,7 +977,7 @@ def apply_reasoning_content_policy(
     elif RC in effective and (text is not None or needs_thinking_pad):
         # Must-echo tier: every assistant turn carries the field; " " (not "") when there is no
         # text, because DeepSeek V4 rejects empty string (#17341) and a legacy "" pad upgrades.
-        api_msg[RC] = text if text is not None else " "
+        api_msg[RC] = _replay_text(text, text_mode)
     else:
         # Also drops a non-string value (None after compaction) and a whitespace pad written
         # for a must-echo provider: never pass null, never replay a pad as reasoning.
@@ -894,14 +999,17 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
+def reapply_reasoning_echo(
+    api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None, text_mode: str = "full",
+) -> int:
     """Reconcile already-built assistant turns with the ACTIVE route.
 
     ``api_messages`` is built once under the primary; a mid-conversation fallback or a recorded
     field rejection changes the route, so baked-in keys are reconciled both ways: TO a must-echo
     provider the pad is re-applied (else 400), TO a strict one the keys are stripped (else 422),
     and a carrier the new route reads is restored from the text that is still present.
-    Idempotent. Returns the number of assistant turns changed.
+    ``text_mode`` travels with the route (a model-scoped replay opt-out blanks the text instead
+    of dropping the field). Idempotent. Returns the number of assistant turns changed.
     """
     changed = 0
     for api_msg in api_messages:
@@ -910,7 +1018,7 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
         before = _reasoning_shape(api_msg)
         if carriers is None and needs_thinking_pad and api_msg.get(RC):
             continue
-        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers)
+        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers, text_mode)
         changed += _reasoning_shape(api_msg) != before
     return changed
 

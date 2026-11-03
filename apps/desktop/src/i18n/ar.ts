@@ -80,7 +80,7 @@ export const arOverrides = {
       allApps: 'كل التطبيقات',
       receiptConnected: apps => `متصلة: ${apps}`,
       receiptNone: 'لم يتم ربط تطبيقات جديدة',
-      receiptTimedOut: 'أُغلقت بعد 5 دقائق',
+      receiptTimedOut: 'أُغلقت بعد 10 دقائق',
       finishInBrowser: 'أكمل في المتصفح',
       signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'
     }

@@ -21,7 +21,7 @@ Turn meeting notes into cited decisions, owners, tickets.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Meetings`, `Action-Items`, `Follow-Up`, `Productivity` |
-| Related skills | [`teams-meeting-pipeline`](../../bundled/productivity/productivity-teams-meeting-pipeline.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`notion`](../../bundled/productivity/productivity-notion.md) |
+| Related skills | [`teams-meeting-pipeline`](../../bundled/productivity/productivity-teams-meeting-pipeline.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`notion`](../../optional/productivity/productivity-notion.md) |
 
 ## Reference: full SKILL.md
 

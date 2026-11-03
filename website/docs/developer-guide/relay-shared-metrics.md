@@ -365,7 +365,12 @@ like `interactive`, as they did before the value existed; `background` and `dele
 runs are unattended and excluded there. Packages written before `one_shot` existed
 carry these runs as `interactive` and still validate. `hermes -z` leaves through
 `os._exit`, so it closes its metrics session before exiting rather than relying on the
-atexit hook.
+atexit hook. Graceful gateway, compute-host, SIGTERMed kanban-worker and orphaned
+slash-worker stops also leave through `os._exit` and run the same flush, bounded at 3 s.
+Every runtime's exit flush, export and send pass binds that runtime's own profile, so a
+process serving several profiles applies each profile's own collection and send consent:
+a profile that turned collection off since its last turn drops its in-memory rows
+instead of writing them.
 
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,
@@ -453,6 +458,11 @@ offline (no network call, no subprocess):
   auxiliary task runs on a local or self-hosted server (a local provider id such
   as Ollama/LM Studio/llama.cpp, or a loopback/private-network base URL). The
   URL itself stays local.
+- `compression_prepare_ahead` (`on`/`off`): whether the profile's config turns on
+  `compression.prepare_ahead` (prepared compaction), read with the same truthiness
+  the agent uses (absent or false reads `off`), from the profile's own `config.yaml` like the other
+  snapshot fields (a managed-scope overlay is not read). Snapshots counted before this field
+  existed carry no value for it and still package.
 
 ### Decision-data metrics
 
@@ -477,7 +487,7 @@ itself ships.
 | `hermes.memory.op.count` | op (`add`/`replace`/`remove`/`read`/`search`/`other`), provider (`builtin`, a bundled memory plugin, else `plugin`), origin (`foreground`/`background_review`), outcome (`success`/`failed`/`rejected`), failure class | Is the learning loop writing memory, who asks for it (the user's turn or the background review), and how often writes are refused or fail, and why. Since package schema v4 `failure_class` names the reason from a closed list mapped from each refusal/failure return of the built-in store: `no_match` (old_text matched no entry), `ambiguous` (it matched several), `over_budget` (the write would pass the char limit), `would_empty` (a batch would remove the last entry), `drift` (the file holds text the store cannot round-trip), `read_failed` (the file exists but cannot be read), `retry_cap` (the per-turn retry budget is spent), `scan_blocked` (the content matched a threat pattern), `missing_content`, `missing_old_text`, `invalid_args`, `stale_entry` (a staged write's entry changed), `disabled` (that target is off in config), `staged` (held for the user's approval), `gate_refused` (the write-approval gate blocked it); `provider_error` / `exception` for a plugin provider's tool that returned an error or raised; `none` on success; `other`/`unknown` otherwise. A batch applies all or none, so every op row of a refused batch carries the class of the op that stopped it. Never the memory text, the old_text or the error message. |
 | `hermes.curator.run.count` | trigger (`scheduled`/`manual`), outcome (`success`/`failed`/`skipped`), archived/merged/patched/created buckets | Does the skill curator run, and does it actually consolidate anything. Dry runs report `skipped`; a scheduled check that finds another process already running the pass records nothing. Never skill names. |
 | `hermes.delegation.run.count` | subagent-count bucket, depth (`1`–`3`, `gte_4`), mode (`foreground`/`background`), outcome (`success`/`partial`/`failed`/`cancelled`) | How wide and deep delegate_task fan-outs go and how often every child finishes. One row per call, however many completion units it splits into. |
-| `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp`, `camofox`, `extension` or a bundled cloud provider (else `other`); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success, but a foreground command that hits its timeout is `failed`/`timeout`; terminal and execute_code calls a guard refuses before they reach the backend, Hermes' own listings for TUI/Desktop path completion, and calls made by the background review and curator forks are not counted. |
+| `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp` or a bundled cloud provider (else `other`; `camofox` and `extension` stay in the schema as legacy labels); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success, but a foreground command that hits its timeout is `failed`/`timeout`; terminal and execute_code calls a guard refuses before they reach the backend, Hermes' own listings for TUI/Desktop path completion, and calls made by the background review and curator forks are not counted. |
 | `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. `connect_failed` counts a failed-connect episode once per profile, platform and UTC day (the reconnect watcher's retries are not new rows; the next success ends the episode, and a platform still failing the next day counts again), with the error class of the episode's first failure. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
 | `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
@@ -486,6 +496,7 @@ itself ships.
 | `hermes.update.run` | kind, outcome, failed_stage, duration_bucket, from_version_age_bucket, apply_mode | Whether updates succeed, how long they take, where they fail, and how stale the version being updated from was. `outcome` is `success`, `noop`, `failed`, `refused`, or `partial` (committed, then interrupted or left the user's stashed changes parked; `hermes update` rows only). A `partial` run counts as an attempt and as a failure in the per-user update rate (these runs read `failed` before, so the trend stays continuous), and its reasons sit with the runs that applied the code and then failed a follow-up. `hermes update` rows are derived from the final update receipt, once per run (`kind` is `desktop` when Desktop's source-checkout hand-off ran it); a run the pre-update interpreter finishes, or the bare bootstrap interpreter finishes after dependency preparation failed (it cannot load the config reader), is parked locally with only the bounded fields the row needs and counted by the next start, which purges it unrecorded when collection is off (nothing is parked when that interpreter can already tell collection is off); Desktop packaged self-updates (`apply_mode=package`) are reported once by the app, after the restart that applies them. A lock refusal (`lock_held`) of the update child a Desktop hand-off launched (the update marker names it, or its parent, as the hand-off's delegate) reads `failed`, not `refused`: the Desktop already quit to run that update and reports it as a failed one. That includes the checkout lock held by another mutator (a Desktop build, a venv sync), not only another update running. |
 | `hermes.update.stage` | stage, outcome, duration_bucket | Per-stage result and wall time of `hermes update` (plan, snapshot, apply, deps, build, restart, verify), from the receipt's stage timestamps. |
 | `hermes.process.exit` | process_kind, exit_kind, crash_class | How CLI / TUI / gateway / serve / cron-tick processes end (`clean`, `crash` with an exception family only, `killed`, `watchdog`), reported by the next start in the same profile from a local marker (a start with collection off deletes these markers, and pending `provider_setup` ones, unreported). Turns aborted by a turn watchdog also count as `exit_kind=watchdog`. |
+| `hermes.gateway.busy_arrival.count` | platform, disposition (`queued`/`steered`/`interrupted`/`merged`/`dropped`/`other`), wait bucket (`lt_5s`, `5s_to_30s`, `30s_to_2m`, `2m_to_10m`, `gte_10m`, `never`) | How often people message an agent that is still busy in their chat, and how long that message waits before the agent sees it. One row per human message that arrives while the chat's turn is running (including one that arrives while an earlier queued message's turn runs), counted under the profile that runs the chat (that profile's collection setting decides), recorded once its fate is known: `queued` (ran later as its own turn), `steered` (delivered into the running turn: `busy_input_mode: steer`, or an interrupt-mode correction that redirects the turn), `interrupted` (stopped the running turn, then ran as the next one), `merged` (folded into another busy message of the same burst; its wait is until that message reached the agent), `dropped` (never ran: cleared by `/stop` or `/new`, refused, deleted with its chat, or over the queue cap). The wait runs from arrival to its own turn starting or the steer landing, `never` when dropped. Commands, approval answers, internal events and background-process notifications are not counted. A message still queued when the gateway restarts is not counted: its saved row runs in the next process. The same holds for a message saved behind a paused queue (the user is told it is saved): it counts as `queued` only if this process later runs it, never as `dropped`. |
 
 Replies the relay connector carries report the platform the conversation lives
 on (the inbound's platform, else the platform the connector fronts when it
@@ -556,6 +567,17 @@ Added inside package schema v4. No connector slug, tool name or query text appea
 | `hermes.tool_batch.count` | provider, model, size bucket (logical calls; each `tool_call` entry counts once), connector share (`none`, `some`, `all`) | How many calls a model packs into one reply, and how much of it is connector work. One row per model reply that calls tools. |
 | `hermes.connector_chain.count` | searches-before bucket (`tool_search` calls since the previous connector execute), described first (`yes`/`no`: the tool was named in an earlier `tool_describe` of the conversation), outcome (the tool outcome) | Do models search and describe before they execute a connector tool, and does skipping it fail more. One row per executed connector entry. |
 
+#### Prepared compaction
+
+Added inside package schema v4. Answers whether installs that turn on `compression.prepare_ahead`
+(see `compression_prepare_ahead` on the snapshot) get a usable summary, or pay for passes nothing uses,
+wait on them, or see a spliced compaction fail. No transcript text, window index, summary or miss text
+appears in any dimension: the free-text splice-miss reason is reduced to a closed code.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.prepared_compaction.count` | event (`pass_started`, `pass_completed`, `pass_failed`, `pass_cancelled`, `used`, `discarded`, `compaction_failed`, `auto_disabled`, `skipped_busy`, `internal_error`), origin (`tool_batch`, `turn_end`: the hook that started the pass; `none` on compaction-side events), reason (`none`, `fresh_required`, `provider_context`, `other_session`, `head_moved`, `transcript_shorter`, `shape_changed`, `rewound`, `text_changed`, `running_not_fit`, `wait_timeout`, `host_cancelled`, `pass_failed_while_waiting`, `superseded`, `session_boundary`, `agent_released`, `compaction_aborted`, `aux_fallback_main`), failure class (the `hermes.compression.count` vocabulary; `none` unless the event is a failure), wait bucket (`none`, `lt_1s`, `1s_to_5s`, `5s_to_30s`, `30s_to_120s`, `gte_120s`: how long a compaction waited on a running pass) | Do prepared passes pay off, and if not, why. Pass side (from the background thread): `pass_started`, `pass_completed` (summary published), `pass_failed` (the summariser returned nothing; its class is the one an inline attempt would log, a terminal summary failure first), `pass_cancelled` (the pass saw its cancel event; reason `superseded`, `session_boundary`, `agent_released`, `wait_timeout` or `host_cancelled`, set by whoever cancelled it), `skipped_busy` (the process-wide cap of two concurrent passes refused a pass; counted once per refused window, not per tool batch) and `internal_error` (failure class `exception`). Compaction side: `used` (the summary was spliced into the compacted transcript, counted at the splice itself; reason `aux_fallback_main` when the pass fell back from the summary model to the main model), `discarded` (a completed or running summary the compaction did not use, with the splice-miss code and any wait; a session boundary dropping one reads `session_boundary`, releasing the agent (cache eviction, rewind, close, a one-shot or managed-worker turn ending) reads `agent_released`, and a summary the compaction took but then aborted or no-opped before splicing reads `compaction_aborted`), `compaction_failed` (a compaction that spliced a prepared summary but did not commit, with its attempt class) and `auto_disabled` (the first compaction needing memory-provider context turned passes off for the agent). One pass can count on both sides, so never add sides together: `discarded` + `pass_cancelled` for a running pass that did not fit or was dropped at a boundary (a boundary that wakes a waiting compaction counts `discarded` once, from the boundary). |
+
 <!-- ---- v5 harness ---- -->
 #### Agent-harness accuracy
 
@@ -598,7 +620,7 @@ subagents count there; background review and the curator never do.
 | Metric | Dimensions | Question it answers |
 |---|---|---|
 | `hermes.engagement.surface_day.count` | surface (`cli`, `tui`, `desktop`, `gateway`, `acp`), active-minutes bucket (`0`, `lt_5m`, `5m_to_30m`, `30m_to_2h`, `2h_to_6h`, `gte_6h`) | How long each surface is actually used per day. One row per surface used on a closed UTC day. |
-| `hermes.engagement.day.count` | active-minutes bucket, surfaces-used count (`0`–`3`, `gte_4`), primary provider, primary model, active-profile count bucket | Days active per week, multi-surface use, and next-day / next-week return by model. One row per closed UTC day a person used Hermes on. The root (default) profile also writes a host row on days only other profiles were active: `surfaces_used_count` `0`, active minutes `0`, carrying the active-profile count; exclude `surfaces_used_count=0` rows when counting days active. |
+| `hermes.engagement.day.count` | active-minutes bucket, surfaces-used count (`0`–`3`, `gte_4`), primary provider, primary model, active-profile count bucket, gateway peak busy-chats bucket (`0`, `1`, `2`, `3_to_5`, `6_to_10`, `gte_11`) | Days active per week, multi-surface use, next-day / next-week return by model, and whether an install ever runs several chats at once. One row per closed UTC day a person used Hermes on. The root (default) profile also writes a host row on days only other profiles were active: `surfaces_used_count` `0`, active minutes `0`, carrying the active-profile count; exclude `surfaces_used_count=0` rows when counting days active. |
 | `hermes.model_switch_after.count` | provider, model (the model switched away from), turns-before-switch bucket (`1`, `2_to_3`, `4_to_10`, `11_to_30`, `gte_31`) | How long users stay on a model before `/model` leaves it. Counts the user turns sent on the old model in the conversation (compression segments included; a turn that failed over to a fallback still counts for the model it was sent on; background review forks are not turns); a switch before any turn on the current model is not counted. |
 
 Active time is accumulated locally per UTC day: the sum of the gaps between
@@ -624,6 +646,14 @@ day row carries the count (it reports a day even when the root itself was
 idle, with `0` active minutes and surfaces); every other profile's row reads
 `0`. When the root profile has collection off, nothing is written to its
 database and the count is not reported.
+
+`gateway_peak_busy_chats_bucket` is the most distinct chats (session keys) of the profile that had a
+turn running at the same moment during that UTC day, as the gateway process serving the profile saw
+them. The gateway keeps the running set and the day's maximum in memory per owning profile (the
+profile whose scope claimed the turn, or the session's own profile for a chat auto-resumed at
+startup; not the launch profile) and folds the maximum into the
+profile's day state at each interaction; a day that closes after midnight still reads its own maximum; no chat id or session key is stored or sent. A profile no
+gateway served reads `0`; rows recorded before the field existed omit it.
 <!-- ---- end v5 engagement ---- -->
 
 <!-- ---- v5 signals ---- -->
@@ -679,12 +709,23 @@ Package schemas v1, v2 and v3 remain unchanged for existing outbox files. New
 packages use v4, which adds `failure_class` to `hermes.compression.count` and
 `hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place with additive values only, also after v4 shipped in a stable release,
 `failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
-former, still accepting their earlier v4 field sets), as v3 accepted the v2
+former, still accepting their earlier v4 field sets; `hermes.prepared_compaction.count` and the
+snapshot's optional `compression_prepare_ahead` arrived the same way), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory
 providers, error classes) are bounded by pattern in the JSON schema; the
-authoritative allowlist is `shared_metrics_contract.py`.
+authoritative allowlist is `shared_metrics_contract.py`. Values Hermes no longer
+emits stay accepted as legacy values so counters recorded by an older version
+still drain: the removed built-in browser tools (`browser_navigate`,
+`browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`,
+`browser_back`, `browser_press`, `browser_console`, `browser_get_images`,
+`browser_vision`) remain valid tool names, and `camofox` remains a valid browser
+backend label. Camofox now ships as the `camofox` catalog plugin, so its tools
+report `plugin`. The same holds for the five `browser_vault_*` tools that became
+one `browser_vault` tool, and for the `spotify` toolset and its `spotify_*` tools,
+which now ship as the `spotify` catalog plugin and report `plugin` / `custom`.
+A value a stable release shipped never leaves the contract.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more

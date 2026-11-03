@@ -5,7 +5,8 @@
  *
  * Intents:
  *   - `in-place` (sidebar click / Enter) — focus existing tile/main if on
- *     screen; else load into main (same as the left sessions sidebar).
+ *     screen; else load into the focused session tab, like a link opened in
+ *     the current browser tab. Main only when main is the focused tab.
  *   - `stack` (⌘K, notifications — anything that opens a chat from outside the
  *     workspace) — like `tab`, but may spend main or an open blank draft tab
  *     when either is empty.
@@ -29,6 +30,7 @@ import {
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
+import { openInFocusedSessionTab } from './chat/focused-tab-open'
 import { $workspaceIsPage, sessionRoute } from './routes'
 
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
@@ -209,11 +211,30 @@ export function openSession(
     return
   }
 
-  // Already on screen (open tile, or the main session)? Jump to its tab;
-  // otherwise load it into main. From a full page (artifacts, skills, …) a
-  // `'main'` hit still has to route back: fronting the workspace tab alone
-  // leaves the page showing.
+  openInPlace(storedSessionId, navigate, workspaceScope)
+}
+
+/**
+ * Already on screen (open tile, or the main session)? Jump to its tab;
+ * otherwise load it into the focused session tab, or into main when main is
+ * the focused tab. From a full page (artifacts, skills, …) a `'main'` hit
+ * still has to route back: fronting the workspace tab alone leaves the page
+ * showing.
+ */
+function openInPlace(
+  storedSessionId: string,
+  navigate: OpenSessionNavigate,
+  workspaceScope: OpenSessionWorkspaceScope
+): void {
   const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  if (
+    !focused &&
+    workspaceScope.workspaceMode === 'sessions' &&
+    openInFocusedSessionTab(storedSessionId, workspaceScope)
+  ) {
+    return
+  }
 
   if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))

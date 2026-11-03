@@ -25,6 +25,12 @@ vi.mock('@/store/session-states', () => ({
   setSessionTileWorkspaceScope: (...args: unknown[]) => setSessionTileWorkspaceScope(...args)
 }))
 
+const openInFocusedSessionTab = vi.fn((storedSessionId: string, scope: unknown) => false)
+
+vi.mock('./chat/focused-tab-open', () => ({
+  openInFocusedSessionTab: (storedSessionId: string, scope: unknown) => openInFocusedSessionTab(storedSessionId, scope)
+}))
+
 vi.mock('@/store/windows', () => ({
   canOpenSessionWindow: () => canOpenSessionWindow(),
   openSessionInNewWindow: (...args: unknown[]) => openSessionInNewWindow(...args)
@@ -78,6 +84,8 @@ describe('openSession', () => {
     canOpenSessionWindow.mockReturnValue(true)
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
+    openInFocusedSessionTab.mockReset()
+    openInFocusedSessionTab.mockReturnValue(false)
     setSessionTileWorkspaceScope.mockReset()
     focusedSessionWorkspaceScope.mockReset()
     focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
@@ -111,6 +119,17 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate)
     expect(navigate).toHaveBeenCalledWith('/c/s1')
+  })
+
+  it('in-place loads into the focused session tab instead of routing main', () => {
+    focusOpenSession.mockReturnValue(null)
+    openInFocusedSessionTab.mockReturnValue(true)
+
+    openSession('s1', navigate)
+
+    expect(openInFocusedSessionTab).toHaveBeenCalledWith('s1', { workspaceMode: 'sessions' })
+    expect(navigate).not.toHaveBeenCalled()
+    expect(frontMainIfSelected).not.toHaveBeenCalled()
   })
 
   it('in-place fronts main when a Bot-scoped open targets the chat main already holds', () => {

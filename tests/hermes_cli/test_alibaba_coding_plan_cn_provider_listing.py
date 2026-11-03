@@ -61,3 +61,21 @@ def test_available_providers_keeps_the_current_cn_twin(monkeypatch):
     monkeypatch.setattr(auth, "get_active_provider", lambda: "alibaba-coding-plan-cn")
     assert "alibaba-coding-plan-cn" in _available_slugs()
     assert "alibaba-coding-plan-cn" in _alibaba_slugs(current_provider="alibaba-coding-plan-cn")
+
+
+@patch.dict(os.environ, {**_CLEAR, "ALIBABA_CODING_PLAN_API_KEY": "sk-intl-fake"}, clear=False)
+def test_available_providers_keeps_a_cn_twin_pinned_in_config(monkeypatch):
+    """``model.provider`` in config.yaml is the current provider, with no auth-store pick at all.
+
+    ``resolve_provider`` reads config.yaml before auth.json, so a home pinned to the twin keeps the
+    row the picker shows for it — reading only the auth store hid it on the WebUI listing.
+    """
+    from hermes_cli import auth
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *a, **k: {"model": {"provider": "alibaba-coding-plan-cn"}},
+    )
+    monkeypatch.setattr(auth, "get_active_provider", lambda: None)
+    assert "alibaba-coding-plan-cn" in _available_slugs()
+    assert sorted(_available_slugs()) == sorted(_alibaba_slugs(current_provider="alibaba-coding-plan-cn"))

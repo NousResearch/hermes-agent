@@ -358,14 +358,19 @@ def cn_twin_lit_only_by_shared_keys(slug: str, current_provider: Optional[str] =
     listed when it is the current provider — that is the endpoint the user is actually on — and
     when it has a dedicated var of its own the user could set.
 
-    ``current_provider=None`` resolves the active provider from the auth store, so listings with
-    no session context agree with the picker's explicit ``current_provider``.
+    ``current_provider=None`` resolves the active provider the way ``resolve_provider`` does —
+    ``model.provider`` from config.yaml first, then the auth store — so a listing with no session
+    context agrees with a picker built from the same config.
     """
     if not slug or not slug.endswith("-cn"):
         return False
-    from hermes_cli.auth import PROVIDER_REGISTRY, get_active_provider
+    from hermes_cli.auth import PROVIDER_REGISTRY, _config_model_provider, get_active_provider
 
-    current = (get_active_provider() if current_provider is None else current_provider) or ""
+    current = current_provider
+    if current is None:
+        # config.yaml `model.provider` outranks auth.json `active_provider` (resolve_provider's
+        # order), so a home pinned to the twin in config keeps its row with no auth-store pick.
+        current = _config_model_provider()[1] or get_active_provider() or ""
     if slug == current.strip().lower():
         return False
     twin = PROVIDER_REGISTRY.get(slug)

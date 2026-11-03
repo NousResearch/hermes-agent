@@ -923,6 +923,30 @@ def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> 
     assert "1 passed" in out.read_text(encoding="utf-8")
 
 
+@pytest.mark.platforms("linux")
+def test_fork_server_exit_status_survives_concurrent_starts() -> None:
+    """Starting a child polls every live child; a status read racing that poll must not turn 0 into 255."""
+    import importlib.util
+    import multiprocessing
+    from concurrent.futures import ThreadPoolExecutor
+
+    spec = importlib.util.spec_from_file_location(
+        "rtp_forkstatus", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
+    rtp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rtp)
+    ctx = multiprocessing.get_context("forkserver")
+
+    def one(_):
+        proc = ctx.Process(target=sys.exit, args=(0,))
+        with rtp._fork_lock:
+            proc.start()
+        return rtp._forked_exit_status(proc, 60)
+
+    with ThreadPoolExecutor(16) as pool:
+        statuses = list(pool.map(one, range(400)))
+    assert statuses == [0] * 400, sorted(set(statuses))
+
+
 def test_a_green_file_that_exits_non_zero_reports_its_exit_status(tmp_path: Path) -> None:
     """The failure dump of a file whose tests all passed must say how the process exited."""
     probe_dir = tmp_path / "probe"

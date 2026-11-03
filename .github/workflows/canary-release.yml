@@ -12,14 +12,14 @@ name: Canary Release
 # conclusion=failure is a canary failure signal.
 #
 # The canary build itself is a Stable Release run (stable-release.yml) on the
-# canary tag: the exact job graph a stable release runs, with every lane on
-# (macOS Intel and Termux included; scripts/releases/lanes.py CANARY) except
-# the signed-package upgrade arms -- the canary app cannot upgrade a stable
-# install; install-e2e tests old stable -> this commit -- so the two never drift.
-# It differs only in where it publishes (the canary channels, never the Store or a
-# stable head) and in what gates publication: the scheduled canary publishes once
-# its candidate is built and smoked (--no-require-green) and every other suite
-# reports in the same run; a manual dispatch waits for every suite unless told not to.
+# canary tag: the exact job graph a stable release runs, from the same default
+# lanes (scripts/releases/lanes.py CANARY; macOS Intel and Termux are opt-in), so
+# the two never drift. Its signed-package upgrade arms upgrade the last published
+# canary to this one. It differs only in where it publishes (the canary channels,
+# never the Store or a stable head) and in what gates publication: the scheduled
+# canary publishes once its candidate is built and smoked and every upgrade arm
+# that ran passed (--no-require-green), and every other suite reports in the same
+# run; a manual dispatch waits for every suite unless told not to.
 
 on:
   schedule:

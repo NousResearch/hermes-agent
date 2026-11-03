@@ -478,13 +478,13 @@ def cmd_canary(args) -> None:
     stable plus the stamp as SemVer build metadata, so it compares equal to the stable and only
     the R2 canary head moves subscribers. No version-file bump or commit is created — the tag
     points at HEAD as-is. Its message is the canary's claim: the lanes it runs (--only/--with/
-    --without, starting from every lane a canary can run) and whether a red suite holds its
+    --without, starting from the stable default lanes) and whether a red suite holds its
     publication (--require-green, the default; the scheduled canary passes --no-require-green).
 
     Created as a DRAFT prerelease, for the same reason the stable path
     drafts: a published release with no installers attached is a release
     users can reach and cannot use. Stable Release runs on this tag with
-    every lane on, and its publish-canary job flips the draft to published
+    the claimed lanes, and its publish-canary job flips the draft to published
     only after the accepted candidate is built and smoked. A failed bundle
     therefore leaves an inspectable draft rather than a broken canary.
 
@@ -705,7 +705,7 @@ def main():
                         help="Tag + publish a stable-core canary "
                              "(canary.<YYYYMMDDTHHMMSSZ>-v<stable>); no-op when "
                              "HEAD has no new commits since the last canary. Takes "
-                             "--only/--with/--without (starting from every lane but upgrade) "
+                             "--only/--with/--without (starting from the stable default lanes) "
                              "and --require-green/--no-require-green")
     parser.add_argument("--only", action="append", metavar="LANES",
                         help="--canary/--build-commit: start from exactly these lanes (comma-separated, repeatable)")

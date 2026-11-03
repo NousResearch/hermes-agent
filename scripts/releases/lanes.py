@@ -45,16 +45,11 @@ LANES = (
 )
 NAMES = tuple(lane.name for lane in LANES)
 DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
-# A canary is a run of the stable pipeline with every lane on but one: it has no claim to narrow
-# it, so macOS Intel and Termux run too, and a lane added above runs in the canary with no other
-# edit. The exception is `upgrade`, the signed-package arms: the canary is its own app (Hermes
-# Canary), so no signed package of it can upgrade a stable install, and canary-to-canary says
-# nothing about what stable users get. Old stable to this commit is install-e2e's job, which
-# installs released stable tags and updates them to the commit under test, with no bundle.
-# Beyond that a canary differs from a stable release only in policy (POLICY_JOBS). CANARY is the
-# base a canary claim starts from; --only/--with/--without narrow or widen it exactly as they do
-# DEFAULT for a stable claim.
-CANARY = frozenset(NAMES) - {"upgrade"}
+# A canary starts from the stable default and differs from a stable release only in policy
+# (POLICY_JOBS). Its signed-package upgrade arms pair the last published canary with this one: both
+# are the same app (Hermes Canary). CANARY is the base a canary claim starts from; --only/--with/
+# --without narrow or widen it exactly as they do DEFAULT for a stable claim.
+CANARY = DEFAULT
 # A commit build is the stable default minus what it can never run. Commit builds don't support
 # updating (canon), so no upgrade test of any kind: neither the signed-package arms (`upgrade`) nor
 # install-e2e, every leg of which installs an old release and updates it. Fresh installs stay
@@ -114,6 +109,9 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
 }.items()}
 
 CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
+# The signed-package upgrade arms. Whatever its green policy, a canary publishes only if every arm
+# that ran passed (stable-release.yml publish-canary, channel_releases custody).
+UPGRADE_ARMS = tuple(job for job, needs in JOB_LANES.items() if "upgrade" in needs)
 
 # The release policies stable-release.yml runs. Every build and test job is shared; only these
 # publication jobs belong to some policies, and each runs only under those. A stable release
@@ -129,12 +127,12 @@ POLICY_JOBS: dict[str, frozenset[str]] = {
     "publish-channel": frozenset({"channel"}),
     "publish-docker": frozenset({"stable", "canary"}),
 }
-# The lane set a claim of each policy starts from, and the lanes it can never run: a canary is its
-# own app identity, so no signed package of it can upgrade anything (see CANARY); a commit build
+# The lane set a claim of each policy starts from, and the lanes it can never run: a canary runs
+# whatever stable can (see CANARY); a commit build
 # runs no upgrade test and builds no Store package (see COMMIT); a channel build runs no signed
 # upgrade arm and builds no Store package (see CHANNEL).
 POLICY_BASE = {"stable": DEFAULT, "canary": CANARY, "commit": COMMIT, "channel": CHANNEL}
-POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset({"upgrade"}), "commit": COMMIT_REFUSED,
+POLICY_REFUSED = {"stable": frozenset(), "canary": frozenset(), "commit": COMMIT_REFUSED,
                   "channel": CHANNEL_REFUSED}
 
 # Candidate handoff group and manifest target, each with the lane that builds it.

@@ -1177,6 +1177,7 @@ export default function ModelsPage() {
   // calls and retries, so they're misleading next to provider billing.
   const [showTokens, setShowTokens] = useState(false);
   const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
@@ -1343,13 +1344,10 @@ export default function ModelsPage() {
               </div>
               {!showTokens && (
                 <p className="mt-4 text-xs text-text-tertiary leading-relaxed">
-                  Token & cost analytics are hidden because the local counts
-                  exclude auxiliary calls (compression, vision, web extract,
-                  …) and provider retries, so they diverge from your provider
-                  bill. Enable{" "}
+                  {modelsUi.tokenAnalyticsHiddenBefore}{" "}
                   <span className="font-mono">dashboard.show_token_analytics</span>{" "}
-                  in <a href="/config" className="underline">Config</a> to
-                  show the local debug estimate anyway.
+                  {modelsUi.in} <a href="/config" className="underline">{modelsUi.config}</a>{" "}
+                  {modelsUi.tokenAnalyticsHiddenAfter}
                 </p>
               )}
             </CardContent>

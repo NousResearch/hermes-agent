@@ -1,7 +1,7 @@
 name: hermes-browser-extension
 title: Hermes Browser Extension
 repo: https://github.com/abundantbeing/hermes-browser-extension
-sha: 91ed5e1de6eacf9f50a67c58f227bf8c8ffefb2a
+sha: 34e99b9a3c71a7d437f6593a222d55f74116ef61
 subdir: companion-plugin
 version: "0.4.0"
 description: >-
@@ -14,10 +14,10 @@ maintainer: abundantbeing
 tier: community
 category: web
 requires_hermes: ">=0.22"
-docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/91ed5e1de6eacf9f50a67c58f227bf8c8ffefb2a/companion-plugin/install.md
-image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/91ed5e1de6eacf9f50a67c58f227bf8c8ffefb2a/assets/readme/release-v0.4.0.jpg
+docs_url: https://github.com/abundantbeing/hermes-browser-extension/blob/34e99b9a3c71a7d437f6593a222d55f74116ef61/companion-plugin/install.md
+image: https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/34e99b9a3c71a7d437f6593a222d55f74116ef61/assets/readme/release-v0.4.0.jpg
 screenshots:
-  - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/91ed5e1de6eacf9f50a67c58f227bf8c8ffefb2a/assets/readme/hermes-browser-control.png
+  - https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/34e99b9a3c71a7d437f6593a222d55f74116ef61/assets/readme/hermes-browser-control.png
 readme: true
 platforms: []
 known_issues:

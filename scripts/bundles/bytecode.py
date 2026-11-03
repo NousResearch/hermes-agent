@@ -15,9 +15,11 @@ stall on first launch. Baking turns that into a warm read:
 * the baked pycs are chmodded owner-writable (0o644) BEFORE packaging:
   Squirrel.Mac's ShipIt clears the quarantine attribute off every file
   in the .app and aborts the whole update with EACCES on any read-only
-  one (#138659); writes still cannot land — unchecked-hash never
-  triggers a rewrite and asserted coverage means no cache-miss write
-  can target them;
+  one (#138659), and on Windows a read-only pyc stopped the next
+  prepare's rmtree (#137717). A read-only bit never blocked a rewrite
+  anyway: CPython replaces a pyc through its writable __pycache__ dir.
+  What keeps default imports (all the launcher does) off these pycs is
+  unchecked-hash plus the asserted coverage below;
 * the runtime's sys.pycache_prefix redirect is dropped when the baked
   marker is present (the prefix relocates READS too — see
   scripts/build/launcher_wrapper.py), so imports read the source-
@@ -100,10 +102,11 @@ def bake_bytecode(root: Path, python: Path) -> dict:
     # Pycs get owner write BEFORE packaging: Squirrel.Mac's ShipIt clears
     # the quarantine attribute from every file in the .app and aborts the
     # whole update with EACCES on any file lacking it (#138659) — a
-    # read-only pyc wedges every macOS update at the swap step. Writes
-    # still cannot land: unchecked-hash never triggers a stale-source
-    # rewrite and asserted coverage means no cache-miss write can target
-    # these dirs, so the macOS signature never observes a pyc change.
+    # read-only pyc wedges every macOS update at the swap step. Default
+    # imports still leave these pycs alone: unchecked-hash never
+    # revalidates against the source and asserted coverage leaves no cache
+    # miss to write. `--check-hash-based-pycs always` or `-O` can still
+    # write here, as they could when the pycs were read-only.
     for source_root in _import_roots(root):
         for cache in source_root.rglob("__pycache__"):
             for pyc in cache.iterdir():

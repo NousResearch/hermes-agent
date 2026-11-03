@@ -367,12 +367,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.rejectProtocolReady = rejectReady
 
     try {
-      const transport = super.connect(wsUrl)
+      let opened = false
+      const transport = super.connect(wsUrl).then(() => { opened = true })
       // State handlers run over a live set: a closed-handler redial can register the next dial's
       // listener while the previous socket's `closed` is still being dispatched. That close ends a
-      // superseded dial, but the current dial fails only when its own transport is closed.
+      // superseded dial, but the current dial fails only when its own opened transport is closed;
+      // before open, the transport's own rejection names the failure.
       stopState = this.onState(state => {
-        if (state === 'closed' && (generation !== this.connectionGeneration || this.connectionState === 'closed')) {
+        if (state === 'closed' && (generation !== this.connectionGeneration || (opened && this.connectionState === 'closed'))) {
           rejectReady(new Error('Hermes gateway disconnected before protocol readiness'))
         }
       })
@@ -451,7 +453,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
       }
     })
 
-    try { await Promise.race([this.protocolReady, exits]) } finally { for (const stop of stops) { stop() } }
+    // A failed dial answers a waiting request as the transport would: not connected, which the
+    // request layer's reconnect and the connectors' retry key on.
+    const ready = this.protocolReady.catch(() => { throw new Error(GATEWAY_NOT_CONNECTED_MESSAGE) })
+
+    try { await Promise.race([ready, exits]) } finally { for (const stop of stops) { stop() } }
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {

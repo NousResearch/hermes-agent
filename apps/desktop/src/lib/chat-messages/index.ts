@@ -29,6 +29,7 @@ export {
 export {
   concatPartsByToolCall,
   hasUnresolvedToolCall,
+  isRedeliveredToolEvent,
   QUESTION_CARD_TOOLS,
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,

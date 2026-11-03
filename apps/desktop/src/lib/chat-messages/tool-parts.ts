@@ -494,6 +494,70 @@ export function toolCallOwnerMessageId(
   return null
 }
 
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
+
+/**
+ * True when a tool event is another copy of a call this turn already finished.
+ *
+ * Only an unresolved part can own an event (`toolCallOwnerMessageId`), so a
+ * second `tool.start` or `tool.complete` for a call that has already returned
+ * routes to the live bubble and gets drawn again as a new row. A background
+ * `delegate_task` returns in about a second, so any re-delivery of its
+ * frames showed the whole fan-out twice.
+ *
+ * Ids alone can't prove it's the same call: llama.cpp reuses one id for
+ * every call. A copy also matches the finished part's content. A start
+ * repeats its arguments; a completion repeats its result. The search stops
+ * at the newest user message, so a later turn that reuses an id with the
+ * same arguments still gets its own row.
+ */
+export function isRedeliveredToolEvent(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete'
+): boolean {
+  const stableId = toolId(payload)
+
+  if (!stableId || toolCallOwnerMessageId(messages, payload, phase)) {
+    return false
+  }
+
+  const args = liveToolArgs(payload)
+  const argKeys = Object.keys(args)
+
+  const repeats = (part: Extract<ChatMessagePart, { type: 'tool-call' }>) => {
+    if (phase === 'complete') {
+      return payload?.result !== undefined && sameJson(payload.result, part.result)
+    }
+
+    const partArgs = parseMaybeJsonObject(part.args)
+
+    return argKeys.length > 0 && argKeys.every(key => sameJson(args[key], partArgs[key]))
+  }
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    if (message.role === 'user') {
+      return false
+    }
+
+    for (const part of message.parts) {
+      if (
+        part.type === 'tool-call' &&
+        part.toolCallId === stableId &&
+        (!payload?.name || part.toolName === payload.name) &&
+        Object.hasOwn(part, 'result') &&
+        repeats(part)
+      ) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 interface PendingClarifyLocation {
   messageIndex: number
   partIndex: number

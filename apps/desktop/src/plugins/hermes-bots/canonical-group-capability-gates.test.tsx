@@ -216,11 +216,13 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
 })
 
-it('canonical creation offers only members on the current connection before submission', async () => {
+// A bot on another connection is offered again: a selection spanning connections
+// becomes a Desktop-driven room (cross-gateway-group-creation.test.tsx). A row
+// whose route disagrees with its own connection is still never offered.
+it('canonical creation offers this connection and reachable other-connection bots, never a contradictory row', async () => {
   answer({ driver: true, persistent_process: true })
   const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={mixedRoster} />)
 
-  expect(baseElement.querySelector('[data-bot-face="remote"]')).toBeNull()
   expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
   await waitFor(() => {
     expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities')
@@ -231,7 +233,7 @@ it('canonical creation offers only members on the current connection before subm
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
   const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
   await waitFor(() => expect(submit.disabled).toBe(false))
-  expect(baseElement.querySelector('[data-bot-face="remote"]')).toBeNull()
+  expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull()
   expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
 })
 

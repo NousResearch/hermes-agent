@@ -264,6 +264,8 @@ class HostedRoomPolicyCheckpoint:
     _APPLY_BY_KIND: dict[str, Callable[..., None]] = {
         "message.user": _apply_user_message, "message.member": _apply_discussion_event,
         **dict.fromkeys(_TERMINAL_KINDS, _apply_discussion_event), "room.activity": _apply_room_activity,
+        # The lead's assignment joins its discussion's projection so the planner sees who takes round 0.
+        "room.assignment": _apply_discussion_event,
         "room.stop_requested": _apply_stop_requested}
 
     def _apply_event(self, conn: sqlite3.Connection, event: Mapping[str, Any]) -> None:

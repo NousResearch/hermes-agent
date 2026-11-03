@@ -1,34 +1,43 @@
 /**
  * Background MCP health checker. On gateway connect — and every 30 minutes
- * after — probe the ACTIVE profile's enabled HTTP/SSE MCP servers and nudge
- * the user when one is in needs-auth (expired OAuth token) or error: on the
- * transition, then at most once a day while it stays broken, with a
- * one-click path to the MCP page's Authenticate button and a Disable button
- * for servers the user no longer wants.
+ * after — read the ACTIVE profile's MCP runtime state and nudge the user when
+ * a server needs re-authentication (expired OAuth token) or a REMOTE server is
+ * failing: on the transition, then at most once a day while it stays broken,
+ * with a one-click path to the MCP page and a Disable button for servers the
+ * user no longer wants.
  *
- * Scope is deliberate: stdio servers are NEVER probed here. Probing a stdio
- * server SPAWNS a local process, so a background timer would silently launch
- * user-configured commands every half hour. Only url-shaped servers (HTTP/SSE
- * — where OAuth expiry actually lives) are swept, sequentially, and through
- * the same probe cache the MCP page uses so neither surface re-probes what
- * the other just learned.
+ * The sweep never connects to anything. It reads `mcp.servers.status`, the
+ * backend's cached view of the connections its agents actually use. A probe of
+ * its own (a fresh connect + list_tools) raced the backend's startup connects
+ * into false failures (#133155), evicted single-session hosts' live session
+ * (#89576) and could open an OAuth consent tab unattended (#142406).
+ *
+ * Local servers (stdio, or a loopback URL) are never nagged about. They are
+ * usually hosted by an app that comes and goes (an editor's built-in MCP
+ * server only answers while the editor runs), and the backend re-probes a
+ * parked server on its own, so tools come back once the app is open again.
+ * Their state stays visible on the MCP page.
  */
 
-import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
+import type { McpServersStatusResult } from '@hermes/shared'
+
+import { getHermesConfigRecord, setMcpServerEnabled } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
-import { getServers, serverEnabled } from '@/lib/mcp-servers'
+import { isLoopbackPreviewUrl } from '@/lib/local-preview'
+import { getServers, type McpServerEntry, serverEnabled } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
-// A constant, not a config knob: the sweep is cheap (a handful of sequential
-// HTTP probes at most) and the notification is transition-gated below, so
-// there is nothing for a user to meaningfully tune.
+// A constant, not a config knob: the sweep is one cached-state read, and the
+// notification is transition-gated below, so there is nothing to tune.
 const CHECK_INTERVAL_MS = 30 * 60_000
+const STATUS_TIMEOUT_MS = 15_000
 
-export type McpHealthStatus = 'error' | 'needs-auth' | 'ok'
+/** `offline` = a local server that is not answering; it never notifies. */
+export type McpHealthStatus = 'error' | 'needs-auth' | 'offline' | 'ok'
 
 /**
  * The notify decision, as a pure state machine: nudge on a TRANSITION into a
@@ -64,6 +73,26 @@ export function shouldNotify(
   return previous !== next || now >= snoozedUntil
 }
 
+/** Local = runs next to the backend: a spawned command or a loopback URL. */
+export const isLocalMcpServer = (server: McpServerEntry): boolean =>
+  typeof server.url !== 'string' || isLoopbackPreviewUrl(server.url)
+
+type RuntimeRow = McpServersStatusResult['servers'][number]
+
+/** One status row → health. Only a FAILED connect is unhealthy; connecting,
+ *  lazy and never-tried servers have nothing to report yet. */
+export function healthOf(row: RuntimeRow, server: McpServerEntry): McpHealthStatus {
+  if (row.needs_auth) {
+    return 'needs-auth'
+  }
+
+  if (row.status !== 'failed') {
+    return 'ok'
+  }
+
+  return isLocalMcpServer(server) ? 'offline' : 'error'
+}
+
 // Same time-based snooze the update/skew toasts use (store/updates.ts): a
 // shown toast arms a 24h cooldown for that (profile, server), persisted so an
 // app restart does not re-nudge before the day is up.
@@ -88,7 +117,7 @@ const lastStatus = new Map<string, McpHealthStatus>()
 let started = false
 let timer: ReturnType<typeof setInterval> | null = null
 // Bumped on profile switch; in-flight sweeps compare and bail so a slow
-// profile-A probe can't record (or notify) into profile B's state.
+// profile-A read can't record (or notify) into profile B's state.
 let sweepEpoch = 0
 // At most one sweep runs and one follow-up is remembered. Reconnect storms
 // still request a fresh pass, but cannot append an unbounded backlog.
@@ -147,58 +176,38 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
   })
 }
 
-const isUrlServer = (server: Record<string, unknown>): boolean =>
-  typeof server.url === 'string' && serverEnabled(server)
-
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch
   const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
   let config: Record<string, unknown>
+  let status: McpServersStatusResult
 
   try {
-    config = await getHermesConfigRecord()
+    ;[config, status] = await Promise.all([
+      getHermesConfigRecord(),
+      requestGatewayForProfile<McpServersStatusResult>(profileKey, 'mcp.servers.status', {}, STATUS_TIMEOUT_MS)
+    ])
   } catch {
-    // Backend unreachable / mid-restart — the next interval tick retries.
+    // Backend unreachable / mid-restart, or one too old to report MCP runtime
+    // state (a missing capability, not a failure) — the next tick retries.
     return
   }
 
-  if (epoch !== sweepEpoch) {
+  if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
     return
   }
 
   // getServers drops non-object entries (a bare `name:` in config.yaml parses
-  // as `null`), so isUrlServer below never reads `.url` off a null entry.
+  // as `null`), so the lookups below never read off a null entry.
   const servers = getServers(config)
 
-  for (const [name, server] of Object.entries(servers)) {
-    if (!isUrlServer(server)) {
-      continue
+  for (const row of status.servers) {
+    const server = servers[row.name]
+
+    if (server && serverEnabled(server)) {
+      recordResult(profileKey, row.name, healthOf(row, server))
     }
-
-    // A profile switch or gateway drop mid-sweep stops the remaining probes.
-    if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
-      return
-    }
-
-    const key = probeKey(name, server, profileKey)
-    let result = freshProbe(key)
-
-    if (!result) {
-      try {
-        result = await testMcpServer(name)
-      } catch (err) {
-        result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] } as McpTestResult
-      }
-
-      if (epoch !== sweepEpoch) {
-        return
-      }
-
-      probeCache.set(key, { at: Date.now(), result })
-    }
-
-    recordResult(profileKey, name, classifyProbe(result))
   }
 }
 

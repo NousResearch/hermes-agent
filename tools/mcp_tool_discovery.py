@@ -875,6 +875,8 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
             entry["error"] = connect_errors[name]
         elif status == "lazy":
             entry["tools"] = lazy_tools[name]
+        # Parked on a rejected OAuth credential: the one failure only the user can fix (sign in again).
+        entry["needs_auth"] = bool(server is not None and not live and server._auth_park is not None)
         result.append(entry)
     return result
 

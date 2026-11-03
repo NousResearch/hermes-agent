@@ -37,6 +37,7 @@ export interface CanonicalGroupMessages {
   statusCancelled: string
   statusUnavailable: string
   statusIdle: string
+  you: string
   roundOf: string
   round: string
   cycleWorking: string
@@ -103,6 +104,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'cancelled',
     statusUnavailable: 'unavailable',
     statusIdle: 'idle',
+    you: 'You',
     roundOf: 'Round {n} of {max}',
     round: 'Round {n}',
     cycleWorking: 'Working: {names}',
@@ -167,6 +169,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'キャンセル',
     statusUnavailable: '利用不可',
     statusIdle: '待機中',
+    you: 'あなた',
     roundOf: 'ラウンド {n}/{max}',
     round: 'ラウンド {n}',
     cycleWorking: '作業中: {names}',
@@ -231,6 +234,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: '已取消',
     statusUnavailable: '不可用',
     statusIdle: '空闲',
+    you: '你',
     roundOf: '第 {n}/{max} 轮',
     round: '第 {n} 轮',
     cycleWorking: '工作中：{names}',
@@ -295,6 +299,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: '已取消',
     statusUnavailable: '無法使用',
     statusIdle: '閒置',
+    you: '你',
     roundOf: '第 {n}/{max} 輪',
     round: '第 {n} 輪',
     cycleWorking: '工作中：{names}',
@@ -359,6 +364,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'أُلغي',
     statusUnavailable: 'غير متاح',
     statusIdle: 'خامل',
+    you: 'أنت',
     roundOf: 'الجولة {n} من {max}',
     round: 'الجولة {n}',
     cycleWorking: 'يعمل: {names}',
@@ -426,6 +432,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'отменено',
     statusUnavailable: 'недоступен',
     statusIdle: 'ожидает',
+    you: 'Вы',
     roundOf: 'Раунд {n} из {max}',
     round: 'Раунд {n}',
     cycleWorking: 'Работают: {names}',
@@ -492,6 +499,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'annulé',
     statusUnavailable: 'indisponible',
     statusIdle: 'inactif',
+    you: 'Vous',
     roundOf: 'Tour {n} sur {max}',
     round: 'Tour {n}',
     cycleWorking: 'Au travail : {names}',
@@ -559,6 +567,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'abgebrochen',
     statusUnavailable: 'nicht verfügbar',
     statusIdle: 'untätig',
+    you: 'Du',
     roundOf: 'Runde {n} von {max}',
     round: 'Runde {n}',
     cycleWorking: 'Arbeitet: {names}',
@@ -625,6 +634,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusCancelled: 'cancelado',
     statusUnavailable: 'no disponible',
     statusIdle: 'inactivo',
+    you: 'Tú',
     roundOf: 'Ronda {n} de {max}',
     round: 'Ronda {n}',
     cycleWorking: 'Trabajando: {names}',

@@ -21,6 +21,10 @@ import type { ComponentProps, FormEvent, ReactNode } from 'react'
 
 import { formatElapsed, type MemberStatus, type RoomCycle } from './group-room-status'
 
+/** The Chat Text Size scope the session transcript and composer get from `styles.css`, for the room's
+ *  own transcript and input (they sit outside those slots): text scales, surrounding chrome does not. */
+export const ROOM_TEXT_SCALE = '[--conversation-text-font-size:calc(var(--conversation-text-base-size)*var(--chat-text-scale,1))]'
+
 /** Plugin copy uses `{name}` style slots so one string table serves every locale. */
 export const fill = (template: string, values: Record<string, number | string>) =>
   template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
@@ -125,7 +129,7 @@ export function RoomMessage({ actions, author, avatar, children, isUser = false,
           <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs)}</time>}
         {actions && <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/room-message:opacity-100 focus-within:opacity-100">{actions}</div>}
       </div>
-      <div className={cn('wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',
+      <div className={cn(ROOM_TEXT_SCALE, 'wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',
         isUser && 'w-fit max-w-full rounded-xl border border-(--ui-stroke-tertiary) bg-(--dt-user-bubble) px-3 py-2')} data-selectable-text="true">
         {children}
       </div>
@@ -156,16 +160,16 @@ export function RoomTypingRow({ avatar, labels, name, status }: {
 }) {
   const line = status.tool ? fill(labels.typingTool, { name, tool: status.tool }) : fill(labels.typing, { name })
 
-  return <div className="flex items-start gap-3 py-2" data-room-typing={status.kind} title={line}>
+  return <div className="flex items-start gap-3 py-2" data-room-typing={status.kind}>
     <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
-    <div className="inline-flex min-w-0 items-center gap-2 rounded-2xl bg-(--ui-bg-quaternary) px-3 py-1.5">
+    <Tip label={line}><div className="inline-flex min-w-0 items-center gap-2 rounded-2xl bg-(--ui-bg-quaternary) px-3 py-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0 gap-1">
         {[0, 160, 320].map(delay => <span className="size-1.5 animate-pulse rounded-full bg-(--ui-text-secondary)" key={delay} style={{ animationDelay: `${delay}ms` }} />)}
       </span>
       <span className={cn('min-w-0 truncate text-xs tabular-nums', status.kind === 'stalled' ? STATUS_TONE.stalled : 'text-(--ui-text-secondary)')}>
         {`${name} · ${memberStatusText(status, labels)}`}
       </span>
-    </div>
+    </div></Tip>
   </div>
 }
 
@@ -287,5 +291,5 @@ export function RoomReplyChip({ cancelLabel, label, onCancel, quote }: { cancelL
 
 /** Borderless input inside a `RoomComposer` surface (the surface owns the ring). */
 export const ROOM_COMPOSER_INPUT_CLASS =
-  '!border-transparent !bg-transparent !shadow-none min-h-(--composer-input-min-height) px-1 py-1 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) placeholder:text-(--ui-text-tertiary)'
+  `${ROOM_TEXT_SCALE} !border-transparent !bg-transparent !shadow-none min-h-(--composer-input-min-height) px-1 py-1 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) placeholder:text-(--ui-text-tertiary)`
 

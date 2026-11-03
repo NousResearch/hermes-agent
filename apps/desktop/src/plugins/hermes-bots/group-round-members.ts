@@ -146,6 +146,32 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   return { room, memberKey, markKey, prompt, deltaImages, heldIds }
 }
 
+/** True while the user's explicit address to `member` is unanswered in this thread. */
+function memberOwesAnswer(context: GroupRoundMemberContext, member: GroupMember, log: GroupMessage[]): boolean {
+  return Boolean(context.addressedKeys?.has(groupMemberKey(member))) && !answeredSinceLastUser(log, member, context.thread)
+}
+
+/** True when `member` has a room entry in `thread` after the latest user entry there. */
+function answeredSinceLastUser(log: GroupMessage[], member: GroupMember, thread: string): boolean {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const entry = log[i]
+
+    if (groupThreadOf(entry) !== thread) {
+      continue
+    }
+
+    if (entry.from?.kind === 'user') {
+      return false
+    }
+
+    if (authoredByMember(entry, member)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Each invocation owns its descriptor, so an old completion cannot clear a newer turn. */
 async function runVisibleMemberTurn(
   context: GroupRoundMemberContext,
@@ -183,6 +209,9 @@ export async function runGroupRoundMember(
 
   const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
+  // Owed only until the member answers: after its reply to the user's address,
+  // a pass on a teammate's reply is ordinary consensus, not noncompliance.
+  const owesAnswer = memberOwesAnswer(context, member, room.log)
   let reply: null | string = null
   let accepted = false
 
@@ -199,7 +228,7 @@ export async function runGroupRoundMember(
     // `isCurrent()` (not the bare binding): a superseded drive's pass is
     // discarded by the epoch check right below anyway, so nudging it would
     // burn a model call whose result can never be committed.
-    if (context.isCurrent() && reply !== null && isGroupPassText(reply) && context.addressedKeys?.has(memberKey)) {
+    if (context.isCurrent() && reply !== null && isGroupPassText(reply) && owesAnswer) {
       reply = await runVisibleMemberTurn(context, member, `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`, deltaImages)
     }
 
@@ -304,7 +333,7 @@ export async function runGroupRoundMember(
 
   if (reply !== null && spoke) {
     appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
-  } else if (reply !== null && context.isCurrent() && context.addressedKeys?.has(memberKey)) {
+  } else if (reply !== null && context.isCurrent() && owesAnswer) {
     // #129443: the nudge was passed on too. Record the noncompliance where
     // the user looks (activity row + roster badge) instead of letting the
     // user's explicit address settle as ordinary quiet consensus. Only a

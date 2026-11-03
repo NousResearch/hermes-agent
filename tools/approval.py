@@ -314,7 +314,8 @@ def clear_session(session_key: str) -> None:
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
     for module, shutdown in (("tools.code_kernel", "shutdown_kernels_for_owner"),
-                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner")):
+                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner"),
+                             ("tools.mcp_tool_skill_loading", "clear_session")):
         try:
             getattr(importlib.import_module(module), shutdown)(session_key)
         except Exception:

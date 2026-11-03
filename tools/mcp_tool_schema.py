@@ -210,6 +210,16 @@ _UTILITY_TOOL_SPECS = (
              "properties": {},
              "additionalProperties": True},
      }, ["name"]),
+    ("list_skills", "Discover remote skills (instructions and supporting files) from MCP server '{server}'. "
+     "Load a skill by its URI with this server's skill_view tool.", {}, None),
+    ("skill_view", "Load and verify an MCP skill from server '{server}', with user consent. "
+     "Read supporting files with the URI and revision returned on load. Files are fetched on demand.",
+     {
+         "uri": {"type": "string", "description": "Full SKILL.md URI, from list_skills or supplied directly"},
+         "file_path": {"type": "string", "description": "Relative supporting file path; end with / to list a directory"},
+         "revision": {"type": "string", "description": "Revision returned on load; required for supporting files. "
+                      "Omit both revision and file_path to load or refresh SKILL.md."},
+     }, ["uri"]),
     ("list_event_types", "List the event types MCP server '{server}' can notify about, and your active "
      "subscriptions to them", {}, None),
     ("subscribe_event", "Subscribe to an event from MCP server '{server}': each occurrence starts a new "
@@ -289,4 +299,5 @@ def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
 _UTILITY_CAPABILITY_ATTRS = {
     "list_resources": "resources", "read_resource": "resources",
     "list_prompts": "prompts", "get_prompt": "prompts",
+    "list_skills": "skills", "skill_view": "skills",
     "list_event_types": "events", "subscribe_event": "events", "unsubscribe_event": "events"}

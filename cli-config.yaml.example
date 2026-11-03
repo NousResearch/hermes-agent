@@ -1657,6 +1657,11 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 #   notion:
 #     url: https://mcp.notion.com/mcp
+#   team_skills:
+#     url: https://skills.example.com/mcp
+#     tools:
+#       skills: true    # default: expose list_skills/skill_view if the Skills extension is advertised
+#       resources: true # false disables resource utilities and Skills utilities together
 #   github:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-github"]

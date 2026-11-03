@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
 from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
+from tools import mcp_tool_skill_loading as _skills
+from tools.mcp_tool_skills import supports_skills
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
 from tools.mcp_tool_handlers import (
@@ -33,6 +35,7 @@ _UTILITY_ORIGIN_PREFIX = "generated utility "
 _UTILITY_HANDLER_FACTORIES = {
     "list_resources": _make_list_resources_handler, "read_resource": _make_read_resource_handler,
     "list_prompts": _make_list_prompts_handler, "get_prompt": _make_get_prompt_handler,
+    "list_skills": _skills.make_list_skills_handler, "skill_view": _skills.make_skill_view_handler,
     "list_event_types": _events._make_list_event_types_handler, "subscribe_event": _events._make_subscribe_event_handler,
     "unsubscribe_event": _events._make_unsubscribe_event_handler}
 
@@ -195,6 +198,9 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
         family = _UTILITY_CAPABILITY_ATTRS[handler_key]
         if family == "events":  # opt-in: the SDK drops the server's ``events`` capability
             return None if _events.events_enabled(config) else "events not enabled"
+        if family == "skills":
+            return (None if enabled["resources"] and _parse_boolish(tools_filter.get("skills"), default=True)
+                    and supports_skills(server) else "Skills extension or resources not enabled/advertised")
         if not enabled[family]:
             return f"{family} disabled"
         if advertised is not None:

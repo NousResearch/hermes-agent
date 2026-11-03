@@ -26,12 +26,15 @@ def _cache_path() -> Path:
 
 def config_fingerprint(config: dict) -> str:
     """Stable hash of the connection-defining parts of an MCP server config."""
+    from tools.mcp_tool_common import _parse_boolish
     tools_filter = config.get("tools") or {}
     payload = {
         "command": config.get("command"),
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),
+        "utility_families": {family: _parse_boolish(tools_filter.get(family), default=True)
+                             for family in ("resources", "prompts", "skills")},
         "tools_include": sorted(tools_filter.get("include") or []),
         "tools_exclude": sorted(tools_filter.get("exclude") or [])}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))

@@ -222,9 +222,12 @@ def get_service_manager() -> ServiceManager:
 # /etc/s6-overlay/s6-rc.d/ as part of the image and are NOT managed here.
 # ---------------------------------------------------------------------------
 
-# s6-overlay's dynamic scandir (tmpfs) that s6-svscan watches; writes here trigger supervision
-# on the next rescan.
-S6_DYNAMIC_SCANDIR = Path("/run/service")
+# s6-overlay's root scandir, watched by the PID-1 s6-svscan: every slot in it runs under a root
+# s6-supervise, so it stays root-owned and holds only the image's static s6-rc services.
+S6_STATIC_SCANDIR = Path("/run/service")
+# Per-profile gateway scandir (tmpfs), watched by a nested s6-svscan running as hermes (the
+# ``profile-gateways`` s6-rc service); writes here trigger supervision on the next rescan.
+S6_DYNAMIC_SCANDIR = Path("/run/hermes-service")
 S6_SERVICE_PREFIX = "gateway-"
 
 
@@ -277,7 +280,7 @@ def register_unregistered_profile_gateway(mgr: ServiceManager, profile: str) -> 
 
     `hermes profile create` can only register a slot when it runs inside the container; created
     from the host against a bind-mounted home, the directory lands where the container reads it
-    but no ``/run/service/gateway-<name>`` exists, and the boot reconciler only notices on the
+    but no ``/run/hermes-service/gateway-<name>`` exists, and the boot reconciler only notices on the
     next container restart. Returns False without touching anything unless the directory carries
     ``SOUL.md`` — the reconciler's own "real profile" marker — so a mistyped ``-p`` name cannot
     mint a phantom slot. ``start_now=False``: the caller's ordinary ``start`` stays the single
@@ -306,8 +309,18 @@ def _s6_run(cmd: str, *args: str, timeout: float = 5, check: bool = False):
     )
 
 
+def s6_service_up(service_dir: Path) -> bool:
+    """``s6-svstat -o up`` for any s6 service directory; False on any failure."""
+    try:
+        result = _s6_run("s6-svstat", "-o", "up", str(service_dir))
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.split() == ["true"]
+
+
 # UID/GID of the in-image ``hermes`` user; hardcoded to match what ``stage2-hook.sh`` enforces
-# (tests/docker/test_uid_remap.py). s6-supervise starts as root and drops via ``s6-setuidgid``.
+# (tests/docker/test_uid_remap.py). Only matters for root callers; the gateway scandir's
+# s6-supervise already runs as hermes.
 _HERMES_UID = 10000
 _HERMES_GID = 10000
 

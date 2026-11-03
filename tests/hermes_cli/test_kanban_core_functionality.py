@@ -712,7 +712,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     assert "--skills" not in cmd, (
         f"spawn argv should not auto-load any skill: {cmd}"
     )
-    assert cmd[-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    assert cmd[-3:] == ["-P", "-m", "hermes_cli.kanban_worker_client"]
     # Assignee + task identity reaches the owner client; policy is read from the board.
     env = captured["env"]
     assert env.get("HERMES_KANBAN_TASK") == tid

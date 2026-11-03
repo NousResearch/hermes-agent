@@ -1,5 +1,5 @@
 """Dispatcher subprocess: submit one claim to its profile owner; never run an agent."""
-# Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
+# Spawned as ``sys.executable -P -m``: in a PM install that interpreter carries no dependencies
 # until hermes_bootstrap selects the committed environment, so it must be the first import.
 try:
     import hermes_bootstrap

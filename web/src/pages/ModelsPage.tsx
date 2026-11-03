@@ -40,6 +40,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
@@ -90,6 +91,8 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
@@ -100,10 +103,10 @@ function TokenBar({
   // color-mix on the same value so themes don't need to ship two
   // separate hex literals.
   const segments: Array<{ color: string; label: string; value: number }> = [
-    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
-    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
-    { value: input, color: "var(--series-input-token)", label: "Input" },
-    { value: output, color: "var(--series-output-token)", label: "Output" },
+    { value: cacheRead, color: "#60a5fa", label: modelsUi.cacheRead }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: modelsUi.reasoning }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: modelsUi.input },
+    { value: output, color: "var(--series-output-token)", label: modelsUi.output },
   ].filter((s) => s.value > 0);
 
   return (
@@ -152,6 +155,8 @@ function CapabilityBadges({
 }: {
   capabilities: ModelsAnalyticsModelEntry["capabilities"];
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const hasAny =
     capabilities.supports_tools ||
     capabilities.supports_vision ||
@@ -163,17 +168,17 @@ function CapabilityBadges({
     <div className="flex flex-wrap items-center gap-1.5">
       {capabilities.supports_tools && (
         <span className="inline-flex items-center gap-1 bg-success/10 px-1.5 py-0.5 text-xs font-medium text-success">
-          <Wrench className="h-2.5 w-2.5" /> Tools
+          <Wrench className="h-2.5 w-2.5" /> {modelsUi.tools}
         </span>
       )}
       {capabilities.supports_vision && (
         <span className="inline-flex items-center gap-1 bg-blue-500/10 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-          <Eye className="h-2.5 w-2.5" /> Vision
+          <Eye className="h-2.5 w-2.5" /> {modelsUi.vision}
         </span>
       )}
       {capabilities.supports_reasoning && (
         <span className="inline-flex items-center gap-1 bg-purple-500/10 px-1.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
-          <Brain className="h-2.5 w-2.5" /> Reasoning
+          <Brain className="h-2.5 w-2.5" /> {modelsUi.reasoning}
         </span>
       )}
       {capabilities.model_family && (
@@ -207,6 +212,8 @@ function UseAsMenu({
   auxTasks: AuxiliaryTaskAssignment[];
   onAssigned(): void;
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -222,7 +229,7 @@ function UseAsMenu({
     confirmExpensiveModel = false,
   ) => {
     if (!provider || !model) {
-      setError("Missing provider/model");
+      setError(modelsUi.missingProviderModel);
       return;
     }
     setBusy(true);
@@ -241,7 +248,7 @@ function UseAsMenu({
           task,
           message:
             result.confirm_message ||
-            "This model has unusually high known pricing.",
+            modelsUi.expensivePricing,
         });
         return;
       }
@@ -275,7 +282,7 @@ function UseAsMenu({
         className="h-6 px-2 text-xs uppercase"
         prefix={busy ? <Spinner /> : null}
       >
-        Use as <ChevronDown className="h-3 w-3" />
+        {modelsUi.useAs} <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
         <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
@@ -287,17 +294,17 @@ function UseAsMenu({
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
-              Main model
+              {modelsUi.mainModel}
             </span>
             {isMain && (
               <span className="text-display text-xs tracking-wider text-primary">
-                current
+                {modelsUi.current}
               </span>
             )}
           </button>
 
           <div className="border-t border-border/50 px-3 py-1.5 text-display text-xs tracking-wider text-text-tertiary">
-            Auxiliary task
+            {modelsUi.auxiliaryTask}
           </div>
 
           <button
@@ -306,7 +313,7 @@ function UseAsMenu({
             disabled={busy}
             className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
           >
-            <span>All auxiliary tasks</span>
+            <span>{modelsUi.allAuxiliaryTasks}</span>
           </button>
 
           {auxTaskRows(auxTasks).map((t) => (
@@ -320,7 +327,7 @@ function UseAsMenu({
               <span>{t.label}</span>
               {mainAuxTask === t.key && (
                 <span className="text-display text-xs tracking-wider text-primary">
-                  current
+                  {modelsUi.current}
                 </span>
               )}
             </button>
@@ -335,11 +342,11 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={modelsUi.expensiveModelWarning}
         description={pendingConfirm?.message}
         destructive
-        confirmLabel="Switch anyway"
-        cancelLabel="Cancel"
+        confirmLabel={modelsUi.switchAnyway}
+        cancelLabel={modelsUi.cancel}
         loading={busy}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
@@ -373,6 +380,7 @@ function ModelCard({
   showTokens: boolean;
 }) {
   const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
@@ -404,12 +412,12 @@ function ModelCard({
               </CardTitle>
               {isMain && (
                 <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-primary">
-                  <Star className="h-2.5 w-2.5" /> main
+                  <Star className="h-2.5 w-2.5" /> {modelsUi.main}
                 </span>
               )}
               {mainAuxTask && (
                 <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-purple-600 dark:text-purple-400">
-                  aux · {mainAuxTask}
+                  {modelsUi.auxiliary} · {mainAuxTask}
                 </span>
               )}
             </div>
@@ -421,12 +429,12 @@ function ModelCard({
               )}
               {caps.context_window && caps.context_window > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {compactNumber(caps.context_window)} ctx
+                  {compactNumber(caps.context_window)} {modelsUi.context}
                 </span>
               )}
               {caps.max_output_tokens && caps.max_output_tokens > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {compactNumber(caps.max_output_tokens)} out
+                  {compactNumber(caps.max_output_tokens)} {modelsUi.outputTokens}
                 </span>
               )}
             </div>

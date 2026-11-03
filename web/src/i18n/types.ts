@@ -306,6 +306,30 @@ export interface Translations {
     noApprovedUsers: string;
   };
 
+  /** Optional while existing locales adopt the extended models-page strings. */
+  modelsUi?: {
+    cacheRead: string;
+    reasoning: string;
+    input: string;
+    output: string;
+    tools: string;
+    vision: string;
+    useAs: string;
+    mainModel: string;
+    current: string;
+    auxiliaryTask: string;
+    allAuxiliaryTasks: string;
+    missingProviderModel: string;
+    expensiveModelWarning: string;
+    expensivePricing: string;
+    switchAnyway: string;
+    cancel: string;
+    main: string;
+    auxiliary: string;
+    context: string;
+    outputTokens: string;
+  };
+
   // ── Files page ──
   /** Optional while existing locales adopt the files-page strings. */
   files?: {

@@ -1,13 +1,9 @@
 ---
 sidebar_position: 2
 title: "Installation"
+seo_title: "Install Hermes Agent: Official Guide | Nous Research"
 description: "Install Hermes Agent with desktop bundles, source installers, Docker, Nix, or the Termux APT package"
 ---
-
-<head>
-  <title>Install Hermes Agent: Official Guide | Nous Research</title>
-  <meta property="og:title" content="Install Hermes Agent: Official Guide | Nous Research" />
-</head>
 
 # Installation
 

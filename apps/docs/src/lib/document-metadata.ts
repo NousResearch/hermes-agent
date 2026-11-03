@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { pageOpenGraph } from './metadata-defaults.ts';
 import { canonicalUrl, LOCALES, type Locale } from './urls.ts';
 
 interface MetadataPage {
@@ -23,6 +24,6 @@ export function documentPageMetadata(
         'x-default': canonicalUrl(translations.en?.url ?? page.url),
       },
     },
-    openGraph: { title, description: page.data.description, url: canonicalUrl(page.url) },
+    openGraph: pageOpenGraph({ title, description: page.data.description, url: canonicalUrl(page.url) }),
   };
 }

@@ -7,17 +7,27 @@ import rehypeRaw from 'rehype-raw';
 import type { Pluggable } from 'unified';
 import { z } from 'zod';
 import { readDocumentMetadata } from './src/lib/content.mjs';
+import { remarkAdmonitionLabels } from './src/remark/admonition-labels.mjs';
 import { remarkCodeLanguages, remarkDocumentLinks } from './src/remark/docs.mjs';
 import { remarkPreserveDirectives } from './src/remark/preserve-directives.mjs';
+import { rehypeFenceMeta } from './src/rehype/fence-meta.mjs';
 
 const contentDir = path.resolve('content');
+// The vendor plugin uses `name in types`; inherited Object keys are not callouts.
+const admonitionTypes = Object.assign(Object.create(null) as Record<string, string>, {
+  note: 'info', tip: 'success', info: 'info', warning: 'warning', caution: 'warning',
+  danger: 'error', important: 'info', success: 'success',
+});
 
 /** Consume the known admonition containers, then turn every remaining
  * directive back into its source text: remark-directive otherwise eats
- * colon-joined words like `9:00`, `1:1` or `host:9090` out of the page. */
+ * colon-joined words like `9:00`, `1:1` or `host:9090` out of the page.
+ * Add default labels before consuming callouts and preserve text before
+ * the heading transform computes anchors. */
 const directiveHandling: Pluggable[] = [
   remarkDirective,
-  [remarkDirectiveAdmonition, { types: { note: 'info', tip: 'info', info: 'info', warning: 'warning', caution: 'warning', danger: 'error', important: 'warning', success: 'success' } }],
+  remarkAdmonitionLabels,
+  [remarkDirectiveAdmonition, { types: admonitionTypes }],
   remarkPreserveDirectives,
 ];
 
@@ -50,6 +60,7 @@ export const docs = defineDocs({
       return pageSchema.extend({
         title: z.string().default(metadata.title),
         seo_title: z.string().optional(),
+        description: z.string().optional().transform((value) => value?.trim() || metadata.description),
         hasH1: z.boolean().default(metadata.hasH1),
         sidebar_label: z.string().optional(),
         slug: z.string().optional(),
@@ -65,7 +76,7 @@ export default defineConfig({
     remarkImageOptions: false,
     remarkRehypeOptions: { allowDangerousHtml: true },
     remarkPlugins: remarkChain,
-    rehypePlugins: (plugins) => [[rehypeRaw, { passThrough: ['mdxjsEsm', 'mdxFlowExpression', 'mdxTextExpression', 'mdxJsxFlowElement', 'mdxJsxTextElement'] }], ...plugins],
+    rehypePlugins: (plugins) => [rehypeFenceMeta, [rehypeRaw, { passThrough: ['mdxjsEsm', 'mdxFlowExpression', 'mdxTextExpression', 'mdxJsxFlowElement', 'mdxJsxTextElement'] }], ...plugins],
     rehypeCodeOptions: { themes: { light: 'github-light', dark: 'github-dark' }, fallbackLanguage: 'text' },
   },
 });

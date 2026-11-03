@@ -40,7 +40,7 @@ it('translates every shipped stock body at the same personality and rotation pos
 
   const { container, rerender } = render(<Fixture />)
 
-  for (const locale of ['zh', 'zh-hant', 'ja', 'fr', 'de', 'es'] as const) {
+  for (const locale of ['zh', 'zh-hant', 'ja', 'fr', 'de', 'es', 'tr'] as const) {
     await act(() => i18n.setLocale(locale))
     const indices = new Map<string, number>()
 

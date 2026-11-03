@@ -988,7 +988,8 @@ class _ChildRun:
         # What actually ended the wait: the stale threshold pre-empts a longer configured cap.
         timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
-        logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}", duration)
+        logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}",
+                       duration, exc_info=not is_timeout)
         child_api_calls = 0
         with _quiet(None):
             child_api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)

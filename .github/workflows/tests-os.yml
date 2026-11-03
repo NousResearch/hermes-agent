@@ -141,7 +141,7 @@ jobs:
         # analysis, so a process that exits right after its first cmdlet (every test's
         # child) never saves it. When the analysis ran here, stay up long enough to save.
         shell: cmd
-        run: powershell.exe -NoProfile -NonInteractive -Command "$t = Measure-Command { Get-ChildItem . | Out-Null }; if ($t.TotalSeconds -gt 5) { Start-Sleep -Seconds 15 }; Write-Host ('analysis {0:N1}s' -f $t.TotalSeconds)"
+        run: powershell.exe -NoProfile -NonInteractive -Command "Get-ChildItem . | Out-Null; $up = ((Get-Date) - (Get-Process -Id $PID).StartTime).TotalSeconds; if ($up -gt 5) { Start-Sleep -Seconds 15 }; Write-Host ('module analysis took {0:N1}s' -f $up)"
 
       - name: EXPERIMENT measure a PowerShell child launch (do not merge)
         if: runner.os == 'Windows'

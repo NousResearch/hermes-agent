@@ -1,3 +1,4 @@
+import type { PlanUsage } from '@hermes/shared'
 import type {
   BillingAutoReload,
   BillingCardInfo,
@@ -38,6 +39,7 @@ export type {
   BillingMutationResponse,
   BillingRefusalCode,
   ChargeFailureReason,
+  PlanUsage,
   SharedBillingStateResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,

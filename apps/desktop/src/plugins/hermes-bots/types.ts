@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -53,6 +55,7 @@ export interface SessionPreview {
   /** Unix seconds, not milliseconds. */
   last_active?: number
   message_count?: number
+  live_message_count?: ProfileSessionPreview['live_message_count']
   preview?: string
   title?: string
 }
@@ -101,6 +104,10 @@ export interface RosterRow {
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string
+  /** A default row whose source also has a real (pre-reservation) `hermes`
+   *  profile: that profile keeps @hermes and this row answers to @default.
+   *  Set by `claimDefaultHandles`. */
+  hermesHandleTaken?: boolean
   has_avatar?: boolean
   /** The connection's backend identity (/api/status `install_id`) when the
    *  roster source has seen it — stable across Desktops, unlike `connectionId`
@@ -108,12 +115,18 @@ export interface RosterRow {
   installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
+  /** Kept from an earlier paint because its source did not answer this
+   *  fetch: shown, but never evidence of what the backend holds now. */
+  retained?: boolean
   route?: ProfileRoute
   sourceError?: null | string
   sourceMissing?: boolean
   sourceReachable?: boolean | null
   sourceScoped?: boolean
   targetProfile?: string
+  /** Its source lists this profile but does not serve it (the Webapp's gateway
+   *  lists every installed profile and reaches only those it serves). */
+  unserved?: boolean
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
@@ -137,6 +150,7 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'hermesHandleTaken'
   | 'installId'
   | 'name'
   | 'previous_names'

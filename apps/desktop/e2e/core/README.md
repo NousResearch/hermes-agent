@@ -14,6 +14,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
   - no marker is ever rendered twice, even transiently (in-page
     MutationObserver sampler — the #120005 garble healed on its own in the
     final DOM, so a final-state check alone misses it);
+  - no message is ever rendered out of order, even transiently: the same
+    sampler fails a reply above its own prompt and two messages that swap
+    places between frames;
   - backend stream integrity: each turn's concatenated `message.delta` /
     `reasoning.delta` equals what the provider streamed, and
     `message.complete` equals the final completion.
@@ -21,6 +24,16 @@ A small, deterministic Electron suite that guards three issue classes end to end
     `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
     switch-back REST hydrate resolves" with gates (no sleeps) under the same
     oracle.
+    `reply-settle-paths.spec.ts` forces the shapes duplicate-reply reports
+    describe: an answer the backend repeats as the final reply (with a
+    review.summary row delivered before its message.complete, #131626), a
+    steer at each point of a tool turn, then reload and switch-back over the
+    folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
+    turn too (history folds it under its first row, #128809).
+    `behind-window-send.spec.ts`: two windows on one chat, window 2 deaf to
+    window 1's turn pings; window 2's send from behind goes through with no
+    "Chat out of date" refusal, the model's request carries window 1's turn,
+    and both windows converge under the oracle.
     `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
     the real onboarding (custom endpoint → the fake provider's URL), then the
     first chat, a second turn and a reload under the same oracle, plus
@@ -55,6 +68,10 @@ A small, deterministic Electron suite that guards three issue classes end to end
   client's picture folder from the backend with a private mount namespace
   (unprivileged user namespaces; without them the test is annotated
   `fidelity` because a same-host path would resolve on the backend).
+  `fleet-condensed-default.spec.ts`: local primary + a remote connection with
+  enough profiles to condense the sidebar rail; the profile menu lists the
+  ACTIVE gateway's default (checked, home glyph) on both sides of a switch
+  (#106017, #131632).
 - **Packaged build** — `packaged-smoke.spec.ts`: asarUnpack contract of the
   `electron-builder --dir` output (#121097) and the packaged binary booting to
   a first chat (≤60 s to interactive, main-process log tail on failure). It

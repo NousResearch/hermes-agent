@@ -19,13 +19,17 @@ on:
     branches: [main]
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release-phase:
         description: "Stable-release phase: 'test' or 'publish'. Empty keeps the standalone triggers."
         required: false
         type: string
         default: ''
       tag:
-        description: "Exact stable tag (vX.Y.Z) under release. The caller is dispatched on this tag, so github.sha is the release candidate."
+        description: "Attempt ref (rc.N-vX.Y.Z) under release; the versioned images carry this tag. The candidate commit arrives in the commit input."
         required: false
         type: string
         default: ''
@@ -59,13 +63,15 @@ concurrency:
 
 env:
   IMAGE_NAME: nousresearch/hermes-agent
+  # A stable run is on the default branch, so GITHUB_SHA is not the candidate.
+  CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
 jobs:
   # Resolve the release phase. Release modes run only via workflow_call from
-  # the parent stable-release workflow on the tagged candidate commit.
+  # the parent stable-release workflow, which passes the candidate commit.
   mode:
     name: Resolve release phase
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       phase: ${{ steps.resolve.outputs.phase }}
@@ -94,12 +100,14 @@ jobs:
     name: Detect affected areas
     needs: [mode]
     if: needs.mode.outputs.release != 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       build: ${{ steps.gate.outputs.build }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Detect affected areas
         id: classify
@@ -149,26 +157,32 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: blacksmith-32vcpu-ubuntu-2404
             platform: linux/amd64
           # arm64 builds on the native arm64 larger runner. A build of
           # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             platform: linux/arm64
 
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # Release calls are dispatched on the stable tag: pin to the exact
-          # candidate commit, never a mutable branch ref.
-          ref: ${{ needs.mode.outputs.release == 'true' && github.sha || '' }}
+          # Stable dispatches from the default branch and names the claim commit.
+          # Pin it, never a mutable branch ref.
+          ref: ${{ inputs.commit || (needs.mode.outputs.release == 'true' && github.sha || '') }}
           # Dev identity is the distance from the highest reachable final
           # release, so the stamp needs both its ancestry and release tags.
           fetch-depth: 0
+
+      # The stamp and boundary scripts run on the runner's python3, whose
+      # version depends on the runner image. Pin it instead of trusting it.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
 
       - name: Write install stamp
         env:
@@ -178,7 +192,7 @@ jobs:
           if [ -z "$display" ]; then
             display="$(python3 -m scripts.releases.distance)"
           fi
-          identity=(--commit "$GITHUB_SHA")
+          identity=(--commit "$CANDIDATE_COMMIT")
           if [ -n "$display" ]; then
             base="${display%%+*}"
             development="${display#*+}"
@@ -199,16 +213,16 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
       - name: Build image (${{ matrix.variant }}/${{ matrix.arch }})
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: Dockerfile
@@ -289,7 +303,7 @@ jobs:
           if image['Architecture'] != os.environ['ARCH']:
               raise SystemExit('Docker image architecture mismatch')
           Path('/tmp/image-artifacts/identity.json').write_text(json.dumps({
-              'tag': os.environ['RELEASE_TAG'], 'commit': os.environ['GITHUB_SHA'],
+              'tag': os.environ['RELEASE_TAG'], 'commit': os.environ['CANDIDATE_COMMIT'],
               'arch': os.environ['ARCH'], 'variant': os.environ['VARIANT'], 'imageId': image['Id']}), encoding='utf-8')
           PY
           docker save --output "/tmp/image-artifacts/image-${ARCH}.tar" "${IMAGE_NAME}:test"
@@ -300,7 +314,7 @@ jobs:
 
       - name: Upload tested image archive (release test)
         if: needs.mode.outputs.phase == 'test'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: |
@@ -334,24 +348,30 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: blacksmith-32vcpu-ubuntu-2404
             platform: linux/amd64
           # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - name: Checkout trusted source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0
+
+      # Same python3 steps as the build job; pin it the same way.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
 
       - name: Write install stamp
         run: |
           display="$(python3 -m scripts.releases.distance)"
-          identity=(--commit "$GITHUB_SHA")
+          identity=(--commit "$CANDIDATE_COMMIT")
           if [ -n "$display" ]; then
             base="${display%%+*}"
             development="${display#*+}"
@@ -368,11 +388,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -384,7 +404,7 @@ jobs:
       # manifest list after both architecture publishers complete.
       - name: Push ${{ matrix.variant }}/${{ matrix.arch }} by digest
         id: push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: Dockerfile
@@ -392,7 +412,7 @@ jobs:
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: ${{ matrix.variant == 'slim' && format('type=gha,mode=max,scope=docker-{0}', matrix.arch) || '' }}
@@ -404,7 +424,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: digest-${{ matrix.variant }}-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -423,6 +443,9 @@ jobs:
     # `needs` is the whole 4-leg matrix: only publish both :main variants
     # after every arch and variant publisher succeeds.
     if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     needs: [mode, publish]
     timeout-minutes: 10
@@ -439,7 +462,7 @@ jobs:
             suffix: "-desktop"
     steps:
       - name: Download digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: digest-${{ matrix.variant }}-*
@@ -517,7 +540,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
         variant: [slim, desktop]
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 45
     env:
       ARCH: ${{ matrix.arch }}
@@ -526,12 +549,12 @@ jobs:
       SUFFIX: ${{ matrix.variant == 'desktop' && '-desktop' || '' }}
     steps:
       - name: Checkout release code (helper scripts only, no build)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Download tested image archive from the test phase (same run)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/image-artifacts
@@ -546,11 +569,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Load tested image
         run: |
@@ -562,7 +585,7 @@ jobs:
           from pathlib import Path
           identity = json.loads(Path('/tmp/image-artifacts/identity.json').read_text())
           loaded = json.loads(Path('/tmp/image-artifacts/loaded.json').read_text())[0]
-          expected = (os.environ['RELEASE_TAG'], os.environ['GITHUB_SHA'], os.environ['ARCH'], os.environ['VARIANT'])
+          expected = (os.environ['RELEASE_TAG'], os.environ['CANDIDATE_COMMIT'], os.environ['ARCH'], os.environ['VARIANT'])
           if (identity['tag'], identity['commit'], identity['arch'], identity['variant']) != expected:
               raise SystemExit('Tested Docker archive identity mismatch')
           if (loaded['Id'], loaded['Architecture']) != (identity['imageId'], identity['arch']):
@@ -595,7 +618,7 @@ jobs:
           cat "/tmp/digests/${ARCH}.digest"
 
       - name: Upload per-arch digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-publish-digest-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/digests/${{ matrix.arch }}.digest
@@ -608,6 +631,9 @@ jobs:
     name: Assemble versioned manifest and digest receipt
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode, release-publish]
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.list.outputs.digest }}
@@ -617,12 +643,12 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout release code (helper scripts only)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Download per-arch digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: docker-publish-digest-*-${{ inputs.tag }}
@@ -704,7 +730,7 @@ jobs:
           mkdir -p /tmp/manifest
           python3 -m scripts.releases.docker manifest \
             --tag "$RELEASE_TAG" \
-            --commit "$GITHUB_SHA" \
+            --commit "$CANDIDATE_COMMIT" \
             --digest-amd64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-amd64-${RELEASE_TAG}/amd64.digest)" \
             --digest-arm64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-arm64-${RELEASE_TAG}/arm64.digest)" \
             > /tmp/manifest/manifest.json
@@ -722,10 +748,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m scripts.releases.docker verify \
-            --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" /tmp/manifest/manifest.json
+            --tag "$RELEASE_TAG" --commit "$CANDIDATE_COMMIT" /tmp/manifest/manifest.json
 
       - name: Upload release manifest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-publish-manifest-${{ inputs.tag }}
           path: /tmp/manifest/manifest.json
@@ -740,7 +766,7 @@ jobs:
     name: Docker phase requirements met
     if: always() && inputs.release-phase != ''
     needs: [mode, build, release-publish, release-publish-manifest]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Validate phase job results

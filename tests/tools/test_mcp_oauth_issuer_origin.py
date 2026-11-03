@@ -63,7 +63,7 @@ class _StandIn:
         url = str(request.url)
         path = urlsplit(url).path
         self.hits.append((request.method, url))
-        j = lambda status, body, **h: self.httpx.Response(status, json=body, headers=h, request=request)  # noqa: E731
+        j = lambda status, body, **h: self.httpx.Response(status, json=body, headers=h, request=request)
         if url == RESOURCE:
             if request.headers.get("Authorization") == "Bearer AT-1":
                 return j(200, {"ok": True})

@@ -210,7 +210,7 @@ WeCom 对部分入站媒体附件使用 AES-256-CBC 加密。适配器会自动�
 
 | 方法 | 发送内容 | 大小限制 |
 |--------|--------------|------------|
-| `send` | Markdown 文本消息 | 4000 字符 |
+| `send` | Markdown 文本消息 | 每条 4000 字符；更长的文本会拆分为多条消息 |
 | `send_image` / `send_image_file` | 原生图片消息 | 10 MB |
 | `send_document` | 文件附件 | 20 MB |
 | `send_voice` | 语音消息（原生语音仅支持 AMR 格式） | 2 MB |

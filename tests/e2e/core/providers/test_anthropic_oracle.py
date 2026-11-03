@@ -75,7 +75,7 @@ def test_record_mode_writes_a_sanitised_cassette(tmp_path) -> None:
             recorder.base_url + "/v1/messages", data=json.dumps(_body()).encode(), method="POST",
             headers={"content-type": "application/json", "x-api-key": secret_key,
                      "authorization": f"Bearer {secret_bearer}", "anthropic-version": "2023-06-01"})
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - loopback fake
+        with urllib.request.urlopen(req, timeout=30) as resp:
             answer = json.loads(resp.read())
         assert upstream.requests[0]["x_api_key"] == secret_key, "record mode must forward the request's auth"
     assert answer["content"][0]["text"] == "UPSTREAM-ANSWER"

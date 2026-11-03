@@ -22,6 +22,7 @@ from agent.delegation_context import owned_kanban_task
 _TERMINAL_KANBAN_TOOLS = frozenset({
     "kanban_complete",
     "kanban_block",
+    "kanban_schedule",
     "kanban_request_review",
     "kanban_request_changes",
 })

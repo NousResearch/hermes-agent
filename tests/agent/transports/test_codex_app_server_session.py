@@ -186,21 +186,21 @@ class TestLifecycle:
         client = FakeClient()
         s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
         s.ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
 
     def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
         """No prompt (or a blank one) never sends an empty developerInstructions field."""
         client = FakeClient()
         make_session(client, developer_instructions="   ").ensure_started()
-        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        _method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert "developerInstructions" not in params
         assert params["personality"] == "none"
 
     def test_named_custom_provider_selects_codex_model_provider(self, monkeypatch):
         """#75186: for ``provider=custom`` + a configured ``providers.<name>`` entry, the session built by
         ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
-        API key; openai/openai-codex agents keep codex's defaults (cwd only)."""
+        API key; openai/openai-codex agents send the selected model with codex's own provider."""
         import hermes_cli.runtime_provider as rp
         from agent.codex_runtime import _ensure_codex_session
         from agent.transports import codex_app_server_session as sess_mod
@@ -224,8 +224,15 @@ class TestLifecycle:
         base = {"cwd": "/tmp", "personality": "none"}
         assert named == {**base, "modelProvider": "my-gateway", "model": "gpt-5.4"}
         assert "sk-secret" not in repr(named)
-        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
-        assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == {
+            **base, "model": "gpt-5.4"}
+        assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == {**base, "model": "gpt-5.4"}
+        # ``-900k`` is a Hermes-side alias the backend rejects; codex gets the base slug.
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex",
+                                   model="gpt-5.6-sol-900k")["model"] == "gpt-5.6-sol"
+        # The OpenAI API-key rung arrives as provider=custom with no codex model_providers id: codex's own
+        # provider takes the bare slug, as openai-codex does.
+        assert thread_start_params(provider="custom", requested_provider="openai", model="openai/gpt-5.4")["model"] == "gpt-5.4"
 
     def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
@@ -307,6 +314,18 @@ class TestRunTurn:
         assert result.submitted_user_text == params["input"][0]["text"]
         assert result.submitted_user_text != rich_input
 
+    def test_turn_start_carries_the_turn_model_only_when_given(self):
+        """An in-place ``/model`` switch keeps the session; the model rides on turn/start, which codex
+        applies to this and later turns of the existing thread."""
+        sent = []
+        for model in ("gpt-5.5", None):
+            client = FakeClient()
+            client.queue_notification("turn/completed", threadId="t",
+                                      turn={"id": "turn-fake-001", "status": "completed", "error": None})
+            make_session(client).run_turn("hi", model=model, turn_timeout=2.0)
+            sent.append(next(p for (m, p) in client.requests if m == "turn/start").get("model"))
+        assert sent == ["gpt-5.5", None]
+
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
         client = FakeClient()
@@ -375,6 +394,55 @@ class TestRunTurn:
         ]
 
 
+
+    def test_turn_start_includes_runtime_overrides(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+
+        s.run_turn(
+            "hi",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            service_tier="fast",
+            turn_timeout=2.0,
+        )
+
+        _, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert params["model"] == "gpt-5.4"
+        assert params["effort"] == "high"
+        assert params["serviceTier"] == "fast"
+
+    def test_service_tier_is_sent_only_when_it_changes(self):
+        """codex's own configured tier is left alone until Hermes selects one; ``/fast off`` afterwards sends
+        an explicit null to clear it, and an unchanged tier is not re-sent."""
+        client = FakeClient()
+        for _ in range(4):
+            client.queue_notification("turn/completed", threadId="t",
+                                      turn={"id": "turn-fake-001", "status": "completed", "error": None})
+        s = make_session(client)
+        for tier in (None, "fast", "fast", None):
+            s.run_turn("hi", service_tier=tier, turn_timeout=2.0)
+        sent = [p for (m, p) in client.requests if m == "turn/start"]
+        assert ["serviceTier" in p for p in sent] == [False, True, False, True]
+        assert [p.get("serviceTier") for p in sent if "serviceTier" in p] == ["fast", None]
+
+    def test_resumed_thread_receives_the_hermes_tier_even_when_it_is_null(self):
+        """CLI ``/fast`` rebuilds the agent, so ``/fast off`` reaches a resumed thread that may still carry the
+        earlier tier: its first turn sends Hermes' tier, a clearing null included."""
+        client = FakeClient()
+        client.queue_notification("turn/completed", threadId="t",
+                                  turn={"id": "turn-fake-001", "status": "completed", "error": None})
+        client._request_handler = lambda method, params: (
+            {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"turn": {"id": "turn-fake-001"}})
+        s = make_session(client, resume_thread_id="stored-1")
+        s.run_turn("hi", service_tier=None, turn_timeout=2.0)
+        (_, params), = [r for r in client.requests if r[0] == "turn/start"]
+        assert "serviceTier" in params and params["serviceTier"] is None
 
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()

@@ -29,6 +29,7 @@
  * instead of overwriting each other; the backend latches each day and area once.
  */
 
+import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
@@ -183,7 +184,6 @@ export type DesktopNoticeId =
   | 'install_method'
   | 'mcp_health'
   | 'model_warning'
-  | 'onboarding_handoff'
   | 'other'
   | 'restored_draft'
   | 'runtime_not_ready'
@@ -204,7 +204,6 @@ const NOTICE_IDS: Record<string, DesktopNoticeId> = {
   'desktop-update-available': 'update_available',
   'gui-contract-skew': 'gui_skew',
   'install-method-not-supported': 'install_method',
-  'onboarding-handoff': 'onboarding_handoff',
   'runtime-not-ready': 'runtime_not_ready',
   'terminal-backend-unavailable': 'terminal_backend',
   'voice-live-unavailable': 'voice_live_unavailable',
@@ -253,10 +252,6 @@ export type DesktopOnboardingStep =
   | 'first_message'
   | 'free_tier_ready'
   | 'guide'
-  | 'guide_connectors'
-  | 'guide_first_build'
-  | 'guide_layout'
-  | 'guide_look'
   | 'guide_skip'
   | 'model_pick'
   | 'provider_api_key'
@@ -364,7 +359,7 @@ export type DesktopMetricsGate = 'off' | 'on' | null
 export const $desktopMetricsGate = atom<DesktopMetricsGate>(null)
 
 /** One id per renderer load: an onboarding step still open from another load was abandoned. */
-const LAUNCH_ID = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Math.random())
+const LAUNCH_ID = randomUuid()
 
 /** Hash of the bound `connection|profile`: names the local record and main's crash consent. */
 let scope = scopeKey('|default')

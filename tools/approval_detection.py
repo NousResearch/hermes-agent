@@ -5,6 +5,7 @@ prompting live here.
 """
 
 import bisect
+import fnmatch
 import functools
 import logging
 import os
@@ -1583,6 +1584,10 @@ def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:
         end = start + len(_shell_command_segment(command, start))
         pos = start
         while pos < end:
+            redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+            if redirect:  # ``ssh host >/dev/null curl …``: a redirection does not end the command
+                _, pos, _ = _read_shell_word(command, redirect.end())
+                continue
             word_start, pos, word = _read_shell_word(command, pos)
             if word_start == pos:
                 break
@@ -1615,6 +1620,10 @@ def _word_may_run_curl_or_wget(word: str) -> bool:
     ``c${suffix}``): what it runs is unknown without executing the shell."""
     names = (os.path.basename(_deobfuscate_shell_word_for_detection(word)), re.split(r"[\\/]", word)[-1])
     if any(name.lower().removesuffix(".exe") in ("curl", "wget") for name in names):
+        return True
+    # A glob in the name (``/usr/bin/cur[l]``, ``wge*``) may match curl/wget.
+    if any(fnmatch.fnmatchcase(tool, name.lower()) for name in names if any(c in name for c in "*?[")
+           for tool in ("curl", "wget", "curl.exe", "wget.exe")):
         return True
     unquoted = word.lstrip("'\"")
     if unquoted.startswith(("$", "`")):

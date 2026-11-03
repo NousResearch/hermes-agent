@@ -47,6 +47,11 @@ export const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source
 
 export type SessionFilterCategory = "chats" | "automation" | "all";
 export type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
+export type SessionSourceLabels = Partial<{
+  apiServer: string;
+  toolSource: string;
+  vulcanDelegate: string;
+}>;
 
 export function isAutomationSource(source: string): boolean {
   return AUTOMATION_SESSION_SOURCE_SET.has(source);
@@ -61,10 +66,10 @@ export function sourceBelongsToCategory(
   return !isAutomationSource(source);
 }
 
-export function sourceLabel(source: string): string {
+export function sourceLabel(source: string, labels?: SessionSourceLabels): string {
   switch (source) {
     case "api_server":
-      return "API server";
+      return labels?.apiServer ?? "API server";
     case "acp":
       return "ACP";
     case "cli":
@@ -86,11 +91,11 @@ export function sourceLabel(source: string): string {
     case "cron":
       return "Cron";
     case "tool":
-      return "Tool";
+      return labels?.toolSource ?? "Tool";
     case "hermes_flow":
       return "Hermes Flow";
     case "vulcan_delegate":
-      return "Vulcan delegate";
+      return labels?.vulcanDelegate ?? "Vulcan delegate";
     case "webhook":
       return "Webhook";
     default:

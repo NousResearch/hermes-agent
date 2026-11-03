@@ -314,6 +314,58 @@ async def test_turn_whose_handler_raised_releases_its_token_without_a_review(
     assert ("spawn", sid) not in timeline
 
 
+@pytest.mark.asyncio
+async def test_drain_cancelled_at_the_marker_handoff_releases_the_handed_over_token(
+    tmp_path, monkeypatch, caplog
+):
+    """``execute_admission`` hands the completion to the drain ahead of two awaits: the turn's
+    marker hand-off and the admission scope's exit. A cancel landing on either ends the drain
+    with no settlement behind it, so no seam would take the held entry: the span itself
+    releases it, turn_unsettled, before the drain dies, and the registry forgets the turn."""
+    import gateway.session_ingress as ingress
+
+    timeline, turns = [], {}
+    runner, authority = await _owner(tmp_path, monkeypatch)
+    # Nothing owed (empty reply, no pending delivery): the hand-off awaits the marker release.
+    _install_turn(runner, monkeypatch, timeline, turns, reply=lambda text: None)
+    reached, gate = asyncio.Event(), asyncio.Event()
+    real_release = ingress._release_turn_marker
+
+    async def gated_release(owner, event):
+        reached.set()
+        await gate.wait()
+        return await real_release(owner, event)
+
+    monkeypatch.setattr(ingress, "_release_turn_marker", gated_release)
+    with caplog.at_level("INFO"):
+        await _submit_local(authority, "cut")
+        await asyncio.wait_for(reached.wait(), 20)
+        (live,) = authority.sessions.values()
+        sid, profile_key = turns["cut"]
+        # The hand-over stored the drain's entry ahead of the await the cancel lands on.
+        assert len(authority.review_completions) == 1
+        assert (
+            review_admission.live_turn_block_reason(sid, None, profile_key) is not None
+        )
+        live.task.cancel()
+        await asyncio.sleep(0)
+        gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(live.task, 10)
+    # No settlement followed the cancel: the row is still the drain's claimed, unsettled turn.
+    assert _statuses(authority) == {"cut": "started"}
+    assert authority.review_completions == {}
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None
+    assert ("spawn", sid) not in timeline
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_TURN_UNSETTLED in record.getMessage()
+    ]
+    assert sum("released without delivery" in line for line in lines) == 1, caplog.text
+    assert lines and all("owner=" in line and sid not in line for line in lines)
+
+
 async def _late_waiter(tmp_path, monkeypatch, timeline, turns):
     """Upstream's late-waiter recipe (``test_native_reply_delivered_once``): the admitting
     adapter task resumes only after the drain claimed and started the turn, so

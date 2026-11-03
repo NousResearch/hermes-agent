@@ -11,7 +11,8 @@ from gateway.session_ingress_review import (adopt_review_completion, complete_re
                                             complete_settled_review, forget_review_waiter,
                                             hand_over_review_completion,
                                             hand_review_completion_to_waiter, note_review_waiter,
-                                            release_failed_review, take_review_completion)
+                                            release_failed_review, release_unsettled_review,
+                                            take_review_completion)
 from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
 from hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
@@ -398,6 +399,14 @@ async def execute_admission(authority, ref, row):
             handed = True
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
+    except BaseException as exc:
+        if handed and not isinstance(exc, Exception):
+            # The hand-over above sits ahead of two awaits (the marker hand-off, the admission
+            # scope's exit). An Exception raised there still settles: ``_execute_claimed`` turns it
+            # into a failed turn whose settlement seams take the held entry. A cancel ends the drain
+            # with no settlement behind it, so nothing else would release the completion it holds.
+            release_unsettled_review(authority, row['admission_id'])
+        raise
     finally:
         if not native:
             # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them

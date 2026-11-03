@@ -644,7 +644,7 @@ def delegate_task(
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
-        home=_live_home,
+        home=_live_home, parent_session_id=getattr(parent_agent, "session_id", None),
     )
     if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
         _settle_refused_transcripts(refused, live_deleg_id, live_writers, _live_home)

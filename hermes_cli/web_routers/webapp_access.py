@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Callable, Optional
 
@@ -33,6 +34,10 @@ _gateway_restart_failure = late("gateway_restart_failure", "hermes_cli.web_serve
 # so the Portal's callback, the config and the gateway all end on the last change asked for.
 _CHANGE_LOCK = threading.Lock()
 _CHANGE_POLL_SECONDS = 0.05
+# The Start in flight, by the gateway it turns the Webapp on for: its step and when it began. The
+# status the pane polls carries it, because building the bundle can take minutes: the pane says
+# what is happening, and a pane opened meanwhile shows the Start running instead of offering it.
+_STARTS: dict[Optional[str], dict] = {}
 
 
 def owner_on_this_machine(request: Request) -> None:
@@ -115,26 +120,40 @@ async def _restart(gateway: Optional[str], what: str) -> dict:
 @router.get("/api/webapp-access/status")
 async def webapp_access_status(profile: Optional[str] = None):
     """``restart_failure``: the newest restart of this gateway exited without replacing it, and why;
-    the pane waiting on that restart stops and says so instead of timing out. The pane polls this,
-    so the status (a control-socket round trip) runs outside the skills lock, as in ``_restart``."""
+    the pane waiting on that restart stops and says so instead of timing out. ``start_progress``:
+    the Start in flight for this gateway (``step``, ``started_at`` in epoch seconds), else None.
+    The pane polls this, so the status (a control-socket round trip) runs outside the skills lock,
+    as in ``_restart``."""
     gateway = await _scoped(profile, lambda gateway: gateway)
     return await _in_gateway_home(gateway, lambda: {
-        **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)})
+        **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway),
+        "start_progress": _STARTS.get(gateway)})
 
 
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
     async with _one_change_at_a_time():
+        started_at = time.time()
         # Writes a standalone profile's first port claim, so it takes the config lock.
         gateway, (host, port, public_url, callback) = await _scoped(
             profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)), config_write=True)
-        # The bundle before anything else lasting: a failed build registers, restarts and writes nothing
-        # but that port claim.
-        await _in_gateway_home(gateway, webapp_access.build_bundle)
-        await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
-        await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url, port), config_write=True)
-        return await _restart(gateway, "turning on Web Access")
+
+        def step(name: str) -> None:
+            _STARTS[gateway] = {"step": name, "started_at": started_at}
+
+        try:
+            # The bundle before anything else lasting: a failed build registers, restarts and writes
+            # nothing but that port claim.
+            step("building")
+            await _in_gateway_home(gateway, webapp_access.build_bundle)
+            step("registering")
+            await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
+            step("restarting")
+            await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url, port), config_write=True)
+            return await _restart(gateway, "turning on Web Access")
+        finally:
+            _STARTS.pop(gateway, None)
 
 
 @router.post("/api/webapp-access/stop")

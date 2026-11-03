@@ -143,12 +143,25 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   // the transcript's [attached image: …] marker.
   const deltaImages = visibleDelta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
 
-  return { room, memberKey, markKey, prompt, deltaImages, heldIds }
+  // A user entry this turn is about to see for the first time: whatever the
+  // member already posted was written without it, so it answers nothing here.
+  const seesNewUserEntry = visibleDelta.some((entry: GroupMessage) => entry.from?.kind === 'user')
+
+  return { room, memberKey, markKey, prompt, deltaImages, heldIds, seesNewUserEntry }
 }
 
-/** True while the user's explicit address to `member` is unanswered in this thread. */
-function memberOwesAnswer(context: GroupRoundMemberContext, member: GroupMember, log: GroupMessage[]): boolean {
-  return Boolean(context.addressedKeys?.has(groupMemberKey(member))) && !answeredSinceLastUser(log, member, context.thread)
+/** True while the user's explicit address to `member` is unanswered in this
+ *  thread: this turn is the first to see a user entry, or the member has not
+ *  posted since the latest one. Position alone is not enough, because a turn
+ *  that started before a follow-up can land after it. */
+function memberOwesAnswer(
+  context: GroupRoundMemberContext,
+  member: GroupMember,
+  log: GroupMessage[],
+  seesNewUserEntry: boolean
+): boolean {
+  return Boolean(context.addressedKeys?.has(groupMemberKey(member))) &&
+    (seesNewUserEntry || !answeredSinceLastUser(log, member, context.thread))
 }
 
 /** True when `member` has a room entry in `thread` after the latest user entry there. */
@@ -207,11 +220,11 @@ export async function runGroupRoundMember(
     return false
   }
 
-  const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
+  const { room, memberKey, markKey, prompt, deltaImages, heldIds, seesNewUserEntry } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   // Owed only until the member answers: after its reply to the user's address,
   // a pass on a teammate's reply is ordinary consensus, not noncompliance.
-  const owesAnswer = memberOwesAnswer(context, member, room.log)
+  const owesAnswer = memberOwesAnswer(context, member, room.log, seesNewUserEntry)
   let reply: null | string = null
   let accepted = false
 

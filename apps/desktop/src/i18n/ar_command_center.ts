@@ -449,6 +449,7 @@ export const arCommandCenter = {
     color: 'اللون',
     colorFor: 'اللون',
     openInNewWindow: 'فتح في نافذة جديدة',
+    openInNewWindowHint: 'اضغط Shift وانقر على بوابة لفتحها في نافذة جديدة',
     setAsDefault: 'تعيين كافتراضي',
     defaultProfile: 'الملف الشخصي الافتراضي',
     defaultSet: name => `أصبح ${name} الملف الافتراضي`,

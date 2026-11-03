@@ -3277,6 +3277,7 @@ export const esOverrides = {
     color: 'Color...',
     colorFor: 'Color',
     openInNewWindow: 'Abrir en una ventana nueva',
+    openInNewWindowHint: 'Mayús+clic en una puerta de enlace para abrirla en una ventana nueva',
     setAsDefault: 'Establecer como predeterminado',
     defaultProfile: 'Perfil predeterminado',
     defaultSet: (name: string) => `${name} es ahora el predeterminado`,

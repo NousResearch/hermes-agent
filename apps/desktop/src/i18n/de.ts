@@ -3290,6 +3290,7 @@ export const deOverrides = {
     color: 'Farbe…',
     colorFor: 'Farbe',
     openInNewWindow: 'In neuem Fenster öffnen',
+    openInNewWindowHint: 'Shift-Klick auf ein Gateway öffnet es in einem neuen Fenster',
     setAsDefault: 'Als Standard festlegen',
     defaultProfile: 'Standardprofil',
     defaultSet: (name: string) => `${name} ist jetzt der Standard`,

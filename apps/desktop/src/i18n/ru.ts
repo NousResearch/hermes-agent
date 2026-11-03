@@ -2098,6 +2098,7 @@ export const ruOverrides = {
     color: 'Цвет…',
     colorFor: 'Цвет',
     openInNewWindow: 'Открыть в новом окне',
+    openInNewWindowHint: 'Shift+щелчок по шлюзу откроет его в новом окне',
     setAsDefault: 'Сделать по умолчанию',
     defaultProfile: 'Профиль по умолчанию',
     defaultSet: name => `${name} теперь используется по умолчанию`,

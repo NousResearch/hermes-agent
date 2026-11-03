@@ -370,6 +370,7 @@ export const zhHantCommandCenter = {
     color: '顏色…',
     colorFor: '顏色',
     openInNewWindow: '在新視窗中開啟',
+    openInNewWindowHint: '按住 Shift 點擊閘道，在新視窗中開啟',
     setAsDefault: '設為預設',
     defaultProfile: '預設設定檔',
     defaultSet: name => `${name} 已設為預設`,

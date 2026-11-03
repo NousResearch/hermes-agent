@@ -2757,6 +2757,7 @@ export const zhOverrides = {
     color: '颜色…',
     colorFor: '颜色',
     openInNewWindow: '在新窗口中打开',
+    openInNewWindowHint: '按住 Shift 点击网关，在新窗口中打开',
     setAsDefault: '设为默认',
     defaultProfile: '默认配置档案',
     defaultSet: name => `${name} 已设为默认`,

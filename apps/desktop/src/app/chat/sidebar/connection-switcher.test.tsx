@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry } from '@/global'
+import type { DesktopConnectionsRegistry, DesktopProfileRoute, DesktopRegistryConnection } from '@/global'
 import { $findInPage } from '@/store/find-in-page'
 
 import { ConnectionSwitcher } from './connection-switcher'
@@ -25,10 +25,21 @@ vi.mock('@/store/connections', () => ({
   selectConnection: vi.fn(async () => undefined)
 }))
 
+vi.mock('@/store/default-profile', () => ({
+  $defaultProfileRoute: atom<DesktopProfileRoute | null>(null)
+}))
+
+vi.mock('@/store/windows', () => ({
+  canOpenNewWindow: vi.fn(() => true),
+  openNewWindow: vi.fn(async () => undefined)
+}))
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       profiles: {
+        openInNewWindow: 'Open in new window',
+        openInNewWindowHint: 'Shift-click a gateway to open it in a new window',
         switchConnectionFailed: (name: string) => `Could not connect to ${name}`,
         switchToConnection: (name: string) => `Switch to ${name}`,
         connectGateway: 'Manage gateways…'
@@ -53,14 +64,30 @@ const $activeConnectionId = connectionStore.$activeConnectionId as ReturnType<ty
 const $connectionsRegistry = connectionStore.$connectionsRegistry
 const $pendingConnectionId = connectionStore.$pendingConnectionId
 const selectConnection = vi.mocked(connectionStore.selectConnection)
+const windowStore = await import('@/store/windows')
+const canOpenNewWindow = vi.mocked(windowStore.canOpenNewWindow)
+const openNewWindow = vi.mocked(windowStore.openNewWindow)
+
+const defaultProfileStore = await import('@/store/default-profile')
+
+const $defaultProfileRoute = defaultProfileStore.$defaultProfileRoute as ReturnType<
+  typeof atom<DesktopProfileRoute | null>
+>
+
 const onConnect = vi.fn()
 
-const connection = (id: string, label: string, kind: 'local' | 'remote' = 'remote') => ({
+const connection = (
+  id: string,
+  label: string,
+  kind: 'local' | 'remote' = 'remote',
+  extra: Partial<DesktopRegistryConnection> = {}
+) => ({
   id,
   kind,
   label,
   tokenPreview: null,
-  tokenSet: false
+  tokenSet: false,
+  ...extra
 })
 
 const registry = (connections: ReturnType<typeof connection>[]): DesktopConnectionsRegistry => ({
@@ -73,7 +100,9 @@ const registry = (connections: ReturnType<typeof connection>[]): DesktopConnecti
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  canOpenNewWindow.mockReturnValue(true)
   $connectionsRegistry.set(null)
+  $defaultProfileRoute.set(null)
   $activeConnectionId.set('local')
   $pendingConnectionId.set(null)
   $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
@@ -247,5 +276,119 @@ describe('ConnectionSwitcher', () => {
 
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
     expect(screen.getByRole('menuitemradio', { name: 'W2Probe' })).toBeTruthy()
+  })
+
+  // Shift is the desktop convention for "open this somewhere else". The radio
+  // group cannot carry it — re-picking the active row fires no value change —
+  // so each row handles the modified press itself.
+  it('shift-clicks a gateway into a peer window and leaves this window alone', () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.pointerDown(screen.getByRole('menuitemradio', { name: 'Homelab' }), {
+      button: 0,
+      pointerType: 'mouse',
+      shiftKey: true
+    })
+
+    expect(openNewWindow).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' })
+    expect(selectConnection).not.toHaveBeenCalled()
+  })
+
+  it('opens a peer window from the gateway that is already active', () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    $activeConnectionId.set('homelab')
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Registered gateways: Homelab' }))
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: Homelab' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.pointerDown(screen.getByRole('menuitemradio', { name: 'Homelab' }), {
+      button: 0,
+      pointerType: 'mouse',
+      shiftKey: true
+    })
+
+    expect(openNewWindow).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' })
+    expect(selectConnection).not.toHaveBeenCalled()
+  })
+
+  it('launches the profile this app defaults to on that gateway', () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    $defaultProfileRoute.set({ connectionId: 'homelab', profile: 'research' })
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.pointerDown(screen.getByRole('menuitemradio', { name: 'Homelab' }), {
+      button: 0,
+      pointerType: 'mouse',
+      shiftKey: true
+    })
+
+    expect(openNewWindow).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
+  })
+
+  it('falls back to the SSH pinned profile when no default names that gateway', () => {
+    $connectionsRegistry.set(
+      registry([
+        connection('local', 'This device', 'local'),
+        connection('vps', 'Work VPS', 'remote', { remoteProfile: 'ops' })
+      ])
+    )
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.pointerDown(screen.getByRole('menuitemradio', { name: 'Work VPS' }), {
+      button: 0,
+      pointerType: 'mouse',
+      shiftKey: true
+    })
+
+    expect(openNewWindow).toHaveBeenCalledWith({ connectionId: 'vps', profile: 'ops' })
+  })
+
+  it('opens a peer window from the keyboard with shift+enter', () => {
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Homelab' }), { key: 'Enter', shiftKey: true })
+
+    expect(openNewWindow).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'default' })
+    expect(selectConnection).not.toHaveBeenCalled()
+  })
+
+  it('does not advertise the peer-window gesture where no window can open', () => {
+    canOpenNewWindow.mockReturnValue(false)
+    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: This device' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+
+    expect(screen.queryByText('Shift-click a gateway to open it in a new window')).toBeNull()
+
+    fireEvent.pointerDown(screen.getByRole('menuitemradio', { name: 'Homelab' }), {
+      button: 0,
+      pointerType: 'mouse',
+      shiftKey: true
+    })
+    expect(openNewWindow).not.toHaveBeenCalled()
   })
 })

@@ -3295,6 +3295,7 @@ export const frOverrides = {
     color: 'Couleur…',
     colorFor: 'Couleur',
     openInNewWindow: 'Ouvrir dans une nouvelle fenêtre',
+    openInNewWindowHint: 'Maj+clic sur une passerelle pour l’ouvrir dans une nouvelle fenêtre',
     setAsDefault: 'Définir par défaut',
     defaultProfile: 'Profil par défaut',
     defaultSet: name => `${name} est maintenant le profil par défaut`,

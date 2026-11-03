@@ -5,7 +5,7 @@ import { RU_NOUN } from './ru_plural'
 // inside the 2,000-line code-health target (the `<locale>_<topic>.ts` pattern
 // `ar.ts`/`ar_chat.ts` already uses). Moved verbatim.
 export const ruComposer: TranslationOverrides['composer'] = {
-  quoteAddToChat: 'Добавить в чат',
+  quoteAddToChat: 'Цитировать',
   message: 'Сообщение',
   wakingProfile: profile => `Пробуждаем ${profile}…`,
   placeholderStarting: 'Запуск Hermes...',

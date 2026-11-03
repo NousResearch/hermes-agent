@@ -80,7 +80,7 @@ it('quotes a transcript selection into the composer as a bracketed blockquote', 
     selectContents('a1')
     publishSelection()
 
-    const action = await screen.findByRole('button', { name: 'Add to chat' })
+    const action = await screen.findByRole('button', { name: 'Quote' })
 
     // The press must not take the selection away from the transcript it quotes.
     const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
@@ -95,7 +95,7 @@ it('quotes a transcript selection into the composer as a bracketed blockquote', 
     })
 
     // Once quoted, the action is done with this selection.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add to chat' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Quote' })).toBeNull())
   } finally {
     window.removeEventListener('hermes:composer-insert', onInsert)
   }
@@ -109,5 +109,5 @@ it('stays hidden while the selection is not a passage from this transcript', asy
   publishSelection()
 
   await new Promise(resolve => window.setTimeout(resolve, 20))
-  expect(screen.queryByRole('button', { name: 'Add to chat' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Quote' })).toBeNull()
 })

@@ -4,7 +4,7 @@ import type { TranslationOverrides } from './define-locale'
 // inside the 2,000-line code-health target (the `<locale>_<topic>.ts` pattern
 // `ar.ts`/`ar_chat.ts` already uses). Moved verbatim.
 export const zhComposer: TranslationOverrides['composer'] = {
-  quoteAddToChat: '添加到对话',
+  quoteAddToChat: '引用',
   message: '消息',
   wakingProfile: profile => `正在唤醒 ${profile}…`,
   placeholderStarting: '正在启动 Hermes…',

@@ -236,9 +236,16 @@ async function shootExtras(page: Page, room: string, label: string): Promise<voi
     probe('09-details-panel', { skipped: 'no details trigger' })
   }
 
+}
+
+/** The Bots list while the room works: its row with member avatars and the working glyph. */
+async function shootBotsRow(page: Page, room: string, label: string): Promise<void> {
   await openBots(page)
-  await page.waitForTimeout(800)
-  await capture('10-bots-row', label, { rowState: await page.locator('[data-room-state]').count() })
+  const refresh = page.getByRole('button', { name: /Refresh gateway groups/i }).first()
+
+  if (await refresh.count()) {await refresh.click().catch(() => undefined)}
+  await page.waitForTimeout(1500)
+  await capture('10-bots-row', label, { rowState: await page.locator('[data-room-state]').count(), row: await page.getByRole('button', { name: room, exact: true }).count() })
   const tab = page.getByRole('tab', { name: new RegExp(`^${room}`) }).first()
 
   if (await tab.count()) {await tab.click()}
@@ -292,6 +299,7 @@ test('gateway-owned room: working, settled, failure', async () => {
   await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('You are @scout')).length, { timeout: 90_000 }).toBeGreaterThan(0)
   await page.waitForTimeout(6000)
   await capture('01-working', label, { phase: 'scout terminal tool running' })
+  await shootBotsRow(page, room, label)
 
   fs.writeFileSync(sentinel, 'go')
   const held = await expect.poll(() => fixture!.mock.heldCompletionCount(), { timeout: 60_000 }).toBe(1).then(() => true, () => false)

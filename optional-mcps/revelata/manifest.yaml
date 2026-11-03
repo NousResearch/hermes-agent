@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: revelata
+description: Query SEC-sourced KPIs, filings, and company summaries for US public companies via Revelata deepKPI.
+source: https://www.revelata.com
+
+# Revelata ships a hosted remote MCP server (Streamable HTTP) with native
+# MCP OAuth 2.1 + Dynamic Client Registration — same shape as linear /
+# comfy-cloud. Hermes's MCP client + mcp_oauth_manager handle discovery,
+# PKCE, token exchange, and refresh — nothing to install locally.
+transport:
+  type: http
+  url: https://deepkpi-mcp.revelata.com/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — native MCP OAuth (case 1), not a third-party provider
+  # like Google. The MCP client triggers the browser flow on the first
+  # probe / first connect.
+
+# Tool selection at install time:
+# deepKPI exposes a small, read-only surface (company resolve, KPI list/search,
+# company summary/segments, SEC filing markdown). Leave default_enabled unset
+# so the install-time checklist starts with everything pre-checked — users
+# prune what they don't want.
+#
+# Canonical tools (names match REST/MCP):
+#   query_company_id, list_kpis, search_kpis,
+#   get_company_summary, get_company_segments, company_summary_search,
+#   list_sec_filing_markdowns, get_sec_filing_markdown
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with Revelata.
+  After auth, restart your Hermes session so the deepKPI tools are loaded.
+
+  deepKPI access uses Revelata credits (free tier available). Account / plans:
+    https://www.revelata.com/ai-credits
+
+  Companion skills (KPI pulls, filings, pressure-tests, etc.) install from
+  GitHub today:
+    hermes skills install revelata/deepkpi-agents/kpi
+  Or, once merged, from the official optional catalog:
+    hermes skills install official/finance/revelata-deepkpi/kpi
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure revelata

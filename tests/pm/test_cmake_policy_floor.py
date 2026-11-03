@@ -21,6 +21,8 @@ def _record_uv_envs(monkeypatch) -> list[dict]:
     seen: list[dict] = []
 
     def record(command, **kwargs):
+        if "env" not in kwargs:  # the pinned interpreter's sysconfig probe, not a uv spawn
+            return subprocess.CompletedProcess(command, 0, "{}", "")
         seen.append(kwargs["env"])
         return subprocess.CompletedProcess(command, 0, "", "")
 

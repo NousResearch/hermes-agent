@@ -26,10 +26,12 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables
+from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recognised, base_source_view_is_stale,
+                              fts_layout_current)
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
+from hermes_state_titles import next_title_in_lineage
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -354,10 +356,12 @@ class SessionSchemaMixin:
         in-place continuity is not achievable — the ONLY valid transition is a full rebuild
         from the view, under the shared cross-process rebuild admission. Legacy inline DBs
         skip this entirely (their index is self-contained; they still take the DDL on the
-        optimize path)."""
-        if legacy or not self._sqlite_table_exists(cursor, "messages_fts"):
+        optimize path), and so does a definition no release of this code created (a newer
+        release's, after a downgrade)."""
+        if legacy or not base_index_recognised(cursor):
             return
-        if not self._fts_index_is_misaligned_source(cursor):
+        stale_view = base_source_view_is_stale(cursor)
+        if not stale_view and not self._fts_index_is_misaligned_source(cursor):
             return
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
@@ -365,12 +369,25 @@ class SessionSchemaMixin:
             for name in _FTS_BASE_TRIGGERS:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute("DROP TABLE IF EXISTS messages_fts")
+            if stale_view:
+                # CREATE VIEW IF NOT EXISTS never replaces a differing view; the index is rebuilt from it below.
+                cursor.execute("DROP VIEW messages_fts_src")
             self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
             if has_messages:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+                # The cleared markers below are shared with the trigram backfill: finish that index too, or rows
+                # an interrupted backfill had not reached stay out of it with nothing left to resume them.
+                if _meta_row(cursor, "fts_rebuild_high_water") is not None:
+                    trigram = self._fts_table_probe(cursor, "messages_fts_trigram")
+                    if trigram:
+                        cursor.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')")
+                    elif trigram is None:
+                        # No usable tokenizer here: detach the index so the first open that has one rebuilds it
+                        # through the missing-trigger repair in _init_fts.
+                        for name in _FTS_TRIGRAM_TRIGGERS:
+                            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
             cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
-            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
         if not has_messages:
             # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
@@ -631,7 +648,7 @@ class SessionSchemaMixin:
                 with contextlib.suppress(sqlite3.Error):
                     self._conn.commit()
                 return recovered
-        except Exception:  # noqa: BLE001 - background retry must never raise
+        except Exception:
             logger.warning(
                 "In-process retry of the deferred stale state.db FTS rebuild failed; will retry later.", exc_info=True,
             )
@@ -704,7 +721,7 @@ class SessionSchemaMixin:
     # ── Declarative column reconciliation ──────────────────────────────────
 
     @staticmethod
-    def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
+    def _parse_schema_columns(schema_sql: str) -> dict[str, dict[str, str]]:
         """Expected columns per table: execute SCHEMA_SQL in an in-memory database and read
         PRAGMA table_info (no regex). Memoized on disk keyed by a DDL hash (~85ms per
         startup otherwise); only the reference-side parse is cached — diffing the LIVE
@@ -725,11 +742,11 @@ class SessionSchemaMixin:
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)
-            table_columns: Dict[str, Dict[str, str]] = {}
+            table_columns: dict[str, dict[str, str]] = {}
             for (tbl,) in ref.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall():
-                cols: Dict[str, str] = {}
+                cols: dict[str, str] = {}
                 info = ref.execute(f'PRAGMA table_info("{tbl}")').fetchall()
                 for _cid, col_name, col_type, notnull, default, pk in info:
                     # Reconstruct the type expression for ALTER TABLE ADD COLUMN
@@ -761,6 +778,8 @@ class SessionSchemaMixin:
                 rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
             except sqlite3.OperationalError:
                 continue  # Table doesn't exist yet (shouldn't happen after executescript)
+            if not rows:
+                continue  # PRAGMA table_info returns [] for a missing table; the DDL creates it whole
             # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
             live_cols = {row[1] for row in rows}
             for col_name, col_type in declared_cols.items():
@@ -784,7 +803,7 @@ class SessionSchemaMixin:
                     )
 
     @staticmethod
-    def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[List[str]]:
+    def _live_pk_columns(cursor: sqlite3.Cursor, table: str) -> Optional[list[str]]:
         """PRIMARY KEY column names of *table* in key order; None when the table is
         missing or has no columns (SCHEMA_SQL creates it correctly)."""
         try:
@@ -989,7 +1008,7 @@ class SessionSchemaMixin:
             cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
             # Store provenance so fresh vs wiped stores are distinguishable.
             # See #97568.
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            now_iso = datetime.datetime.now(datetime.UTC).isoformat()
             cursor.executemany(
                 "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
                 [("store_instance_id", str(uuid.uuid4())), ("store_created_at_utc", now_iso),
@@ -1001,7 +1020,32 @@ class SessionSchemaMixin:
         self._ensure_unique_title_index(cursor)
         if fts5_available:
             self._init_fts(cursor)
+            self._stamp_settled_fts_layout(cursor)
         self._conn.commit()
+
+    def _stamp_settled_fts_layout(self, cursor: sqlite3.Cursor) -> None:
+        """Write ``fts_storage_version`` once the stored layout is exactly current and nothing is in flight.
+
+        The only open-time writer of the stamp, run after _init_fts so a fresh store is stamped on creation
+        and a realigned base index is stamped only when the trigram also matches. A definition this code does
+        not recognise (a newer release's) is never stamped down to this release's version. An interrupted
+        optimize (markers, trash, an empty external index against non-empty messages) keeps the stamp
+        unwritten so the resume offer stays alive. Reads before writing: a settled store never takes the write
+        lock here.
+        """
+        if (
+            self._fts_stale
+            or not fts_layout_current(cursor)
+            or _meta_row(cursor, "fts_rebuild_high_water") is not None
+            or self._has_fts_trash(cursor)
+            or self._fts_external_index_empty_with_messages(cursor)
+        ):
+            return
+        if cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
+            (str(FTS_STORAGE_VERSION),),
+        ).fetchone() is None:
+            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
     def _run_data_migrations(self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool) -> None:
         """Version-gated chain for DATA migrations only (row backfills); column additions never
@@ -1066,10 +1110,7 @@ class SessionSchemaMixin:
             # Rebuild once so rows indexed by older view/trigger definitions do not linger.
             fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
 
-        # Stamp the FTS layout version (fresh/optimized DBs); a legacy DB keeps its absent/0
-        # marker until optimize-storage runs. An INTERRUPTED optimize (markers, trash, or an
-        # empty external index against non-empty messages) is NOT stamped: the marker is the
-        # source of truth for "fully optimized" and keeps the resume offer alive.
+        # The FTS layout stamp is written by _stamp_settled_fts_layout after _init_fts, not here.
         # v23: FTS storage redesign (issues #22478, #43690, #55233). The v11 inline-mode FTS tables each
         # store a full private copy of every message (content || tool_name || tool_calls), and the trigram
         # index additionally covers role='tool' rows (~90% of message bytes: base64 payloads, file dumps) at
@@ -1086,23 +1127,9 @@ class SessionSchemaMixin:
         # marker (see _fts_storage_version / SETTLE below), so schema_version advances to SCHEMA_VERSION
         # here like every other migration — future v24+ migrations land automatically for legacy-FTS users
         # too. Only the FTS *layout* waits for opt-in.
-        if (
-            fts5_available
-            and not self._db_needs_fts_storage_upgrade(cursor)
-            and cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = 'fts_rebuild_high_water' LIMIT 1"
-            ).fetchone() is None
-            and not self._has_fts_trash(cursor)
-            and not self._fts_external_index_empty_with_messages(cursor)
-        ):
-            # Stamp only when it would change something: on a settled DB every condition above
-            # already holds, and re-writing the same value takes the write lock on every open.
-            if cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
-                (str(FTS_STORAGE_VERSION),),
-            ).fetchone() is None:
-                self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
-
+        # v32: nothing to run here. The declared tables/columns #106742 added under v31 were already
+        # created by _init_schema's executescript(SCHEMA_SQL) + _reconcile_columns() before this chain;
+        # the version only records that the store has them (#140315).
         # Advance schema_version — deliberately NOT gated on the FTS opt-in (that would block
         # every future migration for a user who never optimizes). FTS5 unavailable is the
         # one skip: claiming current would lie.
@@ -1113,21 +1140,26 @@ class SessionSchemaMixin:
         """Mint ``message_uid`` onto rows written before the column existed, one bounded slice per open.
 
         A single full-table UPDATE held the write lock for 261 s on an 835k-row / 4.8 GB store, so every
-        sibling process timed out with "database is locked". Id-range chunks commit one at a time (the
+        sibling process timed out with "database is locked". Rowid-range chunks commit one at a time (the
         writer connection is autocommit) and an open spends at most ``_MESSAGE_UID_BACKFILL_BUDGET_S``
         after its first chunk, so a large store converges over later opens. Until then a legacy row
-        simply has no uid, which every reader already treats as "no identity yet"."""
+        simply has no uid, which every reader already treats as "no identity yet".
+
+        The walk is keyed on ``rowid``, not ``id``: on the declared table ``id INTEGER PRIMARY KEY`` is the
+        rowid alias (same plan), but a store converted from JSONL still carries ``id TEXT`` with no PRIMARY
+        KEY (``_reconcile_columns`` adds columns, never rebuilds the key), where ``MAX(id)`` is a str and an
+        ``id`` range compares lexicographically (#141467)."""
         if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is not None:
             return
         row = _meta_row(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
         done_through = int(row[0]) if row else 0
-        high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
+        high = cursor.execute("SELECT MAX(rowid) FROM messages").fetchone()[0] or 0
         deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
         while done_through < high:
             upper = done_through + _MESSAGE_UID_BACKFILL_CHUNK
             cursor.execute(
                 "UPDATE messages SET message_uid = lower(hex(randomblob(16))) "
-                "WHERE id > ? AND id <= ? AND message_uid IS NULL", (done_through, upper))
+                "WHERE rowid > ? AND rowid <= ? AND message_uid IS NULL", (done_through, upper))
             done_through = upper
             if done_through < high and time.monotonic() >= deadline:
                 self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)
@@ -1169,25 +1201,46 @@ class SessionSchemaMixin:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
-        """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        """Unique title index. Older DBs may hold duplicate titles from before the constraint.
+        Per title a user-owned (user/NULL) row beats llm > derived (``_title_rank``). User rows are
+        never dropped: the oldest keeps the title and newer ones become ``Title #k`` in started_at
+        order, so the "#N"-preferring lookup still opens the newest (#126764). Among auto titles
+        only, the newest highest-ranked keeps it; lower-ranked auto titles are cleared. Each change
+        is logged. Must never abort opening the DB, so the repair is guarded."""
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
+            # Savepoint: a failure part-way must not leave a half-repaired store for
+            # _init_schema to commit without the index.
+            cursor.execute("SAVEPOINT title_repair")
             try:
-                cursor.execute("""UPDATE sessions AS older
-                       SET title = NULL
-                       WHERE title IS NOT NULL
-                         AND EXISTS (
-                             SELECT 1 FROM sessions AS newer
-                             WHERE newer.title = older.title
-                               AND newer.rowid > older.rowid
-                         )""")
-                logger.warning(
-                    "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
-                )
+                rows = cursor.execute(
+                    "SELECT rowid, title, title_source, started_at FROM sessions WHERE title IN "
+                    "(SELECT title FROM sessions WHERE title IS NOT NULL GROUP BY title HAVING COUNT(*) > 1)"
+                ).fetchall()
+                groups: dict[str, list] = {}
+                for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3], r[0]), reverse=True):
+                    groups.setdefault(row[1], []).append(row)
+                user_rank = self._TITLE_SOURCE_RANK[self.TITLE_SOURCE_USER]
+                for title, group in groups.items():
+                    # User titles: the OLDEST keeps the base and newer ones get "#k" in
+                    # chronological order, so resolve_session_by_title (which prefers the
+                    # latest "#N") still lands on the newest session.
+                    users = [r for r in reversed(group) if self._title_rank(r[2]) == user_rank]
+                    keep = users[0] if users else group[0]
+                    for rowid, *_ in users[1:]:
+                        renamed = next_title_in_lineage(cursor.connection, title)
+                        cursor.execute("UPDATE sessions SET title = ? WHERE rowid = ?", (renamed, rowid))
+                        logger.warning("Renamed duplicate user session title %r to %r", title, renamed)
+                    for rowid, _title, source, _started in group:
+                        if rowid != keep[0] and self._title_rank(source) != user_rank:
+                            cursor.execute("UPDATE sessions SET title = NULL WHERE rowid = ?", (rowid,))
+                            logger.warning("Cleared duplicate %s session title %r", source, title)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+                cursor.execute("RELEASE title_repair")
             except sqlite3.Error:
+                cursor.execute("ROLLBACK TO title_repair")
+                cursor.execute("RELEASE title_repair")
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:
             pass  # Index already exists
@@ -1323,8 +1376,21 @@ class SessionSchemaMixin:
             )
 
 
+def apply_declared_schema(cursor: sqlite3.Cursor) -> None:
+    """The one additive catch-up order for raw ``state.db`` connections: columns (SCHEMA_SQL indexes may
+    name columns an old table lacks), then the canonical DDL statement by statement (no
+    ``executescript`` implicit COMMIT, so callers keep their own transaction), then columns again
+    (a no-op for tables the script just created whole). Locking, snapshots and commit stay with the
+    callers. ``_reconcile_columns`` only touches the staticmethod ``_parse_schema_columns``, so a bare
+    instance is enough and the column reconciler keeps one implementation."""
+    shim = object.__new__(SessionSchemaMixin)
+    shim._reconcile_columns(cursor)
+    SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
+    shim._reconcile_columns(cursor)
+
+
 def reconcile_state_schema(conn: sqlite3.Connection) -> None:
-    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape.
+    """Bring a raw ``state.db`` connection to the canonical SCHEMA_SQL shape and commit.
 
     Single durable-shape authority for callers that open ``state.db``
     outside SessionDB. The async-delegation tool used to carry its own
@@ -1332,14 +1398,8 @@ def reconcile_state_schema(conn: sqlite3.Connection) -> None:
     from SCHEMA_SQL (same-name columns with different nullability/defaults
     depending on which authority touched the database first, #94691). This
     helper instead replays the canonical DDL (every statement is
-    IF NOT EXISTS/idempotent) and reuses SessionDB's declarative column
-    reconciliation, so out-of-band openers can never grow a second
-    hand-maintained shape for the same durable tables.
+    IF NOT EXISTS/idempotent) through :func:`apply_declared_schema`.
     """
-    conn.executescript(SCHEMA_SQL)
-    # _reconcile_columns only touches the staticmethod _parse_schema_columns,
-    # so a bare instance works; reusing it keeps one reconciliation
-    # implementation (one authority) instead of a near-copy on raw
-    # connections.
-    shim = object.__new__(SessionSchemaMixin)
-    shim._reconcile_columns(conn.cursor())
+    apply_declared_schema(conn.cursor())
+    if conn.in_transaction:
+        conn.commit()

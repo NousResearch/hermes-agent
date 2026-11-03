@@ -14,7 +14,7 @@ import json
 import logging
 import threading
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -64,7 +64,7 @@ def is_engaged() -> bool:
 def engage(reason: Optional[str] = None) -> Path:
     """Create the ESTOP sentinel. Idempotent; re-engaging updates the file."""
     path = sentinel_path()
-    payload = {"engaged_at": datetime.now(timezone.utc).isoformat(), "reason": reason or None}
+    payload = {"engaged_at": datetime.now(UTC).isoformat(), "reason": reason or None}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

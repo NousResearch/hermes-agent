@@ -49,12 +49,14 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 ## Browser Automation
 
-Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
+Hermes includes full browser automation through `browser_exec` (Python over CDP) for navigating websites, filling forms, and extracting information, with several places the browser can run:
 
 - **Browser Use Cloud** — Managed Chromium with stealth, residential proxies, CAPTCHA solving, and reusable browser profiles
 - **Browserbase** — Alternative cloud browser provider with managed browsers, anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`
-- **Local Chromium** — Headless local browser via the `agent-browser` CLI
+- **Local Chromium** — Headless local Chromium that Hermes launches itself (the default)
+
+The Camofox anti-detection browser is a catalog plugin: `hermes plugins install camofox`.
 
 See [Browser Automation](../user-guide/features/browser.md) for setup and usage.
 
@@ -84,13 +86,13 @@ Speech-to-text supports eight providers: local faster-whisper (free, runs on-dev
 ## Memory & Personalization
 
 - **[Built-in Memory](../user-guide/features/memory.md)** — Persistent, curated memory via `MEMORY.md` and `USER.md` files. The agent maintains bounded stores of personal notes and user profile data that survive across sessions.
-- **[Memory Providers](../user-guide/features/memory-providers.md)** — Plug in external memory backends for deeper personalization. Seven providers ship with Hermes: Honcho (dialectic reasoning), OpenViking (tiered retrieval), Mem0 (cloud extraction), Holographic (local SQLite), RetainDB (hybrid search), ByteRover (CLI-based), and Supermemory; Hindsight (knowledge graphs) is available from the plugin catalog via `hermes plugins install hindsight`.
+- **[Memory Providers](../user-guide/features/memory-providers.md)** — Plug in external memory backends for deeper personalization. Two providers ship with Hermes: RetainDB (hybrid search) and ByteRover (CLI-based); Honcho (dialectic reasoning), Hindsight (knowledge graphs), Supermemory (semantic recall), Mem0 (cloud extraction), OpenViking (tiered retrieval) and Holographic (local SQLite) are available from the plugin catalog via `hermes plugins install <name>`.
 
 ## Messaging Platforms
 
 Hermes runs as a gateway bot on 27+ messaging platforms, all configured through the same `gateway` subsystem:
 
-- **[Telegram](../user-guide/messaging/telegram.md)**, **[Discord](../user-guide/messaging/discord.md)**, **[Slack](../user-guide/messaging/slack.md)**, **[WhatsApp](../user-guide/messaging/whatsapp.md)**, **[Signal](../user-guide/messaging/signal.md)**, **[Matrix](../user-guide/messaging/matrix.md)**, **[Mattermost](../user-guide/messaging/mattermost.md)**, **[Email](../user-guide/messaging/email.md)**, **[SMS](../user-guide/messaging/sms.md)**, **[DingTalk](../user-guide/messaging/dingtalk.md)**, **[Feishu/Lark](../user-guide/messaging/feishu.md)**, **[WeCom](../user-guide/messaging/wecom.md)**, **[WeCom Callback](../user-guide/messaging/wecom-callback.md)**, **[Weixin](../user-guide/messaging/weixin.md)**, **[BlueBubbles](../user-guide/messaging/bluebubbles.md)**, **[Buzz](../user-guide/messaging/buzz.md)**, **[QQ Bot](../user-guide/messaging/qqbot.md)**, **[Yuanbao](../user-guide/messaging/yuanbao.md)**, **[Home Assistant](../user-guide/messaging/homeassistant.md)**, **[Microsoft Teams](../user-guide/messaging/teams.md)**, **[Microsoft Teams Meetings](../user-guide/messaging/teams-meetings.md)**, **[Microsoft Graph Webhook](../user-guide/messaging/msgraph-webhook.md)**, **[Google Chat](../user-guide/messaging/google_chat.md)**, **[LINE](../user-guide/messaging/line.md)**, **[ntfy](../user-guide/messaging/ntfy.md)**, **[SimpleX](../user-guide/messaging/simplex.md)**, **[Open WebUI](../user-guide/messaging/open-webui.md)**, **[Webhooks](../user-guide/messaging/webhooks.md)**
+- **[Telegram](../user-guide/messaging/telegram.md)**, **[Discord](../user-guide/messaging/discord.md)**, **[Slack](../user-guide/messaging/slack.md)**, **[WhatsApp](../user-guide/messaging/whatsapp.md)**, **[Signal](../user-guide/messaging/signal.md)**, **[Matrix](../user-guide/messaging/matrix.md)**, **[Mattermost](../user-guide/messaging/mattermost.md)**, **[Email](../user-guide/messaging/email.md)**, **[SMS](../user-guide/messaging/sms.md)**, **[DingTalk](../user-guide/messaging/dingtalk.md)**, **[Feishu/Lark](../user-guide/messaging/feishu.md)**, **[WeCom](../user-guide/messaging/wecom.md)**, **[WeCom Callback](../user-guide/messaging/wecom-callback.md)**, **[Weixin](../user-guide/messaging/weixin.md)**, **[BlueBubbles](../user-guide/messaging/bluebubbles.md)**, **[Buzz](../user-guide/messaging/buzz.md)**, **[QQ Bot](../user-guide/messaging/qqbot.md)**, **[Yuanbao](../user-guide/messaging/yuanbao.md)**, **[Home Assistant](../user-guide/messaging/homeassistant.md)** (plugin), **[Microsoft Teams](../user-guide/messaging/teams.md)**, **[Microsoft Teams Meetings](../user-guide/messaging/teams-meetings.md)**, **[Microsoft Graph Webhook](../user-guide/messaging/msgraph-webhook.md)**, **[Google Chat](../user-guide/messaging/google_chat.md)**, **[LINE](../user-guide/messaging/line.md)**, **[ntfy](../user-guide/messaging/ntfy.md)**, **[SimpleX](../user-guide/messaging/simplex.md)**, **[Open WebUI](../user-guide/messaging/open-webui.md)**, **[Webhooks](../user-guide/messaging/webhooks.md)**
 
 See the [Messaging Gateway overview](../user-guide/messaging/index.md) for the platform comparison table and setup guide.
 
@@ -114,7 +116,7 @@ Each platform's setup page walks through what to do once you're there.
 
 ## Home Automation
 
-- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — Control smart home devices via four dedicated tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`). The Home Assistant toolset activates automatically when `HASS_TOKEN` is configured.
+- **[Home Assistant](../user-guide/messaging/homeassistant.md)** — Control smart home devices via four dedicated tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`) and react to real-time state changes through the gateway. Ships as the `homeassistant` catalog plugin (`hermes plugins install homeassistant`); its toolset activates automatically when `HASS_TOKEN` is configured.
 
 ## Plugins
 

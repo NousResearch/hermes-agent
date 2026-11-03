@@ -168,7 +168,7 @@ class Project:
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
     archived: bool = False
-    folders: List[ProjectFolder] = field(default_factory=list)
+    folders: list[ProjectFolder] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("id", "slug", "name", *_OPTIONAL_ROW_FIELDS)}
@@ -256,7 +256,7 @@ def create_project(
     return pid
 
 
-def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> List[Project]:
+def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> list[Project]:
     sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC"
     return [_load_project(conn, r) for r in conn.execute(sql).fetchall()]
 
@@ -454,7 +454,7 @@ def record_discovered_repos(
     return len(rows)
 
 
-def list_discovered_repos(conn: sqlite3.Connection) -> List[dict]:
+def list_discovered_repos(conn: sqlite3.Connection) -> list[dict]:
     """All cached discovered repo roots, most-recently-seen first."""
     return [dict(r) for r in conn.execute("SELECT root, label, last_seen FROM discovered_repos ORDER BY last_seen DESC").fetchall()]
 

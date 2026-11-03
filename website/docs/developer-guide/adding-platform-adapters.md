@@ -212,7 +212,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
-| User authorization | `allowed_users_env` / `allow_all_env` checked |
+| User authorization | `allowed_users_env` / `allow_all_env` checked; `group_allowed_chats_env` / `allowlist_suppresses_pairing` (see below) |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
@@ -224,11 +224,102 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | System prompt hints | `platform_hint` injected into LLM context |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
-| `hermes status` | Shows plugin platforms with `(plugin)` tag |
+| `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
+| Service-event authorization | `trusted_inbound=True` skips user allowlists/pairing (see below) |
+| Display defaults | `display_tier` picks the built-in tool-progress/streaming tier |
+| Profile clone credential strip | `shared_env_prefixes` keeps tool-shared keys when the adapter is not in use |
+
+### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
+
+Three optional `ctx.register_platform(...)` / `PlatformEntry` fields exist for adapters that bridge a
+service rather than a chat network. The [Home Assistant plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant)
+is the reference consumer.
+
+| Field | Type / default | Effect |
+|---|---|---|
+| `trusted_inbound` | `bool = False` | Every inbound event comes from the service the adapter authenticated to with its own credential; there is no human sender. The gateway's user allowlists and DM pairing do not apply to this platform. Home Assistant's event bus is the consumer. **Never set it for a chat platform** — it would let anyone who can message the bot drive the agent. |
+| `display_tier` | `str = ''` | One of `'high'`, `'medium'`, `'low'`, `'minimal'`: the built-in per-platform display defaults tier (tool progress, streaming, interim messages) used when the user has no `display.platforms.<name>` override. Empty keeps the generic plugin default. Home Assistant uses `'minimal'`. |
+| `shared_env_prefixes` | `tuple[str, ...] = ()` | Env prefixes the platform shares with a non-channel capability, such as the same plugin's tools (Home Assistant: `('HASS_',)`). [Profile clones](../user-guide/profiles.md) strip keys under these prefixes only when the source profile actually runs the adapter, so a profile that only uses the tools keeps its credentials. |
+
+```python
+import dataclasses
+
+def register(ctx):
+    kwargs = dict(
+        name="my_service",
+        label="My Service",
+        adapter_factory=MyServiceAdapter,
+        check_fn=check_requirements,
+    )
+    # Feature-detect: older cores reject unknown register_platform kwargs.
+    from gateway.platform_registry import PlatformEntry
+    known = {f.name for f in dataclasses.fields(PlatformEntry)}
+    for key, value in (
+        ("trusted_inbound", True),
+        ("display_tier", "minimal"),
+        ("shared_env_prefixes", ("MY_SERVICE_",)),
+    ):
+        if key in known:
+            kwargs[key] = value
+    ctx.register_platform(**kwargs)
+```
+
+Feature-detect these fields with `dataclasses.fields(PlatformEntry)` as above so the plugin stays loadable on
+older Hermes cores that predate them.
+
+## Authorization fields for chat platforms
+
+Two more optional `PlatformEntry` fields carry gateway authorization behaviour that core used to
+hard-code for its bundled platforms. Declare them and a plugin platform behaves the same way:
+
+| Field | Type / default | Effect |
+|---|---|---|
+| `group_allowed_chats_env` | `str = ''` | Env var holding comma-separated group/forum **chat** IDs. Any message from a listed chat is authorized, even without a `user_id` (anonymous admins, channel posts). Telegram declares `TELEGRAM_GROUP_ALLOWED_CHATS` and QQ Bot declares `QQ_GROUP_ALLOWED_USERS`. |
+| `allowlist_suppresses_pairing` | `bool = False` | When the platform's `allowed_users_env` (or `group_allowed_chats_env`) is set, unknown DM senders are ignored rather than sent a pairing code: the owner already restricted access. Most bundled chat platforms set it. |
+
+```python
+kwargs = dict(name="my_chat", label="My Chat", adapter_factory=MyChatAdapter, check_fn=check_requirements,
+              allowed_users_env="MY_CHAT_ALLOWED_USERS", allow_all_env="MY_CHAT_ALLOW_ALL_USERS")
+known = {f.name for f in dataclasses.fields(PlatformEntry)}
+for key, value in (("group_allowed_chats_env", "MY_CHAT_GROUP_ALLOWED_CHATS"),
+                   ("allowlist_suppresses_pairing", True)):
+    if key in known:  # older cores reject unknown kwargs
+        kwargs[key] = value
+ctx.register_platform(**kwargs)
+```
+
+## Public helpers for platform plugins
+
+A platform adapter needs more of core than a tool plugin does. These names are public: `hermes plugins
+validate` raises no private-import warning for them, and they keep their names and signatures across
+releases. Anything else under `gateway.*`, `tools.*` or `hermes_cli.*` is internal, and the validator
+lists each import of it.
+
+| Need | Import |
+|---|---|
+| Adapter base class, send results, media cache helpers | `gateway.platforms.base` (public names) |
+| SSRF-safe HTTP client: connect-time IP validation, per-redirect re-check, shared keepalive limits | `from gateway.platforms.helpers import platform_http_client` |
+| The pieces of that client, to build your own | `gateway.platforms.base.ssrf_redirect_guard` (httpx `response` hook), `tools.url_safety.create_ssrf_safe_async_client`, `tools.url_safety.is_safe_url`, `gateway.platforms._http_client_limits.platform_httpx_limits` |
+| Own DM/group policy (`dm_policy` / `group_policy` / allowlists) | `from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin` |
+| Resolve an approval from a native button | `from tools.approval import resolve_gateway_approval` |
+| Native clarify buttons | `tools.clarify_gateway`: `get_pending(clarify_id)` (the pending entry or `None`; read `session_key`, `choices`, `multi_select`), `resolve_gateway_clarify(clarify_id, text)`, `mark_awaiting_text(clarify_id)`, `SKIPPED` |
+| `setup_fn` wizard steps | `hermes_cli.gateway_setup_wizard`: `print_setup_header(title)`, `confirm_reconfigure(label, *env_vars)`, `offer_home_channel(home_var, user_id, what)`, `save_env_values(**values)`, `prompt_csv(text, default)`; prompts from `hermes_cli.setup` (`prompt`, `prompt_choice`, `prompt_yes_no`); output from `hermes_cli.cli_output` (`print_info`, `print_success`, `print_warning`, `print_error`); `.env` access through `hermes_cli.config` (`save_env_value`, `get_env_value`) |
+
+```python
+from gateway.platforms.helpers import platform_http_client
+
+async def connect(self) -> bool:
+    # timeout=30.0 and follow_redirects=True by default; any other httpx.AsyncClient kwarg passes through.
+    self._http = platform_http_client(headers={"User-Agent": "my-chat-bot/1.0"})
+    ...
+```
+
+`get_pending()` returns `None` once the clarify was answered, timed out or cleared, so compare the
+result by identity with the entry your card was rendered for before acting on a click.
 
 ## Standalone send-path extensions
 
@@ -671,16 +762,13 @@ Six touchpoints:
 
 ### 9. Optional: Platform Hints
 
-**`agent/prompt_builder.py`** — If your platform has specific rendering limitations (no markdown, message length limits, etc.), add an entry to the `PLATFORM_HINTS` dict. This injects platform-specific guidance into the system prompt:
+**`platform_hint=`** on `ctx.register_platform` — If your platform has specific rendering limitations (no markdown, message length limits, etc.), declare a hint on its registry entry (keep the text in a light sibling such as `adapter_hint.py`). It is injected into the system prompt; `agent/prompt_builder.py::PLATFORM_HINTS` holds only core surfaces:
 
 ```python
-PLATFORM_HINTS = {
-    # ...
-    "newplat": (
-        "You are chatting via NewPlat. It supports markdown formatting "
-        "but has a 4000-character message limit."
-    ),
-}
+PLATFORM_HINT = (
+    "You are chatting via NewPlat. It supports markdown formatting "
+    "but has a 4000-character message limit."
+)
 ```
 
 Not all platforms need hints — only add one if the agent's behavior should differ.
@@ -797,7 +885,7 @@ async def disconnect(self):
 
 | Adapter | Pattern | Complexity | Good reference for |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | Medium | Simple REST API integration |
-| `weixin.py` | Long-poll + CDN | High | Media handling, encryption |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
+| `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
 | `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

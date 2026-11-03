@@ -27,6 +27,7 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
@@ -115,7 +116,7 @@ interface SidebarSessionsSectionProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
-  onNewSessionInWorkspace?: (path: null | string) => void
+  onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
@@ -249,7 +250,7 @@ export function SidebarSessionsSection({
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
   const sectionOpen = collapsible ? open : true
-  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
+  const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0 || group.mode === 'profile'))
   // A defined project list is itself content (even an empty project should
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
@@ -624,7 +625,7 @@ export function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup className={cn(rootClassName, DROP_TARGET_RING)} {...sessionDropTargetProps(pinned)}>
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
@@ -643,6 +644,15 @@ export function SidebarSessionsSection({
     </SidebarGroup>
   )
 }
+
+// Painted imperatively by session-drag.ts while a session hovers a pin
+// (Pinned) or unpin (any other list) target — same ring as a project row drop
+// target.
+const DROP_TARGET_RING =
+  'rounded-[6px] data-[session-drop-hover=true]:outline-2 data-[session-drop-hover=true]:-outline-offset-2 data-[session-drop-hover=true]:outline-sidebar-ring'
+
+const sessionDropTargetProps = (pinned: boolean) =>
+  pinned ? { 'data-session-pin-drop': '' } : { 'data-session-unpin-drop': '' }
 
 interface SortableSessionRowProps {
   session: SessionInfo

@@ -61,7 +61,7 @@ def _guarded_store_write(action, description, *args, **kwargs):
     """
     try:
         action(*args, **kwargs)
-    except BaseException as e:  # noqa: BLE001 - mirror the tick body's BaseException policy
+    except BaseException as e:
         logger.warning("Cron %s write failed: %s", description, e, exc_info=True)
 
 
@@ -156,18 +156,18 @@ class CronScheduler(ABC):
 
     def stop(self) -> None:
         """Optional eager teardown; stop_event is the primary signal."""
-        return None
+        return
 
     # Optional hooks for external providers — default-safe; keep NON-abstract.
 
     def on_jobs_changed(self) -> None:
         """After a successful store mutation; external providers reconcile. Built-in: no-op."""
-        return None
+        return
 
     def register_job(self, job: dict[str, Any]) -> None:
         """Register the external trigger for a newly persisted job (must complete before callers
         report it as scheduled). Built-in: no-op."""
-        return None
+        return
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
@@ -238,7 +238,7 @@ class CronScheduler(ABC):
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (desired state). Built-in: no-op."""
-        return None
+        return
 
 
 def provider_supports_force_fire(provider: Any) -> bool:
@@ -291,7 +291,7 @@ def _misfire_grace_minutes() -> float:
 
 
 def fire_overdue_jobs(
-    provider: "CronScheduler", *, adapters: Any = None, loop: Any = None, now: Any = None,
+    provider: CronScheduler, *, adapters: Any = None, loop: Any = None, now: Any = None,
 ) -> int:
     """Misfire backstop (gateway housekeeping loop): fire jobs whose external HTTP fire never
     arrived, else ``next_run_at`` stays parked in the past forever. No-op for the built-in (its tick
@@ -384,7 +384,7 @@ def fire_overdue_jobs(
     return fired
 
 
-def resolve_cron_scheduler() -> "CronScheduler":
+def resolve_cron_scheduler() -> CronScheduler:
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
     name = ""
@@ -414,8 +414,8 @@ def resolve_cron_scheduler() -> "CronScheduler":
 
 
 def scheduler_for_profile_mode(
-    provider: "CronScheduler", *, multiplex_profiles: bool
-) -> "CronScheduler":
+    provider: CronScheduler, *, multiplex_profiles: bool
+) -> CronScheduler:
     """External providers own one unscoped remote registry and cannot reconcile several profile
     stores: fail closed to the built-in multiplex ticker until the API carries profile identity."""
     if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):
@@ -438,12 +438,14 @@ class InProcessCronScheduler(CronScheduler):
     def start(
         self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
         from hermes_constants import get_process_hermes_home
+        from cron.dispatch_hold import note_dispatching, note_held
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
@@ -458,6 +460,7 @@ class InProcessCronScheduler(CronScheduler):
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
                 interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
                 default_profile=default_profile, profile_gate=profile_gate,
+                profile_bot_platforms=profile_bot_platforms,
             )
             return
 
@@ -489,7 +492,9 @@ class InProcessCronScheduler(CronScheduler):
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
+                    note_held()
                 else:
+                    note_dispatching()
                     cron_tick(
                         verbose=False, adapters=adapters, loop=loop, sync=False,
                         can_dispatch=can_dispatch,
@@ -534,6 +539,7 @@ class InProcessCronScheduler(CronScheduler):
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
         can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        profile_bot_platforms=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
@@ -541,10 +547,11 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
         from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
+            SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
+        from cron.dispatch_hold import note_dispatching, note_held_profiles
 
         initial_homes = _existing_profile_homes(profile_homes)
         register_ticked_homes([_profile_entry(entry)[1] for entry in initial_homes])
@@ -562,7 +569,8 @@ class InProcessCronScheduler(CronScheduler):
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
+            owned = (profile_bot_platforms or {}).get(profile_name)
+            if not has_credential_platform(tick_adapters, owned) and adapters:
                 return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
             return tick_adapters
 
@@ -615,10 +623,12 @@ class InProcessCronScheduler(CronScheduler):
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
+                    note_held_profiles(cycle_homes)
                 else:
                     for _pname, home in cycle_homes:
                         try:
                             with _profile_cron_scope(home):
+                                note_dispatching()
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,

@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.file_tools as file_tools_mod  # noqa: F401 — registers the file tools
-import tools.terminal_tool as terminal_tool
+import tools.file_tools as file_tools_mod
+from tools import terminal_tool
 from tools.environments.local import LocalEnvironment, _bash_safe_path
 from tools.registry import registry
 

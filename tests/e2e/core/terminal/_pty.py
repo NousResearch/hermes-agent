@@ -92,6 +92,20 @@ def session_members(sid: int) -> list[int]:
     return out
 
 
+def _argv(pid: int) -> list[str]:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")[:-1]
+    except OSError:
+        return []
+
+
+def _pgid_of(pid: int) -> int | None:
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
 def cmdline(pid: int) -> str:
     try:
         return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
@@ -102,15 +116,17 @@ def cmdline(pid: int) -> str:
 class PtyHermes:
     """One interactive ``hermes`` process on a PTY with an emulated screen."""
 
-    def __init__(self, root: Path, argv_tail: list[str], llm: FakeLLMServer, *, rows: int, cols: int,
+    def __init__(self, root: Path, argv_tail: list[str], llm: FakeLLMServer | None, *, rows: int, cols: int,
                  extra_config: str = "") -> None:
+        """``llm=None``: the caller already wrote ``root/home/.hermes`` (e.g. a native-runtime home)."""
         self.root = root
         self.home = root / "home"
         self.hermes_home = self.home / ".hermes"
         operator = (_operator_home() / ".hermes").resolve()
         assert operator not in (self.hermes_home.resolve(), *self.hermes_home.resolve().parents), (
             f"sandbox {self.hermes_home} sits inside the operator's Hermes home")
-        write_hermes_home(self.hermes_home, llm.base_url, extra_config=extra_config)
+        if llm is not None:
+            write_hermes_home(self.hermes_home, llm.base_url, extra_config=extra_config)
         self.llm = llm
         self.screen = Screen(rows, cols)
         self.raw = bytearray()
@@ -265,7 +281,7 @@ class PtyHermes:
         try:
             import psutil
             found |= {(c.pid, _start_time(c.pid)) for c in psutil.Process(self.proc.pid).children(recursive=True)}
-        except Exception:  # noqa: BLE001 - the child may exit between the scan and the walk
+        except Exception:
             pass
         self.seen_members.update(item for item in found if item[1] is not None)
 
@@ -281,12 +297,28 @@ class PtyHermes:
         return self.proc.returncode
 
     def leftover_processes(self, timeout: float = 15.0) -> list[str]:
-        """Processes still alive in the child's session, or seen as its descendants, after exit."""
+        """Processes still alive in the child's session, or seen as its descendants, after exit.
+
+        The profile's ``gateway run`` is not a leftover: ``hermes chat`` attaches to it and it
+        keeps serving (cron, messaging, the next client) after the client exits; ``close()`` still
+        tears it down with the rest of this harness's tree. Neither is that gateway's owner-death
+        supervisor while the gateway lives: it belongs to the gateway, and after the gateway's last
+        owned command it stays for an idle grace on purpose (``_SUPERVISOR_IDLE_EXIT_S``)."""
+        from gateway.status import looks_like_gateway_command_line
+        from hermes_cli.process_identity import is_owner_death_supervisor
+
         def alive() -> list[int]:
             pids = set(session_members(self.sid))
             # Same pid AND same start time: a recycled pid is not our leftover.
             pids |= {pid for pid, started in self.seen_members if _start_time(pid) == started}
-            return sorted(pids)
+            gateways = {pid for pid in pids if looks_like_gateway_command_line(cmdline(pid))}
+            gateway_pgids = {str(pgid) for pgid in map(_pgid_of, gateways) if pgid is not None}
+
+            def gateway_supervisor(pid: int) -> bool:
+                argv = _argv(pid)
+                return is_owner_death_supervisor(argv) and len(argv) > 2 and argv[2] in gateway_pgids
+
+            return sorted(pid for pid in pids - gateways if not gateway_supervisor(pid))
         try:
             poll(lambda: not alive(), timeout=timeout, what="the PTY session to empty")
         except AssertionError:

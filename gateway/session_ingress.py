@@ -509,6 +509,9 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     released before its commit is held until it commits or its handler ends, and a serial reader's
     next command waits for that too (``burst_gate``): a non-burst busy input (a second video, a voice
     note, text outside queue mode) has no burst commit task to wait on."""
+    # No adapter task brackets this turn either (``observe`` only awaits its reply): the executor runs
+    # its processing lifecycle once the row starts executing, as for a producer's (``producer_turn``).
+    event._producer_delivery = True
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
     committed = asyncio.get_running_loop().create_future()

@@ -25,7 +25,7 @@ import { traceIdentityChange } from '@/lib/identity-trace'
 import { isPermanentLocalGatewayEnsureError } from '@/lib/local-gateway-ensure-failure'
 import { initialGatewayProfile } from '@/lib/platform'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { recordConnectionWire } from '@/store/connection-wire'
+import { recordSecondaryWire } from '@/store/connection-wire'
 import { $gatewayActivationEpoch } from '@/store/gateway-activation-epoch'
 import { isMissingConnectionError, isMissingProfileError, isStalledDialError } from '@/store/gateway-dial-failures'
 import { isKeptRoute, keptRouteOpened } from '@/store/gateway-kept-routes'
@@ -976,7 +976,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   // sockets prove it through this closure. Stamp before registry fan-in,
   // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
-    if (event.type === 'gateway.ready') { recordConnectionWire(connectionId, gateway.sessionWire) }
+    if (event.type === 'gateway.ready') { recordSecondaryWire(connectionId, entry.connection, gateway.sessionWire) }
     const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
 
     g.config?.onEvent(scopedEvent)

@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { HermesConnection } from '@/global'
 
 import { serverOwnsComposerQueue } from './composer-queue'
-import { $connectionWires, connectionWire, primaryWireConnectionId, recordConnectionWire } from './connection-wire'
+import { $connectionWires, connectionWire, primaryWireConnectionId, recordConnectionWire, recordSecondaryWire } from './connection-wire'
 import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 
 afterEach(() => {
@@ -30,4 +30,20 @@ it('names an established primary by its own route and an unrecorded one by the w
   expect(primaryWireConnectionId({ connectionId: 'home', mode: 'remote' }, 'vps')).toBe('home')
   expect(primaryWireConnectionId({ connectionId: null, mode: 'remote' }, 'vps')).toBeNull()
   expect(primaryWireConnectionId({ connectionId: null, mode: null }, 'vps')).toBe('vps')
+})
+
+// A profile-only secondary names no connection, but its descriptor names the backend it reached.
+it('records a secondary under its registry id, else the backend its profile resolved to', () => {
+  recordConnectionWire('local', 'canonical')
+
+  recordSecondaryWire('home', { connectionId: 'vps', mode: 'remote' }, 'legacy')
+  recordSecondaryWire(null, { connectionId: 'vps', mode: 'remote' }, 'canonical')
+  recordSecondaryWire(null, { mode: 'remote' }, 'legacy')
+
+  expect(connectionWire('home')).toBe('legacy')
+  expect(connectionWire('vps')).toBe('canonical')
+  expect(connectionWire('local')).toBe('canonical')
+
+  recordSecondaryWire(null, { mode: 'local' }, 'legacy')
+  expect(connectionWire('local')).toBe('legacy')
 })

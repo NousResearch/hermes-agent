@@ -206,11 +206,18 @@ def test_refresh_boots_the_image_environment_when_it_is_the_selection(install, m
     Facts(runtime_facts_path(root)).record_state("venv", "previous-image", ["fal"])
     (uv_cache_path() / "archive-v0").mkdir(parents=True)
     monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: pytest.fail("no rebuild expected"))
+    venv_is_current = pm.install.venv_is_current
     monkeypatch.setattr(pm.install, "venv_is_current", lambda **kwargs: False)
 
     assert refresh_dependencies(root) == "image"
     assert Facts(runtime_facts_path(root)).get("venv") is None
     assert not uv_cache_path().exists()
+
+    # The next boot of the same image finds nothing to do: no rebuild on every boot.
+    monkeypatch.setattr(pm.install, "venv_is_current", venv_is_current)
+    (root / "venv").mkdir()
+    (root / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    assert refresh_dependencies(root) == "current"
 
 
 def test_refresh_without_room_for_a_rebuild_boots_the_image_and_keeps_the_selection(install, monkeypatch):
@@ -326,3 +333,34 @@ def test_refresh_that_fails_with_room_to_spare_keeps_the_uv_cache(install, monke
 
     assert refresh_dependencies(root) == "fallback"
     assert (uv_cache_path() / "archive-v0").is_dir()
+
+
+def test_refresh_whose_plugin_discovery_fails_never_keeps_the_previous_generation(install, monkeypatch):
+    """A generation resolved against the previous lock must never boot the new code, even when
+    reading an enabled plugin's manifest raises before the rebuild starts."""
+    import pm.client
+    import pm.install
+    import pm.workspace
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+    from pm.package import InstallError
+    from pm.packages import Venv
+    from pm.recovery import refresh_dependencies
+
+    root, store = install
+
+    def broken_manifest(extras, python=None):
+        raise InstallError("venv", "plugin 'bad' declares an unsupported manifest_version")
+
+    monkeypatch.setattr(pm.workspace, "build_member_dirs", broken_manifest)
+    monkeypatch.setattr(Venv, "expected_stamp", lambda self, extras, plugin_dirs=None: "stamp:" + ",".join(
+        sorted(extras)) + ("" if plugin_dirs is not None else str(pm.workspace.build_member_dirs(extras))))
+    Facts(store / "facts.json").record_state("venv", "stamp:all,fal,messaging", ["all", "fal", "messaging"])
+    Facts(runtime_facts_path(root)).record_state("venv", "previous-image", ["all", "fal"],
+                                                 environment=root / "previous" / "venv")
+    monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: pytest.fail("no rebuild expected"))
+
+    assert refresh_dependencies(root) == "fallback"
+    fact = Facts(runtime_facts_path(root)).get("venv")
+    assert "environment" not in fact  # the image environment boots, not the previous generation
+    assert fact["extras"] == ["all", "fal", "messaging"]

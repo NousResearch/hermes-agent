@@ -59,12 +59,12 @@ import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupRoute } from './canonical-groups'
-import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
+import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
-import { setGroupMembership } from './group-chat-view-members'
+import { memberMachineOffline, setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -1160,17 +1160,27 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const b = useBots()
   const meta = useValue($botMeta)
   const [name, setName] = useState('')
+  const connectionId = useValue(host.state.connectionId)
+  const roster: RosterRow[] = useValue($lastRoster)
   const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
+  const botName = displayName(bot, botRosterMeta(bot, meta))
+  // Its groups[] also live on its own machine: a change saved while that
+  // machine is offline would land only here and be undone on reconnect.
+  const locked = memberMachineOffline(roster.find(row => botRosterKey(row) === botRosterKey(bot)) || bot, connectionId)
 
-  const setMembership = (group: string, enabled: boolean) => {
-    void setGroupMembership(bot, group, enabled)
-    host.notify({
-      kind: 'info',
-      message: enabled
-        ? `${displayName(bot, botRosterMeta(bot, meta))} added to “${group}”`
-        : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
-    })
+  const setMembership = async (group: string, enabled: boolean) => {
+    try {
+      await setGroupMembership(bot, group, enabled)
+    } catch (error) {
+      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
+
+      return false
+    }
+
+    host.notify({ kind: 'info', message: enabled ? `${botName} added to “${group}”` : `${botName} removed from “${group}”` })
+
+    return true
   }
 
   return (
@@ -1197,11 +1207,20 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
                   className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)"
                   key={group}
                 >
-                  <Checkbox checked={enabled} onCheckedChange={checked => setMembership(group, checked === true)} />
+                  <Checkbox
+                    checked={enabled}
+                    disabled={locked}
+                    onCheckedChange={checked => void setMembership(group, checked === true)}
+                  />
                   <span>{group}</span>
                 </label>
               )
             })}
+          </div>
+        ) : null}
+        {locked ? (
+          <div className="text-xs text-(--ui-text-tertiary)" data-testid="group-dialog-locked">
+            {b.crossGateway.groupsOffline(connectionName(bot), botName)}
           </div>
         ) : null}
         <form
@@ -1210,30 +1229,35 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             event.preventDefault()
             const trimmed = name.trim()
 
-            if (trimmed) {
-              setMembership(trimmed, true)
+            if (trimmed && !locked) {
+              void setMembership(trimmed, true)
               setName('')
             }
           }}
         >
           <Input
             autoFocus
+            disabled={locked}
             onChange={event => setName(event.target.value)}
             placeholder={groups.length ? 'New group…' : 'Group name (e.g. Research)'}
             value={name}
           />
-          <Button disabled={!name.trim()} size="sm" type="submit">
+          <Button disabled={locked || !name.trim()} size="sm" type="submit">
             Create & join
           </Button>
         </form>
         {current.length ? (
           <Button
             className="justify-self-start"
+            disabled={locked}
             onClick={() =>
               void (async () => {
-                // Sequential: each toggle patches groups[] from the current meta.
+                // Sequential: each toggle patches groups[] from the current meta;
+                // stop at the first one that did not land.
                 for (const group of current) {
-                  await setGroupMembership(bot, group, false)
+                  if (!(await setMembership(group, false))) {
+                    return
+                  }
                 }
               })()
             }

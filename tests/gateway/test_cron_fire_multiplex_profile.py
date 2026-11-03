@@ -12,7 +12,6 @@ Real RS256 signing and the real verifier; only the cron provider is a spy. Regre
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import time
@@ -27,6 +26,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from agent import secret_scope as ss
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from tests.waiting import async_wait_until
 
 AUD = "agent:inst-multiplex"
 ISS = "https://portal.example.test"
@@ -112,13 +112,6 @@ def _multiplexed_app(monkeypatch, root: Path, worker: Path) -> web.Application:
     return app
 
 
-async def _wait_fired(spy: _SpyProvider) -> None:
-    for _ in range(100):
-        if spy.fired:
-            return
-        await asyncio.sleep(0.01)
-
-
 @pytest.mark.asyncio
 async def test_profile_prefixed_fire_verifies_against_launch_home(homes, rsa_keys, monkeypatch):
     root, worker = homes
@@ -134,7 +127,7 @@ async def test_profile_prefixed_fire_verifies_against_launch_home(homes, rsa_key
             json={"job_id": "job-worker"},
         )
         assert resp.status == 202, await resp.text()
-        await _wait_fired(spy)
+        await async_wait_until(lambda: spy.fired, what="cron fire")
     assert spy.fired == ["job-worker"]
 
 
@@ -158,7 +151,7 @@ async def test_profile_config_cannot_replace_launch_home_identity(homes, rsa_key
             json={"job_id": "job-worker"},
         )
         assert resp.status == 202, await resp.text()
-        await _wait_fired(spy)
+        await async_wait_until(lambda: spy.fired, what="cron fire")
         forged = await cli.post(
             "/p/worker/api/cron/fire",
             headers={"Authorization": "Bearer not-a-jwt"},

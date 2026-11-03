@@ -12,7 +12,8 @@ All NAS calls are mocked — ZERO live network. These prove:
 
 import pytest
 
-from tests.chronos_fixtures import ROOT_CHRONOS, enter_stale_profile
+from tests.chronos_fixtures import (
+    ROOT_CHRONOS, STALE_CHRONOS, enter_stale_profile, root_and_stale_profile, write_chronos_config)
 
 
 @pytest.fixture
@@ -97,6 +98,28 @@ def test_profile_arms_with_the_root_callback_url_not_its_stale_copy(tmp_path, mo
     enter_stale_profile(tmp_path, monkeypatch)
 
     assert _arm_from_config()["agent_callback_url"] == ROOT_CHRONOS["callback_url"]
+
+
+def test_root_config_refs_expand_from_the_root_secrets_inside_a_profile_scope(tmp_path, monkeypatch):
+    """A multiplexed request for a profile binds that profile's home AND its secret scope; a
+    ``${VAR}`` in the root config must still expand from the root's ``.env``, not the profile's."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root, profile = root_and_stale_profile(tmp_path)
+    write_chronos_config(root, {**ROOT_CHRONOS, "callback_url": "${CHRONOS_CALLBACK_URL}"})
+    (root / ".env").write_text(f"CHRONOS_CALLBACK_URL={ROOT_CHRONOS['callback_url']}\n", encoding="utf-8")
+    (profile / ".env").write_text(f"CHRONOS_CALLBACK_URL={STALE_CHRONOS['callback_url']}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))  # the multiplexed gateway's launch home
+
+    home_token = set_hermes_home_override(str(profile))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile), profile_home=str(profile))
+    try:
+        provision = _arm_from_config()
+    finally:
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+    assert provision["agent_callback_url"] == ROOT_CHRONOS["callback_url"]
 
 
 def test_register_job_arms_only_the_created_job(chronos):

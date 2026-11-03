@@ -4,9 +4,8 @@ NAS seeds ``cron.chronos.*`` into the root ``config.yaml`` (``/opt/data`` on hos
 profile cloned or imported from another agent keeps that agent's values in its own config.yaml.
 """
 
+import json
 from pathlib import Path
-
-import yaml
 
 ROOT_CHRONOS = {
     "portal_url": "https://portal.nous.test",
@@ -22,19 +21,25 @@ STALE_CHRONOS = {
 }
 
 
-def _write_config(home: Path, chronos: dict) -> None:
+def write_chronos_config(home: Path, chronos: dict) -> None:
     home.mkdir(parents=True, exist_ok=True)
+    # JSON is valid YAML, and the test environment has no PyYAML.
     (home / "config.yaml").write_text(
-        yaml.safe_dump({"cron": {"provider": "chronos", "chronos": chronos}}), encoding="utf-8")
+        json.dumps({"cron": {"provider": "chronos", "chronos": chronos}}), encoding="utf-8")
+
+
+def root_and_stale_profile(tmp_path: Path) -> tuple[Path, Path]:
+    """``<root>/config.yaml`` with ``ROOT_CHRONOS`` and ``<root>/profiles/jack`` with ``STALE_CHRONOS``."""
+    root = tmp_path / "data"
+    profile = root / "profiles" / "jack"
+    write_chronos_config(root, ROOT_CHRONOS)
+    write_chronos_config(profile, STALE_CHRONOS)
+    return root, profile
 
 
 def enter_stale_profile(tmp_path: Path, monkeypatch) -> Path:
-    """Build ``<root>/config.yaml`` (``ROOT_CHRONOS``) and ``<root>/profiles/jack`` (``STALE_CHRONOS``),
-    then run as that profile (``HERMES_HOME=<root>/profiles/jack``), as a process launched with
+    """Run as the stale profile (``HERMES_HOME=<root>/profiles/jack``), as a process launched with
     ``-p jack`` does."""
-    root = tmp_path / "data"
-    profile = root / "profiles" / "jack"
-    _write_config(root, ROOT_CHRONOS)
-    _write_config(profile, STALE_CHRONOS)
+    _root, profile = root_and_stale_profile(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(profile))
     return profile

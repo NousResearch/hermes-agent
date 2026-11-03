@@ -12,7 +12,7 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, McpCredentialsRejectedError, _apply_identity_header, _credentials_rejected_error, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
 from tools.mcp_tool_common import _core
@@ -597,6 +597,16 @@ class MCPServerTransportMixin:
                     yield streams
         return _owned_client_streams()
 
+    def _credentials_rejection(self, handshake_before) -> Optional[McpCredentialsRejectedError]:
+        """The verdict for a 401/403 the recorder saw while this attempt connected with configured
+        header credentials, else None. OAuth is excluded: its provider takes the 401 inside its own
+        flow, and the hook records it too. ``initialize_result`` marks a finished handshake, not
+        ``session`` (``mcp_tool_health`` clears that mid-session): ``_negotiate_session`` assigns a
+        new object only on success, so a 401 on a later call is no verdict on connecting."""
+        if self._auth_type == "oauth" or self.initialize_result is not handshake_before:
+            return None
+        return _credentials_rejected_error(self.name, self._http_rejection)
+
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
         _core._ensure_mcp_sdk()
@@ -629,9 +639,13 @@ class MCPServerTransportMixin:
             return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
         transport = self._streamable_http_transport(*common, configured_header_names)
         label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
+        handshake_before = self.initialize_result
         try:
             return await self._serve_transport(transport, label, float(connect_timeout))
         except Exception as exc:
+            rejected = self._credentials_rejection(handshake_before)
+            if rejected is not None:
+                raise rejected from exc
             # The SDK folds a non-2xx it cannot parse into ``-32603 Server returned an error response``;
             # the recorder hook kept the status/URL/body the server actually sent (#114350, #113359).
             http_detail = _describe_http_failure(exc, self._http_rejection)

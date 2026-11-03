@@ -394,9 +394,19 @@ def _select_new_servers(servers: dict[str, dict]) -> dict[str, dict]:
     for srv in stale_cached:
         auth_park = getattr(srv, "_auth_park", None)
         # Parked on an OAuth failure and not re-authorized since: leave it to its timed self-probe.
-        if auth_park is None or auth_park[0].credential_stamp() != auth_park[1]:
+        # Parked on rejected header credentials with the same inputs: a nudge only resends the refused token.
+        if ((auth_park is None or auth_park[0].credential_stamp() != auth_park[1])
+                and not _header_auth_park_holds(srv)):
             _loop._signal_reconnect(srv)
     return new_servers
+
+
+def _header_auth_park_holds(srv) -> bool:
+    """Whether *srv* is parked on rejected header credentials and its connection inputs are unchanged."""
+    if getattr(srv, "_header_auth_park", None) is None:
+        return False
+    with _owner_secret_scope():
+        return srv._header_auth_inputs_unchanged()
 
 
 def _register_lazy_from_cache(new_servers: dict[str, dict]) -> tuple[dict[str, dict], int, int]:

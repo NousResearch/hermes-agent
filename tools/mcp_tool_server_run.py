@@ -222,6 +222,10 @@ class MCPServerRunMixin:
                     "self-probe until it is re-enabled", self.name)
                 paused = True
                 continue
+            if outcome == "self-probe" and await self._header_auth_probe_gated():
+                logger.debug("MCP server '%s': parked on rejected credentials; connection inputs unchanged, "
+                             "skipping self-probe", self.name)
+                continue
             # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
             # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
             # task-local ContextVar reaches it; it stays set for the task's life — every later
@@ -353,6 +357,7 @@ class MCPServerRunMixin:
                             reset_secret_scope(scope_token)
                 rebuild = True
                 self._auth_park = None
+                self._header_auth_park = None
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 self._resolved_identity = None  # the transport publishes the inputs it connects with
                 if not await self._on_clean_return(await run_transport(config), budget):
@@ -482,12 +487,17 @@ class MCPServerRunMixin:
         if failure_class == "permanent":
             # Deterministic failure (bad command, non-MCP URL, 401/403): park at once; auth
             # failures park (not return) so the task can pick up fresh tokens later.
-            detail = (f"authentication, parking until credentials change; re-authenticate with "
-                      f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
-                      else "connection with a permanent error, parking without retries")
+            if _errors._is_auth_error(root):
+                detail = (f"authentication, parking until credentials change; re-authenticate with "
+                          f"`hermes mcp login {self.name}`")
+            elif isinstance(root, _errors.McpCredentialsRejectedError):
+                detail = "connection: credentials rejected, parking until they change"
+            else:
+                detail = "connection with a permanent error, parking without retries"
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
             self._arm_auth_park(root)
+            self._arm_header_auth_park(root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
@@ -519,10 +529,17 @@ class MCPServerRunMixin:
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
-        self._log_park(
-            "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
-            "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+        if isinstance(root, _errors.McpCredentialsRejectedError):
+            self._log_park(
+                "MCP server '%s' hit a permanent error, parking until its credentials change (state: connected → "
+                "parked): %s: %s", self.name, type(root).__name__, root)
+        else:
+            self._log_park(
+                "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
+                "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__,
+                root)
         self._arm_auth_park(root)
+        self._arm_header_auth_park(root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)
 
     def _arm_auth_park(self, root: BaseException) -> None:
@@ -535,6 +552,42 @@ class MCPServerRunMixin:
             from tools.mcp_oauth import HermesTokenStorage
             storage = HermesTokenStorage(self.name, hermes_home=get_hermes_home())
             self._auth_park = (storage, storage.credential_stamp())
+
+    def _arm_header_auth_park(self, root: BaseException) -> None:
+        """Record the connection inputs a header-authenticated server's credentials were rejected with.
+        The digest is the one ``_run_http`` published at the start of the failed attempt, so a token
+        replaced while that attempt ran still counts as a change."""
+        if self._auth_type != "oauth" and isinstance(root, _errors.McpCredentialsRejectedError):
+            self._header_auth_park = self._resolved_identity
+
+    def _header_auth_inputs_unchanged(self) -> bool:
+        """Whether the inputs the next attempt would connect with still hash to the rejected ones,
+        resolved on the path that attempt takes (``_refresh_remote_config`` re-reads the config,
+        ``_run_http`` resolves and hashes it). A missing entry or an unavailable live endpoint counts as
+        changed: the probe runs and reports why. The caller binds the owner's secret scope."""
+        from tools import mcp_tool_config as _config
+        from tools import mcp_tool_transport as _transport
+        fresh = (_config._load_mcp_config() or {}).get(self.name)
+        if not isinstance(fresh, dict) or "url" not in fresh:
+            return False
+        try:
+            inputs, _names = _transport._connect_inputs(self.name, fresh)
+        except _transport.LiveEndpointUnavailable:
+            return False
+        return _registration._identity_digest(inputs) == self._header_auth_park
+
+    async def _header_auth_probe_gated(self) -> bool:
+        """True while parked on rejected header credentials whose inputs have not changed."""
+        if self._header_auth_park is None:
+            return False
+        from tools.mcp_tool_discovery import _install_owner_secret_scope
+        scope_token = await _install_owner_secret_scope()
+        try:
+            return self._header_auth_inputs_unchanged()
+        finally:
+            if scope_token is not None:
+                from agent.secret_scope import reset_secret_scope
+                reset_secret_scope(scope_token)
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""

@@ -423,6 +423,8 @@ Reaction controls use:
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
+Every human `m.reaction` the bot can see is also forwarded to the gateway hook registry as a `reaction:added` event (see [Event Hooks](../features/hooks.md)), so a hook or plugin can drive its own flows — e.g. 👍/👎 as a triage vote. Removal is a redaction in Matrix and raises no event.
+
 ### Media Limits
 
 Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.

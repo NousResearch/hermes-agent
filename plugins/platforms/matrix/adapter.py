@@ -79,6 +79,14 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from .adapter_reaction_prompts import (
+    _MATRIX_CHOICE_PICKER_REACTIONS,
+    _MATRIX_MODEL_PICKER_REACTIONS,
+    _MatrixApprovalPrompt,
+    _MatrixChoicePickerPrompt,
+    _MatrixModelPickerPrompt,
+    _MatrixPickerPrompt,
+)
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -343,35 +351,6 @@ class MatrixRoomIdentity:
     conflict: bool = False
 
 
-@dataclass
-class _MatrixApprovalPrompt:
-    """Pending reaction-based exec approval prompt."""
-    session_key: str
-    chat_id: str
-    message_id: str
-    resolved: bool = False
-    requester_user_id: str | None = None
-    expires_at: float | None = None
-    bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
-
-
-@dataclass
-class _MatrixPickerPrompt:
-    """Pending reaction-based picker; ``choices`` maps emoji -> selection, ``on_selected`` is the callback."""
-    chat_id: str
-    message_id: str
-    session_key: str
-    choices: dict
-    on_selected: Any
-    requester_user_id: str | None = None
-    expires_at: float | None = None
-    resolved: bool = False
-    bot_reaction_events: dict[str, str] = field(default_factory=dict)
-
-
-_MatrixModelPickerPrompt = _MatrixChoicePickerPrompt = _MatrixPickerPrompt
-
-
 # The homeserver rejects an event whose JSON exceeds 65,536 bytes (M_TOO_LARGE). Event content stays
 # under this budget so the envelope (ids, hashes, signatures) and E2EE's 4/3 base64 inflation still fit.
 _MAX_CONTENT_BYTES = 45_000
@@ -423,9 +402,6 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
 _MATRIX_MEDIA_FILENAME_EXTS = frozenset({
     ".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".flac", ".aac", ".amr", ".mp4", ".webm", ".mov", ".mkv"})
-# Keycap 1-9, 🔟; choice pickers (/reasoning, /fast) can need 12 slots, so they add 🅰️ 🅱️.
-_MATRIX_MODEL_PICKER_REACTIONS = tuple(f"{d}\ufe0f\u20e3" for d in "123456789") + ("\U0001f51f",)
-_MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + ("\U0001f170\ufe0f", "\U0001f171\ufe0f")
 
 def _looks_like_matrix_image_filename(text: str) -> bool:
     """True when an m.image body is just the uploaded filename (no caption) — not user text."""
@@ -2510,10 +2486,34 @@ class MatrixAdapter(BasePlatformAdapter):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
+        # Hooks fire before the internal gates so consumers see every human reaction (same contract
+        # as the Slack adapter); errors here never block the approval/picker path below.
+        await self._forward_reaction_event(room_id, reacts_to, key, event_id, sender, content)
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
+
+    async def _forward_reaction_event(
+        self, room_id: str, reacts_to: str, key: str, event_id: str, sender: str, content: Any,
+    ) -> None:
+        """Fan an ``m.reaction`` out to the gateway HookRegistry as ``reaction:added``.
+
+        Matrix has no removal event to forward: taking a reaction back redacts it, so only
+        additions reach hooks. The key is the reaction itself (usually one emoji char).
+        """
+        handler = getattr(self, "_reaction_handler", None)
+        if handler is None or not key or not reacts_to:
+            return
+        try:
+            await handler({
+                "platform": "matrix", "event_name": "reaction:added",
+                "reaction": key, "user_id": sender, "item_user_id": "",
+                "item_type": "message", "channel_id": room_id,
+                "message_ts": reacts_to, "event_ts": event_id, "raw_event": content,
+            })
+        except Exception:  # pragma: no cover - hook contract is non-blocking
+            logger.debug("Matrix: reaction hook forwarding failed", exc_info=True)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
